@@ -1,0 +1,10 @@
+node_modules/
+dist/
+target/
+.DS_Store
+*.tsbuildinfo
+*.node
+*.so
+.pytest_cache/
+.venv/
+__pycache__/

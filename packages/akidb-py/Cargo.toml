@@ -1,0 +1,18 @@
+[package]
+name = "akidb-py"
+version = "1.7.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+name = "akidb"
+crate-type = ["cdylib"]
+
+[dependencies]
+akidb-native = { path = "../akidb-native", default-features = false }
+pyo3 = { version = "0.24.1", features = ["extension-module"] }
+serde_json = "1"
+
+[build-dependencies]
+pyo3-build-config = "0.24.1"

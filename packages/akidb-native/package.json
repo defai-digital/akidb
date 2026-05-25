@@ -1,0 +1,45 @@
+{
+  "name": "@defai-digital/akidb-native",
+  "version": "1.7.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "akidb-native",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "require": "./index.cjs"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.cjs",
+    "index.d.ts",
+    "*.node"
+  ],
+  "scripts": {
+    "build": "napi build --platform --release && mv index.js index.cjs && cp esm-wrapper.js index.js",
+    "build:debug": "napi build --platform && mv index.js index.cjs && cp esm-wrapper.js index.js",
+    "clean": "cargo clean",
+    "artifacts": "napi artifacts",
+    "test": "cargo test",
+    "test:rust": "cargo test",
+    "prepublishOnly": "pnpm build"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4"
+  }
+}

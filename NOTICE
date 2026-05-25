@@ -1,0 +1,14 @@
+AkiDB
+Copyright (c) 2026 DEFAI Private Limited
+
+AkiDB is published under the MIT License.
+
+This repository was split from the AX Fabric codebase. AX Fabric product-layer
+components such as ingestion workflows, semantic governance, semantic packages,
+object-store synchronization, MCP product tools, enterprise connectors, and
+commercial runtime packaging are not part of this MIT project.
+
+FAISS note:
+AkiDB implements vector search concepts independently in Rust. If future audit
+work identifies any source file as derived from FAISS source code, the relevant
+FAISS MIT copyright and permission notice must be retained here before release.
