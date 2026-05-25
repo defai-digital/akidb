@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-native"
-version = "1.7.0"
+version = "0.1.0"
 dependencies = [
  "crc32fast",
  "memmap2",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-py"
-version = "1.7.0"
+version = "0.1.0"
 dependencies = [
  "akidb-native",
  "pyo3",

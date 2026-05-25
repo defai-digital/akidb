@@ -1,6 +1,6 @@
 {
   "name": "@defai-digital/akidb",
-  "version": "1.7.0",
+  "version": "0.1.0",
   "license": "MIT",
   "type": "module",
   "exports": {

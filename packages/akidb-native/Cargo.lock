@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-native"
-version = "1.7.0"
+version = "0.1.0"
 dependencies = [
  "crc32fast",
  "criterion",
