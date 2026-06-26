@@ -42,8 +42,8 @@ cd akidb
 ./scripts/build-on-mac-arm64.sh
 
 # Or run Cargo directly
-cargo build --features cpu
-cargo test --features cpu
+cargo build
+cargo test
 
 # Format and lint
 cargo fmt

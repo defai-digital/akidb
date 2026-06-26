@@ -441,7 +441,10 @@ impl<I: VectorIndex + 'static> RebuildFsm<Swapping<I>, I> {
     /// - Err: Data loss detected, returns to Idle
     pub fn swap(self) -> Result<RebuildFsm<Cleaning, I>> {
         let new_stats = self.state.shadow.stats();
-        let expected_min = self.state.old_active_vectors.saturating_sub(self.state.old_tombstones);
+        let expected_min = self
+            .state
+            .old_active_vectors
+            .saturating_sub(self.state.old_tombstones);
 
         // Guard G4: No data loss
         critical_invariant!(
@@ -457,8 +460,7 @@ impl<I: VectorIndex + 'static> RebuildFsm<Swapping<I>, I> {
         if new_stats.active_vectors < expected_min {
             warn!(
                 new_vectors = new_stats.active_vectors,
-                expected_min,
-                "Data loss detected during swap - aborting"
+                expected_min, "Data loss detected during swap - aborting"
             );
             set_rebuild_state("swapping", false);
             set_rebuild_state("idle", true);
@@ -588,10 +590,7 @@ mod tests {
         let fsm = fsm.swap().unwrap();
 
         // Cleaning → Idle
-        let (fsm, duration) = fsm.complete();
-        // Duration might be 0 in fast tests, just verify it's not negative
-        // (Duration is always non-negative by construction)
-        assert!(duration.as_nanos() >= 0);
+        let (fsm, _duration) = fsm.complete();
 
         // Back to Idle, can start new rebuild
         let _fsm = fsm.start_rebuild(200);

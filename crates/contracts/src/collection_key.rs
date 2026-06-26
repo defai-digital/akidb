@@ -81,7 +81,7 @@ impl CollectionKey {
         &self.0
     }
 
-    /// Convert to owned Vec<u8>
+    /// Convert to owned `Vec<u8>`
     pub fn into_bytes(self) -> Vec<u8> {
         self.0
     }

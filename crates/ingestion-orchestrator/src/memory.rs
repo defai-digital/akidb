@@ -2,11 +2,11 @@
 //!
 //! Monitors memory usage and pauses ingestion when pressure is detected.
 
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::process::Command;
 use tokio::time::{interval, Duration};
-use tracing::{info, warn, error, debug};
+use tracing::{debug, error, info, warn};
 
 use crate::config::MemoryConfig;
 
@@ -52,7 +52,7 @@ impl MemoryCoordinator {
         f32::from_bits(self.usage_pct.load(Ordering::SeqCst))
     }
 
-    /// Start the background monitoring task (must be called on Arc<Self>)
+    /// Start the background monitoring task (must be called on `Arc<Self>`)
     pub fn start_monitoring(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let this = Arc::clone(self);
 
@@ -219,7 +219,8 @@ fn parse_proc_meminfo() -> Result<(u64, u64), String> {
 fn parse_meminfo_value(line: &str) -> Result<u64, String> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() >= 2 {
-        parts[1].parse::<u64>()
+        parts[1]
+            .parse::<u64>()
             .map_err(|e| format!("Failed to parse meminfo value: {}", e))
     } else {
         Err("Invalid meminfo line".to_string())

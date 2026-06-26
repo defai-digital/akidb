@@ -4,10 +4,10 @@ AkiDB v2 is Mac-first. The primary runtime target is Apple Silicon macOS,
 starting with a one-Mac appliance and extending to a four-Mac Thunderbolt cell.
 Thor, CUDA, NVIDIA GPU, and Linux ARM deployment paths are not supported.
 
-| Platform | Target triple | Backend | Feature flags | Notes |
+| Platform | Target triple | Backend | Build path | Notes |
 | --- | --- | --- | --- | --- |
-| Mac M2 or later | `aarch64-apple-darwin` | CPU/portable | `--features cpu` or `--features portable` | Primary one-Mac appliance and development target. CUDA GPU mode is not supported on macOS. |
-| Four-Mac Apple Silicon cell | `aarch64-apple-darwin` | CPU/portable cell | `--features cpu` or `--features portable` | Distributed design target. Requires validated Thunderbolt networking and homogeneous hot-cell hardware for production. |
+| Mac M2 or later | `aarch64-apple-darwin` | CPU/portable | default Cargo features | Primary one-Mac appliance and development target. CUDA GPU mode is not supported on macOS. |
+| Four-Mac Apple Silicon cell | `aarch64-apple-darwin` | CPU/portable cell | default Cargo features | Distributed design target. Requires validated Thunderbolt networking and homogeneous hot-cell hardware for production. |
 
 ## Mac M2 Or Later
 
@@ -17,8 +17,8 @@ Use Apple Silicon Macs for the primary local runtime:
 ./scripts/build-on-mac-arm64.sh
 ```
 
-This script verifies `Darwin/arm64`, checks the Rust workspace with CPU
-features, runs tests, and builds `akidb-server`.
+This script verifies `Darwin/arm64`, checks the Rust workspace, runs tests, and
+builds `akidb-server`.
 
 Do not enable GPU/CUDA feature paths. Apple Silicon support is CPU/portable only.
 

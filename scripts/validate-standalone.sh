@@ -13,13 +13,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIG="$PROJECT_ROOT/config/standalone.toml"
-GRPC_PORT=50051
-AX_ENGINE_PORT=8081
+CONFIG_TEMPLATE="$PROJECT_ROOT/config/standalone.toml"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/akidb-standalone.XXXXXX")"
+CONFIG="$TMP_DIR/standalone.toml"
+PROTO_DIR="$PROJECT_ROOT/crates/grpc-server/proto"
+PROTO_FILE="akidb.proto"
+GRPC_PORT="${GRPC_PORT:-50051}"
+AX_ENGINE_PORT="${AX_ENGINE_PORT:-8081}"
 SKIP_BUILD=false
 SKIP_AX_ENGINE=false
 SERVER_PID=""
 AX_ENGINE_PID=""
+AX_ENGINE_MODEL="${AX_ENGINE_MODEL:-qwen3-embedding-4b}"
 
 # Parse arguments
 for arg in "$@"; do
@@ -43,6 +48,7 @@ cleanup() {
         kill "$AX_ENGINE_PID" 2>/dev/null || true
         wait "$AX_ENGINE_PID" 2>/dev/null || true
     fi
+    rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 
@@ -66,7 +72,8 @@ wait_for_grpc() {
     local max_wait=30
     local waited=0
     echo "Waiting for $service on port $port..."
-    while ! grpcurl -plaintext "localhost:$port" list &>/dev/null; do
+    while ! grpcurl -plaintext -import-path "$PROTO_DIR" -proto "$PROTO_FILE" \
+        "localhost:$port" akidb.v1.Akidb/Health &>/dev/null; do
         sleep 1
         waited=$((waited + 1))
         if [ $waited -ge $max_wait ]; then
@@ -78,6 +85,20 @@ wait_for_grpc() {
 }
 
 echo "=== AkiDB Standalone Validation ==="
+python3 - "$CONFIG_TEMPLATE" "$CONFIG" "$TMP_DIR" <<'PY'
+import pathlib
+import sys
+
+template = pathlib.Path(sys.argv[1])
+output = pathlib.Path(sys.argv[2])
+tmp_dir = pathlib.Path(sys.argv[3])
+
+content = template.read_text()
+content = content.replace('rocksdb_path = "./data/rocksdb"', f'rocksdb_path = "{tmp_dir / "rocksdb"}"')
+content = content.replace('wal_path = "./data/wal"', f'wal_path = "{tmp_dir / "wal"}"')
+output.write_text(content)
+PY
+
 echo "Config: $CONFIG"
 echo ""
 
@@ -97,10 +118,15 @@ fi
 if [ "$SKIP_AX_ENGINE" = false ]; then
     if command -v ax-engine &>/dev/null; then
         echo "=== Starting ax-engine ==="
-        ax-engine serve qwen3-embedding-4b --port "$AX_ENGINE_PORT" &
+        ax-engine serve "$AX_ENGINE_MODEL" --port "$AX_ENGINE_PORT" &
         AX_ENGINE_PID=$!
-        echo "ax-engine started (PID $AX_ENGINE_PID)"
+        echo "ax-engine started (PID $AX_ENGINE_PID, model $AX_ENGINE_MODEL)"
         sleep 5
+        if ! kill -0 "$AX_ENGINE_PID" 2>/dev/null; then
+            echo "WARNING: ax-engine exited during startup. Skipping TextSearch."
+            SKIP_AX_ENGINE=true
+            AX_ENGINE_PID=""
+        fi
     else
         echo "WARNING: ax-engine not found. Skipping embedding service."
         echo "  To test text search, install ax-engine and re-run without --skip-ax-engine"
@@ -125,7 +151,8 @@ echo ""
 
 # Step 5: Health check
 echo "=== Health Check ==="
-grpcurl -plaintext "localhost:$GRPC_PORT" akidb.v1.Akidb/Health | tee /dev/stderr
+grpcurl -plaintext -import-path "$PROTO_DIR" -proto "$PROTO_FILE" \
+    "localhost:$GRPC_PORT" akidb.v1.Akidb/Health
 echo ""
 
 # Step 6: Insert test vectors (using pre-computed embeddings)
@@ -138,9 +165,10 @@ insert_vector() {
     # Generate a deterministic 2560-dim vector based on the ID
     local vector
     vector=$(python3 -c "
+import hashlib
 import math
 dim = 2560
-seed = hash('$id') % (2**31)
+seed = int.from_bytes(hashlib.sha256(b'$id').digest()[:8], 'big')
 vec = []
 for i in range(dim):
     val = math.sin(seed + i * 0.1) * 0.5 + math.cos(i * 0.01) * 0.3
@@ -152,6 +180,8 @@ print('[' + ','.join(str(v) for v in vec) + ']')
 ")
 
     grpcurl -plaintext \
+        -import-path "$PROTO_DIR" \
+        -proto "$PROTO_FILE" \
         -d "{\"collection\":\"test\",\"id\":\"$id\",\"vector\":$vector}" \
         "localhost:$GRPC_PORT" \
         akidb.v1.Akidb/Insert
@@ -168,9 +198,10 @@ echo ""
 # Step 7: Vector search
 echo "=== Vector Search (using doc-001's vector as query) ==="
 QUERY_VECTOR=$(python3 -c "
+import hashlib
 import math
 dim = 2560
-seed = hash('doc-001') % (2**31)
+seed = int.from_bytes(hashlib.sha256(b'doc-001').digest()[:8], 'big')
 vec = []
 for i in range(dim):
     val = math.sin(seed + i * 0.1) * 0.5 + math.cos(i * 0.01) * 0.3
@@ -182,6 +213,8 @@ print('[' + ','.join(str(v) for v in vec) + ']')
 
 echo "Searching for vectors similar to doc-001..."
 grpcurl -plaintext \
+    -import-path "$PROTO_DIR" \
+    -proto "$PROTO_FILE" \
     -d "{\"collection\":\"test\",\"query\":$QUERY_VECTOR,\"top_k\":3}" \
     "localhost:$GRPC_PORT" \
     akidb.v1.Akidb/Search
@@ -192,6 +225,8 @@ if [ "$SKIP_AX_ENGINE" = false ]; then
     echo "=== Text Search (via ax-engine embeddings) ==="
     echo "Searching for: 'neural network learning'"
     grpcurl -plaintext \
+        -import-path "$PROTO_DIR" \
+        -proto "$PROTO_FILE" \
         -d "{\"collection\":\"test\",\"text\":\"neural network learning\",\"top_k\":3}" \
         "localhost:$GRPC_PORT" \
         akidb.v1.Akidb/TextSearch
@@ -204,6 +239,8 @@ fi
 # Step 9: Get vector by ID
 echo "=== Get Vector by ID ==="
 grpcurl -plaintext \
+    -import-path "$PROTO_DIR" \
+    -proto "$PROTO_FILE" \
     -d "{\"collection\":\"test\",\"id\":\"doc-001\"}" \
     "localhost:$GRPC_PORT" \
     akidb.v1.Akidb/Get | python3 -c "
@@ -221,6 +258,8 @@ echo ""
 # Step 10: Delete
 echo "=== Delete doc-005 ==="
 grpcurl -plaintext \
+    -import-path "$PROTO_DIR" \
+    -proto "$PROTO_FILE" \
     -d "{\"collection\":\"test\",\"id\":\"doc-005\"}" \
     "localhost:$GRPC_PORT" \
     akidb.v1.Akidb/Delete

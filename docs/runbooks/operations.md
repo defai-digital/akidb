@@ -10,9 +10,9 @@ deployment procedures are not supported in active operations.
 
 ```bash
 ./scripts/build-on-mac-arm64.sh
-cargo check --workspace --features cpu
-cargo test --workspace --features cpu
-cargo build --release -p akidb-server --features cpu
+cargo check --workspace
+cargo test --workspace
+cargo build --release -p akidb-server
 ```
 
 ## Docker Compose Stack

@@ -32,7 +32,7 @@ impl AxEngineProvider {
 impl EmbeddingProvider for AxEngineProvider {
     fn embed_text(&self, text: &str) -> std::result::Result<Vec<f32>, String> {
         use akidb_coordinator::EmbeddingService;
-        self.inner.embed(text).map_err(|e| e.to_string())
+        tokio::task::block_in_place(|| self.inner.embed(text)).map_err(|e| e.to_string())
     }
 
     fn embedding_dimensions(&self) -> usize {
@@ -54,7 +54,7 @@ struct Args {
     listen: String,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(short = 'l', long, default_value = "info")]
+    #[arg(long, default_value = "info")]
     log_level: String,
 
     /// Run in standalone mode (skip MinIO, no external deps)
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => Level::INFO,
     };
 
-    let subscriber = FmtSubscriber::builder()
+    FmtSubscriber::builder()
         .with_max_level(log_level)
         .with_target(true)
         .with_thread_ids(true)
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration if exists
     let config = if args.config.exists() {
         let config_str = std::fs::read_to_string(&args.config)?;
-        toml::from_str::<AkiDbConfig>(&config_str).unwrap_or_default()
+        toml::from_str::<AkiDbConfig>(&config_str)?
     } else {
         info!("Config file not found, using defaults");
         AkiDbConfig::default()
@@ -119,10 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ef_construction: config.index.hnsw_ef_construction as usize,
             ef_search: config.index.hnsw_ef_search as usize,
         };
-        Arc::new(
-            HnswIndex::new(hnsw_config)
-                .expect("Failed to create HNSW index"),
-        )
+        Arc::new(HnswIndex::new(hnsw_config).expect("Failed to create HNSW index"))
     };
 
     info!("Vector index initialized (HNSW mode)");
@@ -132,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wire embedding provider if enabled
     if config.embedding.enabled {
-        match AxEngineEmbedding::new(config.embedding.clone()) {
+        match tokio::task::block_in_place(|| AxEngineEmbedding::new(config.embedding.clone())) {
             Ok(embedding) => {
                 let provider = Arc::new(AxEngineProvider::new(embedding));
                 service = service.with_embedding_provider(provider);
@@ -142,7 +139,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             Err(e) => {
-                warn!("Failed to create embedding provider: {}. TextSearch will be unavailable.", e);
+                warn!(
+                    "Failed to create embedding provider: {}. TextSearch will be unavailable.",
+                    e
+                );
             }
         }
     }

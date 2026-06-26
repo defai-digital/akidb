@@ -38,8 +38,8 @@ jobs:
         continue-on-error: true
         run: cargo fmt --all -- --check
 
-      - name: Clippy (Mac portable features)
-        run: cargo clippy --workspace --all-targets --features cpu
+      - name: Clippy (Mac portable path)
+        run: cargo clippy --workspace --all-targets
 
       - name: Check (no default features)
         run: cargo check --workspace --no-default-features
@@ -68,8 +68,8 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run tests (CPU features)
-        run: cargo test --workspace --features cpu --verbose
+      - name: Run tests
+        run: cargo test --workspace --verbose
 
   # Explicit Apple Silicon validation path for M2 or later development hosts.
   macos-arm64:
@@ -115,7 +115,7 @@ jobs:
         uses: dtolnay/rust-action@stable
 
       - name: Build docs
-        run: cargo doc --workspace --no-deps --features cpu
+        run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 

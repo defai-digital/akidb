@@ -23,9 +23,9 @@ fi
 echo "Rust: $(rustc --version)"
 echo "Target: $(rustc -vV | awk -F': ' '/host/ {print $2}')"
 
-cargo check --workspace --features cpu
-cargo test --workspace --features cpu
-cargo build --release -p akidb-server --features cpu
+cargo check --workspace
+cargo test --workspace
+cargo build --release -p akidb-server
 
 echo ""
 echo "=== macOS Apple Silicon build complete ==="

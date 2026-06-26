@@ -106,9 +106,7 @@ pub struct TombstoneSettings {
 
 impl Default for TombstoneSettings {
     fn default() -> Self {
-        Self {
-            max_count: 100_000,
-        }
+        Self { max_count: 100_000 }
     }
 }
 
@@ -176,6 +174,7 @@ impl Default for ObservabilityConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LogFormat {
     Json,
     Pretty,
@@ -282,5 +281,24 @@ mod tests {
         assert_eq!(config.server.grpc_port, 50051);
         assert_eq!(config.index.hnsw_m, 16);
         assert_eq!(config.slo.reference.dimensions, 768);
+    }
+
+    #[test]
+    fn test_parse_lowercase_log_format() {
+        let config: ObservabilityConfig = serde_json::from_str(
+            r#"
+            {
+                "tracing_enabled": false,
+                "otlp_endpoint": null,
+                "metrics_enabled": false,
+                "metrics_port": 9090,
+                "log_level": "info",
+                "log_format": "pretty"
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.log_format, LogFormat::Pretty);
     }
 }

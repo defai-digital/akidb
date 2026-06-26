@@ -15,9 +15,9 @@ docs in `docs/`.
 ## Build, Test, and Development Commands
 
 - `./scripts/build-on-mac-arm64.sh`: validate the Apple Silicon development path.
-- `cargo check --workspace --features cpu`: fast portable compile check.
-- `cargo test --workspace --features cpu`: run Rust unit, integration, and doc tests.
-- `cargo build --release -p akidb-server --features cpu`: build the Mac server.
+- `cargo check --workspace`: fast portable compile check.
+- `cargo test --workspace`: run Rust unit, integration, and doc tests.
+- `cargo build --release -p akidb-server`: build the Mac server.
 - `pip install -e ".[dev]" && pytest tests/ -v`: run Python service tests from a service directory.
 - `ruff check .`: lint a Python sidecar service.
 
@@ -26,7 +26,7 @@ docs in `docs/`.
 Use Rust 2021 conventions: four-space indentation, `snake_case`
 modules/functions, `PascalCase` types, and explicit `Result` error handling. Run
 `cargo fmt` before focused Rust changes, but avoid broad formatting-only churn.
-Use `cargo clippy --workspace --all-targets --features cpu` for lint feedback.
+Use `cargo clippy --workspace --all-targets` for lint feedback.
 Python code follows standard `pytest` conventions.
 
 ## Testing Guidelines
@@ -47,5 +47,5 @@ issues, and screenshots only for TUI/UI-visible changes.
 ## Security & Configuration Tips
 
 Do not commit secrets, `.env` files, local data, or `deploy/compose/secrets/`.
-Use CPU features on Mac M2 or later. Thor, CUDA, NVIDIA GPU, and Linux ARM paths
+Use the default portable path on Mac M2 or later. Thor, CUDA, NVIDIA GPU, and Linux ARM paths
 are unsupported and should not be reintroduced in active docs or CI.
