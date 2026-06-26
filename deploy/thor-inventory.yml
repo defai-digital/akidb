@@ -1,0 +1,43 @@
+# Thor Cluster Inventory
+# AkiDB Production Deployment
+
+all:
+  vars:
+    ansible_user: devop
+    ansible_python_interpreter: /usr/bin/python3
+
+  children:
+    coordinators:
+      hosts:
+        DEVOP-THOR-01:
+          ansible_host: 192.168.1.61
+          role: coordinator
+          # Can also act as shard if resources permit
+
+    shards:
+      hosts:
+        DEVOP-THOR-01:
+          ansible_host: 192.168.1.61
+          shard_id: 0
+          grpc_port: 50051
+
+        DEVOP-THOR-02:
+          ansible_host: 192.168.1.62
+          shard_id: 1
+          grpc_port: 50051
+
+    minio:
+      hosts:
+        DEVOP-THOR-01:
+          ansible_host: 192.168.1.61
+          minio_port: 9000
+
+        DEVOP-THOR-02:
+          ansible_host: 192.168.1.62
+          minio_port: 9000
+
+# SSH Configuration:
+# ssh devop@192.168.1.61  # DEVOP-THOR-01
+# ssh devop@192.168.1.62  # DEVOP-THOR-02
+#
+# Note: Ensure SSH keys are configured for passwordless access

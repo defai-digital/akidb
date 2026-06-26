@@ -1,0 +1,28 @@
+# AkiDB Prometheus Configuration
+# Add this to your existing prometheus.yml or use as a starting point
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # AkiDB Coordinator metrics
+  - job_name: 'akidb-coordinator'
+    static_configs:
+      - targets:
+          - '192.168.1.61:9090'  # Coordinator metrics endpoint
+    metrics_path: /metrics
+    scrape_interval: 5s
+
+  # AkiDB Shard nodes (Thor devices)
+  - job_name: 'akidb-shards'
+    static_configs:
+      - targets:
+          - '192.168.1.61:9091'  # Thor-01 shard metrics
+          - '192.168.1.62:9091'  # Thor-02 shard metrics
+    metrics_path: /metrics
+    scrape_interval: 5s
+
+# Recording rules for aggregations
+rule_files:
+  - 'akidb_rules.yml'

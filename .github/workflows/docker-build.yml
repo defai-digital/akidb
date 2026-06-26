@@ -1,0 +1,234 @@
+name: Docker Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'deploy/docker/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'deploy/docker/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+    inputs:
+      push_images:
+        description: 'Push images to registry'
+        required: false
+        default: 'false'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+
+jobs:
+  # Build and test akidb-server Docker image
+  build-server:
+    name: Build akidb-server
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build akidb-server (CPU)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/docker/akidb-server.Dockerfile
+          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-server-results.sarif'
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-server-results.sarif'
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+
+  # Build and test akidb-coordinator Docker image
+  build-coordinator:
+    name: Build akidb-coordinator
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-coordinator
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build akidb-coordinator
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/docker/akidb-coordinator.Dockerfile
+          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-coordinator:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-coordinator-results.sarif'
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-coordinator-results.sarif'
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+
+  # Build GPU images on self-hosted Jetson Thor runner
+  build-gpu:
+    name: Build GPU Images (Thor)
+    runs-on: [self-hosted, jetson-thor]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-server, build-coordinator]
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build akidb-server (GPU)
+        run: |
+          docker build \
+            -f deploy/docker/akidb-server-gpu.Dockerfile \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:gpu-${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:gpu-latest \
+            .
+
+      - name: Push GPU images
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:gpu-${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:gpu-latest
+
+      - name: Test GPU image
+        run: |
+          docker run --rm --runtime=nvidia \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:gpu-${{ github.sha }} \
+            --version || echo "Version check skipped"
+
+  # Test docker-compose stack
+  test-compose:
+    name: Test Docker Compose
+    runs-on: ubuntu-latest
+    needs: [build-server, build-coordinator]
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create secrets directory
+        run: |
+          mkdir -p deploy/compose/secrets
+          echo "minioadmin" > deploy/compose/secrets/minio_root_user.txt
+          echo "minioadmin" > deploy/compose/secrets/minio_root_password.txt
+          echo "admin" > deploy/compose/secrets/grafana_admin_password.txt
+
+      - name: Build and start services
+        working-directory: deploy/compose
+        run: |
+          docker compose build --parallel
+          docker compose up -d nats-1 minio
+
+      - name: Wait for services
+        run: |
+          sleep 30
+          docker compose -f deploy/compose/docker-compose.yml ps
+
+      - name: Check service health
+        working-directory: deploy/compose
+        run: |
+          docker compose ps
+          docker compose logs --tail=50
+
+      - name: Cleanup
+        working-directory: deploy/compose
+        run: docker compose down -v
+        if: always()

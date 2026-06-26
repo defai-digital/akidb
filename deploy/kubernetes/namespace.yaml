@@ -1,0 +1,41 @@
+---
+# AkiDB Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: akidb
+  labels:
+    app.kubernetes.io/name: akidb
+    app.kubernetes.io/component: infrastructure
+---
+# Resource Quota for namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: akidb-quota
+  namespace: akidb
+spec:
+  hard:
+    requests.cpu: "32"
+    requests.memory: 64Gi
+    requests.nvidia.com/gpu: "4"
+    limits.cpu: "64"
+    limits.memory: 128Gi
+    limits.nvidia.com/gpu: "4"
+    persistentvolumeclaims: "16"
+---
+# Limit Range for pods
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: akidb-limits
+  namespace: akidb
+spec:
+  limits:
+  - default:
+      cpu: "2"
+      memory: 4Gi
+    defaultRequest:
+      cpu: "500m"
+      memory: 1Gi
+    type: Container

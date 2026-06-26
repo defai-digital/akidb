@@ -1,0 +1,68 @@
+# Prometheus Configuration for AkiDB Thor Edition
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers: []
+
+rule_files: []
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # NATS monitoring
+  - job_name: "nats"
+    static_configs:
+      - targets:
+          - "nats-1:8222"
+          - "nats-2:8222"
+          - "nats-3:8222"
+    metrics_path: /metrics
+
+  # Upload Gateway
+  - job_name: "upload-gateway"
+    static_configs:
+      - targets: ["upload-gateway:8081"]
+    metrics_path: /metrics
+
+  # Document Parser
+  - job_name: "doc-parser"
+    static_configs:
+      - targets: ["doc-parser:8080"]
+    metrics_path: /metrics
+
+  # Ingestion Orchestrator
+  - job_name: "ingestion"
+    static_configs:
+      - targets: ["ingestion:9093"]
+    metrics_path: /metrics
+
+  # AkiDB Server (Vector Database Shards)
+  - job_name: "akidb-server"
+    static_configs:
+      - targets: ["akidb-server-1:9090"]
+    metrics_path: /metrics
+
+  # AkiDB Coordinator
+  - job_name: "akidb-coordinator"
+    static_configs:
+      - targets: ["akidb-coordinator:9091"]
+    metrics_path: /metrics
+
+  # NVIDIA DCGM GPU Metrics
+  - job_name: "dcgm-exporter"
+    static_configs:
+      - targets: ["dcgm-exporter:9400"]
+    scrape_interval: 5s
+    metrics_path: /metrics
+
+  # MinIO (if metrics enabled)
+  # - job_name: "minio"
+  #   static_configs:
+  #     - targets: ["minio:9000"]
+  #   metrics_path: /minio/v2/metrics/cluster

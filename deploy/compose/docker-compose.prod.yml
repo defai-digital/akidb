@@ -1,0 +1,216 @@
+# AkiDB Thor Edition - Production Configuration
+# Use with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+version: "3.9"
+
+services:
+  # ============================================
+  # NATS Cluster - Production Settings
+  # ============================================
+  nats-1:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  nats-2:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  nats-3:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ============================================
+  # MinIO - Production Settings
+  # ============================================
+  minio:
+    restart: always
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ============================================
+  # Doc Parser - Production Settings
+  # ============================================
+  doc-parser:
+    restart: always
+    environment:
+      WORKERS: 4
+      MAX_CONTENT_SIZE: 104857600  # 100MB
+      TIMEOUT: 300
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2"
+        reservations:
+          memory: 2G
+          cpus: "1"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ============================================
+  # Upload Gateway - Production Settings
+  # ============================================
+  upload-gateway:
+    restart: always
+    environment:
+      WORKERS: 4
+      MAX_UPLOAD_SIZE: 524288000  # 500MB
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1"
+        reservations:
+          memory: 1G
+          cpus: "0.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ============================================
+  # Ingestion Orchestrator - Production Settings
+  # ============================================
+  ingestion:
+    restart: always
+    environment:
+      RUST_LOG: info,akidb_ingestion=info
+      RUST_BACKTRACE: 1
+      # Circuit Breaker
+      CIRCUIT_BREAKER_THRESHOLD: 5
+      CIRCUIT_BREAKER_RESET_SECS: 60
+      CIRCUIT_BREAKER_HALF_OPEN_CALLS: 3
+      # Backpressure
+      BACKPRESSURE_LATENCY_THRESHOLD_MS: 500
+      BACKPRESSURE_QUEUE_DEPTH: 20000
+      BACKPRESSURE_PAUSE_SECS: 10
+      # Memory (for Thor)
+      MEMORY_PAUSE_THRESHOLD_PCT: 75
+      MEMORY_RESUME_THRESHOLD_PCT: 65
+      # Batcher
+      BATCHER_MIN_BATCH: 32
+      BATCHER_MAX_BATCH: 128
+      BATCHER_TIMEOUT_MS: 200
+      # Chunker
+      CHUNKER_TARGET_TOKENS: 512
+      CHUNKER_MIN_OVERLAP: 20
+      CHUNKER_MAX_OVERLAP: 50
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "4"
+        reservations:
+          memory: 4G
+          cpus: "2"
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+  # ============================================
+  # Prometheus - Production Settings
+  # ============================================
+  prometheus:
+    restart: always
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=10GB'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ============================================
+  # Grafana - Production Settings
+  # ============================================
+  grafana:
+    restart: always
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+# Production volumes with explicit sizing
+volumes:
+  nats-data:
+    driver: local
+  minio-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  state-data:
+    driver: local

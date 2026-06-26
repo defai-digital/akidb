@@ -1,0 +1,21 @@
+[Unit]
+Description=AkiDB Vector Database
+Documentation=https://github.com/akidb/akidb-thor
+Wants=network-online.target minio.service
+After=network-online.target minio.service
+
+[Service]
+User={{ ansible_user }}
+Group={{ ansible_user }}
+Environment="RUST_LOG=info"
+Environment="RUST_BACKTRACE=1"
+ExecStart={{ akidb_install_dir }}/bin/akidb-server --config {{ akidb_install_dir }}/config/akidb.toml
+Restart=always
+RestartSec=10
+LimitNOFILE=65536
+
+# GPU access
+SupplementaryGroups=video
+
+[Install]
+WantedBy=multi-user.target

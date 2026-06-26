@@ -1,0 +1,55 @@
+[package]
+name = "akidb-coordinator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "akidb-coordinator"
+path = "src/bin/coordinator.rs"
+
+[features]
+default = []
+discovery = ["libp2p", "libp2p-identity"]
+
+[dependencies]
+akidb-common = { path = "../common" }
+akidb-grpc = { path = "../grpc-server" }
+akidb-invariants = { path = "../invariants" }
+
+tonic.workspace = true
+prost.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dashmap.workspace = true
+prometheus.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono = { version = "0.4", features = ["clock"] }
+clap = { version = "4.5", features = ["derive"] }
+futures = "0.3"
+hyper = { version = "1.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+
+# Discovery dependencies (optional)
+libp2p = { version = "0.54", features = [
+    "mdns",
+    "gossipsub",
+    "noise",
+    "tcp",
+    "tokio",
+    "macros",
+    "identify",
+    "yamux",
+], optional = true }
+libp2p-identity = { version = "0.2", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+toml = "0.8"

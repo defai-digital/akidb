@@ -1,0 +1,13 @@
+[package]
+name = "akidb-invariants"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Invariant checking macros and utilities for AkiDB"
+
+[dependencies]
+tracing.workspace = true
+
+[dev-dependencies]
+proptest = "1.4"

@@ -1,0 +1,35 @@
+[package]
+name = "akidb-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+akidb-common = { path = "../common" }
+akidb-invariants = { path = "../invariants" }
+akidb-contracts = { path = "../contracts" }
+rocksdb.workspace = true
+roaring.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+bincode.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+reqwest.workspace = true
+base64.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+sha1 = "0.10"
+chrono.workspace = true
+url.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
+urlencoding = "2.1"
+
+[dev-dependencies]
+tempfile.workspace = true

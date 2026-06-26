@@ -1,0 +1,24 @@
+[package]
+name = "akidb-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["time", "sync"] }
+parking_lot.workspace = true
+prometheus.workspace = true
+lazy_static = "1.4"
+
+[dev-dependencies]
+tempfile.workspace = true

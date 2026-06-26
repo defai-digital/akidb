@@ -1,0 +1,446 @@
+# AkiDB Thor Edition - Docker Compose
+# Full ingestion pipeline stack for Jetson Thor
+
+version: "3.9"
+
+services:
+  # ============================================
+  # NATS JetStream Cluster (3-node)
+  # ============================================
+  nats-1:
+    image: nats:2.10-alpine
+    container_name: akidb-nats-1
+    # user: "1000:1000"  # Disabled - NATS needs write access to /data
+    command: >
+      -c /etc/nats/nats.conf
+      --name nats-1
+    ports:
+      - "4222:4222"   # Client connections
+      - "8222:8222"   # Monitoring
+      - "6222:6222"   # Cluster routing
+    volumes:
+      - ./nats/nats.conf:/etc/nats/nats.conf:ro
+      - nats-1-data:/data
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  nats-2:
+    image: nats:2.10-alpine
+    container_name: akidb-nats-2
+    user: "1000:1000"
+    command: >
+      -c /etc/nats/nats.conf
+      --name nats-2
+      --cluster_name akidb-cluster
+      --routes nats://nats-1:6222
+    ports:
+      - "4223:4222"
+      - "8223:8222"
+    volumes:
+      - ./nats/nats.conf:/etc/nats/nats.conf:ro
+      - nats-2-data:/data
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      - nats-1
+
+  nats-3:
+    image: nats:2.10-alpine
+    container_name: akidb-nats-3
+    user: "1000:1000"
+    command: >
+      -c /etc/nats/nats.conf
+      --name nats-3
+      --cluster_name akidb-cluster
+      --routes nats://nats-1:6222
+    ports:
+      - "4224:4222"
+      - "8224:8222"
+    volumes:
+      - ./nats/nats.conf:/etc/nats/nats.conf:ro
+      - nats-3-data:/data
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      - nats-1
+
+  # ============================================
+  # MinIO Object Storage
+  # ============================================
+  minio:
+    image: minio/minio:latest
+    container_name: akidb-minio
+    user: "1000:1000"
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      MINIO_NOTIFY_NATS_ENABLE: "on"
+      MINIO_NOTIFY_NATS_ADDRESS: "nats-1:4222"
+      MINIO_NOTIFY_NATS_SUBJECT: "minio.uploads"
+      MINIO_NOTIFY_NATS_JETSTREAM: "on"
+    volumes:
+      - minio-data:/data
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    secrets:
+      - minio_root_user
+      - minio_root_password
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - nats-1
+
+  # MinIO setup - creates bucket and configures notifications
+  minio-setup:
+    image: minio/mc:latest
+    container_name: akidb-minio-setup
+    user: "1000:1000"
+    read_only: true
+    entrypoint: /bin/sh
+    command: /setup/setup-minio.sh
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+    volumes:
+      - ./minio/setup-minio.sh:/setup/setup-minio.sh:ro
+    tmpfs:
+      - /tmp:mode=1777,size=64M
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    secrets:
+      - minio_root_user
+      - minio_root_password
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # ============================================
+  # Upload Gateway
+  # ============================================
+  upload-gateway:
+    build:
+      context: ../../services/upload-gateway
+      dockerfile: Dockerfile
+    container_name: akidb-upload-gateway
+    user: "1000:1000"
+    read_only: true
+    ports:
+      - "8081:8081"
+    environment:
+      UPLOAD_GATEWAY_MINIO_ENDPOINT: minio:9000
+      UPLOAD_GATEWAY_MINIO_ACCESS_KEY_FILE: /run/secrets/minio_root_user
+      UPLOAD_GATEWAY_MINIO_SECRET_KEY_FILE: /run/secrets/minio_root_password
+      UPLOAD_GATEWAY_NATS_URL: nats://nats-1:4222
+      UPLOAD_GATEWAY_LOG_LEVEL: INFO
+    tmpfs:
+      - /tmp:mode=1777,size=256M
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    secrets:
+      - minio_root_user
+      - minio_root_password
+    depends_on:
+      minio:
+        condition: service_healthy
+      nats-1:
+        condition: service_healthy
+
+  # ============================================
+  # Document Parser (Python sidecar)
+  # ============================================
+  doc-parser:
+    build:
+      context: ../../services/doc-parser
+      dockerfile: Dockerfile
+    container_name: akidb-doc-parser
+    user: "1000:1000"
+    read_only: true
+    ports:
+      - "8080:8080"
+    environment:
+      DOC_PARSER_LOG_LEVEL: INFO
+      DOC_PARSER_MAX_FILE_SIZE_MB: 100
+    tmpfs:
+      - /tmp:mode=1777,size=512M
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # ============================================
+  # Ingestion Orchestrator (Rust)
+  # ============================================
+  ingestion:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/ingestion/Dockerfile
+    container_name: akidb-ingestion
+    user: "1000:1000"
+    environment:
+      NATS_URL: nats://nats-1:4222
+      DOC_PARSER_URL: http://doc-parser:8080
+      EMBEDDING_URL: http://embedding:8000
+      RUST_LOG: info
+    volumes:
+      - ingestion-state:/var/lib/akidb
+    tmpfs:
+      - /tmp:mode=1777,size=256M
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      nats-1:
+        condition: service_healthy
+      doc-parser:
+        condition: service_started
+      minio:
+        condition: service_healthy
+
+  # ============================================
+  # Embedding Service (vLLM/TensorRT)
+  # Enable with: docker compose --profile gpu up
+  # ============================================
+  embedding:
+    image: vllm/vllm-openai:latest
+    container_name: akidb-embedding
+    user: "1000:1000"
+    runtime: nvidia
+    environment:
+      MODEL: Qwen/Qwen3-Embedding-8B
+      VLLM_HOST: "0.0.0.0"
+      VLLM_PORT: "8000"
+    ports:
+      - "8000:8000"
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    profiles:
+      - gpu  # Only start with --profile gpu
+
+  # ============================================
+  # AkiDB Server (Vector Database Shard)
+  # ============================================
+  akidb-server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/akidb-server.Dockerfile
+    container_name: akidb-server-1
+    user: "1000:1000"
+    ports:
+      - "50051:50051"   # gRPC
+      - "9092:9090"     # Metrics (mapped to avoid conflict with prometheus)
+    environment:
+      RUST_LOG: info
+      AKIDB_DATA_DIR: /var/lib/akidb/data
+      AKIDB_WAL_DIR: /var/lib/akidb/wal
+      AKIDB_LISTEN_ADDR: 0.0.0.0:50051
+      AKIDB_METRICS_ADDR: 0.0.0.0:9090
+    volumes:
+      - akidb-server-data:/var/lib/akidb
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # ============================================
+  # AkiDB Coordinator (Query Router)
+  # ============================================
+  akidb-coordinator:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/akidb-coordinator.Dockerfile
+    container_name: akidb-coordinator
+    user: "1000:1000"
+    ports:
+      - "50052:50052"   # gRPC
+      - "9091:9091"     # Metrics
+    environment:
+      RUST_LOG: info
+      AKIDB_COORDINATOR_LISTEN_ADDR: 0.0.0.0:50052
+      AKIDB_COORDINATOR_METRICS_ADDR: 0.0.0.0:9091
+      AKIDB_SHARD_ADDRS: akidb-server-1:50051
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9091/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      akidb-server:
+        condition: service_healthy
+
+  # ============================================
+  # NVIDIA DCGM Exporter (GPU Metrics)
+  # Requires: nvidia-docker runtime
+  # ============================================
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.0-3.2.0-ubuntu22.04
+    container_name: akidb-dcgm-exporter
+    runtime: nvidia
+    ports:
+      - "9400:9400"
+    environment:
+      DCGM_EXPORTER_LISTEN: ":9400"
+      DCGM_EXPORTER_KUBERNETES: "false"
+      DCGM_EXPORTER_COLLECTORS: "/etc/dcgm-exporter/default-counters.csv"
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9400/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - gpu  # Only start with --profile gpu
+
+  # ============================================
+  # Prometheus (Monitoring)
+  # ============================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: akidb-prometheus
+    user: "65534:65534"  # nobody user for prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+
+  # ============================================
+  # Grafana (Dashboards)
+  # ============================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: akidb-grafana
+    user: "472:472"  # grafana user
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cluster-health.json
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    secrets:
+      - grafana_admin_password
+    depends_on:
+      - prometheus
+
+networks:
+  akidb-net:
+    driver: bridge
+
+volumes:
+  nats-1-data:
+  nats-2-data:
+  nats-3-data:
+  minio-data:
+  ingestion-state:
+  akidb-server-data:
+  prometheus-data:
+  grafana-data:
+
+# ============================================
+# Secrets (ADR-021 Security Hardening)
+# ============================================
+secrets:
+  minio_root_user:
+    file: ./secrets/minio_root_user.txt
+  minio_root_password:
+    file: ./secrets/minio_root_password.txt
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password.txt

@@ -1,0 +1,98 @@
+[package]
+name = "akidb-ingestion"
+version = "0.1.0"
+edition = "2021"
+description = "AkiDB Ingestion Orchestrator - Hybrid document processing pipeline"
+license = "Apache-2.0"
+
+[[bin]]
+name = "akidb-ingestion"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.44", features = ["full"] }
+futures = "0.3"
+
+# NATS JetStream client
+async-nats = "0.39"
+
+# HTTP client for Python parser
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Document parsers (Rust-native)
+calamine = "0.26"           # XLSX
+scraper = "0.23"            # HTML
+quick-xml = "0.37"          # XML
+csv = "1.3"                 # CSV
+docx-rs = "0.4"             # Simple DOCX
+zip = "2.2"                 # DOCX is a ZIP archive
+
+# Text processing
+unicode-segmentation = "1.12"
+tiktoken-rs = "0.6"         # Token counting
+
+# SQLite for state tracking
+rusqlite = { version = "0.33", features = ["bundled"] }
+
+# MinIO/S3 client
+aws-sdk-s3 = "1.75"
+aws-config = "1.6"
+
+# gRPC client for AkiDB
+tonic = { version = "0.11", features = ["transport"] }
+prost = "0.12"
+
+# AkiDB gRPC types (generated client)
+akidb-grpc = { path = "../grpc-server" }
+
+# Metrics
+prometheus = "0.14"
+
+# Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Configuration
+config = "0.14"
+dotenvy = "0.15"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Hashing for idempotency
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+indexmap = "2.7"  # For ordered set in idempotency checker (LRU eviction)
+
+# UUID
+uuid = { version = "1.12", features = ["v4", "v7"] }
+
+# Random for scheduler jitter
+rand = "0.8"
+
+# Date/time for DLQ timestamps
+chrono = { version = "0.4", features = ["serde"] }
+
+# Internal dependencies
+akidb-common = { path = "../common" }
+akidb-storage = { path = "../storage" }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.14"
+mockall = "0.12"
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["minio", "nats"] }
+wiremock = "0.6"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "pipeline_benchmark"
+harness = false

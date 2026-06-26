@@ -1,0 +1,16 @@
+[package]
+name = "akidb-contracts"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Boundary contracts and validation for AkiDB"
+
+[dependencies]
+akidb-common = { path = "../common" }
+thiserror.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+proptest = "1.4"
+bincode = "1.3"

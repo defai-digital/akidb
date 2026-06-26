@@ -1,0 +1,146 @@
+---
+# Deploy Ingestion Pipeline Services
+# Usage: ansible-playbook -i inventory.yml playbooks/deploy-ingestion.yml
+
+- name: Deploy Ingestion Pipeline
+  hosts: thor_cluster
+  become: yes
+  gather_facts: yes
+
+  vars:
+    docker_compose_dir: "/opt/akidb/compose"
+    services_dir: "/opt/akidb/services"
+    config_dir: "/opt/akidb/config"
+
+  tasks:
+    # Prerequisites
+    - name: Ensure Docker is running
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Create directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+      loop:
+        - "{{ docker_compose_dir }}"
+        - "{{ services_dir }}"
+        - "{{ config_dir }}"
+        - "{{ config_dir }}/nats"
+        - "{{ config_dir }}/monitoring"
+        - "{{ config_dir }}/minio"
+
+    # Copy Docker Compose files
+    - name: Copy Docker Compose files
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ docker_compose_dir }}/{{ item.dest }}"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+      loop:
+        - { src: "../../../deploy/compose/docker-compose.yml", dest: "docker-compose.yml" }
+        - { src: "../../../deploy/compose/docker-compose.prod.yml", dest: "docker-compose.prod.yml" }
+        - { src: "../../../deploy/compose/docker-compose.gpu.yml", dest: "docker-compose.gpu.yml" }
+
+    # Copy NATS configuration
+    - name: Copy NATS configuration
+      copy:
+        src: "../../../deploy/compose/nats/nats.conf"
+        dest: "{{ config_dir }}/nats/nats.conf"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+
+    # Copy MinIO setup script
+    - name: Copy MinIO setup script
+      copy:
+        src: "../../../deploy/compose/minio/setup-minio.sh"
+        dest: "{{ config_dir }}/minio/setup-minio.sh"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+
+    # Copy monitoring configuration
+    - name: Copy Prometheus configuration
+      copy:
+        src: "../../../deploy/compose/monitoring/prometheus.yml"
+        dest: "{{ config_dir }}/monitoring/prometheus.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+
+    # Deploy environment file
+    - name: Deploy environment file
+      template:
+        src: ../templates/ingestion.env.j2
+        dest: "{{ docker_compose_dir }}/.env"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+
+    # Pull images
+    - name: Pull Docker images
+      shell: |
+        cd {{ docker_compose_dir }}
+        docker compose pull
+      become: no
+
+    # Start NATS cluster
+    - name: Start NATS cluster
+      shell: |
+        cd {{ docker_compose_dir }}
+        docker compose up -d nats-1 nats-2 nats-3
+      become: no
+
+    - name: Wait for NATS cluster
+      wait_for:
+        port: 4222
+        delay: 5
+        timeout: 60
+
+    # Start MinIO
+    - name: Start MinIO
+      shell: |
+        cd {{ docker_compose_dir }}
+        docker compose up -d minio minio-setup
+      become: no
+
+    - name: Wait for MinIO
+      wait_for:
+        port: 9000
+        delay: 5
+        timeout: 60
+
+    # Start ingestion services
+    - name: Start ingestion services
+      shell: |
+        cd {{ docker_compose_dir }}
+        docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d doc-parser upload-gateway ingestion
+      become: no
+
+    # Start monitoring
+    - name: Start monitoring stack
+      shell: |
+        cd {{ docker_compose_dir }}
+        docker compose up -d prometheus grafana
+      become: no
+
+    - name: Verify deployment
+      debug:
+        msg: |
+          ============================================
+          INGESTION PIPELINE DEPLOYED ON {{ ansible_hostname }}
+          ============================================
+          NATS: nats://{{ ansible_host }}:4222
+          MinIO: http://{{ ansible_host }}:9000
+          Upload Gateway: http://{{ ansible_host }}:8081
+          Doc Parser: http://{{ ansible_host }}:8080
+          Prometheus: http://{{ ansible_host }}:9090
+          Grafana: http://{{ ansible_host }}:3000
+          ============================================

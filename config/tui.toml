@@ -1,0 +1,34 @@
+# AkiDB TUI Dashboard Configuration
+
+# Refresh interval in milliseconds
+refresh_interval_ms = 500
+
+# Show GPU metrics (via nvtop integration on Jetson)
+show_gpu_metrics = true
+
+# Coordinator address (optional, can also use --coordinator CLI flag)
+# coordinator_address = "192.168.1.61:50050"
+
+# Use mock data for testing
+mock_mode = false
+
+[theme]
+# Theme: "default", "minimal", "high-contrast"
+name = "default"
+
+[layout]
+# Show topology panel
+show_topology = true
+
+# Show metrics panel
+show_metrics = true
+
+# Show health sparklines
+show_health = true
+
+[controls]
+# Allow node eviction from TUI
+allow_eviction = true
+
+# Require quorum confirmation for destructive actions
+require_quorum_confirmation = true

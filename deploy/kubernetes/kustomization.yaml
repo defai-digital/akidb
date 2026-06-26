@@ -1,0 +1,29 @@
+---
+# Kustomization for AkiDB Kubernetes deployment
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: akidb
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/name: akidb
+  app.kubernetes.io/version: "1.0.0"
+  app.kubernetes.io/managed-by: kustomize
+
+resources:
+- namespace.yaml
+- configmap.yaml
+- shard-statefulset.yaml
+- coordinator-deployment.yaml
+- monitoring.yaml
+
+# Image customization (override in overlays)
+images:
+- name: akidb/akidb-server
+  newTag: latest
+- name: akidb/akidb-coordinator
+  newTag: latest
+
+# Patches for environment-specific customization
+# Use overlays for dev/staging/prod
