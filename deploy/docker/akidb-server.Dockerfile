@@ -7,7 +7,7 @@
 # =============================================================================
 # Stage 1: Build
 # =============================================================================
-FROM rust:1.83-bookworm AS builder
+FROM rust:1-bookworm AS builder
 
 WORKDIR /build
 
@@ -24,8 +24,8 @@ RUN apt-get update && apt-get install -y \
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 
-# Build release binary with CPU feature
-RUN cargo build --release -p akidb-server --features cpu
+# Build release binary
+RUN cargo build --release -p akidb-server
 
 # Verify binary was built
 RUN test -f /build/target/release/akidb-server
@@ -38,7 +38,7 @@ FROM debian:bookworm-slim
 LABEL org.opencontainers.image.title="AkiDB Server"
 LABEL org.opencontainers.image.description="AkiDB vector database shard server"
 LABEL org.opencontainers.image.vendor="AkiDB"
-LABEL org.opencontainers.image.version="0.1.0"
+LABEL org.opencontainers.image.version="0.2.0"
 
 WORKDIR /app
 

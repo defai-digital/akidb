@@ -7,7 +7,7 @@
 # =============================================================================
 # Stage 1: Build
 # =============================================================================
-FROM rust:1.83-bookworm AS builder
+FROM rust:1-bookworm AS builder
 
 WORKDIR /build
 
@@ -36,7 +36,7 @@ FROM debian:bookworm-slim
 LABEL org.opencontainers.image.title="AkiDB Coordinator"
 LABEL org.opencontainers.image.description="AkiDB distributed query coordinator"
 LABEL org.opencontainers.image.vendor="AkiDB"
-LABEL org.opencontainers.image.version="0.1.0"
+LABEL org.opencontainers.image.version="0.2.0"
 
 WORKDIR /app
 
