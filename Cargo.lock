@@ -149,7 +149,6 @@ dependencies = [
  "akidb-invariants",
  "anyhow",
  "bincode",
- "cc",
  "criterion",
  "mockall",
  "parking_lot",

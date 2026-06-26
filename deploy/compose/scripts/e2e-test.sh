@@ -1,10 +1,10 @@
 #!/bin/bash
-# AkiDB Thor Edition - End-to-End Test Script
+# AkiDB End-to-End Test Script
 #
 # This script runs a full end-to-end test of the ingestion pipeline
 # using Docker Compose services.
 #
-# Usage: ./e2e-test.sh [--gpu]
+# Usage: ./e2e-test.sh [--timeout seconds]
 
 set -e
 
@@ -20,17 +20,12 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-GPU_MODE=false
 TIMEOUT=300
 TEST_BUCKET="akidb-test-documents"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --gpu)
-            GPU_MODE=true
-            shift
-            ;;
         --timeout)
             TIMEOUT="$2"
             shift 2
@@ -69,7 +64,7 @@ trap cleanup EXIT
 # Start test
 echo ""
 echo "=========================================="
-echo "  AkiDB Thor Edition - E2E Test Suite"
+echo "  AkiDB E2E Test Suite"
 echo "=========================================="
 echo ""
 
@@ -77,11 +72,7 @@ echo ""
 log_info "Starting infrastructure services (NATS, MinIO)..."
 cd "$COMPOSE_DIR"
 
-if [ "$GPU_MODE" = true ]; then
-    docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d nats-1 nats-2 nats-3 minio
-else
-    docker compose up -d nats-1 nats-2 nats-3 minio
-fi
+docker compose up -d nats-1 nats-2 nats-3 minio
 
 # Wait for services to be healthy
 log_info "Waiting for services to be healthy..."
@@ -208,11 +199,7 @@ log_success "All test documents uploaded"
 
 # Step 7: Start remaining services
 log_info "Starting ingestion services..."
-if [ "$GPU_MODE" = true ]; then
-    docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d doc-parser upload-gateway
-else
-    docker compose up -d doc-parser upload-gateway
-fi
+docker compose up -d doc-parser upload-gateway
 
 # Wait for services
 sleep 10

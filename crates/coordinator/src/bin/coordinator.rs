@@ -42,7 +42,7 @@ struct Args {
     listen: String,
 
     /// Shard addresses (comma-separated)
-    #[arg(short, long, default_value = "192.168.1.61:50051,192.168.1.62:50051")]
+    #[arg(short, long, default_value = "127.0.0.1:50051")]
     shards: String,
 
     /// Search timeout in milliseconds
@@ -343,7 +343,7 @@ impl Akidb for CoordinatorService {
             ),
             total_vectors: 0, // Would need to aggregate from shards
             active_vectors: 0,
-            using_gpu: true,
+            using_gpu: false,
         }))
     }
 

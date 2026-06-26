@@ -6,7 +6,7 @@
 //! - NATS JetStream for event-driven processing
 //! - Circuit breaker for fault isolation
 //! - Backpressure based on AkiDB latency
-//! - Memory coordinator via tegrastats
+//! - Memory coordinator for local host pressure
 
 pub mod config;
 pub mod nats;

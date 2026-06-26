@@ -1,10 +1,8 @@
 {
   "refresh_interval_ms": 500,
-  "show_gpu_metrics": true,
+  "show_gpu_metrics": false,
   "discovery_addresses": [
-    "127.0.0.1:50050",
-    "192.168.1.61:50050",
-    "192.168.1.62:50050"
+    "127.0.0.1:50050"
   ],
   "theme": {
     "name": "default"

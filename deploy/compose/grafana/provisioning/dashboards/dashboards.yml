@@ -1,7 +1,7 @@
 apiVersion: 1
 
 providers:
-  - name: 'AkiDB Thor Edition'
+  - name: 'AkiDB'
     orgId: 1
     folder: 'AkiDB'
     folderUid: 'akidb'

@@ -8,14 +8,10 @@ license.workspace = true
 [features]
 default = ["cpu"]
 cpu = []
-# Portable development/runtime backend. This is the supported mode for
-# macOS Apple Silicon (M2 or later) and for Linux hosts without CUDA.
+# Supported backend for macOS Apple Silicon.
 portable = ["cpu"]
-# NVIDIA CUDA backend for Jetson Thor/Linux. Requires CUDA and FAISS GPU.
+# Unsupported legacy switch. Kept only so callers get a clear build error.
 gpu = []
-# cuVS shadow-mode scaffolding. The current implementation is mock-backed
-# until native cuVS FFI bindings are added.
-cuvs = []
 
 [dependencies]
 akidb-common = { path = "../common" }
@@ -28,9 +24,6 @@ serde = { workspace = true, features = ["derive"] }
 uuid = { workspace = true, features = ["v4"] }
 tokio = { workspace = true, features = ["fs", "time"] }
 bincode = "1.3"
-
-[build-dependencies]
-cc = "1.0"
 
 [dev-dependencies]
 tempfile.workspace = true

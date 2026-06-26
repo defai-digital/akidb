@@ -14,7 +14,7 @@ AkiDB is a Mac-first vector database for private, local, and edge retrieval work
 
 The core product bet is not "distributed by default." The core bet is that one Mac can be a strong, low-ops vector search appliance, and that a four-Mac Thunderbolt cell can deliver a useful step function in capacity, resilience, and throughput without introducing data-center-grade operational complexity.
 
-NVIDIA Thor remains an optional accelerator target and benchmark comparison point. It is not the primary product center for this PRD.
+AkiDB v2 supports macOS Apple Silicon only. Thor, CUDA, NVIDIA GPU, and Linux ARM deployment paths are out of scope.
 
 ---
 
@@ -50,7 +50,6 @@ AkiDB targets the gap between them: Mac-first local production, with an explicit
 | Four-Mac Thunderbolt cell | P0 | First distributed production shape | More capacity, higher read throughput, node-loss tolerance when configured with replicas |
 | Multiple cells | P1 | Horizontal growth beyond one cell | Route by collection, tenant, or shard group |
 | Arbitrary N-node mesh | Non-goal for v2.0 | Avoid unbounded topology complexity | Not promised |
-| Thor / CUDA node | P2 | Optional accelerator path | Benchmark and evaluate, not a primary release gate |
 
 ### 3.2 One-Mac Appliance
 
@@ -104,7 +103,7 @@ Requirements:
 The product must define benchmarked reference SKUs. Exact models may change as Apple releases new hardware, but every release must document:
 
 - SoC generation.
-- CPU and GPU core count.
+- CPU core count.
 - Unified memory capacity.
 - Memory bandwidth.
 - Internal SSD size.
@@ -168,7 +167,7 @@ Rationale: in a fan-out search path, the slowest node often controls P95/P99. Mi
 | --- | --- | --- |
 | API-001 | Client APIs must not expose whether the target is one Mac or a cell for normal operations. | P0 |
 | API-002 | Administrative APIs must expose topology, placement, health, and recovery state. | P0 |
-| API-003 | The wire API must be stable across Mac-only and optional Thor backends. | P1 |
+| API-003 | The wire API must be stable across one-Mac and four-Mac cell deployments. | P1 |
 
 ---
 
@@ -259,7 +258,7 @@ Requirements:
 - Claiming high availability for a two-node cluster.
 - Treating heterogeneous nodes as equal in a hot search cell.
 - Replacing cloud-scale vector databases for multi-region enterprise workloads.
-- CUDA, FAISS GPU, or cuVS as a primary v2.0 requirement.
+- CUDA, FAISS GPU, cuVS, Thor, or Linux ARM support.
 
 ---
 

@@ -1,229 +1,85 @@
 # AkiDB Incident Response Runbook
 
-## Overview
-This runbook provides procedures for handling incidents affecting the AkiDB vector database service.
+## Scope
+
+This runbook covers supported macOS Apple Silicon deployments and local Compose
+stacks. GPU, CUDA, Thor, Linux ARM, and Kubernetes incidents are outside the
+active support scope.
 
 ## Severity Levels
 
-| Level | Description | Response Time | Examples |
-|-------|-------------|---------------|----------|
-| SEV1 | Complete service outage | 15 minutes | All coordinators down, data loss |
-| SEV2 | Major degradation | 30 minutes | 50%+ queries failing, high latency |
-| SEV3 | Minor degradation | 2 hours | Single shard down, elevated errors |
-| SEV4 | Low impact | 24 hours | Non-critical warnings |
+| Level | Description | Response Time |
+| --- | --- | --- |
+| SEV1 | Complete service outage or suspected data loss | 15 minutes |
+| SEV2 | Major degradation, high error rate, or failed recovery | 30 minutes |
+| SEV3 | Single component unhealthy or elevated latency | 2 hours |
+| SEV4 | Non-critical warning or documentation issue | 24 hours |
 
----
+## High Search Latency
 
-## Common Incidents
+Diagnosis:
 
-### 1. High Search Latency
-
-**Alert:** `AkiDBHighLatency` or `AkiDBCriticalLatency`
-
-**Symptoms:**
-- P95 latency > 50ms
-- P99 latency > 100ms
-- User complaints about slow search
-
-**Diagnosis:**
 ```bash
-# Check current latency metrics
-kubectl exec -n akidb deploy/akidb-coordinator -- curl -s localhost:9090/metrics | grep akidb_search_latency
-
-# Check shard health
-kubectl get pods -n akidb -l app.kubernetes.io/component=shard
-
-# Check for backpressure
-kubectl exec -n akidb deploy/akidb-coordinator -- curl -s localhost:9090/metrics | grep backpressure
-
-# Check GPU memory
-kubectl exec -n akidb akidb-shard-0 -- nvidia-smi
+docker compose logs --tail=100 akidb-server
+docker compose logs --tail=100 akidb-coordinator
+curl -s http://localhost:9090/metrics | grep akidb_search_latency
 ```
 
-**Resolution:**
-1. **If backpressure is active:**
-   - Scale coordinator replicas: `kubectl scale deployment akidb-coordinator -n akidb --replicas=4`
-   - Review incoming traffic patterns
+Resolution:
 
-2. **If GPU memory is high (>85%):**
-   - Trigger compaction: `grpcurl -plaintext akidb-coordinator:50051 akidb.Admin/TriggerCompaction`
-   - Consider scaling shards
+- Reduce ingestion rate or batch size.
+- Check disk pressure and WAL growth.
+- Trigger compaction if tombstone ratio is high.
+- Restart a stuck local service only after logs are captured.
 
-3. **If single shard is slow:**
-   - Check shard logs: `kubectl logs -n akidb akidb-shard-X`
-   - Consider restarting: `kubectl delete pod -n akidb akidb-shard-X`
+## Shard Or Coordinator Down
 
----
+Diagnosis:
 
-### 2. Shard Down
-
-**Alert:** `AkiDBShardDown`
-
-**Symptoms:**
-- Pod in CrashLoopBackOff or not ready
-- Partial search results
-
-**Diagnosis:**
 ```bash
-# Check pod status
-kubectl describe pod -n akidb akidb-shard-X
-
-# Check logs
-kubectl logs -n akidb akidb-shard-X --previous
-
-# Check node health
-kubectl describe node $(kubectl get pod -n akidb akidb-shard-X -o jsonpath='{.spec.nodeName}')
+docker compose ps
+docker compose logs --tail=200 akidb-server
+docker compose logs --tail=200 akidb-coordinator
 ```
 
-**Resolution:**
-1. **If OOM killed:**
-   - Increase memory limits in StatefulSet
-   - Trigger compaction to reduce memory usage
+Resolution:
 
-2. **If GPU error:**
-   - Check nvidia-smi on the node
-   - Drain and restart node if necessary
+- Restart the unhealthy service: `docker compose restart akidb-server`.
+- Verify data paths under `/var/lib/akidb` or the configured local paths.
+- Restore from the latest valid snapshot if storage is corrupt.
 
-3. **If storage full:**
-   - Expand PVC or trigger compaction
-   - Archive old snapshots
+## Ingestion Backpressure
 
-**Recovery verification:**
+Diagnosis:
+
 ```bash
-# Verify pod is running
-kubectl get pod -n akidb akidb-shard-X
-
-# Verify data integrity
-grpcurl -plaintext akidb-shard-X:50051 akidb.Health/Check
+docker compose logs --tail=200 ingestion
+curl -s http://localhost:9090/metrics | grep backpressure
 ```
 
----
+Resolution:
 
-### 3. Coordinator Down
+- Reduce `BATCHER_MAX_BATCH`.
+- Pause document uploads until queues drain.
+- Confirm parser and upload gateway health.
 
-**Alert:** `AkiDBCoordinatorDown`
+## Parser Failures
 
-**Symptoms:**
-- gRPC connection refused
-- All search requests failing
+Diagnosis:
 
-**Diagnosis:**
 ```bash
-# Check deployment status
-kubectl get deployment -n akidb akidb-coordinator
-
-# Check pod events
-kubectl describe pod -n akidb -l app.kubernetes.io/component=coordinator
-
-# Check service endpoints
-kubectl get endpoints -n akidb akidb-coordinator
+curl http://localhost:8080/health
+docker compose logs --tail=200 doc-parser
 ```
 
-**Resolution:**
-1. **Scale up if needed:**
-   ```bash
-   kubectl scale deployment akidb-coordinator -n akidb --replicas=3
-   ```
+Resolution:
 
-2. **Restart deployment:**
-   ```bash
-   kubectl rollout restart deployment akidb-coordinator -n akidb
-   ```
-
-3. **Check for resource issues:**
-   ```bash
-   kubectl top pods -n akidb -l app.kubernetes.io/component=coordinator
-   ```
-
----
-
-### 4. High Tombstone Ratio
-
-**Alert:** `AkiDBHighTombstoneRatio`
-
-**Symptoms:**
-- Tombstone ratio > 15%
-- Gradual performance degradation
-- Increased memory usage
-
-**Diagnosis:**
-```bash
-# Check tombstone metrics
-kubectl exec -n akidb akidb-shard-0 -- curl -s localhost:9090/metrics | grep tombstone
-
-# Check if compaction is running
-kubectl exec -n akidb akidb-shard-0 -- curl -s localhost:9090/metrics | grep rebuild
-```
-
-**Resolution:**
-1. **Trigger manual compaction:**
-   ```bash
-   grpcurl -plaintext akidb-coordinator:50051 akidb.Admin/TriggerCompaction
-   ```
-
-2. **Wait for compaction to complete:**
-   - Monitor `akidb_rebuild_in_progress` metric
-   - Expected duration: ~5 minutes per million vectors
-
-3. **If compaction fails:**
-   - Check logs for errors
-   - May need to increase memory during off-peak hours
-
----
-
-### 5. cuVS Divergence (Phase 4)
-
-**Alert:** `AkiDBCuVSDivergence`
-
-**Symptoms:**
-- cuVS results differ from FAISS
-- Divergence rate > 0.1%
-
-**Diagnosis:**
-```bash
-# Check shadow validation stats
-kubectl exec -n akidb deploy/akidb-coordinator -- curl -s localhost:9090/metrics | grep cuvs
-
-# Check gate decision
-grpcurl -plaintext akidb-coordinator:50051 akidb.Admin/GetCuVSGateStatus
-```
-
-**Resolution:**
-1. **If divergence is high:**
-   - Rollback to FAISS immediately:
-     ```bash
-     kubectl set env deployment/akidb-coordinator AKIDB_CUVS_ENABLED=false -n akidb
-     ```
-
-2. **Investigate root cause:**
-   - Check cuVS version compatibility
-   - Review recent configuration changes
-   - Compare specific divergent queries
-
----
-
-## Escalation Procedures
-
-### When to Escalate
-
-- SEV1: Immediate escalation to on-call lead
-- SEV2: Escalate if not resolved in 30 minutes
-- Any data loss or corruption suspected
-- Multiple simultaneous incidents
-
-### Escalation Contacts
-
-| Role | Primary | Secondary |
-|------|---------|-----------|
-| On-call Engineer | PagerDuty | Slack #akidb-oncall |
-| Team Lead | - | - |
-| Platform Team | Slack #platform | - |
-
----
+- Restart `doc-parser`.
+- Check PDF/DOCX dependencies and input file size.
+- Move unrecoverable documents to the DLQ with a reason.
 
 ## Post-Incident
 
-1. **Create incident ticket** with timeline and actions taken
-2. **Schedule blameless post-mortem** within 48 hours
-3. **Document lessons learned** and action items
-4. **Update runbooks** if new procedures discovered
+Create an incident ticket with timeline, customer impact, commands run, root
+cause, and follow-up tasks. Update this runbook when a new recovery step proves
+useful.

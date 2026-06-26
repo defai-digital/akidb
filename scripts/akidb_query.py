@@ -3,7 +3,7 @@
 
 This script:
 1. Parses PDF using doc-parser service
-2. Chunks text and generates embeddings via vLLM
+2. Chunks text and generates embeddings via the local embedding service
 3. Inserts vectors into AkiDB via gRPC
 4. Queries AkiDB via gRPC for semantic search
 """
@@ -18,10 +18,10 @@ import httpx
 # AkiDB gRPC uses a simple binary protocol
 # We'll implement a minimal client without proto compilation
 
-THOR_HOST = "192.168.1.61"
-DOC_PARSER_URL = f"http://{THOR_HOST}:8080"
-VLLM_URL = f"http://{THOR_HOST}:8000"
-AKIDB_HOST = THOR_HOST
+LOCAL_HOST = "127.0.0.1"
+DOC_PARSER_URL = f"http://{LOCAL_HOST}:8080"
+VLLM_URL = f"http://{LOCAL_HOST}:8000"
+AKIDB_HOST = LOCAL_HOST
 AKIDB_PORT = 50051
 
 COLLECTION = "documents"

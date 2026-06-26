@@ -1,6 +1,6 @@
 # AkiDB Ingestion Orchestrator
 
-The Ingestion Orchestrator is a hybrid Rust/Python document processing pipeline for AkiDB Thor Edition. It processes documents uploaded to MinIO, extracts text, generates embeddings, and stores vectors in AkiDB.
+The Ingestion Orchestrator is a hybrid Rust/Python document processing pipeline for AkiDB on macOS Apple Silicon. It processes documents uploaded to MinIO, extracts text, generates embeddings, and stores vectors in AkiDB.
 
 ## Architecture Overview
 
@@ -76,10 +76,9 @@ The Ingestion Orchestrator is a hybrid Rust/Python document processing pipeline 
   - Pause duration: 5 seconds
   - Also monitors queue depth (high water: 10,000)
 
-- **Memory Coordinator**: tegrastats-based monitoring
+- **Memory Coordinator**: local memory monitoring
   - Pause threshold: 70%
   - Resume threshold: 60%
-  - Falls back to /proc/meminfo on non-Jetson systems
 
 ### Processing Pipeline
 
@@ -169,11 +168,8 @@ cargo bench -p akidb-ingestion
 ```bash
 cd deploy/compose
 
-# Start all services (CPU mode)
+# Start all services
 docker compose up -d
-
-# Start with GPU support (Thor)
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
 # Run E2E tests
 ./scripts/e2e-test.sh
@@ -232,16 +228,16 @@ The dashboard includes:
 **Resolution**:
 1. Check AkiDB health: `curl http://localhost:50051/health`
 2. Check insert latency in Grafana
-3. Scale AkiDB or reduce ingestion rate
+3. Reduce ingestion rate or batch size
 
 ### Memory Pressure
 
 **Symptom**: Processing paused due to memory
 
 **Resolution**:
-1. Check tegrastats: `tegrastats --interval 1000`
+1. Check local process memory with Activity Monitor or `top`
 2. Reduce batch size: `BATCHER_MAX_BATCH=32`
-3. Free up GPU memory from other processes
+3. Pause uploads until memory pressure clears
 
 ### Documents Stuck in DLQ
 

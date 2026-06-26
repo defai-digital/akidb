@@ -3,11 +3,11 @@
 # Refresh interval in milliseconds
 refresh_interval_ms = 500
 
-# Show GPU metrics (via nvtop integration on Jetson)
-show_gpu_metrics = true
+# GPU metrics are unsupported in the Mac-only build.
+show_gpu_metrics = false
 
 # Coordinator address (optional, can also use --coordinator CLI flag)
-# coordinator_address = "192.168.1.61:50050"
+# coordinator_address = "127.0.0.1:50050"
 
 # Use mock data for testing
 mock_mode = false

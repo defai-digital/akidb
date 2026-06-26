@@ -153,46 +153,6 @@ jobs:
         if: github.event_name != 'pull_request'
         continue-on-error: true
 
-  # Build GPU images on self-hosted Jetson Thor runner
-  build-gpu:
-    name: Build GPU Images (Thor)
-    runs-on: [self-hosted, jetson-thor]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build-server, build-coordinator]
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Login to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build akidb-server (GPU)
-        run: |
-          docker build \
-            -f deploy/docker/akidb-server-gpu.Dockerfile \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:gpu-${{ github.sha }} \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:gpu-latest \
-            .
-
-      - name: Push GPU images
-        run: |
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:gpu-${{ github.sha }}
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:gpu-latest
-
-      - name: Test GPU image
-        run: |
-          docker run --rm --runtime=nvidia \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/akidb-server:gpu-${{ github.sha }} \
-            --version || echo "Version check skipped"
-
   # Test docker-compose stack
   test-compose:
     name: Test Docker Compose

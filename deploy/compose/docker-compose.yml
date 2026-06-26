@@ -1,5 +1,5 @@
-# AkiDB Thor Edition - Docker Compose
-# Full ingestion pipeline stack for Jetson Thor
+# AkiDB Docker Compose
+# Portable local development stack for macOS-hosted development
 
 version: "3.9"
 
@@ -238,41 +238,6 @@ services:
         condition: service_healthy
 
   # ============================================
-  # Embedding Service (vLLM/TensorRT)
-  # Enable with: docker compose --profile gpu up
-  # ============================================
-  embedding:
-    image: vllm/vllm-openai:latest
-    container_name: akidb-embedding
-    user: "1000:1000"
-    runtime: nvidia
-    environment:
-      MODEL: Qwen/Qwen3-Embedding-8B
-      VLLM_HOST: "0.0.0.0"
-      VLLM_PORT: "8000"
-    ports:
-      - "8000:8000"
-    networks:
-      - akidb-net
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 60s
-      retries: 3
-    profiles:
-      - gpu  # Only start with --profile gpu
-
-  # ============================================
   # AkiDB Server (Vector Database Shard)
   # ============================================
   akidb-server:
@@ -337,39 +302,6 @@ services:
     depends_on:
       akidb-server:
         condition: service_healthy
-
-  # ============================================
-  # NVIDIA DCGM Exporter (GPU Metrics)
-  # Requires: nvidia-docker runtime
-  # ============================================
-  dcgm-exporter:
-    image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.0-3.2.0-ubuntu22.04
-    container_name: akidb-dcgm-exporter
-    runtime: nvidia
-    ports:
-      - "9400:9400"
-    environment:
-      DCGM_EXPORTER_LISTEN: ":9400"
-      DCGM_EXPORTER_KUBERNETES: "false"
-      DCGM_EXPORTER_COLLECTORS: "/etc/dcgm-exporter/default-counters.csv"
-    networks:
-      - akidb-net
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9400/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    profiles:
-      - gpu  # Only start with --profile gpu
 
   # ============================================
   # Prometheus (Monitoring)

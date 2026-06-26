@@ -1,4 +1,4 @@
-# AkiDB Thor Edition - Security Review
+# AkiDB Security Review
 
 **Version:** 1.0
 **Date:** 2026-01-21
@@ -7,7 +7,7 @@
 
 ## Executive Summary
 
-This security review covers the AkiDB Thor Edition deployment, including the core vector database, ingestion pipeline, and supporting infrastructure. The review identifies potential security risks and provides mitigation recommendations.
+This security review covers the Mac-only AkiDB deployment, including the core vector database, ingestion pipeline, and supporting infrastructure. The review identifies potential security risks and provides mitigation recommendations.
 
 **Overall Risk Level:** Medium
 
@@ -27,7 +27,7 @@ This security review covers the AkiDB Thor Edition deployment, including the cor
 ### Out of Scope
 
 - Network perimeter security
-- Physical security of Thor hardware
+- Physical security of Mac hardware
 - Client application security
 - Third-party library vulnerabilities (covered by Dependabot)
 

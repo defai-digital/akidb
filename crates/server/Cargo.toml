@@ -12,6 +12,7 @@ path = "src/main.rs"
 [features]
 default = ["cpu"]
 cpu = ["akidb-faiss/cpu"]
+# Unsupported legacy switch. The active product supports macOS CPU/portable mode only.
 gpu = ["akidb-faiss/gpu"]
 
 [dependencies]

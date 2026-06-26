@@ -136,9 +136,8 @@ impl VectorIndex for MockIndex {
         }
 
         // New vector
-        // FIX BUG-HUNT-005: Use SeqCst instead of Relaxed for proper ordering on ARM/RISC-V.
-        // Relaxed ordering can cause test failures on weaker memory model architectures
-        // like Jetson Thor (ARM).
+        // FIX BUG-HUNT-005: Use SeqCst instead of Relaxed for proper ordering on
+        // weaker memory model architectures, including Apple Silicon ARM64.
         let internal_id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
         id_mapping.insert(id.as_str().to_string(), internal_id);

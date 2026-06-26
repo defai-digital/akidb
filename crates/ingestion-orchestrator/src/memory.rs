@@ -1,7 +1,6 @@
-//! Memory Coordinator using tegrastats
+//! Memory Coordinator for local memory pressure
 //!
-//! Monitors unified memory usage on Jetson Thor and pauses
-//! ingestion when memory pressure is detected.
+//! Monitors memory usage and pauses ingestion when pressure is detected.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -11,7 +10,7 @@ use tracing::{info, warn, error, debug};
 
 use crate::config::MemoryConfig;
 
-/// Memory coordinator for tegrastats-based monitoring
+/// Memory coordinator for local memory monitoring
 pub struct MemoryCoordinator {
     /// Whether memory pressure pause is active
     paused: AtomicBool,
@@ -63,7 +62,7 @@ impl MemoryCoordinator {
             loop {
                 ticker.tick().await;
 
-                match parse_tegrastats() {
+                match parse_system_memory() {
                     Ok((used, total)) => {
                         let pct = (used as f32 / total as f32) * 100.0;
 
@@ -96,7 +95,7 @@ impl MemoryCoordinator {
                         }
                     }
                     Err(e) => {
-                        error!(?e, "Failed to parse tegrastats");
+                        error!(?e, "Failed to parse system memory");
                     }
                 }
             }
@@ -123,68 +122,74 @@ pub struct MemoryStats {
     pub used_mb: u64,
 }
 
-/// Parse tegrastats output to get memory usage
-/// Expected format: "RAM 117456/125772MB ..."
-fn parse_tegrastats() -> Result<(u64, u64), String> {
-    use std::io::{BufRead, BufReader};
-    use std::time::Duration;
-
-    // Try to spawn tegrastats and read one line (it runs continuously with --interval)
-    let mut child = match Command::new("tegrastats")
-        .arg("--interval")
-        .arg("100")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => {
-            // Fallback to /proc/meminfo if tegrastats not available
-            return parse_proc_meminfo();
-        }
-    };
-
-    // Read one line from stdout with timeout
-    let result = if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-
-        // Get the first line
-        match lines.next() {
-            Some(Ok(line)) => parse_tegrastats_line(&line),
-            Some(Err(e)) => Err(format!("Failed to read tegrastats: {}", e)),
-            None => Err("No output from tegrastats".to_string()),
-        }
-    } else {
-        Err("Failed to capture tegrastats stdout".to_string())
-    };
-
-    // CRITICAL: Kill the tegrastats process (it runs forever with --interval)
-    let _ = child.kill();
-    let _ = child.wait(); // Reap the zombie process
-
-    // If tegrastats failed, fallback to /proc/meminfo
-    result.or_else(|_| parse_proc_meminfo())
+/// Parse system memory usage in MB.
+fn parse_system_memory() -> Result<(u64, u64), String> {
+    parse_macos_memory().or_else(|_| parse_proc_meminfo())
 }
 
-/// Parse a single tegrastats line
-fn parse_tegrastats_line(line: &str) -> Result<(u64, u64), String> {
-    // Look for "RAM USED/TOTALMB" pattern
-    if let Some(ram_start) = line.find("RAM ") {
-        let ram_part = &line[ram_start + 4..];
-        if let Some(mb_end) = ram_part.find("MB") {
-            let nums = &ram_part[..mb_end];
-            let parts: Vec<&str> = nums.split('/').collect();
-            if parts.len() == 2 {
-                let used = parts[0].trim().parse::<u64>()
-                    .map_err(|e| format!("Failed to parse used: {}", e))?;
-                let total = parts[1].trim().parse::<u64>()
-                    .map_err(|e| format!("Failed to parse total: {}", e))?;
-                return Ok((used, total));
+/// Parse macOS memory counters from sysctl/vm_stat.
+fn parse_macos_memory() -> Result<(u64, u64), String> {
+    let total_output = Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .map_err(|e| format!("Failed to run sysctl: {}", e))?;
+    if !total_output.status.success() {
+        return Err("sysctl hw.memsize failed".to_string());
+    }
+
+    let total_bytes = String::from_utf8_lossy(&total_output.stdout)
+        .trim()
+        .parse::<u64>()
+        .map_err(|e| format!("Failed to parse hw.memsize: {}", e))?;
+
+    let vm_output = Command::new("vm_stat")
+        .output()
+        .map_err(|e| format!("Failed to run vm_stat: {}", e))?;
+    if !vm_output.status.success() {
+        return Err("vm_stat failed".to_string());
+    }
+
+    let vm_stat = String::from_utf8_lossy(&vm_output.stdout);
+    parse_vm_stat(&vm_stat, total_bytes)
+}
+
+fn parse_vm_stat(output: &str, total_bytes: u64) -> Result<(u64, u64), String> {
+    let mut page_size = 4096u64;
+    let mut free_pages = 0u64;
+    let mut speculative_pages = 0u64;
+
+    for line in output.lines() {
+        if let Some(start) = line.find("page size of ") {
+            let size_part = &line[start + "page size of ".len()..];
+            if let Some(end) = size_part.find(" bytes") {
+                page_size = size_part[..end]
+                    .parse::<u64>()
+                    .map_err(|e| format!("Failed to parse page size: {}", e))?;
             }
+        } else if line.starts_with("Pages free:") {
+            free_pages = parse_vm_stat_pages(line)?;
+        } else if line.starts_with("Pages speculative:") {
+            speculative_pages = parse_vm_stat_pages(line)?;
         }
     }
-    Err("Could not parse tegrastats output".to_string())
+
+    let available_bytes = free_pages
+        .saturating_add(speculative_pages)
+        .saturating_mul(page_size);
+    let used_bytes = total_bytes.saturating_sub(available_bytes);
+
+    Ok((used_bytes / 1024 / 1024, total_bytes / 1024 / 1024))
+}
+
+fn parse_vm_stat_pages(line: &str) -> Result<u64, String> {
+    line.split(':')
+        .nth(1)
+        .ok_or_else(|| "Invalid vm_stat line".to_string())?
+        .trim()
+        .trim_end_matches('.')
+        .replace('.', "")
+        .parse::<u64>()
+        .map_err(|e| format!("Failed to parse vm_stat pages: {}", e))
 }
 
 /// Fallback: parse /proc/meminfo
@@ -226,13 +231,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_tegrastats_line() {
-        let line = "01-21-2026 14:10:09 RAM 117456/125772MB (lfb 9x4MB) CPU [0%@1890]";
-        let result = parse_tegrastats_line(line);
+    fn test_parse_vm_stat() {
+        let output = "\
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               1000.
+Pages speculative:                         500.
+Pages active:                            10000.
+";
+        let result = parse_vm_stat(output, 32 * 1024 * 1024);
         assert!(result.is_ok());
         let (used, total) = result.unwrap();
-        assert_eq!(used, 117456);
-        assert_eq!(total, 125772);
+        assert_eq!(used, 8);
+        assert_eq!(total, 32);
     }
 
     #[test]

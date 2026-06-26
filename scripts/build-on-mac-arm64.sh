@@ -23,12 +23,6 @@ fi
 echo "Rust: $(rustc --version)"
 echo "Target: $(rustc -vV | awk -F': ' '/host/ {print $2}')"
 
-if [ "${AKIDB_ENABLE_GPU:-}" = "1" ]; then
-    echo "Error: NVIDIA CUDA GPU mode is not supported on macOS." >&2
-    echo "Use the default CPU/portable build on Apple Silicon." >&2
-    exit 1
-fi
-
 cargo check --workspace --features cpu
 cargo test --workspace --features cpu
 cargo build --release -p akidb-server --features cpu

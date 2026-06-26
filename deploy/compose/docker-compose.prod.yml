@@ -1,4 +1,4 @@
-# AkiDB Thor Edition - Production Configuration
+# AkiDB Production Configuration
 # Use with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 version: "3.9"
@@ -130,7 +130,7 @@ services:
       BACKPRESSURE_LATENCY_THRESHOLD_MS: 500
       BACKPRESSURE_QUEUE_DEPTH: 20000
       BACKPRESSURE_PAUSE_SECS: 10
-      # Memory (for Thor)
+      # Memory
       MEMORY_PAUSE_THRESHOLD_PCT: 75
       MEMORY_RESUME_THRESHOLD_PCT: 65
       # Batcher

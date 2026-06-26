@@ -635,9 +635,9 @@ akidb-bench cell-failover --cell cell-a --kill-node mac-c --topk 10
 
 ## 16. Compatibility and Migration
 
-### 16.1 From Thor Edition Docs
+### 16.1 From Prior Hardware-Specific Docs
 
-The previous Thor-centered docs are superseded. Concepts that may remain useful:
+The previous hardware-specific docs are superseded. Concepts that may remain useful:
 
 - Tombstones.
 - Versioned reindexing.
@@ -647,8 +647,8 @@ The previous Thor-centered docs are superseded. Concepts that may remain useful:
 
 Concepts that are no longer primary:
 
-- CUDA-first backend.
-- Jetson Thor as production default.
+- Hardware-specific accelerator backends.
+- Non-macOS production defaults.
 - No-replication shard design.
 - Kubernetes or container-first operations.
 

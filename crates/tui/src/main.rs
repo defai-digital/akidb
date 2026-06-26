@@ -34,7 +34,7 @@ struct Args {
     #[arg(short, long)]
     config: Option<PathBuf>,
 
-    /// Coordinator address to connect to (e.g., 192.168.1.61:50050)
+    /// Coordinator address to connect to (e.g., 127.0.0.1:50050)
     #[arg(long)]
     coordinator: Option<String>,
 
@@ -123,8 +123,7 @@ async fn run_tui(config: TuiConfig) -> Result<()> {
     if !atty::is(atty::Stream::Stdout) {
         return Err(anyhow::anyhow!(
             "TUI requires an interactive terminal.\n\
-             Please run directly via SSH: ssh devop@192.168.1.61\n\
-             Then run: akidb-tui --coordinator 127.0.0.1:50050\n\
+             Run locally on the Mac host: akidb-tui --coordinator 127.0.0.1:50050\n\
              Or use --test-connection to test without a terminal."
         ));
     }

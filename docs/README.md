@@ -10,8 +10,6 @@ Canonical documents:
 Supporting documents:
 
 - [Development Notes](development/AGENT_CONFIGS.md)
-- [CUDA Compatibility](platform/CUDA_COMPATIBILITY.md)
-- [cuVS Evaluation](evaluations/CUVS_EVALUATION.md)
 - [Security Review](security/SECURITY_REVIEW.md)
 - [Runbooks](runbooks/)
 - [Ingestion Orchestrator](services/ingestion-orchestrator/)

@@ -1,4 +1,4 @@
-# AkiDB Thor Edition - Default Configuration
+# AkiDB macOS Apple Silicon - Default Configuration
 
 [server]
 host = "0.0.0.0"
@@ -14,7 +14,7 @@ nlist = 4096
 nprobe = 32
 
 [index.gpu]
-enabled = true
+enabled = false
 device_id = 0
 memory_fraction = 0.6
 fallback_to_cpu = true
@@ -25,7 +25,7 @@ max_duration_seconds = 300
 preferred_hours = [2, 3, 4]
 
 [index.tombstone]
-use_gpu_bitset = true
+use_gpu_bitset = false
 max_count = 100000
 
 [storage]

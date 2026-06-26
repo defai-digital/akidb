@@ -131,7 +131,7 @@ impl ClusterState {
                 CoordinatorInfo {
                     id: "coord-1".to_string(),
                     peer_id: "12D3KooWA1b2c3d4e5f6g7h8i9j0".to_string(),
-                    address: "192.168.1.61:50050".to_string(),
+                    address: "127.0.0.1:50050".to_string(),
                     is_leader: true,
                     is_self: true,
                     last_seen: Instant::now(),
@@ -140,7 +140,7 @@ impl ClusterState {
                 CoordinatorInfo {
                     id: "coord-2".to_string(),
                     peer_id: "12D3KooWB2c3d4e5f6g7h8i9j0k1".to_string(),
-                    address: "192.168.1.62:50050".to_string(),
+                    address: "127.0.0.1:50052".to_string(),
                     is_leader: false,
                     is_self: false,
                     last_seen: Instant::now(),
@@ -150,19 +150,19 @@ impl ClusterState {
             shards: vec![
                 ShardInfo {
                     id: "shard-1".to_string(),
-                    address: "192.168.1.61:50051".to_string(),
+                    address: "127.0.0.1:50051".to_string(),
                     vector_count: 38,
                     health_score: 0.95,
-                    gpu_memory_percent: Some(62.5),
+                    gpu_memory_percent: None,
                     temperature: Some(52.0),
                     status: NodeStatus::Healthy,
                 },
                 ShardInfo {
                     id: "shard-2".to_string(),
-                    address: "192.168.1.62:50051".to_string(),
+                    address: "127.0.0.1:50053".to_string(),
                     vector_count: 42,
                     health_score: 0.92,
-                    gpu_memory_percent: Some(58.3),
+                    gpu_memory_percent: None,
                     temperature: Some(48.0),
                     status: NodeStatus::Healthy,
                 },

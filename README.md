@@ -9,7 +9,6 @@ appliance deployments, and four-Mac Thunderbolt cells.
 - **Four-Mac Cell Design**: Thunderbolt-connected shard and replica placement for local scale-out
 - **Cell-Based Horizontal Scale**: Add four-Mac cells instead of growing an unbounded mesh
 - **Portable Backend First**: CPU/portable backend for Mac M2 or later ARM64 systems
-- **Optional NVIDIA Acceleration**: Thor/CUDA path retained as a secondary accelerator target
 - **Sub-50ms Latency**: Optimized for real-time RAG applications
 - **Rust Performance**: Memory-safe, async-first implementation
 
@@ -59,25 +58,6 @@ The four-Mac Thunderbolt cell is the v2 distributed design target. See:
 - [ADR](docs/adr/ADR-0001-mac-first-cell-architecture.md)
 - [Technical Specification](docs/architecture/TECH_SPEC.md)
 
-### Optional NVIDIA Thor Path
-
-```bash
-# Validate hardware
-./scripts/thor-validate.sh
-
-# Run FAISS benchmark
-./scripts/faiss-benchmark.sh
-
-# Setup MinIO
-sudo ./scripts/minio-setup.sh
-
-# Build with GPU support
-./scripts/build-on-thor.sh
-
-# Run server
-./target/release/akidb-server --config config/default.toml
-```
-
 ## Project Structure
 
 ```
@@ -103,7 +83,6 @@ See `config/default.toml` for all configuration options.
 Key settings:
 - `slo.reference.*`: SLO reference configuration
 - `index.nprobe`: Search accuracy vs speed for FAISS-compatible backends
-- `index.gpu.memory_fraction`: Optional GPU memory budget for NVIDIA targets
 
 ## Performance Targets
 
@@ -117,11 +96,10 @@ Key settings:
 ## Documentation
 
 - [Documentation Index](docs/README.md) - canonical docs and archive map
-- [Platform Support](docs/platform/SUPPORT.md) - Mac-first and optional NVIDIA target matrix
+- [Platform Support](docs/platform/SUPPORT.md) - macOS Apple Silicon support matrix
 - [ADR](docs/adr/ADR-0001-mac-first-cell-architecture.md) - Architecture Decision Records
 - [PRD](docs/product/PRD.md) - Product Requirements
 - [Technical Specification](docs/architecture/TECH_SPEC.md) - Mac appliance and Thunderbolt cell architecture
-- [CUDA Compatibility](docs/platform/CUDA_COMPATIBILITY.md) - Optional NVIDIA hardware/software matrix
 
 ## Development Status
 

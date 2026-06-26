@@ -1,5 +1,5 @@
 # AkiDB Document Parser Service
-# Multi-stage build for ARM64 (Jetson Thor)
+# Multi-stage build for macOS-hosted development and portable containers
 
 FROM python:3.12-slim as builder
 

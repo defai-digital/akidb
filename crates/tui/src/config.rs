@@ -12,7 +12,7 @@ pub struct TuiConfig {
     #[serde(default = "default_refresh_interval")]
     pub refresh_interval_ms: u64,
 
-    /// Whether to show GPU metrics
+    /// Whether to show GPU metrics from legacy/non-macOS deployments
     #[serde(default = "default_show_gpu_metrics")]
     pub show_gpu_metrics: bool,
 
@@ -170,7 +170,7 @@ fn default_refresh_interval() -> u64 {
 }
 
 fn default_show_gpu_metrics() -> bool {
-    true
+    false
 }
 
 fn default_true() -> bool {
@@ -178,11 +178,7 @@ fn default_true() -> bool {
 }
 
 fn default_discovery_addresses() -> Vec<String> {
-    vec![
-        "127.0.0.1:50050".to_string(),
-        "192.168.1.61:50050".to_string(),
-        "192.168.1.62:50050".to_string(),
-    ]
+    vec!["127.0.0.1:50050".to_string()]
 }
 
 // Placeholder for dirs crate functionality
@@ -204,7 +200,7 @@ mod tests {
     fn test_default_config() {
         let config = TuiConfig::default();
         assert_eq!(config.refresh_interval_ms, 500);
-        assert!(config.show_gpu_metrics);
+        assert!(!config.show_gpu_metrics);
         assert!(config.layout.show_topology);
         // Default discovery addresses should be set
         assert!(!config.discovery_addresses.is_empty());
@@ -216,7 +212,7 @@ mod tests {
         let toml = r#"
             refresh_interval_ms = 1000
             show_gpu_metrics = false
-            coordinator_address = "192.168.1.61:50050"
+            coordinator_address = "127.0.0.1:50050"
 
             [theme]
             name = "minimal"
@@ -232,7 +228,7 @@ mod tests {
         assert!(!config.show_gpu_metrics);
         assert_eq!(
             config.coordinator_address,
-            Some("192.168.1.61:50050".to_string())
+            Some("127.0.0.1:50050".to_string())
         );
         assert_eq!(config.theme.name, "minimal");
         assert!(!config.layout.show_health);
@@ -254,7 +250,7 @@ mod tests {
     fn test_parse_json_config() {
         let json = r#"{
             "refresh_interval_ms": 1000,
-            "discovery_addresses": ["192.168.1.61:50050", "192.168.1.62:50050"]
+            "discovery_addresses": ["127.0.0.1:50050", "127.0.0.1:50051"]
         }"#;
 
         let config: TuiConfig = serde_json::from_str(json).unwrap();

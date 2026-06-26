@@ -271,7 +271,7 @@ pub struct IndexConfig {
     pub nlist: u32,
     /// Number of probes for search (nprobe)
     pub nprobe: u32,
-    /// Use GPU acceleration
+    /// Use GPU acceleration. Unsupported in the active Mac-only build.
     pub use_gpu: bool,
     /// GPU memory fraction (0.0 - 1.0)
     pub gpu_memory_fraction: f32,
@@ -282,7 +282,7 @@ impl Default for IndexConfig {
         Self {
             nlist: 4096,
             nprobe: 32,
-            use_gpu: true,
+            use_gpu: false,
             gpu_memory_fraction: 0.6,
         }
     }

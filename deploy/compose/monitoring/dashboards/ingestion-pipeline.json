@@ -912,7 +912,7 @@
           "refId": "A"
         }
       ],
-      "title": "Memory Usage (tegrastats)",
+      "title": "Memory Usage",
       "type": "gauge"
     },
     {

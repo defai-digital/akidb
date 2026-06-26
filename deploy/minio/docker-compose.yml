@@ -1,5 +1,4 @@
 # MinIO Docker Compose for AkiDB Development
-# For production on Thor, use minio-setup.sh instead
 
 version: '3.8'
 

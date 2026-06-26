@@ -1,5 +1,5 @@
 #!/bin/bash
-# AkiDB Thor Edition - Production Load Testing Script
+# AkiDB Production Load Testing Script
 # Tests ingestion throughput and search performance
 
 set -e
@@ -368,7 +368,7 @@ generate_report() {
     local report_file="${RESULTS_DIR}/load_test_report_${TIMESTAMP}.md"
 
     cat > "$report_file" << EOF
-# AkiDB Thor Edition - Load Test Report
+# AkiDB Load Test Report
 
 **Date:** $(date -Iseconds)
 **Test ID:** ${TIMESTAMP}
@@ -429,7 +429,7 @@ cleanup() {
 
 # Main
 main() {
-    print_header "AkiDB Thor Edition - Production Load Test"
+    print_header "AkiDB Production Load Test"
     echo "  Test ID: ${TIMESTAMP}"
     echo "  Documents: ${TOTAL_DOCS}"
     echo "  Search QPS: ${SEARCH_QPS} for ${SEARCH_DURATION}s"

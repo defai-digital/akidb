@@ -55,7 +55,7 @@ pub struct IndexSettings {
     pub nlist: u32,
     /// Default number of probes
     pub nprobe: u32,
-    /// GPU settings
+    /// Accelerator settings. GPU acceleration is not supported in active Mac-only builds.
     pub gpu: GpuSettings,
     /// Rebuild settings
     pub rebuild: RebuildSettings,
@@ -87,7 +87,7 @@ pub struct GpuSettings {
 impl Default for GpuSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             device_id: 0,
             memory_fraction: 0.6,
             fallback_to_cpu: true,
@@ -117,7 +117,7 @@ impl Default for RebuildSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TombstoneSettings {
-    /// Use GPU bitset for tombstone filtering
+    /// Use accelerator bitset for tombstone filtering
     pub use_gpu_bitset: bool,
     /// Maximum tombstones before forced compaction
     pub max_count: u64,
@@ -126,7 +126,7 @@ pub struct TombstoneSettings {
 impl Default for TombstoneSettings {
     fn default() -> Self {
         Self {
-            use_gpu_bitset: true,
+            use_gpu_bitset: false,
             max_count: 100_000,
         }
     }

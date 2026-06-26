@@ -14,7 +14,7 @@
 
 ### Context
 
-AkiDB previously centered on NVIDIA Jetson Thor and CUDA/FAISS GPU search. User feedback and product review identified a stronger near-term wedge: Apple Silicon Macs provide high memory bandwidth, fast local SSDs, strong developer availability, and a simpler local deployment story.
+AkiDB previously centered on hardware-specific accelerator deployments. User feedback and product review identified a stronger near-term wedge: Apple Silicon Macs provide high memory bandwidth, fast local SSDs, strong developer availability, and a simpler local deployment story.
 
 The market already has distributed vector databases and local vector databases, but there is a gap for a Mac-first vector DB that scales from one local Mac to a small high-speed local cell.
 
@@ -28,7 +28,7 @@ The primary product targets are:
 2. Four Apple Silicon Macs as a Thunderbolt-connected cell.
 3. Multiple cells for horizontal growth.
 
-NVIDIA Thor remains an optional secondary target, not the primary architecture center.
+AkiDB supports macOS Apple Silicon only as an active target.
 
 ### Consequences
 
@@ -41,9 +41,9 @@ Positive:
 
 Negative:
 
-- CUDA/cuVS acceleration is no longer the primary fast path.
-- Apple GPU acceleration is less mature for this codebase than CUDA.
-- Production Linux edge users become secondary until the Mac path is validated.
+- Hardware-specific acceleration is not part of the active product path.
+- Apple GPU acceleration remains a future research area, not a release dependency.
+- Production Linux edge users are out of scope for v2.
 
 ---
 
@@ -301,7 +301,7 @@ Negative:
 
 ### Context
 
-CUDA is not available on macOS. Apple GPU acceleration may become useful, but it should not block the Mac-first product. The first Mac path needs correctness, durability, and benchmarkability before specialized acceleration.
+Specialized accelerator APIs should not block the Mac-only product. The first Mac path needs correctness, durability, and benchmarkability before specialized acceleration.
 
 ### Decision
 
@@ -316,7 +316,7 @@ The backend abstraction must preserve:
 - Restore.
 - Backend-specific diagnostics.
 
-GPU, Metal, FAISS GPU, and cuVS remain optional accelerators.
+GPU, Metal, FAISS GPU, CUDA, and cuVS are not part of the supported v2 active path.
 
 ### Consequences
 
@@ -390,4 +390,4 @@ Negative:
 
 ## Superseded Documents
 
-This ADR set supersedes the prior "AkiDB Thor Edition" versioned ADR series. Subsystem-specific ADRs may remain valid only where they do not conflict with this document.
+This ADR set supersedes the prior hardware-specific versioned ADR series. Subsystem-specific ADRs may remain valid only where they do not conflict with this document.

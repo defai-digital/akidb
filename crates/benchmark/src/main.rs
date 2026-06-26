@@ -1,6 +1,6 @@
-//! AkiDB GPU Performance Benchmark
+//! AkiDB Performance Benchmark
 //!
-//! This tool benchmarks the AkiDB vector database to verify GPU acceleration.
+//! This tool benchmarks the AkiDB vector database on the supported Mac-only path.
 
 use akidb_grpc::proto::akidb_client::AkidbClient;
 use akidb_grpc::proto::{
@@ -15,12 +15,12 @@ use tonic::transport::Channel;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-/// AkiDB GPU Performance Benchmark
+/// AkiDB Performance Benchmark
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Server address
-    #[arg(short, long, default_value = "http://192.168.1.61:50051")]
+    #[arg(short, long, default_value = "http://127.0.0.1:50051")]
     server: String,
 
     /// Vector dimension
@@ -72,7 +72,7 @@ async fn check_health(client: &mut AkidbClient<Channel>) -> Result<(), Box<dyn s
     println!("\n=== Server Health ===");
     println!("Healthy: {}", health.healthy);
     println!("Ready: {}", health.ready);
-    println!("Using GPU: {}", health.using_gpu);
+    println!("Using GPU: {} (unsupported in Mac-only builds)", health.using_gpu);
     println!("Total vectors: {}", health.total_vectors);
     println!("Active vectors: {}", health.active_vectors);
     println!("Message: {}", health.message);
@@ -376,7 +376,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     println!("========================================");
-    println!("  AkiDB GPU Performance Benchmark");
+    println!("  AkiDB Performance Benchmark");
     println!("========================================");
     println!("Server: {}", args.server);
     println!("Dimension: {}", args.dimension);

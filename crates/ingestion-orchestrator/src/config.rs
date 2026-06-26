@@ -177,7 +177,7 @@ pub struct MemoryConfig {
     /// Memory usage threshold to resume (percentage)
     pub resume_threshold_pct: f32,
 
-    /// tegrastats polling interval (ms)
+    /// Memory polling interval (ms)
     pub poll_interval_ms: u64,
 
     /// FIX BUG-H052: Maximum pause duration before proceeding anyway (seconds)

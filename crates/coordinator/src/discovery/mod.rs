@@ -361,13 +361,13 @@ mod tests {
             timestamp: 12345,
             coordinators: vec![CoordinatorAnnouncement {
                 peer_id: "peer-1".to_string(),
-                address: "192.168.1.1:50050".to_string(),
+                address: "127.0.0.1:50050".to_string(),
                 is_leader: true,
                 healthy: true,
             }],
             shards: vec![ShardAnnouncement {
                 id: "shard-1".to_string(),
-                address: "192.168.1.1:50051".to_string(),
+                address: "127.0.0.1:50051".to_string(),
                 vector_count: 100,
                 health: 0.95,
             }],
