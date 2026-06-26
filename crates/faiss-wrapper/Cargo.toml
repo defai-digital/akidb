@@ -8,7 +8,14 @@ license.workspace = true
 [features]
 default = ["cpu"]
 cpu = []
-gpu = []  # Enable GPU support (requires CUDA)
+# Portable development/runtime backend. This is the supported mode for
+# macOS Apple Silicon (M2 or later) and for Linux hosts without CUDA.
+portable = ["cpu"]
+# NVIDIA CUDA backend for Jetson Thor/Linux. Requires CUDA and FAISS GPU.
+gpu = []
+# cuVS shadow-mode scaffolding. The current implementation is mock-backed
+# until native cuVS FFI bindings are added.
+cuvs = []
 
 [dependencies]
 akidb-common = { path = "../common" }

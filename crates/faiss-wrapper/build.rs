@@ -4,6 +4,11 @@
 //! and links against FAISS GPU libraries.
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=CUDA_HOME");
+    println!("cargo:rerun-if-env-changed=FAISS_PATH");
+    println!("cargo:rerun-if-env-changed=AKIDB_ALLOW_CUDA_ON_UNSUPPORTED_TARGET");
+
     // Only build C++ wrapper when gpu feature is enabled
     #[cfg(feature = "gpu")]
     build_gpu_wrapper();
@@ -18,6 +23,25 @@ fn main() {
 fn build_gpu_wrapper() {
     use std::env;
     use std::path::PathBuf;
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let allow_unsupported = env::var_os("AKIDB_ALLOW_CUDA_ON_UNSUPPORTED_TARGET").is_some();
+
+    if target_os != "linux" && !allow_unsupported {
+        panic!(
+            "AkiDB gpu feature is supported only on Linux targets with NVIDIA CUDA. \
+             Use --features cpu (or portable) on macOS Apple Silicon."
+        );
+    }
+
+    if target_arch != "aarch64" && !allow_unsupported {
+        println!(
+            "cargo:warning=AkiDB gpu feature is intended for NVIDIA Jetson Thor \
+             (aarch64 Linux). Building for {target_arch}-{target_os}; set \
+             AKIDB_ALLOW_CUDA_ON_UNSUPPORTED_TARGET=1 to acknowledge this target."
+        );
+    }
 
     // Get CUDA path
     let cuda_path = env::var("CUDA_PATH")
@@ -44,10 +68,6 @@ fn build_gpu_wrapper() {
             panic!("FAISS not found. Set FAISS_PATH environment variable.");
         }
     });
-
-    println!("cargo:rerun-if-env-changed=CUDA_PATH");
-    println!("cargo:rerun-if-env-changed=CUDA_HOME");
-    println!("cargo:rerun-if-env-changed=FAISS_PATH");
 
     // Build C++ wrapper
     cc::Build::new()

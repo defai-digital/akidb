@@ -1,10 +1,12 @@
-# AkiDB Thor Edition
+# AkiDB
 
-A distributed vector search engine optimized for NVIDIA Jetson Thor edge clusters.
+A distributed vector search engine for NVIDIA Jetson Thor edge clusters and
+macOS Apple Silicon development hosts.
 
 ## Features
 
-- **GPU-Accelerated Search**: FAISS GPU IVF-Flat with optional cuVS acceleration
+- **NVIDIA Thor GPU Search**: FAISS GPU IVF-Flat with optional cuVS shadow-mode scaffolding
+- **Apple Silicon Development**: CPU/portable backend for Mac M2 or later ARM64 systems
 - **Distributed Architecture**: Shard-based design with fan-out search
 - **No-Replication Design**: Cost-effective edge deployment with MinIO snapshots
 - **Sub-50ms Latency**: Optimized for real-time RAG applications
@@ -35,17 +37,18 @@ A distributed vector search engine optimized for NVIDIA Jetson Thor edge cluster
 
 ## Quick Start
 
-### Development (Mac)
+### Development (Mac M2 or later)
 
 ```bash
 # Clone the repository
-git clone https://github.com/akidb/akidb-thor.git
-cd akidb-thor
+git clone https://github.com/defai-digital/akidb.git
+cd akidb
 
-# Build (CPU mode for development)
+# Build and validate the portable Apple Silicon path
+./scripts/build-on-mac-arm64.sh
+
+# Or run Cargo directly
 cargo build --features cpu
-
-# Run tests
 cargo test --features cpu
 
 # Format and lint
@@ -66,7 +69,7 @@ cargo clippy
 sudo ./scripts/minio-setup.sh
 
 # Build with GPU support
-cargo build --release --features gpu
+./scripts/build-on-thor.sh
 
 # Run server
 ./target/release/akidb-server --config config/default.toml
@@ -109,6 +112,7 @@ Key settings:
 
 ## Documentation
 
+- [Platform Support](docs/PLATFORM_SUPPORT.md) - NVIDIA Thor and Mac ARM64 build matrix
 - [ADR v1.1](automatosx/prd/AKIDB_ADR_v1.1.md) - Architecture Decision Records
 - [PRD v1.1](automatosx/prd/AKIDB_PRD_v1.1.md) - Product Requirements
 - [Implementation Plan](automatosx/prd/AKIDB_IMPLEMENTATION_PLAN_v1.0.md) - Development roadmap
