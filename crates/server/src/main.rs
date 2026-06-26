@@ -1,22 +1,45 @@
 //! AkiDB Server - Main entry point
 //!
 //! This binary starts the AkiDB gRPC server with vector indexing capabilities.
+//! In standalone mode (`--standalone`), it runs with no external dependencies
+//! (no MinIO, no NATS) and optionally uses ax-engine for text embeddings.
 
 use akidb_common::config::AkiDbConfig;
-#[cfg(feature = "gpu")]
-use akidb_faiss::{GpuIndex, GpuIndexConfig};
-#[cfg(not(feature = "gpu"))]
-use akidb_faiss::{MockIndex, MockIndexConfig};
+use akidb_coordinator::AxEngineEmbedding;
+use akidb_faiss::{HnswConfig, HnswIndex};
 use akidb_grpc::proto::akidb_server::AkidbServer;
-use akidb_grpc::AkiDbService;
+use akidb_grpc::{AkiDbService, EmbeddingProvider};
 use akidb_storage::{IdMapping, RocksDbBackend};
 use clap::Parser;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tonic::transport::Server;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
+
+/// Adapter from coordinator's AxEngineEmbedding to the gRPC EmbeddingProvider trait
+struct AxEngineProvider {
+    inner: AxEngineEmbedding,
+}
+
+impl AxEngineProvider {
+    fn new(inner: AxEngineEmbedding) -> Self {
+        Self { inner }
+    }
+}
+
+impl EmbeddingProvider for AxEngineProvider {
+    fn embed_text(&self, text: &str) -> std::result::Result<Vec<f32>, String> {
+        use akidb_coordinator::EmbeddingService;
+        self.inner.embed(text).map_err(|e| e.to_string())
+    }
+
+    fn embedding_dimensions(&self) -> usize {
+        use akidb_coordinator::EmbeddingService;
+        self.inner.dimensions()
+    }
+}
 
 /// AkiDB Server - High-performance vector database
 #[derive(Parser, Debug)]
@@ -33,6 +56,10 @@ struct Args {
     /// Log level (trace, debug, info, warn, error)
     #[arg(short = 'l', long, default_value = "info")]
     log_level: String,
+
+    /// Run in standalone mode (skip MinIO, no external deps)
+    #[arg(long, default_value_t = false)]
+    standalone: bool,
 }
 
 #[tokio::main]
@@ -57,6 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting AkiDB Server v{}", env!("CARGO_PKG_VERSION"));
     info!("Config file: {:?}", args.config);
+    if args.standalone {
+        info!("Running in standalone mode (no external dependencies)");
+    }
 
     // Load configuration if exists
     let config = if args.config.exists() {
@@ -81,36 +111,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id_mapping = Arc::new(IdMapping::new(storage.clone(), "default"));
 
     // Initialize vector index
-    #[cfg(feature = "gpu")]
     let index = {
-        let index_config = GpuIndexConfig {
-            dimension: 768,
-            nlist: 4096,
-            nprobe: 32,
-            device_id: 0,
-            memory_fraction: 0.6,
-            use_float16: false,
-            training_threshold: 100_000,
-            rebuild_threshold: 0.10,
-            fallback_to_cpu: true,
+        let hnsw_config = HnswConfig {
+            dimensions: config.slo.reference.dimensions,
+            capacity: config.slo.reference.vectors_per_shard,
+            m: config.index.hnsw_m as usize,
+            ef_construction: config.index.hnsw_ef_construction as usize,
+            ef_search: config.index.hnsw_ef_search as usize,
         };
-        info!("Initializing GPU index with FAISS...");
-        Arc::new(GpuIndex::new(index_config)?)
+        Arc::new(
+            HnswIndex::new(hnsw_config)
+                .expect("Failed to create HNSW index"),
+        )
     };
 
-    #[cfg(not(feature = "gpu"))]
-    let index = {
-        let index_config = MockIndexConfig::new(768).with_capacity(1_000_000);
-        Arc::new(MockIndex::from_config(index_config))
-    };
-
-    #[cfg(feature = "gpu")]
-    info!("Vector index initialized (GPU mode with FAISS)");
-    #[cfg(not(feature = "gpu"))]
-    info!("Vector index initialized (mock mode)");
+    info!("Vector index initialized (HNSW mode)");
 
     // Create gRPC service
-    let service = AkiDbService::new(index, id_mapping, "default");
+    let mut service = AkiDbService::new(index, id_mapping, "default");
+
+    // Wire embedding provider if enabled
+    if config.embedding.enabled {
+        match AxEngineEmbedding::new(config.embedding.clone()) {
+            Ok(embedding) => {
+                let provider = Arc::new(AxEngineProvider::new(embedding));
+                service = service.with_embedding_provider(provider);
+                info!(
+                    "Embedding provider enabled: model={}, url={}",
+                    config.embedding.model, config.embedding.url
+                );
+            }
+            Err(e) => {
+                warn!("Failed to create embedding provider: {}. TextSearch will be unavailable.", e);
+            }
+        }
+    }
 
     // Parse listen address
     let addr: SocketAddr = args.listen.parse()?;

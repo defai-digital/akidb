@@ -10,6 +10,7 @@ pub struct AkiDbConfig {
     pub storage: StorageConfig,
     pub observability: ObservabilityConfig,
     pub slo: SloConfig,
+    pub embedding: EmbeddingClientConfig,
 }
 
 impl Default for AkiDbConfig {
@@ -20,6 +21,7 @@ impl Default for AkiDbConfig {
             storage: StorageConfig::default(),
             observability: ObservabilityConfig::default(),
             slo: SloConfig::default(),
+            embedding: EmbeddingClientConfig::default(),
         }
     }
 }
@@ -49,14 +51,14 @@ impl Default for ServerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexSettings {
-    /// Index type (IVF-Flat)
+    /// Index type (HNSW)
     pub index_type: String,
-    /// Number of clusters
-    pub nlist: u32,
-    /// Default number of probes
-    pub nprobe: u32,
-    /// Accelerator settings. GPU acceleration is not supported in active Mac-only builds.
-    pub gpu: GpuSettings,
+    /// HNSW M parameter (connections per layer)
+    pub hnsw_m: u32,
+    /// HNSW ef_construction parameter
+    pub hnsw_ef_construction: u32,
+    /// Default ef_search parameter
+    pub hnsw_ef_search: u32,
     /// Rebuild settings
     pub rebuild: RebuildSettings,
     /// Tombstone settings
@@ -66,31 +68,12 @@ pub struct IndexSettings {
 impl Default for IndexSettings {
     fn default() -> Self {
         Self {
-            index_type: "IVF4096,Flat".to_string(),
-            nlist: 4096,
-            nprobe: 32,
-            gpu: GpuSettings::default(),
+            index_type: "HNSW".to_string(),
+            hnsw_m: 16,
+            hnsw_ef_construction: 128,
+            hnsw_ef_search: 64,
             rebuild: RebuildSettings::default(),
             tombstone: TombstoneSettings::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GpuSettings {
-    pub enabled: bool,
-    pub device_id: i32,
-    pub memory_fraction: f32,
-    pub fallback_to_cpu: bool,
-}
-
-impl Default for GpuSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            device_id: 0,
-            memory_fraction: 0.6,
-            fallback_to_cpu: true,
         }
     }
 }
@@ -117,8 +100,6 @@ impl Default for RebuildSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TombstoneSettings {
-    /// Use accelerator bitset for tombstone filtering
-    pub use_gpu_bitset: bool,
     /// Maximum tombstones before forced compaction
     pub max_count: u64,
 }
@@ -126,7 +107,6 @@ pub struct TombstoneSettings {
 impl Default for TombstoneSettings {
     fn default() -> Self {
         Self {
-            use_gpu_bitset: false,
             max_count: 100_000,
         }
     }
@@ -262,6 +242,36 @@ impl Default for BackpressureConfig {
     }
 }
 
+/// Configuration for the ax-engine embedding HTTP client
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingClientConfig {
+    /// Whether the embedding client is enabled
+    pub enabled: bool,
+    /// ax-engine `/v1/embeddings` endpoint URL
+    pub url: String,
+    /// Model name to request
+    pub model: String,
+    /// Expected embedding dimensions
+    pub dimensions: usize,
+    /// HTTP request timeout in milliseconds
+    pub timeout_ms: u64,
+    /// Maximum batch size per request
+    pub max_batch_size: usize,
+}
+
+impl Default for EmbeddingClientConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: "http://127.0.0.1:8080/v1/embeddings".to_string(),
+            model: "qwen3-embedding-4b".to_string(),
+            dimensions: 2560,
+            timeout_ms: 10_000,
+            max_batch_size: 32,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,7 +280,7 @@ mod tests {
     fn test_default_config() {
         let config = AkiDbConfig::default();
         assert_eq!(config.server.grpc_port, 50051);
-        assert_eq!(config.index.nlist, 4096);
+        assert_eq!(config.index.hnsw_m, 16);
         assert_eq!(config.slo.reference.dimensions, 768);
     }
 }

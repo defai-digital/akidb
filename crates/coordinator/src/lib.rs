@@ -34,6 +34,7 @@ pub use discovery::{
     DiscoveryService, ShardAnnouncement,
 };
 pub use embedding::{
+    ax_engine::AxEngineEmbedding,
     CacheStats, CachedEmbeddingService, EmbeddingConfig, EmbeddingError, EmbeddingService,
     FallbackEmbeddingService, MockEmbeddingService,
 };

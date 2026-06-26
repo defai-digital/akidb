@@ -3,8 +3,10 @@
 //! This module provides:
 //! - Trait-based embedding service abstraction
 //! - LRU caching layer for embedding reuse
-//! - Fallback chain (TensorRT → vLLM → Mock)
+//! - Fallback chain (ax-engine → Mock)
 //! - Batch processing for efficiency
+
+pub mod ax_engine;
 
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet, VecDeque};

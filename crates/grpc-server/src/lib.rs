@@ -11,7 +11,7 @@ pub mod webhook;
 
 pub use admin::{AdminServiceImpl, AdminState, RegisteredTask};
 pub use ingestion::IngestionServiceImpl;
-pub use service::AkiDbService;
+pub use service::{AkiDbService, EmbeddingProvider};
 pub use webhook::{WebhookConfig, WebhookEventType, WebhookPayload, WebhookSender, WebhookStats};
 
 /// Generated protobuf types

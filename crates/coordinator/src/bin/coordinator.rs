@@ -13,7 +13,7 @@ use akidb_grpc::proto::{
     GetClusterStateRequest, GetClusterStateResponse, GetRequest, GetResponse, HealthRequest,
     HealthResponse, InsertBatchRequest, InsertBatchResponse, InsertRequest, InsertResponse,
     NodeStatus, SearchBatchRequest, SearchBatchResponse, SearchRequest, SearchResponse,
-    SearchResult as ProtoSearchResult, ShardNode, UpdateRequest, UpdateResponse, UpdateStatus,
+    SearchResult as ProtoSearchResult, ShardNode, TextSearchRequest, UpdateRequest, UpdateResponse, UpdateStatus,
     VisibilityInfo,
 };
 use clap::Parser;
@@ -547,6 +547,15 @@ impl Akidb for CoordinatorService {
             local_peer_id: self.local_id.clone(),
             metrics: cluster_metrics,
         }))
+    }
+
+    async fn text_search(
+        &self,
+        _request: Request<TextSearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        Err(Status::unimplemented(
+            "TextSearch is only available on shard servers with an embedding provider configured",
+        ))
     }
 }
 

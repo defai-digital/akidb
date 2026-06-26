@@ -10,6 +10,7 @@ use crate::proto::{
     InsertBatchRequest, InsertBatchResponse,
     SearchRequest, SearchResponse, SearchResult,
     SearchBatchRequest, SearchBatchResponse,
+    TextSearchRequest,
     UpdateRequest, UpdateResponse, UpdateStatus,
     VisibilityInfo,
 };
@@ -21,6 +22,14 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info, instrument, warn};
+
+/// Trait for embedding providers (implemented by coordinator's AxEngineEmbedding)
+pub trait EmbeddingProvider: Send + Sync {
+    /// Generate embedding for text
+    fn embed_text(&self, text: &str) -> std::result::Result<Vec<f32>, String>;
+    /// Get embedding dimensions
+    fn embedding_dimensions(&self) -> usize;
+}
 
 /// FIX BUG-059: RAII guard for update locks to ensure release on panic
 /// This guard automatically removes the lock when dropped, even during panic unwinding
@@ -61,6 +70,8 @@ where
     /// FIX BUG-HUNT-202: Configurable SLO threshold in microseconds
     /// Previously hardcoded to 50_000us, now configurable via constructor
     slo_threshold_us: u64,
+    /// Optional embedding provider for text search
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 impl<I, S> AkiDbService<I, S>
@@ -92,7 +103,14 @@ where
             collection: collection.into(),
             update_locks: DashSet::new(),
             slo_threshold_us,
+            embedding_provider: None,
         }
+    }
+
+    /// Set the embedding provider for text search support
+    pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
+        self.embedding_provider = Some(provider);
+        self
     }
 
     /// Create a new service instance from SloConfig
@@ -568,5 +586,76 @@ where
         Err(Status::unimplemented(
             "GetClusterState is only available on coordinator nodes",
         ))
+    }
+
+    #[instrument(skip(self, request))]
+    async fn text_search(
+        &self,
+        request: Request<TextSearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+
+        // Check embedding provider is configured
+        let provider = self.embedding_provider.as_ref().ok_or_else(|| {
+            Status::unavailable("TextSearch requires an embedding provider to be configured")
+        })?;
+
+        if req.text.is_empty() {
+            return Err(Status::invalid_argument("Text cannot be empty"));
+        }
+        if req.top_k == 0 {
+            return Err(Status::invalid_argument("top_k must be greater than 0"));
+        }
+        if req.top_k > 10000 {
+            return Err(Status::invalid_argument("top_k exceeds maximum of 10000"));
+        }
+
+        // Generate embedding from text
+        let query_vector = provider
+            .embed_text(&req.text)
+            .map_err(|e| Status::internal(format!("Embedding generation failed: {}", e)))?;
+
+        debug!(
+            text_len = req.text.len(),
+            embedding_dim = query_vector.len(),
+            "TextSearch embedding generated"
+        );
+
+        let params = SearchParams::new(req.top_k as usize)
+            .with_nprobe(req.nprobe.unwrap_or(32));
+
+        let results = self.index
+            .search(&query_vector, &params)
+            .map_err(Self::to_status)?;
+
+        let elapsed = start.elapsed();
+        let latency_us = elapsed.as_micros() as u64;
+
+        let response_results: Vec<SearchResult> = results
+            .into_iter()
+            .map(|r| SearchResult {
+                id: r.id.to_string(),
+                score: r.score,
+                metadata: r.metadata.map(|m| m.to_string()).unwrap_or_default(),
+            })
+            .collect();
+
+        info!(
+            "TextSearch for '{}' returned {} results in {:?}",
+            &req.text[..req.text.len().min(50)],
+            response_results.len(),
+            elapsed
+        );
+
+        Ok(Response::new(SearchResponse {
+            results: response_results,
+            partial: false,
+            missing_shards: vec![],
+            coverage: 1.0,
+            latency_us,
+            within_slo: latency_us < self.slo_threshold_us,
+            degraded_mode: false,
+        }))
     }
 }

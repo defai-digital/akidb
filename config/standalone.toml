@@ -1,12 +1,12 @@
-# AkiDB macOS Apple Silicon - Default Configuration
+# AkiDB Standalone Configuration
+# Single-machine mode with no external dependencies (no MinIO, no NATS, no GPU)
+# Use with: akidb-server --config config/standalone.toml --standalone
 
 [server]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8080
 grpc_port = 50051
 tls_enabled = false
-# tls_cert_path = "/etc/akidb/certs/server.crt"
-# tls_key_path = "/etc/akidb/certs/server.key"
 
 [index]
 index_type = "HNSW"
@@ -28,37 +28,36 @@ wal_enabled = true
 wal_path = "./data/wal"
 
 [storage.minio]
-endpoint = "localhost:9000"
-bucket = "akidb-snapshots"
-access_key = "akidb-admin"
-secret_key = "akidb-secret-key"
+endpoint = ""
+bucket = ""
+access_key = ""
+secret_key = ""
 use_ssl = false
 
 [observability]
-tracing_enabled = true
-otlp_endpoint = "http://localhost:4317"
-metrics_enabled = true
+tracing_enabled = false
+metrics_enabled = false
 metrics_port = 9090
 log_level = "info"
-log_format = "json"
+log_format = "pretty"
 
 [slo]
 [slo.reference]
-dimensions = 768
+dimensions = 2560
 vectors_per_shard = 1000000
 top_k = 10
-nprobe = 32
+nprobe = 64
 batch_size = 1
-target_p95_ms = 50
+target_p95_ms = 100
 
 [slo.backpressure]
-soft_breach_ms = 50
-hard_breach_ms = 75
+soft_breach_ms = 100
+hard_breach_ms = 200
 degraded_mode_enabled = true
 
 [embedding]
-enabled = false
-url = "http://127.0.0.1:8080/v1/embeddings"
+enabled = true
+url = "http://127.0.0.1:8081/v1/embeddings"
 model = "qwen3-embedding-4b"
 dimensions = 2560
 timeout_ms = 10000

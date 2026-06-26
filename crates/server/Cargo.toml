@@ -10,16 +10,14 @@ name = "akidb-server"
 path = "src/main.rs"
 
 [features]
-default = ["cpu"]
-cpu = ["akidb-faiss/cpu"]
-# Unsupported legacy switch. The active product supports macOS CPU/portable mode only.
-gpu = ["akidb-faiss/gpu"]
+default = []
 
 [dependencies]
 akidb-common = { path = "../common" }
-akidb-faiss = { path = "../faiss-wrapper", default-features = false }
+akidb-faiss = { path = "../faiss-wrapper" }
 akidb-storage = { path = "../storage" }
 akidb-grpc = { path = "../grpc-server" }
+akidb-coordinator = { path = "../coordinator" }
 
 tokio.workspace = true
 tonic.workspace = true
