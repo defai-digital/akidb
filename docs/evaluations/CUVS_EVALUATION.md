@@ -205,7 +205,7 @@ cuVS represents the future of GPU-accelerated vector search on NVIDIA hardware. 
 - [cuVS Documentation](https://docs.rapids.ai/api/cuvs/stable/)
 - [NVIDIA RAFT](https://github.com/rapidsai/raft)
 - [FAISS GPU](https://github.com/facebookresearch/faiss/wiki/Faiss-on-the-GPU)
-- [AkiDB Phase 0 Validation Report](./automatosx/tmp/phase0-validation-report-2026-01-21.md)
+- [AkiDB Phase 0 Validation Report](../archive/automatosx/reports/phase0-validation-report-2026-01-21.md)
 
 ---
 

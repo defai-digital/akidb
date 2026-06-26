@@ -1,6 +1,6 @@
 //! AkiDB TUI Dashboard
 //!
-//! Terminal User Interface for monitoring AkiDB Thor Edition clusters.
+//! Terminal User Interface for monitoring AkiDB deployments.
 
 use std::io;
 use std::path::PathBuf;
@@ -25,7 +25,7 @@ use akidb_tui::{
     ui, App,
 };
 
-/// AkiDB TUI Dashboard - Monitor your AkiDB Thor Edition cluster
+/// AkiDB TUI Dashboard - Monitor your AkiDB deployment
 #[derive(Parser, Debug)]
 #[command(name = "akidb-tui")]
 #[command(author, version, about, long_about = None)]

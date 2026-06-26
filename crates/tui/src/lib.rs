@@ -1,6 +1,6 @@
 //! AkiDB TUI Dashboard
 //!
-//! Terminal User Interface for monitoring AkiDB Thor Edition clusters.
+//! Terminal User Interface for monitoring AkiDB deployments.
 
 pub mod app;
 pub mod client;

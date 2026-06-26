@@ -42,7 +42,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 /// Draw the header section
 fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let title = format!(
-        " AkiDB Thor Edition {} ",
+        " AkiDB {} ",
         if app.config.mock_mode {
             "[MOCK]"
         } else {

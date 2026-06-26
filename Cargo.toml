@@ -18,7 +18,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 authors = ["AkiDB Team"]
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/defai-digital/akidb"
 
 [workspace.dependencies]
