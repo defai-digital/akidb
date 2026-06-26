@@ -15,7 +15,7 @@ tokio = { version = "1.44", features = ["full"] }
 futures = "0.3"
 
 # NATS JetStream client
-async-nats = "0.39"
+async-nats = "0.49"
 
 # HTTP client for Python parser
 reqwest = { version = "0.12", features = ["json"] }
@@ -40,8 +40,8 @@ tiktoken-rs = "0.6"         # Token counting
 rusqlite = { version = "0.33", features = ["bundled"] }
 
 # MinIO/S3 client
-aws-sdk-s3 = "1.75"
-aws-config = "1.6"
+aws-sdk-s3 = { version = "1.137", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-config = { version = "1.8", default-features = false, features = ["default-https-client", "rt-tokio", "credentials-process"] }
 
 # gRPC client for AkiDB
 tonic = { version = "0.11", features = ["transport"] }
@@ -88,8 +88,8 @@ akidb-storage = { path = "../storage" }
 tokio-test = "0.4"
 tempfile = "3.14"
 mockall = "0.12"
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["minio", "nats"] }
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["minio", "nats"] }
 wiremock = "0.6"
 criterion = { version = "0.5", features = ["async_tokio"] }
 

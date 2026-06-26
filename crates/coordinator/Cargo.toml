@@ -39,7 +39,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 
 # Discovery dependencies (optional)
-libp2p = { version = "0.54", features = [
+libp2p = { version = "0.56", features = [
     "mdns",
     "gossipsub",
     "noise",

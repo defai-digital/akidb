@@ -51,7 +51,7 @@ opentelemetry-otlp = "0.15"
 tracing-opentelemetry = "0.23"
 
 # Metrics
-prometheus = "0.13"
+prometheus = "0.14"
 
 # Testing
 criterion = "0.5"
