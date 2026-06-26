@@ -62,7 +62,7 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build akidb-server (CPU)
+      - name: Build akidb-server
         uses: docker/build-push-action@v5
         with:
           context: .
