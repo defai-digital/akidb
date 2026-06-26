@@ -3,10 +3,14 @@
 #
 # Validates end-to-end insert + search with real embeddings on a Mac.
 # Prerequisites:
-#   - ax-engine (pip install ax-engine) running on port 8081
+#   - ax-engine (pip install ax-engine)
+#   - local Qwen embedding artifacts, exposed via AX_ENGINE_MODEL_DIR
 #   - Rust toolchain for building akidb-server
 #
 # Usage:
+#   AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-4B ./scripts/validate-standalone.sh
+#   AX_ENGINE_MODEL=Qwen/Qwen3-Embedding-0.6B EMBEDDING_DIMENSIONS=1024 \
+#     AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-0.6B ./scripts/validate-standalone.sh
 #   ./scripts/validate-standalone.sh [--skip-build] [--skip-ax-engine]
 #
 set -euo pipefail
@@ -24,7 +28,9 @@ SKIP_BUILD=false
 SKIP_AX_ENGINE=false
 SERVER_PID=""
 AX_ENGINE_PID=""
-AX_ENGINE_MODEL="${AX_ENGINE_MODEL:-qwen3-embedding-4b}"
+AX_ENGINE_MODEL="${AX_ENGINE_MODEL:-Qwen/Qwen3-Embedding-4B}"
+AX_ENGINE_MODEL_DIR="${AX_ENGINE_MODEL_DIR:-}"
+EMBEDDING_DIMENSIONS="${EMBEDDING_DIMENSIONS:-2560}"
 
 # Parse arguments
 for arg in "$@"; do
@@ -44,7 +50,7 @@ cleanup() {
         wait "$SERVER_PID" 2>/dev/null || true
     fi
     if [ -n "$AX_ENGINE_PID" ] && kill -0 "$AX_ENGINE_PID" 2>/dev/null; then
-        echo "Stopping ax-engine (PID $AX_ENGINE_PID)"
+        echo "Stopping ax-engine embedding sidecar (PID $AX_ENGINE_PID)"
         kill "$AX_ENGINE_PID" 2>/dev/null || true
         wait "$AX_ENGINE_PID" 2>/dev/null || true
     fi
@@ -84,18 +90,45 @@ wait_for_grpc() {
     echo "$service is ready"
 }
 
+wait_for_http() {
+    local url=$1
+    local service=$2
+    local max_wait=60
+    local waited=0
+    echo "Waiting for $service at $url..."
+    while ! curl -fsS "$url" >/dev/null 2>&1; do
+        sleep 1
+        waited=$((waited + 1))
+        if [ $waited -ge $max_wait ]; then
+            echo "ERROR: $service did not start within ${max_wait}s"
+            exit 1
+        fi
+        if [ -n "$AX_ENGINE_PID" ] && ! kill -0 "$AX_ENGINE_PID" 2>/dev/null; then
+            echo "ERROR: $service exited during startup"
+            exit 1
+        fi
+    done
+    echo "$service is ready"
+}
+
 echo "=== AkiDB Standalone Validation ==="
-python3 - "$CONFIG_TEMPLATE" "$CONFIG" "$TMP_DIR" <<'PY'
+python3 - "$CONFIG_TEMPLATE" "$CONFIG" "$TMP_DIR" "$AX_ENGINE_PORT" "$AX_ENGINE_MODEL" "$EMBEDDING_DIMENSIONS" <<'PY'
 import pathlib
 import sys
 
 template = pathlib.Path(sys.argv[1])
 output = pathlib.Path(sys.argv[2])
 tmp_dir = pathlib.Path(sys.argv[3])
+embedding_port = sys.argv[4]
+embedding_model = sys.argv[5]
+embedding_dimensions = sys.argv[6]
 
 content = template.read_text()
 content = content.replace('rocksdb_path = "./data/rocksdb"', f'rocksdb_path = "{tmp_dir / "rocksdb"}"')
 content = content.replace('wal_path = "./data/wal"', f'wal_path = "{tmp_dir / "wal"}"')
+content = content.replace('url = "http://127.0.0.1:8081/v1/embeddings"', f'url = "http://127.0.0.1:{embedding_port}/v1/embeddings"')
+content = content.replace('model = "Qwen/Qwen3-Embedding-4B"', f'model = "{embedding_model}"')
+content = content.replace('dimensions = 2560', f'dimensions = {embedding_dimensions}')
 output.write_text(content)
 PY
 
@@ -114,24 +147,23 @@ if [ "$SKIP_BUILD" = false ]; then
     echo ""
 fi
 
-# Step 3: Start ax-engine (if not skipped)
+# Step 3: Start ax-engine embedding sidecar (if not skipped)
 if [ "$SKIP_AX_ENGINE" = false ]; then
-    if command -v ax-engine &>/dev/null; then
-        echo "=== Starting ax-engine ==="
-        ax-engine serve "$AX_ENGINE_MODEL" --port "$AX_ENGINE_PORT" &
-        AX_ENGINE_PID=$!
-        echo "ax-engine started (PID $AX_ENGINE_PID, model $AX_ENGINE_MODEL)"
-        sleep 5
-        if ! kill -0 "$AX_ENGINE_PID" 2>/dev/null; then
-            echo "WARNING: ax-engine exited during startup. Skipping TextSearch."
-            SKIP_AX_ENGINE=true
-            AX_ENGINE_PID=""
-        fi
-    else
-        echo "WARNING: ax-engine not found. Skipping embedding service."
-        echo "  To test text search, install ax-engine and re-run without --skip-ax-engine"
-        echo "  pip install ax-engine"
+    if [ -z "$AX_ENGINE_MODEL_DIR" ]; then
+        echo "WARNING: AX_ENGINE_MODEL_DIR is not set. Skipping TextSearch."
+        echo "  ax-engine 6.x does not manage embedding model downloads."
+        echo "  Download Qwen embedding artifacts separately, then set:"
+        echo "  AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-4B"
         SKIP_AX_ENGINE=true
+    else
+        echo "=== Starting ax-engine embedding sidecar ==="
+        python3 "$PROJECT_ROOT/scripts/ax_engine_embedding_server.py" \
+            --model-dir "$AX_ENGINE_MODEL_DIR" \
+            --model-id "$AX_ENGINE_MODEL" \
+            --port "$AX_ENGINE_PORT" &
+        AX_ENGINE_PID=$!
+        echo "ax-engine embedding sidecar started (PID $AX_ENGINE_PID, model $AX_ENGINE_MODEL)"
+        wait_for_http "http://127.0.0.1:$AX_ENGINE_PORT/health" "ax-engine embedding sidecar"
     fi
 fi
 
@@ -164,10 +196,10 @@ insert_vector() {
     local description=$2
     # Generate a deterministic 2560-dim vector based on the ID
     local vector
-    vector=$(python3 -c "
+vector=$(python3 -c "
 import hashlib
 import math
-dim = 2560
+dim = int('$EMBEDDING_DIMENSIONS')
 seed = int.from_bytes(hashlib.sha256(b'$id').digest()[:8], 'big')
 vec = []
 for i in range(dim):
@@ -200,7 +232,7 @@ echo "=== Vector Search (using doc-001's vector as query) ==="
 QUERY_VECTOR=$(python3 -c "
 import hashlib
 import math
-dim = 2560
+dim = int('$EMBEDDING_DIMENSIONS')
 seed = int.from_bytes(hashlib.sha256(b'doc-001').digest()[:8], 'big')
 vec = []
 for i in range(dim):
@@ -220,9 +252,9 @@ grpcurl -plaintext \
     akidb.v1.Akidb/Search
 echo ""
 
-# Step 8: Text search (requires ax-engine)
+# Step 8: Text search (requires ax-engine embedding sidecar)
 if [ "$SKIP_AX_ENGINE" = false ]; then
-    echo "=== Text Search (via ax-engine embeddings) ==="
+    echo "=== Text Search (via ax-engine embedding sidecar) ==="
     echo "Searching for: 'neural network learning'"
     grpcurl -plaintext \
         -import-path "$PROTO_DIR" \
@@ -232,7 +264,7 @@ if [ "$SKIP_AX_ENGINE" = false ]; then
         akidb.v1.Akidb/TextSearch
     echo ""
 else
-    echo "=== Text Search SKIPPED (ax-engine not running) ==="
+    echo "=== Text Search SKIPPED (embedding sidecar not running) ==="
     echo ""
 fi
 

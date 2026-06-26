@@ -21,6 +21,10 @@ This script verifies `Darwin/arm64`, checks the Rust workspace, runs tests, and
 builds `akidb-server`.
 
 Do not enable GPU/CUDA feature paths. Apple Silicon support is CPU/portable only.
+Optional text embeddings use local `ax-engine` through
+`scripts/ax_engine_embedding_server.py` with a local Qwen embedding model
+native artifact directory containing `model-manifest.json`. Do not use
+`ax-engine serve <embedding-alias>` for AkiDB embeddings.
 
 ## Four-Mac Thunderbolt Cell
 

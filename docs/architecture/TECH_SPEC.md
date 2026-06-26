@@ -625,11 +625,12 @@ Benchmarks must publish:
 Minimum benchmark commands:
 
 ```text
-akidb-bench single --dataset sift1m --dimension 128 --topk 10
-akidb-bench single --dataset synthetic --vectors 1000000 --dimension 768 --topk 10
-akidb-bench cell --cell cell-a --vectors 1000000 --dimension 768 --topk 10
-akidb-bench cell-failover --cell cell-a --kill-node mac-c --topk 10
+VECTORS=1000000 DIMENSIONS=768 QUERIES=5000 ./scripts/benchmark-one-mac.sh
+python3 scripts/qa_vector_quality.py --build --vectors 10000 --dimensions 768
 ```
+
+Cell and failover benchmark commands are intentionally not specified until the
+four-Mac control plane and placement model are implemented.
 
 ---
 

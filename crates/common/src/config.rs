@@ -241,12 +241,12 @@ impl Default for BackpressureConfig {
     }
 }
 
-/// Configuration for the ax-engine embedding HTTP client
+/// Configuration for the local embedding HTTP client
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingClientConfig {
     /// Whether the embedding client is enabled
     pub enabled: bool,
-    /// ax-engine `/v1/embeddings` endpoint URL
+    /// OpenAI-compatible `/v1/embeddings` endpoint URL
     pub url: String,
     /// Model name to request
     pub model: String,
@@ -262,8 +262,8 @@ impl Default for EmbeddingClientConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            url: "http://127.0.0.1:8080/v1/embeddings".to_string(),
-            model: "qwen3-embedding-4b".to_string(),
+            url: "http://127.0.0.1:8081/v1/embeddings".to_string(),
+            model: "Qwen/Qwen3-Embedding-4B".to_string(),
             dimensions: 2560,
             timeout_ms: 10_000,
             max_batch_size: 32,

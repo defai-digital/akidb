@@ -1,12 +1,10 @@
-//! ax-engine HTTP embedding client
+//! OpenAI-compatible embedding HTTP client
 //!
-//! Calls ax-engine's OpenAI-compatible `/v1/embeddings` endpoint to generate
-//! vector embeddings for text. Supports single and batched requests with
-//! automatic L2 normalization for cosine similarity.
+//! Calls AkiDB's local ax-engine embedding sidecar at `/v1/embeddings`.
+//! The sidecar wraps the current ax-engine native `Session.embed_batch*` API,
+//! while this Rust client keeps a stable HTTP contract.
 
-use crate::embedding::{
-    EmbeddingError, EmbeddingResult, EmbeddingService,
-};
+use crate::embedding::{EmbeddingError, EmbeddingResult, EmbeddingService};
 use akidb_common::config::EmbeddingClientConfig;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -51,19 +49,21 @@ struct UsageInfo {
     total_tokens: u64,
 }
 
-/// ax-engine HTTP embedding client
+/// Local embedding HTTP client
 pub struct AxEngineEmbedding {
     client: Client,
     config: EmbeddingClientConfig,
 }
 
 impl AxEngineEmbedding {
-    /// Create a new ax-engine embedding client
+    /// Create a new embedding HTTP client
     pub fn new(config: EmbeddingClientConfig) -> EmbeddingResult<Self> {
         let client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .build()
-            .map_err(|e| EmbeddingError::BackendError(format!("Failed to build HTTP client: {}", e)))?;
+            .map_err(|e| {
+                EmbeddingError::BackendError(format!("Failed to build HTTP client: {}", e))
+            })?;
 
         Ok(Self { client, config })
     }
@@ -80,7 +80,11 @@ impl AxEngineEmbedding {
     }
 
     /// Parse the OpenAI-compatible response, sorting by `index` to preserve input order
-    fn parse_response(&self, response: EmbeddingResponse, expected_count: usize) -> EmbeddingResult<Vec<Vec<f32>>> {
+    fn parse_response(
+        &self,
+        response: EmbeddingResponse,
+        expected_count: usize,
+    ) -> EmbeddingResult<Vec<Vec<f32>>> {
         if response.data.len() != expected_count {
             return Err(EmbeddingError::BackendError(format!(
                 "Expected {} embeddings, got {}",
@@ -89,7 +93,7 @@ impl AxEngineEmbedding {
             )));
         }
 
-        // Sort by index to preserve input order (ax-engine guarantees index matches input position)
+        // Sort by index to preserve input order.
         let mut data = response.data;
         data.sort_by_key(|d| d.index);
 
@@ -125,7 +129,7 @@ impl EmbeddingService for AxEngineEmbedding {
                     EmbeddingError::Timeout(Duration::from_millis(self.config.timeout_ms))
                 } else if e.is_connect() {
                     EmbeddingError::BackendError(format!(
-                        "Cannot connect to ax-engine at {}: {}",
+                        "Cannot connect to embedding sidecar at {}: {}",
                         self.config.url, e
                     ))
                 } else {
@@ -137,7 +141,7 @@ impl EmbeddingService for AxEngineEmbedding {
             let status = response.status();
             let body = response.text().unwrap_or_default();
             return Err(EmbeddingError::BackendError(format!(
-                "ax-engine returned {}: {}",
+                "embedding sidecar returned {}: {}",
                 status, body
             )));
         }
@@ -150,12 +154,14 @@ impl EmbeddingService for AxEngineEmbedding {
             debug!(
                 prompt_tokens = usage.prompt_tokens,
                 total_tokens = usage.total_tokens,
-                "ax-engine usage"
+                "embedding sidecar usage"
             );
         }
 
         let mut results = self.parse_response(embedding_response, 1)?;
-        results.pop().ok_or_else(|| EmbeddingError::BackendError("Empty response".to_string()))
+        results
+            .pop()
+            .ok_or_else(|| EmbeddingError::BackendError("Empty response".to_string()))
     }
 
     fn embed_batch(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
@@ -174,7 +180,10 @@ impl EmbeddingService for AxEngineEmbedding {
         let request = EmbeddingRequest {
             model: self.config.model.clone(),
             input: Some(serde_json::Value::Array(
-                input_array.into_iter().map(serde_json::Value::String).collect(),
+                input_array
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
             )),
             encoding_format: "float".to_string(),
         };
@@ -189,7 +198,7 @@ impl EmbeddingService for AxEngineEmbedding {
                     EmbeddingError::Timeout(Duration::from_millis(self.config.timeout_ms))
                 } else if e.is_connect() {
                     EmbeddingError::BackendError(format!(
-                        "Cannot connect to ax-engine at {}: {}",
+                        "Cannot connect to embedding sidecar at {}: {}",
                         self.config.url, e
                     ))
                 } else {
@@ -201,7 +210,7 @@ impl EmbeddingService for AxEngineEmbedding {
             let status = response.status();
             let body = response.text().unwrap_or_default();
             return Err(EmbeddingError::BackendError(format!(
-                "ax-engine returned {}: {}",
+                "embedding sidecar returned {}: {}",
                 status, body
             )));
         }
@@ -215,7 +224,7 @@ impl EmbeddingService for AxEngineEmbedding {
                 prompt_tokens = usage.prompt_tokens,
                 total_tokens = usage.total_tokens,
                 batch_size = texts.len(),
-                "ax-engine batch usage"
+                "embedding sidecar batch usage"
             );
         }
 
@@ -278,14 +287,6 @@ mod tests {
                         // Parse input array size from request body
                         let input_count = request.matches("\"input\"").count();
                         let is_batch = request.contains('[') && input_count > 0;
-
-                        // Determine how many embeddings to return
-                        let count = if is_batch {
-                            // Count items in the input array
-                            request.matches('"').count() / 2 // rough estimate
-                        } else {
-                            1
-                        };
 
                         // Build embedding data array
                         let mut data_parts = Vec::new();
@@ -367,7 +368,13 @@ mod tests {
         // 3-dim embedding should fail validation
         let bad_embedding = vec![1.0, 2.0, 3.0];
         let result = client.validate_dimensions(&bad_embedding);
-        assert!(matches!(result, Err(EmbeddingError::DimensionMismatch { expected: 4, actual: 3 })));
+        assert!(matches!(
+            result,
+            Err(EmbeddingError::DimensionMismatch {
+                expected: 4,
+                actual: 3
+            })
+        ));
 
         // 4-dim embedding should pass
         let good_embedding = vec![1.0, 2.0, 3.0, 4.0];

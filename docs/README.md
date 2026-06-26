@@ -10,6 +10,8 @@ Canonical documents:
 Supporting documents:
 
 - [Development Notes](development/AGENT_CONFIGS.md)
+- [One-Mac Benchmark](quality/one-mac-benchmark.md)
+- [Vector Quality Gates](quality/vector-quality.md) - exact-vector and semantic retrieval QA
 - [Security Review](security/SECURITY_REVIEW.md)
 - [Runbooks](runbooks/)
 - [Ingestion Orchestrator](services/ingestion-orchestrator/)

@@ -23,6 +23,7 @@ Thumbs.db
 /.ax-grok/
 /.claude/settings.local.json
 /.gemini/
+/.qoder/
 /opencode.json
 
 # Logs
@@ -41,8 +42,10 @@ coverage/
 
 # Benchmarks
 /benchmark-results/
+/qa-results/
 
 # Generated files
+__pycache__/
 *.pb.go
 *.pb.rs
 

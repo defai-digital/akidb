@@ -1,6 +1,6 @@
 //! ID mapping between external and internal IDs
 
-use crate::{backend::StorageBackend, AkiDbError, Result};
+use crate::{backend::BatchOperation, backend::StorageBackend, AkiDbError, Result};
 use akidb_common::{InternalId, VectorId};
 use akidb_invariants::debug_invariant;
 use parking_lot::Mutex;
@@ -27,13 +27,55 @@ pub struct IdMappingEntry {
     pub deleted_at: Option<u64>,
 }
 
+/// Durable vector payload stored alongside the ID mapping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredVectorEntry {
+    /// External vector ID
+    pub external_id: String,
+    /// Internal index ID
+    pub internal_id: i64,
+    /// Vector embedding
+    pub vector: Vec<f32>,
+    /// Original request metadata
+    pub metadata: Vec<u8>,
+    /// Creation timestamp
+    pub created_at: u64,
+    /// Last update timestamp
+    pub updated_at: u64,
+    /// Whether this vector has been deleted
+    pub deleted: bool,
+}
+
+impl StoredVectorEntry {
+    fn new(
+        external_id: &VectorId,
+        internal_id: InternalId,
+        vector: &[f32],
+        metadata: &[u8],
+    ) -> Self {
+        let now = current_timestamp_ms();
+
+        Self {
+            external_id: external_id.as_str().to_string(),
+            internal_id: internal_id.0,
+            vector: vector.to_vec(),
+            metadata: metadata.to_vec(),
+            created_at: now,
+            updated_at: now,
+            deleted: false,
+        }
+    }
+
+    fn mark_deleted(&mut self) {
+        self.deleted = true;
+        self.updated_at = current_timestamp_ms();
+    }
+}
+
 impl IdMappingEntry {
     /// FIX BUG-038: Use unwrap_or_default to handle pre-epoch clock gracefully
     pub fn new(internal_id: i64) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = current_timestamp_ms();
 
         Self {
             internal_id,
@@ -46,10 +88,7 @@ impl IdMappingEntry {
 
     /// FIX BUG-038: Use unwrap_or_default to handle pre-epoch clock gracefully
     pub fn mark_deleted(&mut self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = current_timestamp_ms();
 
         self.deleted = true;
         self.deleted_at = Some(now);
@@ -58,6 +97,14 @@ impl IdMappingEntry {
 }
 
 const ID_MAPPING_PREFIX: &[u8] = b"id:";
+const VECTOR_PREFIX: &[u8] = b"vec:";
+
+fn current_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 /// ID mapping manager
 pub struct IdMapping<S: StorageBackend> {
@@ -109,18 +156,45 @@ impl<S: StorageBackend> IdMapping<S> {
     /// Now uses length prefix:
     ///   collection="foo", id="bar:baz" -> "id:3:foobar:baz"
     ///   collection="foo:bar", id="baz" -> "id:7:foo:barbaz" (no collision)
-    fn make_key(&self, external_id: &VectorId) -> Vec<u8> {
+    fn make_key_with_prefix(&self, prefix: &[u8], external_id: &VectorId) -> Vec<u8> {
         let collection_len = self.collection.len();
         let len_str = collection_len.to_string();
         let mut key = Vec::with_capacity(
-            ID_MAPPING_PREFIX.len() + len_str.len() + 1 + collection_len + external_id.as_str().len()
+            prefix.len() + len_str.len() + 1 + collection_len + external_id.as_str().len(),
         );
-        key.extend_from_slice(ID_MAPPING_PREFIX);
+        key.extend_from_slice(prefix);
         key.extend_from_slice(len_str.as_bytes());
         key.push(b':');
         key.extend_from_slice(self.collection.as_bytes());
         key.extend_from_slice(external_id.as_str().as_bytes());
         key
+    }
+
+    fn make_collection_prefix(&self, prefix: &[u8]) -> Vec<u8> {
+        let collection_len = self.collection.len();
+        let len_str = collection_len.to_string();
+        let mut key = Vec::with_capacity(prefix.len() + len_str.len() + 1 + collection_len);
+        key.extend_from_slice(prefix);
+        key.extend_from_slice(len_str.as_bytes());
+        key.push(b':');
+        key.extend_from_slice(self.collection.as_bytes());
+        key
+    }
+
+    fn make_key(&self, external_id: &VectorId) -> Vec<u8> {
+        self.make_key_with_prefix(ID_MAPPING_PREFIX, external_id)
+    }
+
+    fn make_vector_key(&self, external_id: &VectorId) -> Vec<u8> {
+        self.make_key_with_prefix(VECTOR_PREFIX, external_id)
+    }
+
+    fn serialize_mapping(entry: &IdMappingEntry) -> Result<Vec<u8>> {
+        bincode::serialize(entry).map_err(|e| AkiDbError::SerializationError(e.to_string()))
+    }
+
+    fn serialize_vector(entry: &StoredVectorEntry) -> Result<Vec<u8>> {
+        bincode::serialize(entry).map_err(|e| AkiDbError::SerializationError(e.to_string()))
     }
 
     /// Get the mapping entry for an external ID
@@ -164,8 +238,7 @@ impl<S: StorageBackend> IdMapping<S> {
         }
 
         let entry = IdMappingEntry::new(internal_id.0);
-        let data = bincode::serialize(&entry)
-            .map_err(|e| AkiDbError::SerializationError(e.to_string()))?;
+        let data = Self::serialize_mapping(&entry)?;
 
         self.storage.put(&key, &data)?;
 
@@ -218,17 +291,16 @@ impl<S: StorageBackend> IdMapping<S> {
 
         entry.internal_id = new_internal_id.0;
         // FIX BUG-038: Use unwrap_or_default to handle pre-epoch clock gracefully
-        entry.updated_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        entry.updated_at = current_timestamp_ms();
 
-        let data = bincode::serialize(&entry)
-            .map_err(|e| AkiDbError::SerializationError(e.to_string()))?;
+        let data = Self::serialize_mapping(&entry)?;
 
         self.storage.put(&key, &data)?;
 
-        debug!("Updated ID mapping: {} -> {}", external_id, new_internal_id.0);
+        debug!(
+            "Updated ID mapping: {} -> {}",
+            external_id, new_internal_id.0
+        );
 
         Ok(entry)
     }
@@ -241,8 +313,7 @@ impl<S: StorageBackend> IdMapping<S> {
         key: &[u8],
     ) -> Result<IdMappingEntry> {
         let entry = IdMappingEntry::new(internal_id.0);
-        let data = bincode::serialize(&entry)
-            .map_err(|e| AkiDbError::SerializationError(e.to_string()))?;
+        let data = Self::serialize_mapping(&entry)?;
 
         self.storage.put(key, &data)?;
 
@@ -276,12 +347,32 @@ impl<S: StorageBackend> IdMapping<S> {
         let internal_id = entry.internal_id;
         entry.mark_deleted();
 
-        let data = bincode::serialize(&entry)
-            .map_err(|e| AkiDbError::SerializationError(e.to_string()))?;
+        let data = Self::serialize_mapping(&entry)?;
+        let vector_key = self.make_vector_key(external_id);
+        let vector_update = self
+            .storage
+            .get(&vector_key)?
+            .map(|data| {
+                bincode::deserialize::<StoredVectorEntry>(&data)
+                    .map_err(|e| AkiDbError::SerializationError(e.to_string()))
+            })
+            .transpose()?;
 
-        self.storage.put(&key, &data)?;
+        let mut operations = vec![BatchOperation::Put { key, value: data }];
+        if let Some(mut vector_entry) = vector_update {
+            vector_entry.mark_deleted();
+            operations.push(BatchOperation::Put {
+                key: vector_key,
+                value: Self::serialize_vector(&vector_entry)?,
+            });
+        }
 
-        debug!("Marked ID as deleted: {} (internal: {})", external_id, internal_id);
+        self.storage.write_batch(operations)?;
+
+        debug!(
+            "Marked ID as deleted: {} (internal: {})",
+            external_id, internal_id
+        );
 
         Ok(Some(InternalId(internal_id)))
     }
@@ -292,6 +383,96 @@ impl<S: StorageBackend> IdMapping<S> {
             Some(entry) if !entry.deleted => Ok(Some(InternalId(entry.internal_id))),
             _ => Ok(None),
         }
+    }
+
+    /// Create or update an ID mapping and durable vector payload atomically.
+    pub fn upsert_with_vector(
+        &self,
+        external_id: &VectorId,
+        internal_id: InternalId,
+        vector: &[f32],
+        metadata: &[u8],
+    ) -> Result<IdMappingEntry> {
+        let stripe_idx = self.stripe_index(external_id);
+        let _lock = self.lock_stripes[stripe_idx].lock();
+
+        let mapping_key = self.make_key(external_id);
+        let vector_key = self.make_vector_key(external_id);
+        let now = current_timestamp_ms();
+
+        let entry = match self.storage.get(&mapping_key)? {
+            Some(data) => {
+                let mut entry: IdMappingEntry = bincode::deserialize(&data)
+                    .map_err(|e| AkiDbError::SerializationError(e.to_string()))?;
+                if entry.deleted {
+                    return Err(AkiDbError::IdReuseForbidden(external_id.to_string()));
+                }
+                entry.internal_id = internal_id.0;
+                entry.updated_at = now;
+                entry
+            }
+            None => IdMappingEntry::new(internal_id.0),
+        };
+
+        let stored_vector = StoredVectorEntry {
+            updated_at: now,
+            ..StoredVectorEntry::new(external_id, internal_id, vector, metadata)
+        };
+
+        self.storage.write_batch(vec![
+            BatchOperation::Put {
+                key: mapping_key,
+                value: Self::serialize_mapping(&entry)?,
+            },
+            BatchOperation::Put {
+                key: vector_key,
+                value: Self::serialize_vector(&stored_vector)?,
+            },
+        ])?;
+
+        Ok(entry)
+    }
+
+    /// Get a durable vector payload for an active external ID.
+    pub fn get_vector(&self, external_id: &VectorId) -> Result<Option<StoredVectorEntry>> {
+        if self.get_internal_id(external_id)?.is_none() {
+            return Ok(None);
+        }
+
+        let key = self.make_vector_key(external_id);
+        match self.storage.get(&key)? {
+            Some(data) => {
+                let entry: StoredVectorEntry = bincode::deserialize(&data)
+                    .map_err(|e| AkiDbError::SerializationError(e.to_string()))?;
+                if entry.deleted {
+                    Ok(None)
+                } else {
+                    Ok(Some(entry))
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Load all active durable vector payloads for this collection.
+    pub fn load_active_vectors(&self) -> Result<Vec<StoredVectorEntry>> {
+        let prefix = self.make_collection_prefix(VECTOR_PREFIX);
+        let mut vectors = Vec::new();
+
+        for (_, data) in self.storage.scan_prefix_limited(&prefix, None)? {
+            let entry: StoredVectorEntry = bincode::deserialize(&data)
+                .map_err(|e| AkiDbError::SerializationError(e.to_string()))?;
+            if entry.deleted {
+                continue;
+            }
+
+            let vector_id = VectorId::new(&entry.external_id);
+            if self.get_internal_id(&vector_id)?.is_some() {
+                vectors.push(entry);
+            }
+        }
+
+        Ok(vectors)
     }
 
     /// Check if an ID exists (including deleted)
@@ -378,5 +559,41 @@ mod tests {
         // Try to reuse deleted ID
         let result = mapping.create(&ext_id, InternalId(100));
         assert!(matches!(result, Err(AkiDbError::IdReuseForbidden(_))));
+    }
+
+    #[test]
+    fn test_vector_payload_persists() {
+        let storage = create_test_storage();
+        let mapping = IdMapping::new(storage, "test_collection");
+
+        let ext_id = VectorId::new("vec-1");
+        mapping
+            .upsert_with_vector(&ext_id, InternalId(42), &[0.1, 0.2, 0.3], br#"{"k":"v"}"#)
+            .unwrap();
+
+        let stored = mapping.get_vector(&ext_id).unwrap().unwrap();
+        assert_eq!(stored.external_id, "vec-1");
+        assert_eq!(stored.internal_id, 42);
+        assert_eq!(stored.vector, vec![0.1, 0.2, 0.3]);
+        assert_eq!(stored.metadata, br#"{"k":"v"}"#);
+
+        let active = mapping.load_active_vectors().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].external_id, "vec-1");
+    }
+
+    #[test]
+    fn test_deleted_vector_payload_not_loaded() {
+        let storage = create_test_storage();
+        let mapping = IdMapping::new(storage, "test_collection");
+
+        let ext_id = VectorId::new("vec-1");
+        mapping
+            .upsert_with_vector(&ext_id, InternalId(42), &[0.1, 0.2, 0.3], &[])
+            .unwrap();
+        mapping.mark_deleted(&ext_id).unwrap();
+
+        assert!(mapping.get_vector(&ext_id).unwrap().is_none());
+        assert!(mapping.load_active_vectors().unwrap().is_empty());
     }
 }

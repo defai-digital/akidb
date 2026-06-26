@@ -1,18 +1,11 @@
 //! AkiDB gRPC service implementation
 
 use crate::proto::{
-    akidb_server::Akidb,
-    DeleteRequest, DeleteResponse, DeleteStatus,
-    GetClusterStateRequest, GetClusterStateResponse,
-    GetRequest, GetResponse,
-    HealthRequest, HealthResponse,
-    InsertRequest, InsertResponse,
-    InsertBatchRequest, InsertBatchResponse,
-    SearchRequest, SearchResponse, SearchResult,
-    SearchBatchRequest, SearchBatchResponse,
-    TextSearchRequest,
-    UpdateRequest, UpdateResponse, UpdateStatus,
-    VisibilityInfo,
+    akidb_server::Akidb, DeleteRequest, DeleteResponse, DeleteStatus, GetClusterStateRequest,
+    GetClusterStateResponse, GetRequest, GetResponse, HealthRequest, HealthResponse,
+    InsertBatchRequest, InsertBatchResponse, InsertRequest, InsertResponse, SearchBatchRequest,
+    SearchBatchResponse, SearchRequest, SearchResponse, SearchResult, TextSearchRequest,
+    UpdateRequest, UpdateResponse, UpdateStatus, VisibilityInfo,
 };
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
@@ -21,7 +14,7 @@ use dashmap::DashSet;
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 /// Trait for embedding providers (implemented by coordinator's AxEngineEmbedding)
 pub trait EmbeddingProvider: Send + Sync {
@@ -83,8 +76,17 @@ where
     const DEFAULT_SLO_THRESHOLD_US: u64 = 50_000;
 
     /// Create a new service instance with default SLO threshold (50ms)
-    pub fn new(index: Arc<I>, id_mapping: Arc<IdMapping<S>>, collection: impl Into<String>) -> Self {
-        Self::with_slo_threshold(index, id_mapping, collection, Self::DEFAULT_SLO_THRESHOLD_US)
+    pub fn new(
+        index: Arc<I>,
+        id_mapping: Arc<IdMapping<S>>,
+        collection: impl Into<String>,
+    ) -> Self {
+        Self::with_slo_threshold(
+            index,
+            id_mapping,
+            collection,
+            Self::DEFAULT_SLO_THRESHOLD_US,
+        )
     }
 
     /// FIX BUG-HUNT-202: Create a new service instance with configurable SLO threshold
@@ -153,7 +155,10 @@ where
 
         // Get old internal ID atomically to reduce TOCTOU window
         // The mapping lookup returns None if deleted or never existed
-        let old_internal_id = self.id_mapping.get_internal_id(vector_id).map_err(Self::to_status)?;
+        let old_internal_id = self
+            .id_mapping
+            .get_internal_id(vector_id)
+            .map_err(Self::to_status)?;
         let status = if old_internal_id.is_some() {
             UpdateStatus::Updated
         } else {
@@ -161,12 +166,15 @@ where
         };
 
         // Insert new vector first (to minimize data loss window)
-        let new_internal_id = self.index
+        let new_internal_id = self
+            .index
             .insert(vector_id, vector)
             .map_err(Self::to_status)?;
 
-        // Update mapping to point to new internal ID
-        let mapping_result = self.id_mapping.update(vector_id, new_internal_id);
+        // Persist mapping and vector payload atomically.
+        let mapping_result =
+            self.id_mapping
+                .upsert_with_vector(vector_id, new_internal_id, vector, &[]);
 
         if let Err(e) = mapping_result {
             // FIX BUG-HUNT-601: Log rollback failures instead of silently ignoring
@@ -198,7 +206,10 @@ where
         }
 
         let elapsed = start.elapsed();
-        info!("Update {} completed in {:?} with status {:?}", id, elapsed, status);
+        info!(
+            "Update {} completed in {:?} with status {:?}",
+            id, elapsed, status
+        );
 
         Ok(Response::new(UpdateResponse {
             success: true,
@@ -219,7 +230,10 @@ where
     S: StorageBackend + 'static,
 {
     #[instrument(skip(self, request))]
-    async fn insert(&self, request: Request<InsertRequest>) -> Result<Response<InsertResponse>, Status> {
+    async fn insert(
+        &self,
+        request: Request<InsertRequest>,
+    ) -> Result<Response<InsertResponse>, Status> {
         let start = Instant::now();
         let req = request.into_inner();
 
@@ -233,31 +247,30 @@ where
             return Err(Status::invalid_argument("Vector ID cannot be empty"));
         }
         if req.id.len() > 1024 {
-            return Err(Status::invalid_argument("Vector ID exceeds maximum length of 1024"));
+            return Err(Status::invalid_argument(
+                "Vector ID exceeds maximum length of 1024",
+            ));
         }
         if vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
-            return Err(Status::invalid_argument("Vector contains NaN or Infinity values"));
+            return Err(Status::invalid_argument(
+                "Vector contains NaN or Infinity values",
+            ));
         }
         if vector.is_empty() {
             return Err(Status::invalid_argument("Vector cannot be empty"));
         }
 
         // Insert into index
-        let internal_id = self.index
+        let internal_id = self
+            .index
             .insert(&vector_id, &vector)
             .map_err(Self::to_status)?;
 
-        // Create ID mapping - if this fails, rollback the index insert
-        let mapping_result = self.id_mapping
-            .create(&vector_id, internal_id)
-            .or_else(|e| {
-                // Handle upsert case
-                if matches!(e, AkiDbError::VectorAlreadyExists(_)) {
-                    self.id_mapping.update(&vector_id, internal_id)
-                } else {
-                    Err(e)
-                }
-            });
+        // Persist ID mapping and vector payload atomically. If this fails,
+        // rollback the index insert.
+        let mapping_result =
+            self.id_mapping
+                .upsert_with_vector(&vector_id, internal_id, &vector, &req.metadata);
 
         if let Err(e) = mapping_result {
             // FIX BUG-HUNT-601: Log rollback failures instead of silently ignoring
@@ -288,7 +301,10 @@ where
     }
 
     #[instrument(skip(self, request))]
-    async fn search(&self, request: Request<SearchRequest>) -> Result<Response<SearchResponse>, Status> {
+    async fn search(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
         let start = Instant::now();
         let req = request.into_inner();
 
@@ -302,10 +318,10 @@ where
             return Err(Status::invalid_argument("top_k exceeds maximum of 10000"));
         }
 
-        let params = SearchParams::new(req.top_k as usize)
-            .with_nprobe(req.nprobe.unwrap_or(32));
+        let params = SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
 
-        let results = self.index
+        let results = self
+            .index
             .search(&req.query, &params)
             .map_err(Self::to_status)?;
 
@@ -321,7 +337,11 @@ where
             })
             .collect();
 
-        info!("Search returned {} results in {:?}", response_results.len(), elapsed);
+        info!(
+            "Search returned {} results in {:?}",
+            response_results.len(),
+            elapsed
+        );
 
         Ok(Response::new(SearchResponse {
             results: response_results,
@@ -336,7 +356,10 @@ where
     }
 
     #[instrument(skip(self, request))]
-    async fn delete(&self, request: Request<DeleteRequest>) -> Result<Response<DeleteResponse>, Status> {
+    async fn delete(
+        &self,
+        request: Request<DeleteRequest>,
+    ) -> Result<Response<DeleteResponse>, Status> {
         let start = Instant::now();
         let req = request.into_inner();
 
@@ -345,7 +368,11 @@ where
         let vector_id = VectorId::new(&req.id);
 
         // Get internal ID and mark deleted
-        let status = match self.id_mapping.mark_deleted(&vector_id).map_err(Self::to_status)? {
+        let status = match self
+            .id_mapping
+            .mark_deleted(&vector_id)
+            .map_err(Self::to_status)?
+        {
             Some(internal_id) => {
                 // Mark in tombstone
                 self.index.delete(internal_id).map_err(Self::to_status)?;
@@ -353,7 +380,11 @@ where
             }
             None => {
                 // Check if already deleted
-                if self.id_mapping.exists(&vector_id).map_err(Self::to_status)? {
+                if self
+                    .id_mapping
+                    .exists(&vector_id)
+                    .map_err(Self::to_status)?
+                {
                     DeleteStatus::AlreadyDeleted
                 } else {
                     DeleteStatus::NotFound
@@ -362,7 +393,10 @@ where
         };
 
         let elapsed = start.elapsed();
-        info!("Delete {} completed in {:?} with status {:?}", req.id, elapsed, status);
+        info!(
+            "Delete {} completed in {:?} with status {:?}",
+            req.id, elapsed, status
+        );
 
         Ok(Response::new(DeleteResponse {
             success: true,
@@ -373,8 +407,10 @@ where
     }
 
     #[instrument(skip(self, request))]
-    async fn update(&self, request: Request<UpdateRequest>) -> Result<Response<UpdateResponse>, Status> {
-        let start = Instant::now();
+    async fn update(
+        &self,
+        request: Request<UpdateRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
         let req = request.into_inner();
 
         debug!("Update request for ID: {}", req.id);
@@ -384,10 +420,14 @@ where
             return Err(Status::invalid_argument("Vector ID cannot be empty"));
         }
         if req.id.len() > 1024 {
-            return Err(Status::invalid_argument("Vector ID exceeds maximum length of 1024"));
+            return Err(Status::invalid_argument(
+                "Vector ID exceeds maximum length of 1024",
+            ));
         }
         if req.vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
-            return Err(Status::invalid_argument("Vector contains NaN or Infinity values"));
+            return Err(Status::invalid_argument(
+                "Vector contains NaN or Infinity values",
+            ));
         }
         if req.vector.is_empty() {
             return Err(Status::invalid_argument("Vector cannot be empty"));
@@ -398,10 +438,9 @@ where
         // FIX BUG-052 + BUG-059: Use RAII guard for panic-safe per-key locking
         // The guard automatically releases the lock when dropped, even on panic
         let _lock_guard = UpdateLockGuard::try_acquire(&self.update_locks, req.id.clone())
-            .ok_or_else(|| Status::aborted(format!(
-                "Concurrent update in progress for ID: {}",
-                req.id
-            )))?;
+            .ok_or_else(|| {
+                Status::aborted(format!("Concurrent update in progress for ID: {}", req.id))
+            })?;
 
         // Perform the update operation - lock is held by guard
         // Guard will release lock automatically when this function returns (or panics)
@@ -414,27 +453,48 @@ where
         let vector_id = VectorId::new(&req.id);
 
         // Get internal ID
-        let internal_id = self.id_mapping
+        let internal_id = self
+            .id_mapping
             .get_internal_id(&vector_id)
             .map_err(Self::to_status)?
             .ok_or_else(|| Status::not_found(format!("Vector not found: {}", req.id)))?;
 
-        // Get vector
-        let vector = self.index
+        let stored_vector = self
+            .id_mapping
+            .get_vector(&vector_id)
+            .map_err(Self::to_status)?;
+
+        // Get vector from the hot index first, then durable storage. The
+        // fallback matters after process restart while the index is rebuilding.
+        let vector = match self
+            .index
             .get_vector(internal_id)
             .map_err(Self::to_status)?
-            .ok_or_else(|| Status::not_found(format!("Vector not found: {}", req.id)))?;
+        {
+            Some(vector) => vector,
+            None => stored_vector
+                .as_ref()
+                .map(|entry| entry.vector.clone())
+                .ok_or_else(|| Status::not_found(format!("Vector not found: {}", req.id)))?,
+        };
+        let metadata = stored_vector
+            .as_ref()
+            .map(|entry| String::from_utf8_lossy(&entry.metadata).into_owned())
+            .unwrap_or_default();
 
         Ok(Response::new(GetResponse {
             id: req.id,
             vector,
-            metadata: String::new(),
+            metadata,
             found: true,
         }))
     }
 
     #[instrument(skip(self, _request))]
-    async fn health(&self, _request: Request<HealthRequest>) -> Result<Response<HealthResponse>, Status> {
+    async fn health(
+        &self,
+        _request: Request<HealthRequest>,
+    ) -> Result<Response<HealthResponse>, Status> {
         let stats = self.index.stats();
 
         Ok(Response::new(HealthResponse {
@@ -454,7 +514,10 @@ where
     }
 
     #[instrument(skip(self, request))]
-    async fn insert_batch(&self, request: Request<InsertBatchRequest>) -> Result<Response<InsertBatchResponse>, Status> {
+    async fn insert_batch(
+        &self,
+        request: Request<InsertBatchRequest>,
+    ) -> Result<Response<InsertBatchResponse>, Status> {
         let start = Instant::now();
         let req = request.into_inner();
 
@@ -468,26 +531,13 @@ where
 
             match self.index.insert(&vector_id, &vector.embedding) {
                 Ok(internal_id) => {
-                    match self.id_mapping.create(&vector_id, internal_id) {
+                    match self.id_mapping.upsert_with_vector(
+                        &vector_id,
+                        internal_id,
+                        &vector.embedding,
+                        &vector.metadata,
+                    ) {
                         Ok(_) => inserted_count += 1,
-                        Err(AkiDbError::VectorAlreadyExists(_)) => {
-                            // Handle upsert
-                            if self.id_mapping.update(&vector_id, internal_id).is_ok() {
-                                inserted_count += 1;
-                            } else {
-                                // FIX BUG-046, BUG-HUNT-601: Rollback and log failures
-                                if let Err(rollback_err) = self.index.delete(internal_id) {
-                                    tracing::error!(
-                                        vector_id = %vector.id,
-                                        internal_id = internal_id.0,
-                                        rollback_error = %rollback_err,
-                                        "Batch insert: rollback failed after upsert mapping failure - orphan vector may exist"
-                                    );
-                                }
-                                warn!("Batch insert: ID {} failed during upsert mapping update", vector.id);
-                                failed_ids.push(vector.id);
-                            }
-                        }
                         Err(e) => {
                             // FIX BUG-046, BUG-HUNT-601: Rollback and log failures
                             if let Err(rollback_err) = self.index.delete(internal_id) {
@@ -499,21 +549,32 @@ where
                                     "Batch insert: rollback failed after mapping create failure - orphan vector may exist"
                                 );
                             }
-                            warn!("Batch insert: ID {} failed during id_mapping.create: {}", vector.id, e);
+                            warn!(
+                                "Batch insert: ID {} failed during id_mapping.create: {}",
+                                vector.id, e
+                            );
                             failed_ids.push(vector.id);
                         }
                     }
                 }
                 Err(e) => {
                     // FIX BUG-074: Log error details for failed inserts
-                    warn!("Batch insert: ID {} failed during index.insert: {}", vector.id, e);
+                    warn!(
+                        "Batch insert: ID {} failed during index.insert: {}",
+                        vector.id, e
+                    );
                     failed_ids.push(vector.id);
                 }
             }
         }
 
         let elapsed = start.elapsed();
-        info!("Batch insert: {} succeeded, {} failed in {:?}", inserted_count, failed_ids.len(), elapsed);
+        info!(
+            "Batch insert: {} succeeded, {} failed in {:?}",
+            inserted_count,
+            failed_ids.len(),
+            elapsed
+        );
 
         Ok(Response::new(InsertBatchResponse {
             success: failed_ids.is_empty(),
@@ -523,7 +584,10 @@ where
     }
 
     #[instrument(skip(self, request))]
-    async fn search_batch(&self, request: Request<SearchBatchRequest>) -> Result<Response<SearchBatchResponse>, Status> {
+    async fn search_batch(
+        &self,
+        request: Request<SearchBatchRequest>,
+    ) -> Result<Response<SearchBatchResponse>, Status> {
         let start = Instant::now();
         let req = request.into_inner();
 
@@ -537,15 +601,15 @@ where
             return Err(Status::invalid_argument("top_k exceeds maximum of 10000"));
         }
 
-        let params = SearchParams::new(req.top_k as usize)
-            .with_nprobe(req.nprobe.unwrap_or(32));
+        let params = SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
 
         let mut results = Vec::with_capacity(req.queries.len());
 
         for query in req.queries {
             let search_start = Instant::now();
 
-            let search_results = self.index
+            let search_results = self
+                .index
                 .search(&query.vector, &params)
                 .map_err(Self::to_status)?;
 
@@ -622,10 +686,10 @@ where
             "TextSearch embedding generated"
         );
 
-        let params = SearchParams::new(req.top_k as usize)
-            .with_nprobe(req.nprobe.unwrap_or(32));
+        let params = SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
 
-        let results = self.index
+        let results = self
+            .index
             .search(&query_vector, &params)
             .map_err(Self::to_status)?;
 

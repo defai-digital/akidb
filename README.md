@@ -83,6 +83,81 @@ See `config/default.toml` for all configuration options.
 Key settings:
 - `slo.reference.*`: SLO reference configuration
 - `index.nprobe`: Search accuracy vs speed for FAISS-compatible backends
+- `embedding.*`: optional local text embedding sidecar for `TextSearch`
+
+### Local Text Embeddings
+
+AkiDB uses a local OpenAI-compatible `/v1/embeddings` endpoint for `TextSearch`.
+For current `ax-engine`, run the included sidecar against local Qwen embedding
+native artifacts containing `model-manifest.json`; do not use
+`ax-engine serve <embedding-alias>`.
+
+```bash
+python3 scripts/ax_engine_embedding_server.py \
+  --model-dir /path/to/Qwen3-Embedding-4B \
+  --model-id Qwen/Qwen3-Embedding-4B \
+  --port 8081
+
+AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-4B \
+  ./scripts/validate-standalone.sh
+```
+
+For `Qwen3-Embedding-0.6B`, set `AX_ENGINE_MODEL=Qwen/Qwen3-Embedding-0.6B`
+and `EMBEDDING_DIMENSIONS=1024` when running the validator.
+
+### Vector Quality QA
+
+Run all available local quality gates. The vector gate always runs; the semantic
+`TextSearch` gate runs when `AX_ENGINE_MODEL_DIR` is configured.
+
+```bash
+./scripts/qa_all.sh --build
+```
+
+For release validation, require both gates:
+
+```bash
+AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-0.6B-4bit-DWQ \
+AX_ENGINE_MODEL=mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ \
+EMBEDDING_DIMENSIONS=1024 \
+./scripts/qa_all.sh --build --require-text
+```
+
+Run the deterministic quality gate to compare AkiDB search results with exact
+brute-force cosine ground truth:
+
+```bash
+python3 scripts/qa_vector_quality.py --build
+```
+
+Run semantic retrieval QA with local embedding artifacts:
+
+```bash
+AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-0.6B-4bit-DWQ \
+AX_ENGINE_MODEL=mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ \
+EMBEDDING_DIMENSIONS=1024 \
+python3 scripts/qa_text_retrieval.py
+```
+
+Quality gates report recall@k, nDCG, MRR, hit rate, and latency. See
+`docs/quality/vector-quality.md` for thresholds and release artifact rules.
+
+### One-Mac Benchmark
+
+Run the clean standalone synthetic benchmark and write a JSON artifact:
+
+```bash
+./scripts/benchmark-one-mac.sh
+```
+
+For the reference target shape:
+
+```bash
+VECTORS=1000000 DIMENSIONS=768 QUERIES=5000 ./scripts/benchmark-one-mac.sh
+```
+
+See `docs/quality/one-mac-benchmark.md` for artifact requirements and
+interpretation.
 
 ## Performance Targets
 
@@ -100,6 +175,8 @@ Key settings:
 - [ADR](docs/adr/ADR-0001-mac-first-cell-architecture.md) - Architecture Decision Records
 - [PRD](docs/product/PRD.md) - Product Requirements
 - [Technical Specification](docs/architecture/TECH_SPEC.md) - Mac appliance and Thunderbolt cell architecture
+- [One-Mac Benchmark](docs/quality/one-mac-benchmark.md) - reproducible benchmark artifact workflow
+- [Vector Quality Gates](docs/quality/vector-quality.md) - recall and semantic retrieval QA
 
 ## Development Status
 

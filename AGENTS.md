@@ -10,7 +10,8 @@ fan-out routing, `server` for the shard binary, `tui` for terminal operations,
 and `ingestion-orchestrator` for document ingestion. Python services live in
 `services/doc-parser` and `services/upload-gateway`. Configuration is in
 `config/`, scripts in `scripts/`, deployment files in `deploy/`, and canonical
-docs in `docs/`.
+docs in `docs/`. The local embedding wrapper lives at
+`scripts/ax_engine_embedding_server.py`.
 
 ## Build, Test, and Development Commands
 
@@ -27,7 +28,10 @@ Use Rust 2021 conventions: four-space indentation, `snake_case`
 modules/functions, `PascalCase` types, and explicit `Result` error handling. Run
 `cargo fmt` before focused Rust changes, but avoid broad formatting-only churn.
 Use `cargo clippy --workspace --all-targets` for lint feedback.
-Python code follows standard `pytest` conventions.
+Python code follows standard `pytest` conventions. For text embeddings, use
+`scripts/ax_engine_embedding_server.py` with `AX_ENGINE_MODEL_DIR` pointing at
+native artifacts containing `model-manifest.json`; do not wire AkiDB to
+`ax-engine serve <embedding-alias>`.
 
 ## Testing Guidelines
 

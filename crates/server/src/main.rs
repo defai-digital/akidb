@@ -5,8 +5,9 @@
 //! (no MinIO, no NATS) and optionally uses ax-engine for text embeddings.
 
 use akidb_common::config::AkiDbConfig;
+use akidb_common::VectorId;
 use akidb_coordinator::AxEngineEmbedding;
-use akidb_faiss::{HnswConfig, HnswIndex};
+use akidb_faiss::{HnswConfig, HnswIndex, VectorIndex};
 use akidb_grpc::proto::akidb_server::AkidbServer;
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
 use akidb_storage::{IdMapping, RocksDbBackend};
@@ -123,6 +124,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     info!("Vector index initialized (HNSW mode)");
+
+    let stored_vectors = id_mapping.load_active_vectors()?;
+    if !stored_vectors.is_empty() {
+        info!(
+            "Reloading {} persisted vectors into HNSW index",
+            stored_vectors.len()
+        );
+    }
+    let mut reloaded_count = 0usize;
+    for stored in stored_vectors {
+        let vector_id = VectorId::new(&stored.external_id);
+        match index.insert(&vector_id, &stored.vector) {
+            Ok(internal_id) => {
+                match id_mapping.upsert_with_vector(
+                    &vector_id,
+                    internal_id,
+                    &stored.vector,
+                    &stored.metadata,
+                ) {
+                    Ok(_) => {
+                        reloaded_count += 1;
+                    }
+                    Err(e) => {
+                        warn!(
+                            vector_id = %stored.external_id,
+                            error = %e,
+                            "Failed to update mapping for reloaded vector"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    vector_id = %stored.external_id,
+                    error = %e,
+                    "Failed to reload persisted vector into index"
+                );
+            }
+        }
+    }
+    if reloaded_count > 0 {
+        info!(
+            "Reloaded {} persisted vectors into HNSW index",
+            reloaded_count
+        );
+    }
 
     // Create gRPC service
     let mut service = AkiDbService::new(index, id_mapping, "default");

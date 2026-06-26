@@ -45,6 +45,25 @@ docker compose logs --tail=100 akidb-server
 docker compose logs --tail=100 akidb-coordinator
 ```
 
+## Text Embeddings
+
+`TextSearch` expects an OpenAI-compatible local embedding endpoint. With current
+`ax-engine`, start AkiDB's sidecar with local Qwen embedding native artifacts
+containing `model-manifest.json`:
+
+```bash
+python3 scripts/ax_engine_embedding_server.py \
+  --model-dir /path/to/Qwen3-Embedding-4B \
+  --model-id Qwen/Qwen3-Embedding-4B \
+  --port 8081
+```
+
+`ax-engine serve <embedding-alias>` is not the supported embedding path. The
+validator uses `AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-4B` to start the
+sidecar, and skips `TextSearch` when that variable is absent.
+For `Qwen3-Embedding-0.6B`, also set `AX_ENGINE_MODEL=Qwen/Qwen3-Embedding-0.6B`
+and `EMBEDDING_DIMENSIONS=1024`.
+
 ## Maintenance
 
 Create a manual snapshot through the admin API when available, then verify the
