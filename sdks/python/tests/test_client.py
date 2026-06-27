@@ -121,6 +121,13 @@ def test_get_and_update():
     assert list(stub.Update.call_args[0][0].vector) == [3.0, 4.0]
 
 
+def test_get_missing_returns_found_false_not_exception():
+    client, stub = make_client()
+    stub.Get.side_effect = FakeRpcError(grpc.StatusCode.NOT_FOUND, "missing")
+    got = client.get("nope")
+    assert got.found is False and got.id == "nope" and got.vector == []
+
+
 def test_retries_on_unavailable_then_succeeds():
     client, stub = make_client(max_retries=3)
     stub.Search.side_effect = [
@@ -135,10 +142,10 @@ def test_retries_on_unavailable_then_succeeds():
 
 def test_non_retryable_error_maps_immediately():
     client, stub = make_client(max_retries=5)
-    stub.Get.side_effect = FakeRpcError(grpc.StatusCode.NOT_FOUND, "missing")
+    stub.Search.side_effect = FakeRpcError(grpc.StatusCode.NOT_FOUND, "missing")
     with pytest.raises(NotFoundError) as ei:
-        client.get("nope")
-    assert stub.Get.call_count == 1  # not retried
+        client.search([0.1])
+    assert stub.Search.call_count == 1  # not retried
     assert ei.value.code == grpc.StatusCode.NOT_FOUND
 
 
@@ -189,6 +196,41 @@ def test_build_memory_metadata_protects_reserved_keys():
     assert meta["memory_kind"] == "task"
     assert "conversation_id" not in meta  # reserved key not clobbered by a tag
     assert meta["topic"] == "x"
+
+
+def test_on_retry_hook_invoked():
+    seen = []
+    client, stub = make_client(max_retries=2, on_retry=lambda attempt, err: seen.append(attempt))
+    stub.Search.side_effect = [
+        FakeRpcError(grpc.StatusCode.UNAVAILABLE),
+        FakeRpcError(grpc.StatusCode.UNAVAILABLE),
+        pb.SearchResponse(results=[]),
+    ]
+    client.search([0.1])
+    assert seen == [0, 1]  # one callback per retry, with the attempt index
+
+
+def test_insert_returns_typed_result():
+    client, stub = make_client()
+    stub.Insert.return_value = pb.InsertResponse(success=True, id="a", internal_id=7)
+    res = client.insert("a", [1.0])
+    assert (res.success, res.id, res.internal_id) == (True, "a", 7)
+
+
+def test_health_returns_typed_status():
+    client, stub = make_client()
+    stub.Health.return_value = pb.HealthResponse(
+        healthy=True, ready=True, message="ok", total_vectors=10, active_vectors=9, using_gpu=False
+    )
+    h = client.health()
+    assert h.healthy and h.ready and h.total_vectors == 10 and h.active_vectors == 9
+
+
+def test_delete_returns_typed_result():
+    client, stub = make_client()
+    stub.Delete.return_value = pb.DeleteResponse(success=True, id="x", visibility="immediate")
+    d = client.delete("x")
+    assert d.success and d.id == "x" and d.visibility == "immediate"
 
 
 def test_custom_collection_used():

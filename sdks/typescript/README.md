@@ -57,4 +57,9 @@ npm test
 ```
 
 Includes a proto-drift test that fails if the vendored `proto/akidb.proto` drifts
-from the canonical engine proto (`../check-proto-drift.sh` checks both SDKs).
+from the canonical engine proto (`../check-proto-drift.sh` checks both SDKs). A
+live integration test (`src/live.test.ts`) runs only when `AKIDB_SERVER_ADDR` is
+set; it is exercised in CI (`.github/workflows/sdks.yml`) against a real server.
+
+Resilience/observability options: `timeoutMs`, `maxRetries`, `backoffMs`
+(jittered), `onRetry`, `tls`/`rootCerts`, `authToken`, `metadata`.

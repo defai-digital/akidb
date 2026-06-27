@@ -2,9 +2,14 @@
 
 from .client import (
     AkiDBClient,
+    BatchInsertResult,
+    DeleteResult,
     GetResult,
+    HealthStatus,
+    InsertResult,
     SearchHit,
     TextSearchResult,
+    UpdateResult,
     VectorInput,
     build_memory_metadata,
 )
@@ -24,9 +29,14 @@ from .errors import (
 
 __all__ = [
     "AkiDBClient",
+    "BatchInsertResult",
+    "DeleteResult",
     "GetResult",
+    "HealthStatus",
+    "InsertResult",
     "SearchHit",
     "TextSearchResult",
+    "UpdateResult",
     "VectorInput",
     "build_memory_metadata",
     "AkiDBError",

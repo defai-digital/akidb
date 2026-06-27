@@ -7,6 +7,8 @@ export {
 export type {
   AkiDBClientOptions,
   BatchInsertResponse,
+  ClusterState,
+  DeleteResponse,
   GetResult,
   HealthStatus,
   InsertResponse,
@@ -15,6 +17,7 @@ export type {
   SearchHit,
   TextSearchOptions,
   TextSearchResult,
+  UpdateResponse,
   VectorInput,
 } from './client.js';
 export {

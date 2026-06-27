@@ -66,7 +66,16 @@ hits = client.memory_read(query_embedding, conversation_id="c1")
 pytest tests/ -v
 ```
 
-Tests mock the gRPC stub, so no running server is required.
+Unit tests mock the gRPC stub, so no running server is required. A live
+integration test (`tests/test_live.py`) runs only when `AKIDB_SERVER_ADDR` is set
+(with `AKIDB_TEST_DIM` matching the server's index dimension); it is exercised in
+CI (`.github/workflows/sdks.yml`) against a real server.
+
+## Observability & resilience knobs
+
+`timeout`, `max_retries`, `retry_backoff` (jittered), `on_retry=(attempt, error)`,
+`tls`/`ca_cert`, `auth_token`, `metadata`, and gRPC `interceptors` are all
+constructor options on both `AkiDBClient` and `AsyncAkiDBClient`.
 
 ## Regenerating gRPC stubs / proto drift
 

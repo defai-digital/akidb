@@ -1,7 +1,7 @@
 """Asyncio AkiDB client (grpc.aio).
 
-Same surface, retries, and typed errors as the synchronous
-:class:`akidb.client.AkiDBClient`, for asyncio applications:
+Same surface, retries (with jitter), observability hook, and typed errors/results
+as the synchronous :class:`akidb.client.AkiDBClient`, for asyncio applications:
 
     from akidb.aio import AsyncAkiDBClient
 
@@ -25,16 +25,23 @@ from .client import (
     DEFAULT_COLLECTION,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TIMEOUT,
+    BatchInsertResult,
+    DeleteResult,
     GetResult,
+    HealthStatus,
+    InsertResult,
+    OnRetry,
     SearchHit,
     TextSearchResult,
+    UpdateResult,
     VectorInput,
     _combine,
     _eq_condition,
     _hits,
+    _jittered,
     build_memory_metadata,
 )
-from .errors import RETRYABLE_CODES, map_grpc_error
+from .errors import RETRYABLE_CODES, NotFoundError, map_grpc_error
 
 
 class AsyncAkiDBClient:
@@ -48,11 +55,13 @@ class AsyncAkiDBClient:
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_backoff: float = DEFAULT_BACKOFF,
+        on_retry: Optional[OnRetry] = None,
         tls: bool = False,
         ca_cert: Optional[bytes] = None,
         auth_token: Optional[str] = None,
         metadata: Optional[Sequence[tuple[str, str]]] = None,
         channel_options: Optional[Sequence[tuple[str, Any]]] = None,
+        interceptors: Optional[Sequence[Any]] = None,
         channel: Any = None,
         stub: Any = None,
     ):
@@ -60,6 +69,7 @@ class AsyncAkiDBClient:
         self._timeout = timeout
         self._max_retries = max_retries
         self._retry_backoff = retry_backoff
+        self._on_retry = on_retry
         self._owns_channel = False
 
         md: list[tuple[str, str]] = list(metadata or [])
@@ -73,13 +83,13 @@ class AsyncAkiDBClient:
         elif channel is not None:
             self._channel = channel
             self._stub = pb_grpc.AkidbStub(channel)
-        elif tls:
-            creds = grpc.ssl_channel_credentials(root_certificates=ca_cert)
-            self._channel = grpc.aio.secure_channel(target, creds, options=channel_options)
-            self._owns_channel = True
-            self._stub = pb_grpc.AkidbStub(self._channel)
         else:
-            self._channel = grpc.aio.insecure_channel(target, options=channel_options)
+            kwargs: dict[str, Any] = {"options": channel_options, "interceptors": interceptors}
+            if tls:
+                creds = grpc.ssl_channel_credentials(root_certificates=ca_cert)
+                self._channel = grpc.aio.secure_channel(target, creds, **kwargs)
+            else:
+                self._channel = grpc.aio.insecure_channel(target, **kwargs)
             self._owns_channel = True
             self._stub = pb_grpc.AkidbStub(self._channel)
 
@@ -91,40 +101,51 @@ class AsyncAkiDBClient:
             except grpc.RpcError as exc:
                 code = exc.code() if hasattr(exc, "code") else None
                 if code in RETRYABLE_CODES and attempt < self._max_retries:
-                    await asyncio.sleep(self._retry_backoff * (2**attempt))
+                    if self._on_retry is not None:
+                        self._on_retry(attempt, exc)
+                    await asyncio.sleep(_jittered(self._retry_backoff, attempt))
                     attempt += 1
                     continue
                 raise map_grpc_error(exc) from exc
 
-    async def insert(self, id: str, vector: Sequence[float], *, metadata: bytes = b"", text: str = "") -> Any:
-        return await self._invoke(
+    async def insert(
+        self, id: str, vector: Sequence[float], *, metadata: bytes = b"", text: str = ""
+    ) -> InsertResult:
+        r = await self._invoke(
             self._stub.Insert,
             pb.InsertRequest(
                 collection=self.collection, id=id, vector=list(vector), metadata=metadata, text=text
             ),
         )
+        return InsertResult(success=r.success, id=r.id, internal_id=r.internal_id)
 
-    async def insert_batch(self, vectors: Sequence[VectorInput]) -> Any:
+    async def insert_batch(self, vectors: Sequence[VectorInput]) -> BatchInsertResult:
         proto_vectors = [
             pb.Vector(id=v.id, embedding=list(v.vector), metadata=v.metadata, text=v.text)
             for v in vectors
         ]
-        return await self._invoke(
+        r = await self._invoke(
             self._stub.InsertBatch,
             pb.InsertBatchRequest(collection=self.collection, vectors=proto_vectors),
         )
+        return BatchInsertResult(success=r.success, inserted_count=r.inserted_count, failed_ids=list(r.failed_ids))
 
-    async def update(self, id: str, vector: Sequence[float], *, metadata: bytes = b"") -> Any:
-        return await self._invoke(
+    async def update(self, id: str, vector: Sequence[float], *, metadata: bytes = b"") -> UpdateResult:
+        r = await self._invoke(
             self._stub.Update,
             pb.UpdateRequest(collection=self.collection, id=id, vector=list(vector), metadata=metadata),
         )
+        return UpdateResult(success=r.success, id=r.id, status=r.status)
 
-    async def delete(self, id: str) -> Any:
-        return await self._invoke(self._stub.Delete, pb.DeleteRequest(collection=self.collection, id=id))
+    async def delete(self, id: str) -> DeleteResult:
+        r = await self._invoke(self._stub.Delete, pb.DeleteRequest(collection=self.collection, id=id))
+        return DeleteResult(success=r.success, id=r.id, status=r.status, visibility=r.visibility)
 
     async def get(self, id: str) -> GetResult:
-        resp = await self._invoke(self._stub.Get, pb.GetRequest(collection=self.collection, id=id))
+        try:
+            resp = await self._invoke(self._stub.Get, pb.GetRequest(collection=self.collection, id=id))
+        except NotFoundError:
+            return GetResult(id=id, vector=[], metadata="", found=False)
         return GetResult(id=resp.id, vector=list(resp.vector), metadata=resp.metadata, found=resp.found)
 
     async def search(
@@ -177,10 +198,18 @@ class AsyncAkiDBClient:
         resp = await self._invoke(self._stub.TextSearch, req)
         return TextSearchResult(hits=_hits(resp.results), context_pack=resp.context_pack)
 
-    async def health(self) -> Any:
-        return await self._invoke(self._stub.Health, pb.HealthRequest())
+    async def health(self) -> HealthStatus:
+        r = await self._invoke(self._stub.Health, pb.HealthRequest())
+        return HealthStatus(
+            healthy=r.healthy,
+            ready=r.ready,
+            message=r.message,
+            total_vectors=r.total_vectors,
+            active_vectors=r.active_vectors,
+            using_gpu=r.using_gpu,
+        )
 
-    async def cluster_state(self) -> Any:
+    async def cluster_state(self) -> pb.GetClusterStateResponse:
         return await self._invoke(self._stub.GetClusterState, pb.GetClusterStateRequest())
 
     async def memory_write(
@@ -196,7 +225,7 @@ class AsyncAkiDBClient:
         source_uri: Optional[str] = None,
         timestamp: Optional[int] = None,
         tags: Optional[dict[str, str]] = None,
-    ) -> Any:
+    ) -> InsertResult:
         meta = build_memory_metadata(
             kind=kind,
             conversation_id=conversation_id,

@@ -9,29 +9,33 @@ A typed, production-grade wrapper over the AkiDB gRPC API (INT-002):
         result = client.text_search("hello", top_k=5, hybrid=True, pack=True)
         print(result.context_pack)
 
-Features: per-call deadlines, automatic retry with exponential backoff on
-transient errors, optional TLS and bearer-token auth, a typed error hierarchy
-(see :mod:`akidb.errors`), and full coverage of the service surface. For testing,
-inject a ``stub``.
+Features: per-call deadlines, automatic retry with exponential backoff and jitter
+on transient errors, an ``on_retry`` observability hook, optional TLS and
+bearer-token auth, gRPC interceptor support, a typed error hierarchy (see
+:mod:`akidb.errors`), typed results, and full coverage of the service surface.
+For testing, inject a ``stub``.
 """
 
 from __future__ import annotations
 
 import json
+import random
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 import grpc
 
 from . import akidb_pb2 as pb
 from . import akidb_pb2_grpc as pb_grpc
-from .errors import RETRYABLE_CODES, map_grpc_error
+from .errors import RETRYABLE_CODES, NotFoundError, map_grpc_error
 
 DEFAULT_COLLECTION = "default"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF = 0.1
+
+OnRetry = Callable[[int, BaseException], None]
 
 
 @dataclass
@@ -76,6 +80,45 @@ class GetResult:
     found: bool
 
 
+@dataclass
+class InsertResult:
+    success: bool
+    id: str
+    internal_id: int = 0
+
+
+@dataclass
+class DeleteResult:
+    success: bool
+    id: str
+    status: int = 0
+    visibility: str = ""
+
+
+@dataclass
+class UpdateResult:
+    success: bool
+    id: str
+    status: int = 0
+
+
+@dataclass
+class BatchInsertResult:
+    success: bool
+    inserted_count: int
+    failed_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HealthStatus:
+    healthy: bool
+    ready: bool
+    message: str
+    total_vectors: int
+    active_vectors: int
+    using_gpu: bool
+
+
 def _hits(results) -> list[SearchHit]:
     return [SearchHit(r.id, r.score, r.metadata) for r in results]
 
@@ -91,11 +134,13 @@ class AkiDBClient:
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_backoff: float = DEFAULT_BACKOFF,
+        on_retry: Optional[OnRetry] = None,
         tls: bool = False,
         ca_cert: Optional[bytes] = None,
         auth_token: Optional[str] = None,
         metadata: Optional[Sequence[tuple[str, str]]] = None,
         channel_options: Optional[Sequence[tuple[str, Any]]] = None,
+        interceptors: Optional[Sequence[grpc.UnaryUnaryClientInterceptor]] = None,
         channel: Any = None,
         stub: Any = None,
     ):
@@ -103,6 +148,7 @@ class AkiDBClient:
         self._timeout = timeout
         self._max_retries = max_retries
         self._retry_backoff = retry_backoff
+        self._on_retry = on_retry
         self._owns_channel = False
 
         md: list[tuple[str, str]] = list(metadata or [])
@@ -123,12 +169,14 @@ class AkiDBClient:
             else:
                 self._channel = grpc.insecure_channel(target, options=channel_options)
                 self._owns_channel = True
+            if interceptors:
+                self._channel = grpc.intercept_channel(self._channel, *interceptors)
             self._stub = pb_grpc.AkidbStub(self._channel)
 
     # -- core call wrapper -------------------------------------------------
 
     def _invoke(self, method, request):
-        """Invoke a unary RPC with deadline, metadata, retries, and error mapping."""
+        """Invoke a unary RPC with deadline, metadata, jittered retries, and error mapping."""
         attempt = 0
         while True:
             try:
@@ -136,49 +184,55 @@ class AkiDBClient:
             except grpc.RpcError as exc:
                 code = exc.code() if hasattr(exc, "code") else None
                 if code in RETRYABLE_CODES and attempt < self._max_retries:
-                    time.sleep(self._retry_backoff * (2**attempt))
+                    if self._on_retry is not None:
+                        self._on_retry(attempt, exc)
+                    time.sleep(_jittered(self._retry_backoff, attempt))
                     attempt += 1
                     continue
                 raise map_grpc_error(exc) from exc
 
     # -- writes ------------------------------------------------------------
 
-    def insert(self, id: str, vector: Sequence[float], *, metadata: bytes = b"", text: str = "") -> Any:
-        return self._invoke(
+    def insert(self, id: str, vector: Sequence[float], *, metadata: bytes = b"", text: str = "") -> InsertResult:
+        r = self._invoke(
             self._stub.Insert,
             pb.InsertRequest(
                 collection=self.collection, id=id, vector=list(vector), metadata=metadata, text=text
             ),
         )
+        return InsertResult(success=r.success, id=r.id, internal_id=r.internal_id)
 
-    def insert_batch(self, vectors: Sequence["VectorInput"]) -> Any:
+    def insert_batch(self, vectors: Sequence["VectorInput"]) -> BatchInsertResult:
         proto_vectors = [
-            pb.Vector(
-                id=v.id,
-                embedding=list(v.vector),
-                metadata=v.metadata,
-                text=v.text,
-            )
+            pb.Vector(id=v.id, embedding=list(v.vector), metadata=v.metadata, text=v.text)
             for v in vectors
         ]
-        return self._invoke(
+        r = self._invoke(
             self._stub.InsertBatch,
             pb.InsertBatchRequest(collection=self.collection, vectors=proto_vectors),
         )
+        return BatchInsertResult(success=r.success, inserted_count=r.inserted_count, failed_ids=list(r.failed_ids))
 
-    def update(self, id: str, vector: Sequence[float], *, metadata: bytes = b"") -> Any:
-        return self._invoke(
+    def update(self, id: str, vector: Sequence[float], *, metadata: bytes = b"") -> UpdateResult:
+        r = self._invoke(
             self._stub.Update,
             pb.UpdateRequest(collection=self.collection, id=id, vector=list(vector), metadata=metadata),
         )
+        return UpdateResult(success=r.success, id=r.id, status=r.status)
 
-    def delete(self, id: str) -> Any:
-        return self._invoke(self._stub.Delete, pb.DeleteRequest(collection=self.collection, id=id))
+    def delete(self, id: str) -> DeleteResult:
+        r = self._invoke(self._stub.Delete, pb.DeleteRequest(collection=self.collection, id=id))
+        return DeleteResult(success=r.success, id=r.id, status=r.status, visibility=r.visibility)
 
     # -- reads -------------------------------------------------------------
 
     def get(self, id: str) -> GetResult:
-        resp = self._invoke(self._stub.Get, pb.GetRequest(collection=self.collection, id=id))
+        # The server signals a missing vector with a NOT_FOUND error; normalize
+        # that to a `found=False` result so callers don't branch on exceptions.
+        try:
+            resp = self._invoke(self._stub.Get, pb.GetRequest(collection=self.collection, id=id))
+        except NotFoundError:
+            return GetResult(id=id, vector=[], metadata="", found=False)
         return GetResult(id=resp.id, vector=list(resp.vector), metadata=resp.metadata, found=resp.found)
 
     def search(
@@ -230,10 +284,18 @@ class AkiDBClient:
         resp = self._invoke(self._stub.TextSearch, req)
         return TextSearchResult(hits=_hits(resp.results), context_pack=resp.context_pack)
 
-    def health(self) -> Any:
-        return self._invoke(self._stub.Health, pb.HealthRequest())
+    def health(self) -> HealthStatus:
+        r = self._invoke(self._stub.Health, pb.HealthRequest())
+        return HealthStatus(
+            healthy=r.healthy,
+            ready=r.ready,
+            message=r.message,
+            total_vectors=r.total_vectors,
+            active_vectors=r.active_vectors,
+            using_gpu=r.using_gpu,
+        )
 
-    def cluster_state(self) -> Any:
+    def cluster_state(self) -> pb.GetClusterStateResponse:
         return self._invoke(self._stub.GetClusterState, pb.GetClusterStateRequest())
 
     # -- agent memory convenience -----------------------------------------
@@ -251,10 +313,9 @@ class AkiDBClient:
         source_uri: Optional[str] = None,
         timestamp: Optional[int] = None,
         tags: Optional[dict[str, str]] = None,
-    ) -> Any:
+    ) -> InsertResult:
         """Store an agent-memory entry. The caller supplies the embedding; this
-        builds the canonical memory metadata and inserts it (see the memory
-        schema in `akidb-retrieval`)."""
+        builds the canonical memory metadata and inserts it."""
         meta = build_memory_metadata(
             kind=kind,
             conversation_id=conversation_id,
@@ -306,6 +367,15 @@ class VectorInput:
     text: str = ""
 
 
+def _jittered(base: float, attempt: int) -> float:
+    """Equal-jitter exponential backoff: half fixed, half random, to avoid a
+    thundering herd. ``base == 0`` yields 0 (used by tests)."""
+    if base <= 0:
+        return 0.0
+    window = base * (2**attempt)
+    return window / 2 + random.uniform(0, window / 2)
+
+
 def build_memory_metadata(
     *,
     kind: str = "note",
@@ -329,7 +399,7 @@ def build_memory_metadata(
         meta["source_uri"] = source_uri
     if timestamp is not None:
         meta["timestamp"] = timestamp
-    reserved = set(meta) | {"memory_kind", "conversation_id", "task_id", "tool", "source_uri", "timestamp"}
+    reserved = {"memory_kind", "conversation_id", "task_id", "tool", "source_uri", "timestamp"}
     for k, v in (tags or {}).items():
         if k not in reserved:
             meta[k] = v

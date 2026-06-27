@@ -11,7 +11,7 @@ import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mapError, RETRYABLE_CODES } from './errors.js';
+import { mapError, NotFoundError, RETRYABLE_CODES } from './errors.js';
 
 export const DEFAULT_COLLECTION = 'default';
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -52,6 +52,27 @@ export interface HealthStatus {
   total_vectors: string;
   active_vectors: string;
   using_gpu: boolean;
+}
+
+export interface DeleteResponse {
+  success: boolean;
+  id: string;
+  status: string;
+  visibility: string;
+}
+
+export interface UpdateResponse {
+  success: boolean;
+  id: string;
+  status: string;
+}
+
+export interface ClusterState {
+  coordinators: unknown[];
+  shards: unknown[];
+  leader_id?: string;
+  local_peer_id: string;
+  metrics?: unknown;
 }
 
 export interface InsertResponse {
@@ -125,6 +146,8 @@ export interface AkiDBClientOptions {
   rootCerts?: Buffer;
   authToken?: string;
   metadata?: Record<string, string>;
+  /** Observability hook invoked before each retry sleep. */
+  onRetry?: (attempt: number, error: grpc.ServiceError) => void;
   /** Inject a client (for tests); when omitted, a real gRPC client is created. */
   rawClient?: RawClient;
 }
@@ -145,6 +168,14 @@ function loadRawClient(target: string, creds: grpc.ChannelCredentials): RawClien
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Equal-jitter exponential backoff: half fixed, half random (avoids a
+ * thundering herd). `base <= 0` yields 0 (used by tests). */
+function jitter(base: number, attempt: number): number {
+  if (base <= 0) return 0;
+  const window = base * 2 ** attempt;
+  return window / 2 + Math.random() * (window / 2);
+}
+
 export class AkiDBClient {
   private raw: RawClient;
   readonly collection: string;
@@ -153,6 +184,7 @@ export class AkiDBClient {
   private backoffMs: number;
   private authToken?: string;
   private metadataEntries: [string, string][];
+  private onRetry?: (attempt: number, error: grpc.ServiceError) => void;
 
   constructor(opts: AkiDBClientOptions = {}) {
     this.collection = opts.collection ?? DEFAULT_COLLECTION;
@@ -161,6 +193,7 @@ export class AkiDBClient {
     this.backoffMs = opts.backoffMs ?? DEFAULT_BACKOFF_MS;
     this.authToken = opts.authToken;
     this.metadataEntries = Object.entries(opts.metadata ?? {});
+    this.onRetry = opts.onRetry;
 
     if (opts.rawClient) {
       this.raw = opts.rawClient;
@@ -195,13 +228,14 @@ export class AkiDBClient {
       try {
         return await this.callOnce<T>(fn, request);
       } catch (err) {
-        const code = (err as grpc.ServiceError).code;
-        if (code !== undefined && RETRYABLE_CODES.has(code) && attempt < this.maxRetries) {
-          await sleep(this.backoffMs * 2 ** attempt);
+        const e = err as grpc.ServiceError;
+        if (e.code !== undefined && RETRYABLE_CODES.has(e.code) && attempt < this.maxRetries) {
+          this.onRetry?.(attempt, e);
+          await sleep(jitter(this.backoffMs, attempt));
           attempt++;
           continue;
         }
-        throw mapError(err as grpc.ServiceError);
+        throw mapError(e);
       }
     }
   }
@@ -232,7 +266,7 @@ export class AkiDBClient {
     });
   }
 
-  update(id: string, vector: number[], opts: { metadata?: Uint8Array } = {}): Promise<any> {
+  update(id: string, vector: number[], opts: { metadata?: Uint8Array } = {}): Promise<UpdateResponse> {
     return this.call(this.raw.Update, {
       collection: this.collection,
       id,
@@ -241,16 +275,23 @@ export class AkiDBClient {
     });
   }
 
-  delete(id: string): Promise<any> {
+  delete(id: string): Promise<DeleteResponse> {
     return this.call(this.raw.Delete, { collection: this.collection, id });
   }
 
   async get(id: string): Promise<GetResult> {
-    const r = await this.call<{ id: string; vector?: number[]; metadata: string; found: boolean }>(
-      this.raw.Get,
-      { collection: this.collection, id },
-    );
-    return { id: r.id, vector: r.vector ?? [], metadata: r.metadata, found: r.found };
+    // The server signals a missing vector with a NOT_FOUND error; normalize that
+    // to a `found: false` result so callers don't branch on exceptions.
+    try {
+      const r = await this.call<{ id: string; vector?: number[]; metadata: string; found: boolean }>(
+        this.raw.Get,
+        { collection: this.collection, id },
+      );
+      return { id: r.id, vector: r.vector ?? [], metadata: r.metadata, found: r.found };
+    } catch (e) {
+      if (e instanceof NotFoundError) return { id, vector: [], metadata: '', found: false };
+      throw e;
+    }
   }
 
   async search(vector: number[], topK = 10, tagFilter?: unknown): Promise<SearchHit[]> {
@@ -295,7 +336,7 @@ export class AkiDBClient {
     return this.call(this.raw.Health, {});
   }
 
-  clusterState(): Promise<any> {
+  clusterState(): Promise<ClusterState> {
     return this.call(this.raw.GetClusterState, {});
   }
 

@@ -70,13 +70,13 @@ def test_async_retries_then_succeeds():
 
 def test_async_non_retryable_maps_error():
     client, stub = make_client()
-    stub.Get = AsyncMock(side_effect=FakeRpcError(grpc.StatusCode.NOT_FOUND, "missing"))
+    stub.Search = AsyncMock(side_effect=FakeRpcError(grpc.StatusCode.NOT_FOUND, "missing"))
     try:
-        run(client.get("nope"))
+        run(client.search([0.1]))
         assert False, "expected NotFoundError"
     except NotFoundError:
         pass
-    assert stub.Get.call_count == 1
+    assert stub.Search.call_count == 1
 
 
 def test_async_retries_exhausted():

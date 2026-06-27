@@ -137,11 +137,50 @@ describe('AkiDBClient (hardened)', () => {
     expect(counts.Search).toBe(3);
   });
 
+  it('invokes onRetry before each retry', async () => {
+    let n = 0;
+    const seen: number[] = [];
+    const { raw } = fakeClient({
+      Search: () => {
+        n++;
+        return n < 3 ? rpcError(Status.UNAVAILABLE) : { results: [] };
+      },
+    });
+    const client = new AkiDBClient({
+      rawClient: raw,
+      backoffMs: 0,
+      maxRetries: 3,
+      onRetry: (attempt) => seen.push(attempt),
+    });
+    await client.search([0.1]);
+    expect(seen).toEqual([0, 1]);
+  });
+
+  it('returns typed delete/update responses', async () => {
+    const { raw } = fakeClient({
+      Delete: { success: true, id: 'x', status: 'DELETED', visibility: 'immediate' },
+      Update: { success: true, id: 'x', status: 'UPDATED' },
+    });
+    const client = new AkiDBClient({ rawClient: raw });
+    const d = await client.delete('x');
+    expect(d.visibility).toBe('immediate');
+    const u = await client.update('x', [1, 2]);
+    expect(u.status).toBe('UPDATED');
+  });
+
+  it('get on a missing id returns found:false instead of throwing', async () => {
+    const { raw } = fakeClient({ Get: () => rpcError(Status.NOT_FOUND, 'missing') });
+    const client = new AkiDBClient({ rawClient: raw });
+    const got = await client.get('nope');
+    expect(got.found).toBe(false);
+    expect(got.id).toBe('nope');
+  });
+
   it('maps non-retryable errors immediately', async () => {
-    const { raw, counts } = fakeClient({ Get: () => rpcError(Status.NOT_FOUND, 'missing') });
+    const { raw, counts } = fakeClient({ Search: () => rpcError(Status.NOT_FOUND, 'missing') });
     const client = new AkiDBClient({ rawClient: raw, maxRetries: 5 });
-    await expect(client.get('nope')).rejects.toBeInstanceOf(NotFoundError);
-    expect(counts.Get).toBe(1);
+    await expect(client.search([0.1])).rejects.toBeInstanceOf(NotFoundError);
+    expect(counts.Search).toBe(1);
   });
 
   it('throws mapped error after exhausting retries', async () => {

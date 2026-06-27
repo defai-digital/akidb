@@ -1,0 +1,76 @@
+name: SDKs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdks/**'
+      - 'crates/grpc-server/proto/**'
+      - '.github/workflows/sdks.yml'
+  pull_request:
+    paths:
+      - 'sdks/**'
+      - 'crates/grpc-server/proto/**'
+      - '.github/workflows/sdks.yml'
+
+jobs:
+  sdks:
+    # Apple Silicon: the engine is Mac-first, so the server is built/run here.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        run: brew install protobuf
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Proto drift check
+        run: ./sdks/check-proto-drift.sh
+
+      - name: Build server
+        run: cargo build -p akidb-cli
+
+      - name: Python SDK — install + unit tests
+        working-directory: sdks/python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pytest tests/test_client.py tests/test_aio.py tests/test_proto_drift.py -q
+
+      - name: TypeScript SDK — install + typecheck + unit tests
+        working-directory: sdks/typescript
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm test -- src/client.test.ts src/proto-drift.test.ts
+
+      - name: Live integration tests (real server)
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"; CFG="$TMP/akidb.toml"
+          sed -e "s#\./data/rocksdb#$TMP/rocksdb#" \
+              -e "s#\./data/wal#$TMP/wal#" \
+              -e "s/dimensions = 768/dimensions = 8/" \
+              config/default.toml > "$CFG"
+          ./target/debug/akidb server --standalone --config "$CFG" --listen 127.0.0.1:51999 \
+            > "$TMP/server.log" 2>&1 &
+          SRV=$!
+          trap 'kill "$SRV" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+          for i in $(seq 1 80); do
+            if nc -z 127.0.0.1 51999 2>/dev/null; then echo "server up"; break; fi
+            sleep 0.5
+          done
+          export AKIDB_SERVER_ADDR=127.0.0.1:51999 AKIDB_TEST_DIM=8
+          (cd sdks/python && pytest tests/test_live.py -q)
+          (cd sdks/typescript && npm test -- src/live.test.ts)
+          cat "$TMP/server.log"
