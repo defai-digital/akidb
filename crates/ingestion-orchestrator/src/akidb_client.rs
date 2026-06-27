@@ -23,6 +23,8 @@ pub struct VectorInsert {
     pub id: String,
     pub embedding: Vec<f32>,
     pub metadata: std::collections::HashMap<String, String>,
+    /// Source chunk text, indexed for lexical (BM25) hybrid retrieval.
+    pub text: String,
 }
 
 /// Insert result
@@ -134,9 +136,7 @@ impl AkiDbClient {
                     id: v.id.clone(),
                     embedding: v.embedding.clone(),
                     metadata: metadata_bytes,
-                    // TODO(CP5): thread chunk source text through VectorInsert to
-                    // populate the lexical index from ingestion.
-                    text: String::new(),
+                    text: v.text.clone(),
                 }
             })
             .collect();
@@ -290,9 +290,11 @@ mod tests {
             id: "test-1".to_string(),
             embedding: vec![0.1, 0.2, 0.3],
             metadata: std::collections::HashMap::new(),
+            text: "hello world".to_string(),
         };
         assert_eq!(vi.id, "test-1");
         assert_eq!(vi.embedding.len(), 3);
+        assert_eq!(vi.text, "hello world");
     }
 
     #[test]

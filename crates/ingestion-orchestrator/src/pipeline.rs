@@ -276,6 +276,7 @@ impl IngestionPipeline {
                 id: format!("{}:{}", content_hash, i),
                 embedding: embedding.clone(),
                 metadata,
+                text: chunk.text.clone(),
             }
         }).collect();
 
