@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "akidb"
-version = "0.6.0"
+version = "0.6.1"
 description = "Python SDK for AkiDB — a Mac-native retrieval memory engine for private AI agents"
 readme = "README.md"
 requires-python = ">=3.9"

@@ -1,6 +1,6 @@
 {
   "name": "@akidb/client",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "TypeScript SDK for AkiDB — a Mac-native retrieval memory engine for private AI agents",
   "license": "Apache-2.0",
   "type": "module",
