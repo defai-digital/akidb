@@ -7,6 +7,8 @@
 
 pub mod error;
 mod keys;
+#[cfg(feature = "kuzu")]
+pub mod kuzu;
 pub mod model;
 pub mod native;
 pub mod query;

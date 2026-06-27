@@ -17,6 +17,9 @@ pub enum GraphError {
 
     #[error("serialization error: {0}")]
     Serialization(String),
+
+    #[error("graph backend unavailable: {0}")]
+    Unavailable(String),
 }
 
 impl From<akidb_common::AkiDbError> for GraphError {

@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = []
+kuzu = []
+
 [dependencies]
 akidb-common = { path = "../common" }
 akidb-storage = { path = "../storage" }

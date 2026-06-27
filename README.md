@@ -59,6 +59,11 @@ enabled as an optional metadata SQL adapter for exact structured filters.
 PostgreSQL and external graph engines such as Kuzu or Apache AGE remain planned
 as optional adapters, not default runtime dependencies.
 
+The Kuzu evaluation entry point is currently compile-gated with
+`akidb-graph/kuzu`. It exposes the adapter boundary and schema scaffold without
+linking Kuzu into the default build; real Kuzu binding support remains behind
+the benchmark and maintenance gates.
+
 ## Quick Start
 
 ### Mac M2 Or Later
@@ -237,8 +242,9 @@ maintained as internal documents and are not part of this public repository.
 - [x] Local graph inspect CLI for stats, neighbors, and related chunks
 - [x] Optional SQLite metadata SQL adapter design
 - [x] Planner-driven SQL metadata retrieval mode for scalar JSON filters
+- [x] Kuzu adapter evaluation scaffold behind optional `akidb-graph/kuzu` feature
 - [ ] One-Mac reference benchmark
-- [ ] Kuzu adapter evaluation behind an optional feature
+- [ ] Kuzu binding and native-vs-Kuzu benchmark decision gate
 - [ ] PostgreSQL metadata adapter
 - [ ] Four-Mac Thunderbolt cell validation
 
