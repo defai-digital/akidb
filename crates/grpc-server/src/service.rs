@@ -9,7 +9,8 @@ use crate::proto::{
 };
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
-use akidb_retrieval::{Bm25Index, HybridFuser, ScoredId};
+use akidb_retrieval::{pack, Bm25Index, Citation, HybridFuser, PackerConfig, Passage, ScoredId};
+use std::collections::HashMap;
 use akidb_storage::{IdMapping, StorageBackend};
 use dashmap::DashSet;
 use parking_lot::RwLock;
@@ -75,6 +76,10 @@ where
     /// re-ingested. Persisting source text and rebuilding on startup is a
     /// tracked follow-up.
     lexical: Arc<RwLock<Bm25Index>>,
+    /// Raw source text per vector id, the document store backing context
+    /// packing. Populated alongside `lexical` from insert `text`; same
+    /// in-memory-only limitation applies.
+    documents: Arc<RwLock<HashMap<VectorId, String>>>,
 }
 
 impl<I, S> AkiDbService<I, S>
@@ -117,6 +122,7 @@ where
             slo_threshold_us,
             embedding_provider: None,
             lexical: Arc::new(RwLock::new(Bm25Index::new())),
+            documents: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -309,10 +315,11 @@ where
             return Err(Self::to_status(e));
         }
 
-        // Populate the lexical (BM25) index for hybrid retrieval when source
-        // text is provided.
+        // Populate the lexical (BM25) index and document store for hybrid
+        // retrieval and context packing when source text is provided.
         if !req.text.is_empty() {
             self.lexical.write().insert(vector_id.clone(), &req.text);
+            self.documents.write().insert(vector_id.clone(), req.text.clone());
         }
 
         let elapsed = start.elapsed();
@@ -409,6 +416,7 @@ where
             // FIX BUG-HUNT-202: Use configurable SLO threshold instead of hardcoded 50ms
             within_slo: latency_us < self.slo_threshold_us,
             degraded_mode: false,
+            context_pack: String::new(),
         }))
     }
 
@@ -433,8 +441,9 @@ where
             Some(internal_id) => {
                 // Mark in tombstone
                 self.index.delete(internal_id).map_err(Self::to_status)?;
-                // Keep the lexical index in sync with the delete.
+                // Keep the lexical index and document store in sync.
                 self.lexical.write().remove(&vector_id);
+                self.documents.write().remove(&vector_id);
                 DeleteStatus::Deleted
             }
             None => {
@@ -600,6 +609,9 @@ where
                             inserted_count += 1;
                             if !vector.text.is_empty() {
                                 self.lexical.write().insert(vector_id.clone(), &vector.text);
+                                self.documents
+                                    .write()
+                                    .insert(vector_id.clone(), vector.text.clone());
                             }
                         }
                         Err(e) => {
@@ -697,6 +709,7 @@ where
                 // FIX BUG-HUNT-202: Use configurable SLO threshold instead of hardcoded 50ms
                 within_slo: latency_us < self.slo_threshold_us,
                 degraded_mode: false,
+                context_pack: String::new(),
             });
         }
 
@@ -800,6 +813,25 @@ where
                 .collect()
         };
 
+        // Optionally assemble a source-grounded, citation-bearing context pack
+        // (PACK-*). Passages are built from results whose source text is known
+        // in the document store; results without text are skipped.
+        let context_pack = if req.pack {
+            let budget = req.pack_token_budget.unwrap_or(1024) as usize;
+            let docs = self.documents.read();
+            let passages: Vec<Passage> = response_results
+                .iter()
+                .filter_map(|r| {
+                    let id = VectorId::new(&r.id);
+                    docs.get(&id)
+                        .map(|text| Passage::new(id, text.clone(), r.score, Citation::new(&r.id)))
+                })
+                .collect();
+            pack(&passages, &PackerConfig::new(budget)).text
+        } else {
+            String::new()
+        };
+
         let elapsed = start.elapsed();
         let latency_us = elapsed.as_micros() as u64;
 
@@ -818,6 +850,7 @@ where
             latency_us,
             within_slo: latency_us < self.slo_threshold_us,
             degraded_mode: false,
+            context_pack,
         }))
     }
 }

@@ -221,6 +221,7 @@ impl Akidb for CoordinatorService {
             latency_us,
             within_slo: latency_us < 10_000, // 10ms SLO
             degraded_mode: partial,
+            context_pack: String::new(),
         }))
     }
 

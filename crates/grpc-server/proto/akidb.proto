@@ -69,6 +69,7 @@ message SearchResponse {
   uint64 latency_us = 5;
   bool within_slo = 6;
   bool degraded_mode = 7;
+  string context_pack = 8;  // Optional assembled context pack (TextSearch pack=true)
 }
 
 message SearchResult {
@@ -241,6 +242,8 @@ message TextSearchRequest {
   bool hybrid = 5;  // Fuse dense (embedded) + lexical (BM25) results via RRF
   optional float dense_weight = 6;  // RRF weight for dense results (default 1.0)
   optional float lexical_weight = 7;  // RRF weight for lexical results (default 1.0)
+  bool pack = 8;  // Assemble a source-grounded, citation-bearing context pack
+  optional uint32 pack_token_budget = 9;  // Token budget for the pack (default 1024)
 }
 
 // ============================================

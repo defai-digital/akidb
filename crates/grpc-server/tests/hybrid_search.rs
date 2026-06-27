@@ -79,6 +79,8 @@ async fn search(
             hybrid,
             dense_weight,
             lexical_weight,
+            pack: false,
+            pack_token_budget: None,
         }))
         .await
         .expect("text_search failed")
@@ -161,6 +163,86 @@ async fn test_delete_removes_from_hybrid_results() {
     let after = search(&svc, "alpha", 10, true, None, None).await;
     assert!(!ids(&after).contains(&"drop".to_string()), "deleted doc must be gone");
     assert!(ids(&after).contains(&"keep".to_string()));
+}
+
+#[tokio::test]
+async fn test_pack_returns_cited_context() {
+    let svc = setup();
+    seed_disagreeing(&svc).await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 3,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: true,
+            pack_token_budget: Some(1024),
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+
+    // The pack should contain the top doc's source text and a citation marker.
+    assert!(!resp.context_pack.is_empty(), "expected a non-empty context pack");
+    assert!(resp.context_pack.contains("needle in the document"));
+    assert!(
+        resp.context_pack.contains("[doc_both]"),
+        "expected a citation marker, got: {}",
+        resp.context_pack
+    );
+}
+
+#[tokio::test]
+async fn test_pack_respects_token_budget() {
+    let svc = setup();
+    seed_disagreeing(&svc).await;
+
+    // A tiny budget must drop passages: the pack is far shorter than all text.
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 3,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: true,
+            pack_token_budget: Some(3),
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+
+    // At most the first passage fits a 3-token budget.
+    let word_count = resp.context_pack.split_whitespace().count();
+    assert!(word_count <= 3, "budget exceeded: {} words", word_count);
+}
+
+#[tokio::test]
+async fn test_no_pack_leaves_context_empty() {
+    let svc = setup();
+    seed_disagreeing(&svc).await;
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 3,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+    assert!(resp.context_pack.is_empty());
 }
 
 #[tokio::test]
