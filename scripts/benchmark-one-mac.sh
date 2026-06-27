@@ -20,6 +20,7 @@ SLO_MS="${SLO_MS:-50}"
 SEED="${SEED:-42}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_ROOT/benchmark-results}"
 ONE_MAC_REFERENCE="${ONE_MAC_REFERENCE:-0}"
+BUILD_PROFILE="${BUILD_PROFILE:-debug}"
 SERVER_PID=""
 
 cleanup() {
@@ -53,6 +54,21 @@ wait_for_tcp() {
 cd "$PROJECT_ROOT"
 mkdir -p "$OUTPUT_DIR"
 
+case "$BUILD_PROFILE" in
+    debug)
+        CARGO_PROFILE_ARGS=()
+        BIN_DIR="$PROJECT_ROOT/target/debug"
+        ;;
+    release)
+        CARGO_PROFILE_ARGS=(--release)
+        BIN_DIR="$PROJECT_ROOT/target/release"
+        ;;
+    *)
+        echo "ERROR: BUILD_PROFILE must be debug or release, got '$BUILD_PROFILE'"
+        exit 1
+        ;;
+esac
+
 python3 - "$CONFIG_TEMPLATE" "$CONFIG" "$TMP_DIR" "$DIMENSIONS" <<'PY'
 import pathlib
 import re
@@ -71,11 +87,11 @@ content = re.sub(r"(\[embedding\]\s*)enabled = true", r"\1enabled = false", cont
 output.write_text(content)
 PY
 
-echo "=== Building benchmark binaries ==="
-cargo build -p akidb-server -p akidb-benchmark
+echo "=== Building benchmark binaries ($BUILD_PROFILE) ==="
+cargo build "${CARGO_PROFILE_ARGS[@]}" -p akidb-server -p akidb-benchmark
 
 echo "=== Starting clean standalone akidb-server ==="
-./target/debug/akidb-server \
+"$BIN_DIR/akidb-server" \
     --config "$CONFIG" \
     --standalone \
     --listen "127.0.0.1:$GRPC_PORT" \
@@ -88,7 +104,7 @@ OUTPUT="$OUTPUT_DIR/one-mac-${DIMENSIONS}d-${VECTORS}v-c${CONCURRENCY}-${STAMP}.
 ID_PREFIX="one-mac-${STAMP}-$$"
 
 echo "=== Running one-Mac benchmark ==="
-./target/debug/akidb-bench \
+"$BIN_DIR/akidb-bench" \
     --server "http://127.0.0.1:$GRPC_PORT" \
     --dimension "$DIMENSIONS" \
     --num-vectors "$VECTORS" \

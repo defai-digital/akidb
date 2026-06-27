@@ -29,6 +29,9 @@ Defaults:
 Results are written to `benchmark-results/one-mac-*.json`. The runner validates
 the artifact before exiting.
 
+Set `BUILD_PROFILE=release` to run the smoke shape with optimized binaries, or
+leave it unset for the default debug development loop.
+
 ## Reference Workload
 
 Use the product reference shape when the Mac has enough memory:
@@ -39,7 +42,9 @@ Use the product reference shape when the Mac has enough memory:
 
 The reference runner fixes `DIMENSIONS=768`, `VECTORS=1000000`,
 `QUERIES=5000`, `TOP_K=10`, `NPROBE=64`, `CONCURRENCY=1`, and validates the
-artifact with `scripts/validate-one-mac-benchmark.py --reference`.
+artifact with `scripts/validate-one-mac-benchmark.py --reference`. It defaults
+to `BUILD_PROFILE=release` so published reference artifacts use optimized
+binaries.
 
 For 1536-dimensional embeddings:
 

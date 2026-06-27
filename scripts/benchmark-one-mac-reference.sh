@@ -14,6 +14,7 @@ export TOP_K="${TOP_K:-10}"
 export NPROBE="${NPROBE:-64}"
 export CONCURRENCY="${CONCURRENCY:-1}"
 export SLO_MS="${SLO_MS:-50}"
+export BUILD_PROFILE="${BUILD_PROFILE:-release}"
 export ONE_MAC_REFERENCE=1
 
 "$SCRIPT_DIR/benchmark-one-mac.sh"

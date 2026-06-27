@@ -212,7 +212,8 @@ For the reference target shape:
 ```
 
 See `docs/quality/one-mac-benchmark.md` for artifact requirements and
-interpretation.
+interpretation. The reference runner uses optimized release binaries by
+default.
 
 ### Kuzu Benchmark
 
