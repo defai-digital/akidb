@@ -1286,6 +1286,42 @@ where
             ranked.retain(|s| self.metadata_matches_filter(&s.id, metadata_filter));
         }
 
+        if planner_trace.graph_enabled {
+            if let Some(graph) = &self.graph_index {
+                let mut seen: HashSet<VectorId> = ranked.iter().map(|s| s.id.clone()).collect();
+                let seeds = ranked.clone();
+                let graph_limit = top_k.saturating_mul(2).max(1);
+                for seed in seeds {
+                    let seed_node = Self::chunk_node_id(&seed.id);
+                    match graph.related_chunks(&seed_node, graph_limit) {
+                        Ok(chunks) => {
+                            for chunk in chunks {
+                                let id = chunk.vector_id;
+                                if !seen.insert(id.clone()) {
+                                    continue;
+                                }
+                                if let Some(metadata_filter) = &metadata_filter {
+                                    if !self.metadata_matches_filter(&id, metadata_filter) {
+                                        continue;
+                                    }
+                                }
+                                ranked.push(ScoredId::new(id, seed.score * 0.85));
+                            }
+                        }
+                        Err(e) => {
+                            warn!(seed = %seed_node, error = %e, "graph result expansion failed");
+                        }
+                    }
+                }
+                ranked.sort_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+                });
+            }
+        }
+
         // Optional reranking (RET-005): re-score candidates by query-text
         // relevance over their stored source text.
         if req.rerank {

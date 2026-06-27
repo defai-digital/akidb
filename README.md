@@ -228,8 +228,9 @@ maintained as internal documents and are not part of this public repository.
 - [x] TextSearch metadata/tag filtering across hybrid and graph-expanded context
 - [x] Metadata-driven code graph edges for imports/calls/dependencies/owners/commits
 - [x] Planner-driven TextSearch vector/BM25/hybrid routing with explicit mode overrides
+- [x] Graph-expanded chunks participate in TextSearch results when graph routing is enabled
 - [ ] One-Mac reference benchmark
-- [ ] Full planner-driven graph result routing and SQL adapter integration
+- [ ] Planner-driven SQL adapter integration
 - [ ] Kuzu adapter evaluation behind an optional feature
 - [ ] Optional SQL metadata adapter design
 - [ ] Four-Mac Thunderbolt cell validation

@@ -667,6 +667,67 @@ async fn test_pack_includes_graph_related_chunk() {
 }
 
 #[tokio::test]
+async fn test_graph_mode_returns_graph_expanded_results() {
+    let (svc, graph) = setup_with_graph();
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle anchor text",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "related",
+        vec![0.0, 0.0, 1.0],
+        "graph result context",
+        b"",
+    )
+    .await;
+
+    graph
+        .upsert_node(GraphNode::new("chunk:anchor", NodeKind::Chunk))
+        .unwrap();
+    graph
+        .upsert_node(GraphNode::new("chunk:related", NodeKind::Chunk))
+        .unwrap();
+    graph
+        .upsert_edge(GraphEdge::new(
+            "anchor-related-result",
+            "chunk:anchor",
+            "chunk:related",
+            EdgeKind::RelatedTo,
+        ))
+        .unwrap();
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 2,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "graph".into(),
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["anchor", "related"]);
+}
+
+#[tokio::test]
 async fn test_insert_metadata_indexes_graph_related_ids_for_pack() {
     let (svc, _graph) = setup_with_graph();
     insert(
@@ -890,7 +951,7 @@ async fn test_text_search_filter_blocks_graph_expanded_context() {
         .text_search(Request::new(TextSearchRequest {
             collection: "test".into(),
             text: "needle".into(),
-            top_k: 1,
+            top_k: 2,
             nprobe: None,
             hybrid: true,
             dense_weight: None,
@@ -902,12 +963,14 @@ async fn test_text_search_filter_blocks_graph_expanded_context() {
             mmr_lambda: None,
             filter: br#"{"tenant":"a"}"#.to_vec(),
             tag_filter: None,
-            retrieval_mode: String::new(),
+            retrieval_mode: "graph_hybrid".into(),
         }))
         .await
         .expect("text_search failed")
         .into_inner();
 
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["anchor"]);
     assert!(
         resp.context_pack.contains("needle allowed context"),
         "allowed anchor context expected, got: {}",
