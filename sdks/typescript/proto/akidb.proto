@@ -1,0 +1,697 @@
+syntax = "proto3";
+
+package akidb.v1;
+
+// AkiDB Vector Database Service
+service Akidb {
+  // Insert a vector
+  rpc Insert(InsertRequest) returns (InsertResponse);
+
+  // Search for similar vectors
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Delete a vector
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+
+  // Update a vector (upsert semantics)
+  rpc Update(UpdateRequest) returns (UpdateResponse);
+
+  // Get a vector by ID
+  rpc Get(GetRequest) returns (GetResponse);
+
+  // Health check
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Batch insert
+  rpc InsertBatch(InsertBatchRequest) returns (InsertBatchResponse);
+
+  // Batch search
+  rpc SearchBatch(SearchBatchRequest) returns (SearchBatchResponse);
+
+  // Get cluster state (coordinators and shards)
+  rpc GetClusterState(GetClusterStateRequest) returns (GetClusterStateResponse);
+
+  // Text search: embed text via ax-engine, then search for similar vectors
+  rpc TextSearch(TextSearchRequest) returns (SearchResponse);
+}
+
+// Insert request
+message InsertRequest {
+  string collection = 1;
+  string id = 2;
+  repeated float vector = 3;
+  bytes metadata = 4;  // Optional JSON metadata
+  string text = 5;  // Optional source text for lexical (BM25) hybrid retrieval
+}
+
+message InsertResponse {
+  bool success = 1;
+  string id = 2;
+  int64 internal_id = 3;
+  VisibilityInfo visibility = 4;
+}
+
+// Search request
+message SearchRequest {
+  string collection = 1;
+  repeated float query = 2;
+  uint32 top_k = 3;
+  optional uint32 nprobe = 4;  // IVF probes, default 32
+  bytes filter = 5;  // Optional metadata filter (legacy JSON)
+  TagFilter tag_filter = 6;  // Optional typed tag filter
+}
+
+message SearchResponse {
+  repeated SearchResult results = 1;
+  bool partial = 2;  // True if some shards were unavailable
+  repeated string missing_shards = 3;
+  float coverage = 4;  // 0.0 - 1.0
+  uint64 latency_us = 5;
+  bool within_slo = 6;
+  bool degraded_mode = 7;
+  string context_pack = 8;  // Optional assembled context pack (TextSearch pack=true)
+}
+
+message SearchResult {
+  string id = 1;
+  float score = 2;
+  string metadata = 3;
+}
+
+// Delete request
+message DeleteRequest {
+  string collection = 1;
+  string id = 2;
+}
+
+message DeleteResponse {
+  bool success = 1;
+  string id = 2;
+  DeleteStatus status = 3;
+  string visibility = 4;  // "immediate"
+}
+
+enum DeleteStatus {
+  DELETED = 0;
+  NOT_FOUND = 1;
+  ALREADY_DELETED = 2;
+}
+
+// Update request
+message UpdateRequest {
+  string collection = 1;
+  string id = 2;
+  repeated float vector = 3;
+  bytes metadata = 4;
+}
+
+message UpdateResponse {
+  bool success = 1;
+  string id = 2;
+  UpdateStatus status = 3;
+  VisibilityInfo visibility = 4;
+}
+
+enum UpdateStatus {
+  UPDATED = 0;
+  CREATED = 1;  // Upsert created new
+}
+
+// Visibility info
+message VisibilityInfo {
+  string delete_visibility = 1;  // "immediate"
+  string insert_visibility = 2;  // "within_100ms"
+}
+
+// Get request
+message GetRequest {
+  string collection = 1;
+  string id = 2;
+}
+
+message GetResponse {
+  string id = 1;
+  repeated float vector = 2;
+  string metadata = 3;
+  bool found = 4;
+}
+
+// Health check
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy = 1;
+  bool ready = 2;
+  string message = 3;
+  uint64 total_vectors = 4;
+  uint64 active_vectors = 5;
+  bool using_gpu = 6;
+}
+
+// Cluster state request
+message GetClusterStateRequest {}
+
+// Cluster state response with coordinator and shard info
+message GetClusterStateResponse {
+  repeated CoordinatorNode coordinators = 1;
+  repeated ShardNode shards = 2;
+  optional string leader_id = 3;
+  string local_peer_id = 4;
+  ClusterMetrics metrics = 5;
+}
+
+// Coordinator node information
+message CoordinatorNode {
+  string id = 1;
+  string peer_id = 2;
+  string address = 3;
+  bool is_leader = 4;
+  bool is_self = 5;
+  NodeStatus status = 6;
+}
+
+// Shard node information
+message ShardNode {
+  string id = 1;
+  string address = 2;
+  uint64 vector_count = 3;
+  float health_score = 4;
+  optional float gpu_memory_percent = 5;
+  optional float temperature = 6;
+  NodeStatus status = 7;
+}
+
+// Node health status
+enum NodeStatus {
+  NODE_STATUS_UNKNOWN = 0;
+  NODE_STATUS_HEALTHY = 1;
+  NODE_STATUS_UNHEALTHY = 2;
+}
+
+// Cluster-wide metrics
+message ClusterMetrics {
+  double qps = 1;
+  double p50_latency_ms = 2;
+  double p95_latency_ms = 3;
+  double p99_latency_ms = 4;
+  float coverage = 5;
+  float backpressure = 6;
+  bool within_slo = 7;
+}
+
+// Batch operations
+message InsertBatchRequest {
+  string collection = 1;
+  repeated Vector vectors = 2;
+}
+
+message Vector {
+  string id = 1;
+  repeated float embedding = 2;
+  bytes metadata = 3;
+  string text = 4;  // Optional source text for lexical (BM25) hybrid retrieval
+}
+
+message InsertBatchResponse {
+  bool success = 1;
+  uint32 inserted_count = 2;
+  repeated string failed_ids = 3;
+}
+
+message SearchBatchRequest {
+  string collection = 1;
+  repeated Query queries = 2;
+  uint32 top_k = 3;
+  optional uint32 nprobe = 4;
+}
+
+message Query {
+  repeated float vector = 1;
+}
+
+message SearchBatchResponse {
+  repeated SearchResponse results = 1;
+}
+
+// Text search request (embeds text via ax-engine, then searches)
+message TextSearchRequest {
+  string collection = 1;
+  string text = 2;
+  uint32 top_k = 3;
+  optional uint32 nprobe = 4;
+  bool hybrid = 5;  // Fuse dense (embedded) + lexical (BM25) results via RRF
+  optional float dense_weight = 6;  // RRF weight for dense results (default 1.0)
+  optional float lexical_weight = 7;  // RRF weight for lexical results (default 1.0)
+  bool pack = 8;  // Assemble a source-grounded, citation-bearing context pack
+  optional uint32 pack_token_budget = 9;  // Token budget for the pack (default 1024)
+  bool rerank = 10;  // Re-score candidates by query-text relevance (RET-005)
+  bool diversity = 11;  // MMR diversity reselection to reduce near-duplicates (RET-006)
+  optional float mmr_lambda = 12;  // MMR relevance/diversity tradeoff (default 0.5)
+}
+
+// ============================================
+// Tag System
+// ============================================
+
+// Typed tag value
+message TagValue {
+  oneof value {
+    string text = 1;
+    double number = 2;
+    bool boolean = 3;
+    TextList text_list = 4;
+  }
+}
+
+// List of text values for multi-value tags
+message TextList {
+  repeated string values = 1;
+}
+
+// Tag filter for search queries
+message TagFilter {
+  oneof filter_type {
+    AndFilter and = 1;
+    OrFilter or = 2;
+    NotFilter not = 3;
+    TagCondition condition = 4;
+  }
+}
+
+message AndFilter {
+  repeated TagFilter filters = 1;
+}
+
+message OrFilter {
+  repeated TagFilter filters = 1;
+}
+
+message NotFilter {
+  TagFilter filter = 1;
+}
+
+message TagCondition {
+  string key = 1;
+  TagValue value = 2;
+  TagOperator op = 3;
+}
+
+enum TagOperator {
+  TAG_OP_EQ = 0;
+  TAG_OP_GT = 1;
+  TAG_OP_LT = 2;
+  TAG_OP_GTE = 3;
+  TAG_OP_LTE = 4;
+  TAG_OP_CONTAINS = 5;
+  TAG_OP_EXISTS = 6;
+}
+
+// Update tags without re-embedding
+message UpdateTagsRequest {
+  string collection = 1;
+  string document_id = 2;  // instance_id or content_hash
+  map<string, TagValue> tags = 3;
+  bool merge = 4;  // true = merge, false = replace
+}
+
+message UpdateTagsResponse {
+  bool success = 1;
+  string error = 2;
+  uint32 vectors_updated = 3;
+}
+
+// ============================================
+// Ingestion Service
+// ============================================
+
+service IngestionService {
+  // Trigger a sync run manually
+  rpc TriggerSync(TriggerSyncRequest) returns (TriggerSyncResponse);
+
+  // Get sync status
+  rpc GetSyncStatus(GetSyncStatusRequest) returns (SyncStatusResponse);
+
+  // Update tags on existing documents
+  rpc UpdateTags(UpdateTagsRequest) returns (UpdateTagsResponse);
+
+  // Reindex a category
+  rpc ReindexCategory(ReindexCategoryRequest) returns (ReindexCategoryResponse);
+
+  // Delete a category (soft or hard)
+  rpc DeleteCategory(DeleteCategoryRequest) returns (DeleteCategoryResponse);
+
+  // List categories
+  rpc ListCategories(ListCategoriesRequest) returns (ListCategoriesResponse);
+}
+
+// Trigger sync manually
+message TriggerSyncRequest {
+  bool force = 1;  // Force run even if one is in progress
+}
+
+message TriggerSyncResponse {
+  string run_id = 1;
+  SyncRunStatus status = 2;
+  string message = 3;
+}
+
+enum SyncRunStatus {
+  SYNC_STARTED = 0;
+  SYNC_ALREADY_RUNNING = 1;
+  SYNC_DISABLED = 2;
+}
+
+// Get sync status
+message GetSyncStatusRequest {}
+
+message SyncStatusResponse {
+  string last_run_id = 1;
+  string last_run_status = 2;
+  int64 last_run_timestamp_ms = 3;
+  int64 next_run_timestamp_ms = 4;
+  bool is_running = 5;
+  SyncStats last_run_stats = 6;
+}
+
+message SyncStats {
+  uint64 new_count = 1;
+  uint64 updated_count = 2;
+  uint64 marked_count = 3;
+  uint64 confirmed_count = 4;
+  uint64 skipped_count = 5;
+}
+
+// Reindex by category
+message ReindexCategoryRequest {
+  string category_uid = 1;
+  bool dry_run = 2;
+}
+
+message ReindexCategoryResponse {
+  bool success = 1;
+  string run_id = 2;
+  uint32 documents = 3;
+  uint32 vectors_inserted = 4;
+  uint32 vectors_tombstoned = 5;
+  uint64 old_version = 6;
+  uint64 new_version = 7;
+  string error = 8;
+}
+
+// Delete by category
+message DeleteCategoryRequest {
+  string category_uid = 1;
+  bool hard_delete = 2;
+}
+
+message DeleteCategoryResponse {
+  bool success = 1;
+  uint32 vectors_affected = 2;
+}
+
+// List categories
+message ListCategoriesRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+}
+
+message CategoryInfo {
+  string category_uid = 1;
+  uint64 vector_count = 2;
+  uint64 document_count = 3;
+  uint64 version = 4;
+}
+
+message ListCategoriesResponse {
+  repeated CategoryInfo categories = 1;
+  uint32 total_count = 2;
+}
+
+// ============================================
+// Admin Service - Background Task Management
+// ============================================
+
+service AdminService {
+  // Get status of all background tasks
+  rpc GetBackgroundTaskStatus(GetBackgroundTaskStatusRequest) returns (GetBackgroundTaskStatusResponse);
+
+  // List task execution history
+  rpc GetTaskHistory(GetTaskHistoryRequest) returns (GetTaskHistoryResponse);
+
+  // Trigger a snapshot manually
+  rpc TriggerSnapshot(TriggerSnapshotRequest) returns (TriggerSnapshotResponse);
+
+  // Trigger an index rebuild manually
+  rpc TriggerRebuild(TriggerRebuildRequest) returns (TriggerRebuildResponse);
+
+  // Cancel a running task
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+
+  // Get resource governor status
+  rpc GetResourceStatus(GetResourceStatusRequest) returns (GetResourceStatusResponse);
+
+  // Configure webhook alerts
+  rpc ConfigureWebhook(ConfigureWebhookRequest) returns (ConfigureWebhookResponse);
+
+  // Get current webhook configuration
+  rpc GetWebhookConfig(GetWebhookConfigRequest) returns (GetWebhookConfigResponse);
+}
+
+// ============================================
+// Background Task Status
+// ============================================
+
+message GetBackgroundTaskStatusRequest {
+  optional string task_type = 1;  // Filter by task type
+  optional string task_id = 2;    // Filter by task ID
+}
+
+message GetBackgroundTaskStatusResponse {
+  repeated BackgroundTaskInfo tasks = 1;
+  ResourceStatus resource_status = 2;
+}
+
+message BackgroundTaskInfo {
+  string task_type = 1;
+  string task_id = 2;
+  string description = 3;
+  TaskStatus status = 4;
+  TaskScheduleInfo schedule = 5;
+  optional TaskExecutionInfo current_execution = 6;
+  optional TaskExecutionInfo last_execution = 7;
+  ResourceRequirementsInfo requirements = 8;
+  bool enabled = 9;
+}
+
+enum TaskStatus {
+  TASK_STATUS_IDLE = 0;
+  TASK_STATUS_PENDING = 1;
+  TASK_STATUS_RUNNING = 2;
+  TASK_STATUS_COMPLETED = 3;
+  TASK_STATUS_FAILED = 4;
+  TASK_STATUS_CANCELLED = 5;
+  TASK_STATUS_DISABLED = 6;
+}
+
+message TaskScheduleInfo {
+  oneof schedule_type {
+    string cron = 1;           // Cron expression
+    uint64 interval_ms = 2;    // Interval in milliseconds
+    bool once = 3;             // Run once
+    bool manual = 4;           // Manual trigger only
+  }
+  optional int64 next_run_timestamp_ms = 5;
+}
+
+message TaskExecutionInfo {
+  string execution_id = 1;
+  int64 started_at_ms = 2;
+  optional int64 completed_at_ms = 3;
+  TaskStatus status = 4;
+  optional string message = 5;
+  optional string error = 6;
+  float progress = 7;           // 0-100
+  optional uint64 items_processed = 8;
+  optional uint64 bytes_processed = 9;
+  uint64 duration_ms = 10;
+  uint32 retry_attempt = 11;
+}
+
+message ResourceRequirementsInfo {
+  uint32 cpu_weight = 1;
+  uint32 memory_mb = 2;
+  uint32 io_weight = 3;
+  bool uses_gpu = 4;
+}
+
+// ============================================
+// Task History
+// ============================================
+
+message GetTaskHistoryRequest {
+  optional string task_type = 1;
+  optional string task_id = 2;
+  uint32 limit = 3;             // Default 50
+  optional int64 since_timestamp_ms = 4;
+  optional TaskStatus status_filter = 5;
+}
+
+message GetTaskHistoryResponse {
+  repeated TaskExecutionRecord executions = 1;
+  uint32 total_count = 2;
+}
+
+message TaskExecutionRecord {
+  string execution_id = 1;
+  string task_type = 2;
+  string task_id = 3;
+  TaskStatus status = 4;
+  int64 started_at_ms = 5;
+  optional int64 completed_at_ms = 6;
+  uint64 duration_ms = 7;
+  optional string message = 8;
+  optional string error = 9;
+  optional uint64 items_processed = 10;
+  optional uint64 bytes_processed = 11;
+  uint32 retry_attempt = 12;
+}
+
+// ============================================
+// Snapshot Trigger
+// ============================================
+
+message TriggerSnapshotRequest {
+  bool force = 1;               // Force even if one is in progress
+  optional string shard_id = 2; // Specific shard (empty = all)
+}
+
+message TriggerSnapshotResponse {
+  bool accepted = 1;
+  string snapshot_id = 2;
+  string message = 3;
+  SnapshotStatus current_status = 4;
+}
+
+enum SnapshotStatus {
+  SNAPSHOT_IDLE = 0;
+  SNAPSHOT_COMPRESSING = 1;
+  SNAPSHOT_UPLOADING = 2;
+  SNAPSHOT_VERIFYING = 3;
+  SNAPSHOT_COMPLETING = 4;
+  SNAPSHOT_FAILED = 5;
+  SNAPSHOT_COMPLETED = 6;
+}
+
+// ============================================
+// Rebuild Trigger
+// ============================================
+
+message TriggerRebuildRequest {
+  bool force = 1;               // Force even if one is in progress
+  optional string shard_id = 2; // Specific shard (empty = all)
+  bool compact_tombstones = 3;  // Whether to compact tombstones
+}
+
+message TriggerRebuildResponse {
+  bool accepted = 1;
+  string rebuild_id = 2;
+  string message = 3;
+  RebuildStatus current_status = 4;
+}
+
+enum RebuildStatus {
+  REBUILD_IDLE = 0;
+  REBUILD_PREPARING = 1;
+  REBUILD_SCANNING = 2;
+  REBUILD_BUILDING = 3;
+  REBUILD_REPLAYING = 4;
+  REBUILD_VALIDATING = 5;
+  REBUILD_SWAPPING = 6;
+  REBUILD_CLEANING = 7;
+  REBUILD_FAILED = 8;
+  REBUILD_COMPLETED = 9;
+}
+
+// ============================================
+// Task Cancellation
+// ============================================
+
+message CancelTaskRequest {
+  string execution_id = 1;      // Specific execution
+  optional string task_type = 2; // Or cancel by type
+  optional string task_id = 3;  // Or cancel by task ID
+}
+
+message CancelTaskResponse {
+  bool success = 1;
+  string message = 2;
+  repeated string cancelled_execution_ids = 3;
+}
+
+// ============================================
+// Resource Status
+// ============================================
+
+message GetResourceStatusRequest {}
+
+message GetResourceStatusResponse {
+  ResourceStatus status = 1;
+}
+
+message ResourceStatus {
+  uint32 running_tasks = 1;
+  uint32 max_concurrent_tasks = 2;
+  uint64 p95_latency_ms = 3;
+  uint64 latency_threshold_ms = 4;
+  uint32 cpu_percent = 5;
+  uint32 memory_mb = 6;
+  uint32 max_memory_mb = 7;
+  bool can_accept_tasks = 8;
+  bool in_cooldown = 9;
+  optional uint64 cooldown_remaining_ms = 10;
+  repeated RunningTaskInfo running = 11;
+}
+
+message RunningTaskInfo {
+  string task_id = 1;
+  string task_type = 2;
+  int64 started_at_ms = 3;
+  uint64 elapsed_ms = 4;
+  ResourceRequirementsInfo requirements = 5;
+}
+
+// ============================================
+// Webhook Configuration
+// ============================================
+
+message ConfigureWebhookRequest {
+  string url = 1;
+  repeated WebhookEvent events = 2;
+  optional string secret = 3;   // For HMAC signing
+  bool enabled = 4;
+}
+
+enum WebhookEvent {
+  WEBHOOK_TASK_STARTED = 0;
+  WEBHOOK_TASK_COMPLETED = 1;
+  WEBHOOK_TASK_FAILED = 2;
+  WEBHOOK_SNAPSHOT_COMPLETED = 3;
+  WEBHOOK_REBUILD_COMPLETED = 4;
+  WEBHOOK_SLO_BREACH = 5;
+  WEBHOOK_RESOURCE_EXHAUSTED = 6;
+}
+
+message ConfigureWebhookResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetWebhookConfigRequest {}
+
+message GetWebhookConfigResponse {
+  optional string url = 1;
+  repeated WebhookEvent events = 2;
+  bool enabled = 3;
+  optional int64 last_delivery_timestamp_ms = 4;
+  optional bool last_delivery_success = 5;
+}
