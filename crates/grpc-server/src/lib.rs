@@ -5,6 +5,7 @@
 pub mod admin;
 pub mod filter;
 pub mod ingestion;
+pub mod mcp;
 pub mod metrics;
 pub mod service;
 pub mod tags;

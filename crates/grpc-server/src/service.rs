@@ -173,6 +173,24 @@ where
         Self::with_slo_threshold(index, id_mapping, collection, slo_threshold_us)
     }
 
+    /// Embed text with the configured provider, if any. Used by the MCP layer.
+    pub fn embed_text(&self, text: &str) -> std::result::Result<Vec<f32>, String> {
+        match &self.embedding_provider {
+            Some(p) => p.embed_text(text),
+            None => Err("no embedding provider configured".to_string()),
+        }
+    }
+
+    /// Whether an embedding provider is configured.
+    pub fn has_embedding_provider(&self) -> bool {
+        self.embedding_provider.is_some()
+    }
+
+    /// Current index statistics (active/total/tombstoned vectors, dimensions).
+    pub fn index_stats(&self) -> akidb_faiss::IndexStats {
+        self.index.stats()
+    }
+
     /// Convert AkiDbError to tonic Status
     fn to_status(err: AkiDbError) -> Status {
         match err {
