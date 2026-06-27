@@ -13,9 +13,10 @@ use akidb_faiss::{SearchParams, VectorIndex};
 use akidb_graph::{EdgeKind, GraphEdge, GraphIndex, GraphNode, GraphNodeId, GraphStats, NodeKind};
 use akidb_retrieval::{
     expand_to_parents, mmr, pack, plan_query, Bm25Index, HybridFuser, LexicalOverlapReranker,
-    MatchedChunk, MmrItem, PackerConfig, PlannerInput, Reranker, RerankItem, RetrievalMode,
+    MatchedChunk, MmrItem, PackerConfig, PlannerInput, RerankItem, Reranker, RetrievalMode,
     ScoredId,
 };
+use akidb_sql::{MetadataQuery, MetadataSqlIndex, SqlMetadataRecord};
 use akidb_storage::{IdMapping, StorageBackend};
 use dashmap::DashSet;
 use parking_lot::RwLock;
@@ -91,6 +92,8 @@ where
     /// This is deliberately opt-in: constructing a service without a graph keeps
     /// the existing TextSearch behavior unchanged.
     graph_index: Option<Arc<dyn GraphIndex>>,
+    /// Optional SQL metadata mirror for exact structured metadata filters.
+    metadata_sql_index: Option<Arc<dyn MetadataSqlIndex>>,
 }
 
 impl<I, S> AkiDbService<I, S>
@@ -135,6 +138,7 @@ where
             lexical: Arc::new(RwLock::new(Bm25Index::new())),
             documents: Arc::new(RwLock::new(HashMap::new())),
             graph_index: None,
+            metadata_sql_index: None,
         }
     }
 
@@ -147,6 +151,15 @@ where
     /// Set the graph index used for GraphRAG context expansion.
     pub fn with_graph_index(mut self, graph_index: Arc<dyn GraphIndex>) -> Self {
         self.graph_index = Some(graph_index);
+        self
+    }
+
+    /// Set the optional SQL metadata index used by structured retrieval mode.
+    pub fn with_metadata_sql_index(
+        mut self,
+        metadata_sql_index: Arc<dyn MetadataSqlIndex>,
+    ) -> Self {
+        self.metadata_sql_index = Some(metadata_sql_index);
         self
     }
 
@@ -169,7 +182,50 @@ where
             documents.insert(id, text);
         }
         if count > 0 {
-            info!(documents = count, "rebuilt lexical index from persisted text");
+            info!(
+                documents = count,
+                "rebuilt lexical index from persisted text"
+            );
+        }
+        count
+    }
+
+    /// Rebuild the optional SQL metadata mirror from durable vector payloads.
+    /// Returns the number of records successfully mirrored.
+    pub fn rebuild_sql_metadata_index(&self) -> usize {
+        let Some(sql_index) = &self.metadata_sql_index else {
+            return 0;
+        };
+        let stored_vectors = match self.id_mapping.load_active_vectors() {
+            Ok(vectors) => vectors,
+            Err(e) => {
+                warn!(error = %e, "failed to load persisted vectors for SQL metadata rebuild");
+                return 0;
+            }
+        };
+
+        let mut count = 0usize;
+        for stored in stored_vectors {
+            let vector_id = VectorId::new(&stored.external_id);
+            if self
+                .index_sql_metadata_with_backend(
+                    sql_index.as_ref(),
+                    &vector_id,
+                    stored.internal_id,
+                    &stored.metadata,
+                    stored.created_at,
+                    stored.updated_at,
+                )
+                .is_ok()
+            {
+                count += 1;
+            }
+        }
+        if count > 0 {
+            info!(
+                records = count,
+                "rebuilt SQL metadata index from persisted vectors"
+            );
         }
         count
     }
@@ -208,13 +264,15 @@ where
 
     /// Current graph statistics, when graph expansion is configured.
     pub fn graph_stats(&self) -> Option<GraphStats> {
-        self.graph_index.as_ref().and_then(|graph| match graph.stats() {
-            Ok(stats) => Some(stats),
-            Err(e) => {
-                warn!(error = %e, "failed to load graph stats");
-                None
-            }
-        })
+        self.graph_index
+            .as_ref()
+            .and_then(|graph| match graph.stats() {
+                Ok(stats) => Some(stats),
+                Err(e) => {
+                    warn!(error = %e, "failed to load graph stats");
+                    None
+                }
+            })
     }
 
     /// Convert AkiDbError to tonic Status
@@ -250,10 +308,7 @@ where
                 if entry.metadata.is_empty() {
                     Some(serde_json::Value::Null)
                 } else {
-                    Some(
-                        serde_json::from_slice(&entry.metadata)
-                            .unwrap_or(serde_json::Value::Null),
-                    )
+                    Some(serde_json::from_slice(&entry.metadata).unwrap_or(serde_json::Value::Null))
                 }
             }
             _ => None,
@@ -263,6 +318,143 @@ where
     fn metadata_matches_filter(&self, id: &VectorId, filter: &MetadataFilter) -> bool {
         self.load_metadata_value(id)
             .is_some_and(|metadata| filter.matches(&metadata))
+    }
+
+    fn metadata_value_from_bytes(metadata: &[u8]) -> serde_json::Value {
+        if metadata.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(metadata).unwrap_or(serde_json::Value::Null)
+        }
+    }
+
+    fn current_timestamp_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+    fn index_sql_metadata_with_backend(
+        &self,
+        sql_index: &dyn MetadataSqlIndex,
+        vector_id: &VectorId,
+        internal_id: i64,
+        metadata: &[u8],
+        created_at_ms: u64,
+        updated_at_ms: u64,
+    ) -> Result<(), akidb_sql::SqlMetadataError> {
+        sql_index.upsert_record(&SqlMetadataRecord::new(
+            self.collection.clone(),
+            vector_id.as_str().to_string(),
+            internal_id,
+            Self::metadata_value_from_bytes(metadata),
+            created_at_ms,
+            updated_at_ms,
+        ))
+    }
+
+    fn index_sql_metadata(&self, vector_id: &VectorId, internal_id: i64, metadata: &[u8]) {
+        let Some(sql_index) = &self.metadata_sql_index else {
+            return;
+        };
+        let now = Self::current_timestamp_ms();
+        if let Err(e) = self.index_sql_metadata_with_backend(
+            sql_index.as_ref(),
+            vector_id,
+            internal_id,
+            metadata,
+            now,
+            now,
+        ) {
+            warn!(vector_id = %vector_id, error = %e, "failed to index SQL metadata");
+        }
+    }
+
+    fn delete_sql_metadata(&self, vector_id: &VectorId) {
+        let Some(sql_index) = &self.metadata_sql_index else {
+            return;
+        };
+        if let Err(e) = sql_index.delete_record(&self.collection, vector_id.as_str()) {
+            warn!(vector_id = %vector_id, error = %e, "failed to delete SQL metadata");
+        }
+    }
+
+    fn sql_query_from_legacy_filter(
+        collection: &str,
+        filter: &[u8],
+        limit: usize,
+    ) -> Result<MetadataQuery, Status> {
+        let mut query = MetadataQuery::new(collection).with_limit(limit);
+        if filter.is_empty() {
+            return Ok(query);
+        }
+
+        let value: serde_json::Value = serde_json::from_slice(filter)
+            .map_err(|e| Status::invalid_argument(format!("invalid SQL metadata filter: {e}")))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| Status::invalid_argument("SQL metadata filter must be a JSON object"))?;
+
+        for (key, value) in object {
+            if matches!(
+                value,
+                serde_json::Value::Array(_) | serde_json::Value::Object(_)
+            ) {
+                return Err(Status::invalid_argument(format!(
+                    "SQL metadata filter field '{key}' must be a scalar value"
+                )));
+            }
+            query = query.with_eq(key.clone(), value.clone());
+        }
+        Ok(query)
+    }
+
+    fn sql_metadata_text_search(
+        &self,
+        req: &TextSearchRequest,
+        started_at: Instant,
+    ) -> Result<Response<SearchResponse>, Status> {
+        let Some(sql_index) = &self.metadata_sql_index else {
+            return Err(Status::unavailable(
+                "Structured SQL retrieval requires the optional SQL metadata adapter",
+            ));
+        };
+        if req.tag_filter.is_some() {
+            return Err(Status::unimplemented(
+                "Structured SQL retrieval currently supports the legacy JSON filter; tag_filter pushdown is pending",
+            ));
+        }
+
+        let query =
+            Self::sql_query_from_legacy_filter(&self.collection, &req.filter, req.top_k as usize)?;
+        let ids = sql_index
+            .query_ids(&query)
+            .map_err(|e| Status::internal(format!("SQL metadata retrieval failed: {e}")))?;
+
+        let results: Vec<SearchResult> = ids
+            .into_iter()
+            .map(|id| {
+                let vector_id = VectorId::new(&id);
+                SearchResult {
+                    id,
+                    score: 1.0,
+                    metadata: self.load_metadata_string(&vector_id),
+                }
+            })
+            .collect();
+        let latency_us = started_at.elapsed().as_micros() as u64;
+
+        Ok(Response::new(SearchResponse {
+            results,
+            partial: false,
+            missing_shards: vec![],
+            coverage: 1.0,
+            latency_us,
+            within_slo: latency_us < self.slo_threshold_us,
+            degraded_mode: false,
+            context_pack: String::new(),
+        }))
     }
 
     fn requested_text_retrieval_mode(
@@ -314,13 +506,11 @@ where
         serde_json::from_str::<serde_json::Value>(metadata)
             .ok()
             .and_then(|m| {
-                m.get("related_ids")
-                    .and_then(|v| v.as_array())
-                    .map(|ids| {
-                        ids.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
+                m.get("related_ids").and_then(|v| v.as_array()).map(|ids| {
+                    ids.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
             })
             .unwrap_or_default()
     }
@@ -357,8 +547,7 @@ where
     ) -> bool {
         graph
             .upsert_node(
-                GraphNode::new(node_id, kind)
-                    .with_property("id", serde_json::json!(raw_id)),
+                GraphNode::new(node_id, kind).with_property("id", serde_json::json!(raw_id)),
             )
             .is_ok()
     }
@@ -590,6 +779,7 @@ where
         id: &str,
         vector_id: &VectorId,
         vector: &[f32],
+        metadata: &[u8],
     ) -> Result<Response<UpdateResponse>, Status> {
         let start = Instant::now();
 
@@ -614,7 +804,7 @@ where
         // Persist mapping and vector payload atomically.
         let mapping_result =
             self.id_mapping
-                .upsert_with_vector(vector_id, new_internal_id, vector, &[]);
+                .upsert_with_vector(vector_id, new_internal_id, vector, metadata);
 
         if let Err(e) = mapping_result {
             // FIX BUG-HUNT-601: Log rollback failures instead of silently ignoring
@@ -644,6 +834,9 @@ where
                 );
             }
         }
+
+        self.index_sql_metadata(vector_id, new_internal_id.0, metadata);
+        self.index_graph_chunk(vector_id, metadata);
 
         let elapsed = start.elapsed();
         info!(
@@ -730,7 +923,9 @@ where
         // retrieval and context packing when source text is provided.
         if !req.text.is_empty() {
             self.lexical.write().insert(vector_id.clone(), &req.text);
-            self.documents.write().insert(vector_id.clone(), req.text.clone());
+            self.documents
+                .write()
+                .insert(vector_id.clone(), req.text.clone());
             // Persist text so the lexical index / document store can be rebuilt
             // after a restart. Best-effort: dense search is already durable.
             if let Err(e) = self.id_mapping.store_text(&vector_id, &req.text) {
@@ -738,6 +933,7 @@ where
             }
         }
         self.index_graph_chunk(&vector_id, &req.metadata);
+        self.index_sql_metadata(&vector_id, internal_id.0, &req.metadata);
 
         let elapsed = start.elapsed();
         info!("Inserted vector {} in {:?}", req.id, elapsed);
@@ -865,6 +1061,7 @@ where
                     warn!(vector_id = %vector_id, error = %e, "failed to delete persisted text");
                 }
                 self.delete_graph_chunk(&vector_id);
+                self.delete_sql_metadata(&vector_id);
                 DeleteStatus::Deleted
             }
             None => {
@@ -933,7 +1130,7 @@ where
 
         // Perform the update operation - lock is held by guard
         // Guard will release lock automatically when this function returns (or panics)
-        self.do_update_locked(&req.id, &vector_id, &req.vector)
+        self.do_update_locked(&req.id, &vector_id, &req.vector, &req.metadata)
     }
 
     #[instrument(skip(self, request))]
@@ -1033,13 +1230,13 @@ where
                                 self.documents
                                     .write()
                                     .insert(vector_id.clone(), vector.text.clone());
-                                if let Err(e) =
-                                    self.id_mapping.store_text(&vector_id, &vector.text)
+                                if let Err(e) = self.id_mapping.store_text(&vector_id, &vector.text)
                                 {
                                     warn!(vector_id = %vector_id, error = %e, "failed to persist source text");
                                 }
                             }
                             self.index_graph_chunk(&vector_id, &vector.metadata);
+                            self.index_sql_metadata(&vector_id, internal_id.0, &vector.metadata);
                         }
                         Err(e) => {
                             // FIX BUG-046, BUG-HUNT-601: Rollback and log failures
@@ -1189,9 +1386,7 @@ where
         }
         let planner_trace = plan_query(&planner_input);
         if matches!(planner_trace.mode, RetrievalMode::StructuredSql) {
-            return Err(Status::unimplemented(
-                "Structured SQL retrieval is planned as an optional adapter",
-            ));
+            return self.sql_metadata_text_search(&req, start);
         }
         debug!(
             mode = ?planner_trace.mode,

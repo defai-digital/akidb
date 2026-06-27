@@ -8,6 +8,8 @@ pub struct AkiDbConfig {
     pub server: ServerConfig,
     pub index: IndexSettings,
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub sql: SqlMetadataConfig,
     pub observability: ObservabilityConfig,
     pub slo: SloConfig,
     pub embedding: EmbeddingClientConfig,
@@ -19,6 +21,7 @@ impl Default for AkiDbConfig {
             server: ServerConfig::default(),
             index: IndexSettings::default(),
             storage: StorageConfig::default(),
+            sql: SqlMetadataConfig::default(),
             observability: ObservabilityConfig::default(),
             slo: SloConfig::default(),
             embedding: EmbeddingClientConfig::default(),
@@ -125,6 +128,26 @@ impl Default for StorageConfig {
             wal_enabled: true,
             wal_path: "./data/wal".to_string(),
             minio: MinioConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SqlMetadataConfig {
+    /// Whether the optional SQL metadata index is enabled.
+    pub enabled: bool,
+    /// SQL backend name. Currently `sqlite`; PostgreSQL is reserved for a future adapter.
+    pub backend: String,
+    /// SQLite database path for standalone metadata filters and audit-ready records.
+    pub sqlite_path: String,
+}
+
+impl Default for SqlMetadataConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: "sqlite".to_string(),
+            sqlite_path: "./data/akidb-metadata.sqlite".to_string(),
         }
     }
 }
@@ -281,6 +304,80 @@ mod tests {
         assert_eq!(config.server.grpc_port, 50051);
         assert_eq!(config.index.hnsw_m, 16);
         assert_eq!(config.slo.reference.dimensions, 768);
+        assert!(!config.sql.enabled);
+        assert_eq!(config.sql.backend, "sqlite");
+    }
+
+    #[test]
+    fn test_parse_config_without_sql_uses_default() {
+        let config: AkiDbConfig = toml::from_str(
+            r#"
+            [server]
+            host = "127.0.0.1"
+            port = 8080
+            grpc_port = 50051
+            tls_enabled = false
+
+            [index]
+            index_type = "HNSW"
+            hnsw_m = 16
+            hnsw_ef_construction = 128
+            hnsw_ef_search = 64
+
+            [index.rebuild]
+            tombstone_ratio_trigger = 0.10
+            max_duration_seconds = 300
+            preferred_hours = [2, 3, 4]
+
+            [index.tombstone]
+            max_count = 100000
+
+            [storage]
+            rocksdb_path = "./data/rocksdb"
+            wal_enabled = true
+            wal_path = "./data/wal"
+
+            [storage.minio]
+            endpoint = ""
+            bucket = ""
+            access_key = ""
+            secret_key = ""
+            use_ssl = false
+
+            [observability]
+            tracing_enabled = false
+            metrics_enabled = false
+            metrics_port = 9090
+            log_level = "info"
+            log_format = "pretty"
+
+            [slo]
+            [slo.reference]
+            dimensions = 768
+            vectors_per_shard = 1000000
+            top_k = 10
+            nprobe = 32
+            batch_size = 1
+            target_p95_ms = 50
+
+            [slo.backpressure]
+            soft_breach_ms = 50
+            hard_breach_ms = 75
+            degraded_mode_enabled = true
+
+            [embedding]
+            enabled = false
+            url = "http://127.0.0.1:8081/v1/embeddings"
+            model = "Qwen/Qwen3-Embedding-4B"
+            dimensions = 2560
+            timeout_ms = 10000
+            max_batch_size = 32
+            "#,
+        )
+        .unwrap();
+
+        assert!(!config.sql.enabled);
+        assert_eq!(config.sql.sqlite_path, "./data/akidb-metadata.sqlite");
     }
 
     #[test]

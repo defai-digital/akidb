@@ -44,6 +44,7 @@ Query Planner
    ├── Vector Search
    ├── BM25 / Full Text
    ├── Metadata Filters
+   ├── SQLite Metadata SQL
    └── Native Graph Index
            │
         Fusion
@@ -53,9 +54,10 @@ Query Planner
     Context Builder
 ```
 
-The default hot path stays self-contained on Apple Silicon. SQL backends and
-external graph engines such as Kuzu or Apache AGE are planned as optional
-adapters, not default runtime dependencies.
+The default hot path stays self-contained on Apple Silicon. SQLite can be
+enabled as an optional metadata SQL adapter for exact structured filters.
+PostgreSQL and external graph engines such as Kuzu or Apache AGE remain planned
+as optional adapters, not default runtime dependencies.
 
 ## Quick Start
 
@@ -97,6 +99,7 @@ akidb/
 │   ├── faiss-wrapper/   # Optional FAISS FFI bindings
 │   ├── graph/           # Native GraphRAG graph index and traversal contract
 │   ├── retrieval/       # BM25, RRF, rerank, context packing
+│   ├── sql/             # Optional SQLite metadata SQL adapter
 │   ├── storage/         # RocksDB, WAL, ID mapping
 │   ├── grpc-server/     # gRPC API service
 │   ├── coordinator/     # Fan-out search coordination
@@ -116,6 +119,7 @@ See `config/default.toml` for all configuration options.
 Key settings:
 - `slo.reference.*`: SLO reference configuration
 - `index.nprobe`: Search accuracy vs speed for FAISS-compatible backends
+- `sql.*`: optional SQLite metadata SQL adapter for structured filters
 - `embedding.*`: optional local text embedding sidecar for `TextSearch`
 
 ### Local Text Embeddings
@@ -231,10 +235,11 @@ maintained as internal documents and are not part of this public repository.
 - [x] Graph-expanded chunks participate in TextSearch results when graph routing is enabled
 - [x] Server/MCP startup wires the native graph index by default
 - [x] Local graph inspect CLI for stats, neighbors, and related chunks
+- [x] Optional SQLite metadata SQL adapter design
+- [x] Planner-driven SQL metadata retrieval mode for scalar JSON filters
 - [ ] One-Mac reference benchmark
-- [ ] Planner-driven SQL adapter integration
 - [ ] Kuzu adapter evaluation behind an optional feature
-- [ ] Optional SQL metadata adapter design
+- [ ] PostgreSQL metadata adapter
 - [ ] Four-Mac Thunderbolt cell validation
 
 ## License

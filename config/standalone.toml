@@ -34,6 +34,11 @@ access_key = ""
 secret_key = ""
 use_ssl = false
 
+[sql]
+enabled = false
+backend = "sqlite"
+sqlite_path = "./data/akidb-metadata.sqlite"
+
 [observability]
 tracing_enabled = false
 metrics_enabled = false

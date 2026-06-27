@@ -7,6 +7,7 @@ members = [
     "crates/faiss-wrapper",
     "crates/graph",
     "crates/retrieval",
+    "crates/sql",
     "crates/storage",
     "crates/grpc-server",
     "crates/coordinator",

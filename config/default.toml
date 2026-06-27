@@ -34,6 +34,11 @@ access_key = "akidb-admin"
 secret_key = "akidb-secret-key"
 use_ssl = false
 
+[sql]
+enabled = false
+backend = "sqlite"
+sqlite_path = "./data/akidb-metadata.sqlite"
+
 [observability]
 tracing_enabled = true
 otlp_endpoint = "http://localhost:4317"

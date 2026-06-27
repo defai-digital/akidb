@@ -20,6 +20,7 @@ use akidb_graph::{
 use akidb_grpc::proto::akidb_server::Akidb;
 use akidb_grpc::proto::{DeleteRequest, InsertRequest, TextSearchRequest};
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
+use akidb_sql::SqliteMetadataIndex;
 use akidb_storage::{IdMapping, RocksDbBackend};
 use tonic::Request;
 
@@ -54,6 +55,15 @@ fn setup_without_embedder() -> AkiDbService<HnswIndex, RocksDbBackend> {
     let id_mapping = Arc::new(IdMapping::new(storage, "test"));
     let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
     AkiDbService::new(index, id_mapping, "test")
+}
+
+fn setup_with_sql() -> AkiDbService<HnswIndex, RocksDbBackend> {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
+    let id_mapping = Arc::new(IdMapping::new(storage, "test"));
+    let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
+    let sql_index = Arc::new(SqliteMetadataIndex::in_memory().unwrap());
+    AkiDbService::new(index, id_mapping, "test").with_metadata_sql_index(sql_index)
 }
 
 fn setup_with_graph() -> (
@@ -219,14 +229,7 @@ async fn test_retrieval_mode_vector_overrides_hybrid_flag() {
 async fn test_retrieval_mode_bm25_does_not_require_embedding_provider() {
     let svc = setup_without_embedder();
     insert(&svc, "dense", vec![1.0, 0.0, 0.0], "haystack only", b"").await;
-    insert(
-        &svc,
-        "lexical",
-        vec![0.0, 1.0, 0.0],
-        "needle needle",
-        b"",
-    )
-    .await;
+    insert(&svc, "lexical", vec![0.0, 1.0, 0.0], "needle needle", b"").await;
 
     let resp = svc
         .text_search(Request::new(TextSearchRequest {
@@ -252,6 +255,83 @@ async fn test_retrieval_mode_bm25_does_not_require_embedding_provider() {
 
     let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(got, vec!["lexical"]);
+}
+
+#[tokio::test]
+async fn test_retrieval_mode_sql_uses_metadata_adapter_without_embedder() {
+    let svc = setup_with_sql();
+    insert(
+        &svc,
+        "contract-2025",
+        vec![1.0, 0.0, 0.0],
+        "",
+        br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "contract-2024",
+        vec![0.0, 1.0, 0.0],
+        "",
+        br#"{"tenant_id":"defai","customer":"HGC","year":2024}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "HGC contract amount".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#.to_vec(),
+            tag_filter: None,
+            retrieval_mode: "sql".into(),
+        }))
+        .await
+        .expect("sql text_search should not require an embedder")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["contract-2025"]);
+    assert!(resp.results[0].metadata.contains("\"year\":2025"));
+
+    svc.delete(Request::new(DeleteRequest {
+        collection: "test".into(),
+        id: "contract-2025".into(),
+    }))
+    .await
+    .expect("delete failed");
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "HGC contract amount".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#.to_vec(),
+            tag_filter: None,
+            retrieval_mode: "sql".into(),
+        }))
+        .await
+        .expect("sql text_search should still succeed after delete")
+        .into_inner();
+    assert!(resp.results.is_empty());
 }
 
 #[tokio::test]

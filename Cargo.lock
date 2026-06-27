@@ -112,6 +112,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "toml",
  "tracing",
  "uuid",
 ]
@@ -200,6 +201,7 @@ dependencies = [
  "akidb-faiss",
  "akidb-graph",
  "akidb-retrieval",
+ "akidb-sql",
  "akidb-storage",
  "anyhow",
  "dashmap",
@@ -300,6 +302,7 @@ dependencies = [
  "akidb-faiss",
  "akidb-graph",
  "akidb-grpc",
+ "akidb-sql",
  "akidb-storage",
  "clap",
  "tokio",
@@ -307,6 +310,18 @@ dependencies = [
  "tonic 0.11.0",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "akidb-sql"
+version = "0.6.1"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

@@ -11,6 +11,7 @@ use akidb_faiss::{HnswConfig, HnswIndex, VectorIndex};
 use akidb_graph::NativeGraphIndex;
 use akidb_grpc::proto::akidb_server::AkidbServer;
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
+use akidb_sql::SqliteMetadataIndex;
 use akidb_storage::{IdMapping, RocksDbBackend};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -203,14 +204,38 @@ fn build_service(
         }
     }
     if reloaded_count > 0 {
-        info!("Reloaded {} persisted vectors into HNSW index", reloaded_count);
+        info!(
+            "Reloaded {} persisted vectors into HNSW index",
+            reloaded_count
+        );
     }
 
     // Create gRPC service
     let graph_index = Arc::new(NativeGraphIndex::new(storage));
-    let mut service =
-        AkiDbService::new(index, id_mapping, "default").with_graph_index(graph_index);
+    let mut service = AkiDbService::new(index, id_mapping, "default").with_graph_index(graph_index);
     info!("Native graph index enabled");
+
+    if config.sql.enabled {
+        if !config.sql.backend.eq_ignore_ascii_case("sqlite") {
+            return Err(format!(
+                "unsupported SQL metadata backend '{}'; expected 'sqlite'",
+                config.sql.backend
+            )
+            .into());
+        }
+        let sqlite_path = PathBuf::from(&config.sql.sqlite_path);
+        if let Some(parent) = sqlite_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        let sql_index = Arc::new(SqliteMetadataIndex::open(&sqlite_path)?);
+        service = service.with_metadata_sql_index(sql_index);
+        let rebuilt = service.rebuild_sql_metadata_index();
+        info!(
+            path = %sqlite_path.display(),
+            records = rebuilt,
+            "SQLite metadata adapter enabled"
+        );
+    }
 
     // Wire embedding provider if enabled
     if config.embedding.enabled {
