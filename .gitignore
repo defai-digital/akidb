@@ -25,7 +25,7 @@ Thumbs.db
 /.ax-internal/
 /docs/archive/ax-internal/
 /.ax-grok/
-/.claude/settings.local.json
+/.claude/
 /.gemini/
 /.qoder/
 /opencode.json
