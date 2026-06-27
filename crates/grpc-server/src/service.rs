@@ -13,7 +13,8 @@ use akidb_faiss::{SearchParams, VectorIndex};
 use akidb_graph::{EdgeKind, GraphEdge, GraphIndex, GraphNode, GraphNodeId, GraphStats, NodeKind};
 use akidb_retrieval::{
     expand_to_parents, mmr, pack, plan_query, Bm25Index, HybridFuser, LexicalOverlapReranker,
-    MatchedChunk, MmrItem, PackerConfig, PlannerInput, Reranker, RerankItem, ScoredId,
+    MatchedChunk, MmrItem, PackerConfig, PlannerInput, Reranker, RerankItem, RetrievalMode,
+    ScoredId,
 };
 use akidb_storage::{IdMapping, StorageBackend};
 use dashmap::DashSet;
@@ -262,6 +263,31 @@ where
     fn metadata_matches_filter(&self, id: &VectorId, filter: &MetadataFilter) -> bool {
         self.load_metadata_value(id)
             .is_some_and(|metadata| filter.matches(&metadata))
+    }
+
+    fn requested_text_retrieval_mode(
+        req: &TextSearchRequest,
+    ) -> Result<Option<RetrievalMode>, Status> {
+        let mode = req.retrieval_mode.trim().to_ascii_lowercase();
+        if mode.is_empty() {
+            return Ok((!req.hybrid).then_some(RetrievalMode::Vector));
+        }
+
+        match mode.as_str() {
+            "auto" => Ok(None),
+            "vector" | "dense" => Ok(Some(RetrievalMode::Vector)),
+            "bm25" | "lexical" | "full_text" | "full-text" => Ok(Some(RetrievalMode::Bm25)),
+            "hybrid" => Ok(Some(RetrievalMode::Hybrid)),
+            "graph" => Ok(Some(RetrievalMode::Graph)),
+            "graph_hybrid" | "graph-hybrid" => Ok(Some(RetrievalMode::GraphHybrid)),
+            "sql" | "structured_sql" | "structured-sql" => {
+                Ok(Some(RetrievalMode::StructuredSql))
+            }
+            _ => Err(Status::invalid_argument(format!(
+                "invalid retrieval_mode '{}'; expected auto, vector, bm25, hybrid, graph, or graph_hybrid",
+                req.retrieval_mode
+            ))),
+        }
     }
 
     fn parent_id_from_metadata(metadata: &str) -> Option<String> {
@@ -1138,11 +1164,6 @@ where
         let start = Instant::now();
         let req = request.into_inner();
 
-        // Check embedding provider is configured
-        let provider = self.embedding_provider.as_ref().ok_or_else(|| {
-            Status::unavailable("TextSearch requires an embedding provider to be configured")
-        })?;
-
         if req.text.is_empty() {
             return Err(Status::invalid_argument("Text cannot be empty"));
         }
@@ -1159,22 +1180,19 @@ where
             Err(msg) => return Err(Status::invalid_argument(msg)),
         };
 
-        // Generate embedding from text
-        let query_vector = provider
-            .embed_text(&req.text)
-            .map_err(|e| Status::internal(format!("Embedding generation failed: {}", e)))?;
-
-        debug!(
-            text_len = req.text.len(),
-            embedding_dim = query_vector.len(),
-            "TextSearch embedding generated"
-        );
-
-        let planner_trace = plan_query(
-            &PlannerInput::new(req.text.clone())
-                .with_pack(req.pack)
-                .with_metadata_filter(metadata_filter.is_some()),
-        );
+        let requested_mode = Self::requested_text_retrieval_mode(&req)?;
+        let mut planner_input = PlannerInput::new(req.text.clone())
+            .with_pack(req.pack)
+            .with_metadata_filter(metadata_filter.is_some());
+        if let Some(mode) = requested_mode {
+            planner_input = planner_input.with_requested_mode(mode);
+        }
+        let planner_trace = plan_query(&planner_input);
+        if matches!(planner_trace.mode, RetrievalMode::StructuredSql) {
+            return Err(Status::unimplemented(
+                "Structured SQL retrieval is planned as an optional adapter",
+            ));
+        }
         debug!(
             mode = ?planner_trace.mode,
             graph_enabled = planner_trace.graph_enabled,
@@ -1185,50 +1203,78 @@ where
         let top_k = req.top_k as usize;
         // Over-fetch a candidate pool when a later stage (fusion, rerank,
         // diversity) needs room to reorder; otherwise fetch exactly top_k.
-        let needs_pool = req.hybrid || req.rerank || req.diversity;
+        let use_dense = planner_trace.vector_weight > 0.0;
+        let use_lexical = planner_trace.lexical_weight > 0.0;
+        let needs_pool = (use_dense && use_lexical) || req.rerank || req.diversity;
         let search_k = if needs_pool {
             top_k.saturating_mul(4).clamp(top_k, 200)
         } else {
             top_k
         };
-        let mut params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
-        if let Some(metadata_filter) = metadata_filter.clone() {
-            let id_mapping = self.id_mapping.clone();
-            params = params.with_filter(Arc::new(move |id: &VectorId| {
-                match id_mapping.get_vector(id) {
-                    Ok(Some(entry)) => {
-                        let meta = if entry.metadata.is_empty() {
-                            serde_json::Value::Null
-                        } else {
-                            serde_json::from_slice(&entry.metadata)
-                                .unwrap_or(serde_json::Value::Null)
-                        };
-                        metadata_filter.matches(&meta)
-                    }
-                    _ => false,
-                }
-            }));
-        }
 
         // Dense stage.
-        let dense = self
-            .index
-            .search(&query_vector, &params)
-            .map_err(Self::to_status)?;
+        let dense = if use_dense {
+            let provider = self.embedding_provider.as_ref().ok_or_else(|| {
+                Status::unavailable(
+                    "TextSearch vector retrieval requires an embedding provider to be configured",
+                )
+            })?;
+            let query_vector = provider
+                .embed_text(&req.text)
+                .map_err(|e| Status::internal(format!("Embedding generation failed: {}", e)))?;
+
+            debug!(
+                text_len = req.text.len(),
+                embedding_dim = query_vector.len(),
+                "TextSearch embedding generated"
+            );
+
+            let mut params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
+            if let Some(metadata_filter) = metadata_filter.clone() {
+                let id_mapping = self.id_mapping.clone();
+                params = params.with_filter(Arc::new(move |id: &VectorId| {
+                    match id_mapping.get_vector(id) {
+                        Ok(Some(entry)) => {
+                            let meta = if entry.metadata.is_empty() {
+                                serde_json::Value::Null
+                            } else {
+                                serde_json::from_slice(&entry.metadata)
+                                    .unwrap_or(serde_json::Value::Null)
+                            };
+                            metadata_filter.matches(&meta)
+                        }
+                        _ => false,
+                    }
+                }));
+            }
+
+            self.index
+                .search(&query_vector, &params)
+                .map_err(Self::to_status)?
+        } else {
+            Vec::new()
+        };
+
+        let lexical = if use_lexical {
+            self.lexical.read().search(&req.text, search_k)
+        } else {
+            Vec::new()
+        };
 
         // Base ranked list: hybrid fusion (dense + lexical via RRF) or dense-only.
         // An empty lexical index degrades hybrid cleanly to dense ranking.
-        let mut ranked: Vec<ScoredId> = if req.hybrid {
-            let lexical = self.lexical.read().search(&req.text, search_k);
+        let mut ranked: Vec<ScoredId> = if use_dense && use_lexical {
             let dense_scored: Vec<ScoredId> = dense
                 .iter()
                 .map(|r| ScoredId::new(r.id.clone(), r.score))
                 .collect();
             let fuser = HybridFuser::new().with_weights(
-                req.dense_weight.unwrap_or(1.0),
-                req.lexical_weight.unwrap_or(1.0),
+                req.dense_weight.unwrap_or(planner_trace.vector_weight),
+                req.lexical_weight.unwrap_or(planner_trace.lexical_weight),
             );
             fuser.fuse(&dense_scored, &lexical, search_k)
+        } else if use_lexical {
+            lexical
         } else {
             dense
                 .iter()

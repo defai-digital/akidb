@@ -48,6 +48,14 @@ fn setup() -> AkiDbService<HnswIndex, RocksDbBackend> {
     AkiDbService::new(index, id_mapping, "test").with_embedding_provider(Arc::new(StubEmbedder))
 }
 
+fn setup_without_embedder() -> AkiDbService<HnswIndex, RocksDbBackend> {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
+    let id_mapping = Arc::new(IdMapping::new(storage, "test"));
+    let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
+    AkiDbService::new(index, id_mapping, "test")
+}
+
 fn setup_with_graph() -> (
     AkiDbService<HnswIndex, RocksDbBackend>,
     Arc<NativeGraphIndex<RocksDbBackend>>,
@@ -105,6 +113,7 @@ async fn search(
             mmr_lambda: None,
             filter: vec![],
             tag_filter: None,
+            retrieval_mode: String::new(),
         }))
         .await
         .expect("text_search failed")
@@ -176,6 +185,76 @@ async fn test_high_lexical_weight_promotes_lexical_match() {
 }
 
 #[tokio::test]
+async fn test_retrieval_mode_vector_overrides_hybrid_flag() {
+    let svc = setup();
+    seed_disagreeing(&svc).await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 3,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "vector".into(),
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["doc_both", "doc_dense", "doc_lexical"]);
+}
+
+#[tokio::test]
+async fn test_retrieval_mode_bm25_does_not_require_embedding_provider() {
+    let svc = setup_without_embedder();
+    insert(&svc, "dense", vec![1.0, 0.0, 0.0], "haystack only", b"").await;
+    insert(
+        &svc,
+        "lexical",
+        vec![0.0, 1.0, 0.0],
+        "needle needle",
+        b"",
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 2,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 text_search should not require an embedder")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["lexical"]);
+}
+
+#[tokio::test]
 async fn test_hybrid_with_empty_lexical_degrades_to_dense() {
     let svc = setup();
     // No text => lexical index stays empty.
@@ -238,6 +317,7 @@ async fn test_pack_returns_cited_context() {
             mmr_lambda: None,
             filter: vec![],
             tag_filter: None,
+            retrieval_mode: String::new(),
         }))
         .await
         .expect("text_search failed")
@@ -278,6 +358,7 @@ async fn test_pack_respects_token_budget() {
             mmr_lambda: None,
             filter: vec![],
             tag_filter: None,
+            retrieval_mode: String::new(),
         }))
         .await
         .expect("text_search failed")
@@ -308,6 +389,7 @@ async fn test_no_pack_leaves_context_empty() {
             mmr_lambda: None,
             filter: vec![],
             tag_filter: None,
+            retrieval_mode: String::new(),
         }))
         .await
         .expect("text_search failed")
@@ -391,6 +473,7 @@ async fn test_rerank_promotes_query_term_match() {
             mmr_lambda: None,
             filter: vec![],
             tag_filter: None,
+            retrieval_mode: String::new(),
         }))
         .await
         .expect("text_search failed")
@@ -426,6 +509,7 @@ async fn test_diversity_demotes_near_duplicate() {
             mmr_lambda: Some(0.5),
             filter: vec![],
             tag_filter: None,
+            retrieval_mode: String::new(),
         }))
         .await
         .expect("text_search failed")
@@ -459,6 +543,7 @@ async fn pack_for(
         mmr_lambda: None,
         filter: vec![],
         tag_filter: None,
+        retrieval_mode: String::new(),
     }))
     .await
     .expect("text_search failed")
@@ -771,6 +856,7 @@ async fn test_text_search_applies_legacy_metadata_filter_to_hybrid_results() {
             mmr_lambda: None,
             filter: br#"{"tenant":"a"}"#.to_vec(),
             tag_filter: None,
+            retrieval_mode: String::new(),
         }))
         .await
         .expect("text_search failed")
@@ -816,6 +902,7 @@ async fn test_text_search_filter_blocks_graph_expanded_context() {
             mmr_lambda: None,
             filter: br#"{"tenant":"a"}"#.to_vec(),
             tag_filter: None,
+            retrieval_mode: String::new(),
         }))
         .await
         .expect("text_search failed")

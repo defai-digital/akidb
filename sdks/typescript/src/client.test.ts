@@ -101,10 +101,11 @@ describe('AkiDBClient (hardened)', () => {
     const filter = new Uint8Array([123, 125]);
     const tagFilter = { condition: { key: 'tenant', value: { text: 'a' }, op: 'TAG_OP_EQ' } };
 
-    await client.textSearch('q', { filter, tagFilter });
+    await client.textSearch('q', { filter, tagFilter, retrievalMode: 'bm25' });
 
     expect(calls.TextSearch!.request.filter).toBe(filter);
     expect(calls.TextSearch!.request.tag_filter).toBe(tagFilter);
+    expect(calls.TextSearch!.request.retrieval_mode).toBe('bm25');
   });
 
   it('insertBatch / get / update / searchBatch', async () => {

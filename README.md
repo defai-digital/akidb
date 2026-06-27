@@ -227,8 +227,9 @@ maintained as internal documents and are not part of this public repository.
 - [x] MCP status reports graph stats when graph expansion is configured
 - [x] TextSearch metadata/tag filtering across hybrid and graph-expanded context
 - [x] Metadata-driven code graph edges for imports/calls/dependencies/owners/commits
+- [x] Planner-driven TextSearch vector/BM25/hybrid routing with explicit mode overrides
 - [ ] One-Mac reference benchmark
-- [ ] Full planner-driven vector/BM25/metadata/graph routing
+- [ ] Full planner-driven graph result routing and SQL adapter integration
 - [ ] Kuzu adapter evaluation behind an optional feature
 - [ ] Optional SQL metadata adapter design
 - [ ] Four-Mac Thunderbolt cell validation

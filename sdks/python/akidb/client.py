@@ -271,6 +271,7 @@ class AkiDBClient:
         token_budget: Optional[int] = None,
         filter: Optional[bytes] = None,
         tag_filter: Optional[pb.TagFilter] = None,
+        retrieval_mode: Optional[str] = None,
     ) -> TextSearchResult:
         req = pb.TextSearchRequest(
             collection=self.collection,
@@ -287,6 +288,8 @@ class AkiDBClient:
             req.filter = filter
         if tag_filter is not None:
             req.tag_filter.CopyFrom(tag_filter)
+        if retrieval_mode is not None:
+            req.retrieval_mode = retrieval_mode
         resp = self._invoke(self._stub.TextSearch, req)
         return TextSearchResult(hits=_hits(resp.results), context_pack=resp.context_pack)
 

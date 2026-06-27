@@ -249,6 +249,7 @@ message TextSearchRequest {
   optional float mmr_lambda = 12;  // MMR relevance/diversity tradeoff (default 0.5)
   bytes filter = 13;  // Optional metadata filter (legacy JSON)
   TagFilter tag_filter = 14;  // Optional typed tag filter
+  string retrieval_mode = 15;  // Optional planner override: auto/vector/bm25/hybrid/graph/graph_hybrid
 }
 
 // ============================================
