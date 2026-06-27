@@ -4,14 +4,16 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [features]
 default = []
-kuzu = []
+kuzu = ["dep:kuzu_db"]
 
 [dependencies]
 akidb-common = { path = "../common" }
 akidb-storage = { path = "../storage" }
+kuzu_db = { package = "kuzu", version = "0.11.3", optional = true, default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

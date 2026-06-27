@@ -56,14 +56,26 @@ Query Planner
 
 The default hot path stays self-contained on Apple Silicon. SQLite can be
 enabled as an optional metadata SQL adapter for exact structured filters.
-PostgreSQL and external graph engines such as Kuzu or Apache AGE remain planned
-as optional adapters, not default runtime dependencies.
+PostgreSQL is available as an optional metadata adapter. External graph engines
+such as Kuzu or Apache AGE remain optional adapters, not default runtime
+dependencies.
 
-The Kuzu evaluation entry point is currently compile-gated with
-`akidb-graph/kuzu`. It exposes the adapter boundary and schema scaffold without
-linking Kuzu into the default build; real Kuzu binding support remains behind
-the benchmark and maintenance gates. Native-vs-Kuzu benchmark decisions should
-be validated with `scripts/validate-kuzu-decision.py`.
+The Kuzu adapter is compile-gated with `akidb-graph/kuzu`. It now links to the
+Rust Kuzu binding for evaluation, but the default build continues to use the
+native graph index. On macOS, test the adapter with the shared Homebrew Kuzu
+library:
+
+```bash
+KUZU_SHARED=1 \
+KUZU_LIBRARY_DIR=/opt/homebrew/lib \
+KUZU_INCLUDE_DIR=/opt/homebrew/include \
+cargo test -p akidb-graph --features kuzu
+```
+
+Kuzu should not be promoted into the core hot path without a native-vs-Kuzu
+benchmark and maintenance review. Homebrew currently marks Kuzu as deprecated
+because the upstream repository is archived, so AkiDB keeps Kuzu optional unless
+`scripts/validate-kuzu-decision.py` validates a deliberate adoption artifact.
 
 ## Quick Start
 
@@ -259,12 +271,12 @@ maintained as internal documents and are not part of this public repository.
 - [x] Optional SQLite metadata SQL adapter design
 - [x] Planner-driven SQL metadata retrieval mode for scalar JSON filters
 - [x] Optional PostgreSQL metadata adapter behind `akidb-server/postgres`
-- [x] Kuzu adapter evaluation scaffold behind optional `akidb-graph/kuzu` feature
+- [x] Optional Kuzu graph adapter binding behind `akidb-graph/kuzu`
 - [x] Kuzu native-vs-Kuzu decision artifact validator
 - [x] One-Mac benchmark artifact validator
 - [x] Four-Mac cell validation artifact validator
 - [ ] One-Mac reference benchmark
-- [ ] Kuzu binding and native-vs-Kuzu benchmark artifact
+- [ ] Kuzu native-vs-Kuzu benchmark artifact
 - [ ] Four-Mac Thunderbolt cell validation
 
 ## License

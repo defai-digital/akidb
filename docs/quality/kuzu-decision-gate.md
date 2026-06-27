@@ -5,6 +5,21 @@ Kuzu proves it is worth adding as more than an optional adapter. The Kuzu
 decision must be based on a native-vs-Kuzu benchmark artifact, not on feature
 appeal alone.
 
+The optional Rust adapter is available behind `akidb-graph/kuzu` for evaluation.
+On macOS, use the shared Homebrew Kuzu library when running adapter tests:
+
+```bash
+KUZU_SHARED=1 \
+KUZU_LIBRARY_DIR=/opt/homebrew/lib \
+KUZU_INCLUDE_DIR=/opt/homebrew/include \
+cargo test -p akidb-graph --features kuzu
+```
+
+The current Homebrew formula marks Kuzu as deprecated because the upstream
+repository is archived. Treat that as a maintenance risk: Kuzu can remain an
+optional adapter only if the adoption artifact records the packaging source,
+upstream status, rollback plan, and owner for monitoring future breakage.
+
 Validate an artifact for optional adapter readiness:
 
 ```bash
@@ -33,6 +48,7 @@ AkiDB commit, same dataset, and same query mix. It must include:
 - native and Kuzu query QPS and P50/P95/P99 latency
 - result parity and matching node/edge counts
 - an explicit recommendation and rationale
+- Kuzu packaging source, upstream maintenance status, and rollback plan
 
 ## Default Gates
 
