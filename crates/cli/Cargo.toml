@@ -12,9 +12,12 @@ path = "src/main.rs"
 
 [dependencies]
 akidb-coordinator = { path = "../coordinator" }
+akidb-graph = { path = "../graph" }
 akidb-server = { path = "../server" }
+akidb-storage = { path = "../storage" }
 akidb-tui = { path = "../tui" }
 
 anyhow.workspace = true
 clap = { version = "4.5", features = ["derive"] }
+serde_json.workspace = true
 tokio.workspace = true

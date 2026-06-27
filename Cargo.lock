@@ -86,10 +86,13 @@ name = "akidb-cli"
 version = "0.6.1"
 dependencies = [
  "akidb-coordinator",
+ "akidb-graph",
  "akidb-server",
+ "akidb-storage",
  "akidb-tui",
  "anyhow",
  "clap",
+ "serde_json",
  "tokio",
 ]
 
@@ -295,6 +298,7 @@ dependencies = [
  "akidb-common",
  "akidb-coordinator",
  "akidb-faiss",
+ "akidb-graph",
  "akidb-grpc",
  "akidb-storage",
  "clap",

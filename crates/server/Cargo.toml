@@ -15,6 +15,7 @@ default = []
 [dependencies]
 akidb-common = { path = "../common" }
 akidb-faiss = { path = "../faiss-wrapper" }
+akidb-graph = { path = "../graph" }
 akidb-storage = { path = "../storage" }
 akidb-grpc = { path = "../grpc-server" }
 akidb-coordinator = { path = "../coordinator" }

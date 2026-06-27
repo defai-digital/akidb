@@ -8,6 +8,7 @@ use akidb_common::config::AkiDbConfig;
 use akidb_common::VectorId;
 use akidb_coordinator::AxEngineEmbedding;
 use akidb_faiss::{HnswConfig, HnswIndex, VectorIndex};
+use akidb_graph::NativeGraphIndex;
 use akidb_grpc::proto::akidb_server::AkidbServer;
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
 use akidb_storage::{IdMapping, RocksDbBackend};
@@ -206,7 +207,10 @@ fn build_service(
     }
 
     // Create gRPC service
-    let mut service = AkiDbService::new(index, id_mapping, "default");
+    let graph_index = Arc::new(NativeGraphIndex::new(storage));
+    let mut service =
+        AkiDbService::new(index, id_mapping, "default").with_graph_index(graph_index);
+    info!("Native graph index enabled");
 
     // Wire embedding provider if enabled
     if config.embedding.enabled {

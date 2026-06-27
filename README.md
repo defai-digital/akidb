@@ -229,6 +229,8 @@ maintained as internal documents and are not part of this public repository.
 - [x] Metadata-driven code graph edges for imports/calls/dependencies/owners/commits
 - [x] Planner-driven TextSearch vector/BM25/hybrid routing with explicit mode overrides
 - [x] Graph-expanded chunks participate in TextSearch results when graph routing is enabled
+- [x] Server/MCP startup wires the native graph index by default
+- [x] Local graph inspect CLI for stats, neighbors, and related chunks
 - [ ] One-Mac reference benchmark
 - [ ] Planner-driven SQL adapter integration
 - [ ] Kuzu adapter evaluation behind an optional feature
