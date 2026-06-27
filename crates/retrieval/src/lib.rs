@@ -16,10 +16,14 @@
 pub mod fusion;
 pub mod lexical;
 pub mod packer;
+pub mod rerank;
 
 pub use fusion::{Fusion, HybridFuser, RankedInput, Rrf};
 pub use lexical::Bm25Index;
 pub use packer::{pack, Citation, ContextPack, PackStrategy, PackerConfig, Passage};
+pub use rerank::{
+    cosine_similarity, mmr, IdentityReranker, LexicalOverlapReranker, MmrItem, RerankItem, Reranker,
+};
 
 use akidb_common::VectorId;
 
