@@ -93,14 +93,60 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         AkiDbConfig::default()
     };
 
+    let service = build_service(&config)?;
+
+    // Parse listen address
+    let addr: SocketAddr = args.listen.parse()?;
+    info!("Starting gRPC server on {}", addr);
+
+    // Start server
+    Server::builder()
+        .add_service(AkidbServer::new(service))
+        .serve(addr)
+        .await?;
+
+    Ok(())
+}
+
+/// Run AkiDB as an MCP server over stdio (newline-delimited JSON-RPC), sharing
+/// the same storage, index, and embedding setup as the gRPC server.
+pub async fn run_mcp(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    // MCP speaks JSON-RPC on stdout, so logs must go to stderr and never stdout.
+    let log_level = match args.log_level.as_str() {
+        "trace" => Level::TRACE,
+        "debug" => Level::DEBUG,
+        "warn" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => Level::INFO,
+    };
+    FmtSubscriber::builder()
+        .with_max_level(log_level)
+        .with_writer(std::io::stderr)
+        .with_target(true)
+        .init();
+
+    let config = if args.config.exists() {
+        toml::from_str::<AkiDbConfig>(&std::fs::read_to_string(&args.config)?)?
+    } else {
+        AkiDbConfig::default()
+    };
+
+    let service = Arc::new(build_service(&config)?);
+    info!("AkiDB MCP server ready on stdio");
+    akidb_grpc::mcp::run_stdio(service).await?;
+    Ok(())
+}
+
+/// Build a fully-wired AkiDbService (storage, index, vector reload, embedding
+/// provider, lexical rebuild) from config. Shared by the gRPC and MCP entry
+/// points.
+fn build_service(
+    config: &AkiDbConfig,
+) -> Result<AkiDbService<HnswIndex, RocksDbBackend>, Box<dyn std::error::Error>> {
     // Initialize storage
     let rocksdb_path = config.storage.rocksdb_path.clone();
-
     info!("Initializing RocksDB at {}", rocksdb_path);
-
-    // Create RocksDB directory if it doesn't exist
     std::fs::create_dir_all(&rocksdb_path)?;
-
     let storage = Arc::new(RocksDbBackend::open(&rocksdb_path)?);
 
     // Initialize ID mapping
@@ -117,7 +163,6 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         };
         Arc::new(HnswIndex::new(hnsw_config).expect("Failed to create HNSW index"))
     };
-
     info!("Vector index initialized (HNSW mode)");
 
     let stored_vectors = id_mapping.load_active_vectors()?;
@@ -132,22 +177,19 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let vector_id = VectorId::new(&stored.external_id);
         match index.insert(&vector_id, &stored.vector) {
             Ok(internal_id) => {
-                match id_mapping.upsert_with_vector(
+                if let Err(e) = id_mapping.upsert_with_vector(
                     &vector_id,
                     internal_id,
                     &stored.vector,
                     &stored.metadata,
                 ) {
-                    Ok(_) => {
-                        reloaded_count += 1;
-                    }
-                    Err(e) => {
-                        warn!(
-                            vector_id = %stored.external_id,
-                            error = %e,
-                            "Failed to update mapping for reloaded vector"
-                        );
-                    }
+                    warn!(
+                        vector_id = %stored.external_id,
+                        error = %e,
+                        "Failed to update mapping for reloaded vector"
+                    );
+                } else {
+                    reloaded_count += 1;
                 }
             }
             Err(e) => {
@@ -160,10 +202,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if reloaded_count > 0 {
-        info!(
-            "Reloaded {} persisted vectors into HNSW index",
-            reloaded_count
-        );
+        info!("Reloaded {} persisted vectors into HNSW index", reloaded_count);
     }
 
     // Create gRPC service
@@ -196,15 +235,5 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         info!("Rebuilt lexical index from {} persisted documents", loaded);
     }
 
-    // Parse listen address
-    let addr: SocketAddr = args.listen.parse()?;
-    info!("Starting gRPC server on {}", addr);
-
-    // Start server
-    Server::builder()
-        .add_service(AkidbServer::new(service))
-        .serve(addr)
-        .await?;
-
-    Ok(())
+    Ok(service)
 }
