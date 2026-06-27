@@ -9,8 +9,10 @@ use crate::proto::{
 };
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
+use akidb_retrieval::{Bm25Index, HybridFuser, ScoredId};
 use akidb_storage::{IdMapping, StorageBackend};
 use dashmap::DashSet;
+use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
@@ -65,6 +67,14 @@ where
     slo_threshold_us: u64,
     /// Optional embedding provider for text search
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    /// In-memory BM25 lexical index, the lexical half of hybrid retrieval.
+    ///
+    /// Populated from the optional `text` carried on insert; kept in sync on
+    /// delete. NOTE: this index is in-memory only — it is not yet persisted, so
+    /// lexical/hybrid retrieval is empty after a restart until documents are
+    /// re-ingested. Persisting source text and rebuilding on startup is a
+    /// tracked follow-up.
+    lexical: Arc<RwLock<Bm25Index>>,
 }
 
 impl<I, S> AkiDbService<I, S>
@@ -106,6 +116,7 @@ where
             update_locks: DashSet::new(),
             slo_threshold_us,
             embedding_provider: None,
+            lexical: Arc::new(RwLock::new(Bm25Index::new())),
         }
     }
 
@@ -141,6 +152,18 @@ where
             AkiDbError::RebuildInProgress => Status::unavailable(err.to_string()),
             AkiDbError::Timeout(_) => Status::deadline_exceeded(err.to_string()),
             _ => Status::internal(err.to_string()),
+        }
+    }
+
+    /// Load a vector's stored metadata as a JSON string, or empty when absent.
+    /// Used to populate metadata on fused hybrid results, which come back from
+    /// the retrieval layer as id + score only.
+    fn load_metadata_string(&self, id: &VectorId) -> String {
+        match self.id_mapping.get_vector(id) {
+            Ok(Some(entry)) if !entry.metadata.is_empty() => {
+                String::from_utf8(entry.metadata).unwrap_or_default()
+            }
+            _ => String::new(),
         }
     }
 
@@ -286,6 +309,12 @@ where
             return Err(Self::to_status(e));
         }
 
+        // Populate the lexical (BM25) index for hybrid retrieval when source
+        // text is provided.
+        if !req.text.is_empty() {
+            self.lexical.write().insert(vector_id.clone(), &req.text);
+        }
+
         let elapsed = start.elapsed();
         info!("Inserted vector {} in {:?}", req.id, elapsed);
 
@@ -404,6 +433,8 @@ where
             Some(internal_id) => {
                 // Mark in tombstone
                 self.index.delete(internal_id).map_err(Self::to_status)?;
+                // Keep the lexical index in sync with the delete.
+                self.lexical.write().remove(&vector_id);
                 DeleteStatus::Deleted
             }
             None => {
@@ -565,7 +596,12 @@ where
                         &vector.embedding,
                         &vector.metadata,
                     ) {
-                        Ok(_) => inserted_count += 1,
+                        Ok(_) => {
+                            inserted_count += 1;
+                            if !vector.text.is_empty() {
+                                self.lexical.write().insert(vector_id.clone(), &vector.text);
+                            }
+                        }
                         Err(e) => {
                             // FIX BUG-046, BUG-HUNT-601: Rollback and log failures
                             if let Err(rollback_err) = self.index.delete(internal_id) {
@@ -714,24 +750,58 @@ where
             "TextSearch embedding generated"
         );
 
-        let params = SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
+        let top_k = req.top_k as usize;
+        // For hybrid, over-fetch a candidate pool per stage so RRF has room to
+        // reorder; for dense-only, fetch exactly top_k.
+        let search_k = if req.hybrid {
+            top_k.saturating_mul(4).clamp(top_k, 200)
+        } else {
+            top_k
+        };
+        let params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
 
-        let results = self
+        // Dense stage.
+        let dense = self
             .index
             .search(&query_vector, &params)
             .map_err(Self::to_status)?;
 
+        let response_results: Vec<SearchResult> = if req.hybrid {
+            // Lexical (BM25) stage over the same query text, fused with dense via
+            // Reciprocal Rank Fusion. An empty lexical index degrades cleanly to
+            // dense-only ranking.
+            let lexical = self.lexical.read().search(&req.text, search_k);
+            let dense_scored: Vec<ScoredId> = dense
+                .iter()
+                .map(|r| ScoredId::new(r.id.clone(), r.score))
+                .collect();
+            let fuser = HybridFuser::new().with_weights(
+                req.dense_weight.unwrap_or(1.0),
+                req.lexical_weight.unwrap_or(1.0),
+            );
+            fuser
+                .fuse(&dense_scored, &lexical, top_k)
+                .into_iter()
+                .map(|s| SearchResult {
+                    metadata: self.load_metadata_string(&s.id),
+                    id: s.id.to_string(),
+                    score: s.score,
+                })
+                .collect()
+        } else {
+            dense
+                .into_iter()
+                .take(top_k)
+                .map(|r| SearchResult {
+                    id: r.id.to_string(),
+                    score: r.score,
+                    metadata: r.metadata.map(|m| m.to_string()).unwrap_or_default(),
+                })
+                .collect()
+        };
+
         let elapsed = start.elapsed();
         let latency_us = elapsed.as_micros() as u64;
-
-        let response_results: Vec<SearchResult> = results
-            .into_iter()
-            .map(|r| SearchResult {
-                id: r.id.to_string(),
-                score: r.score,
-                metadata: r.metadata.map(|m| m.to_string()).unwrap_or_default(),
-            })
-            .collect();
 
         info!(
             "TextSearch for '{}' returned {} results in {:?}",

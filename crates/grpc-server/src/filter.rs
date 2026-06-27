@@ -86,7 +86,7 @@ pub fn tag_filter_matches(metadata: &Value, filter: &TagFilter) -> bool {
         Some(FilterType::Not(not)) => not
             .filter
             .as_ref()
-            .map_or(true, |f| !tag_filter_matches(metadata, f)),
+            .is_none_or(|f| !tag_filter_matches(metadata, f)),
         Some(FilterType::Condition(cond)) => condition_matches(metadata, cond),
         None => true,
     }

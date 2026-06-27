@@ -134,6 +134,9 @@ impl AkiDbClient {
                     id: v.id.clone(),
                     embedding: v.embedding.clone(),
                     metadata: metadata_bytes,
+                    // TODO(CP5): thread chunk source text through VectorInsert to
+                    // populate the lexical index from ingestion.
+                    text: String::new(),
                 }
             })
             .collect();

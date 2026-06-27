@@ -147,6 +147,7 @@ impl Akidb for CoordinatorService {
                 id: req.id,
                 vector: req.vector,
                 metadata: req.metadata,
+                text: req.text,
             })
             .await
             .map_err(|e| Status::internal(format!("Shard insert failed: {}", e)))?;

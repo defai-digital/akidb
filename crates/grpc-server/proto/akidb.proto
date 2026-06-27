@@ -41,6 +41,7 @@ message InsertRequest {
   string id = 2;
   repeated float vector = 3;
   bytes metadata = 4;  // Optional JSON metadata
+  string text = 5;  // Optional source text for lexical (BM25) hybrid retrieval
 }
 
 message InsertResponse {
@@ -207,6 +208,7 @@ message Vector {
   string id = 1;
   repeated float embedding = 2;
   bytes metadata = 3;
+  string text = 4;  // Optional source text for lexical (BM25) hybrid retrieval
 }
 
 message InsertBatchResponse {
@@ -236,6 +238,9 @@ message TextSearchRequest {
   string text = 2;
   uint32 top_k = 3;
   optional uint32 nprobe = 4;
+  bool hybrid = 5;  // Fuse dense (embedded) + lexical (BM25) results via RRF
+  optional float dense_weight = 6;  // RRF weight for dense results (default 1.0)
+  optional float lexical_weight = 7;  // RRF weight for lexical results (default 1.0)
 }
 
 // ============================================

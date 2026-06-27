@@ -309,6 +309,7 @@ async fn benchmark_inserts(
                 id: format!("{}-vec-{:08}", id_prefix, i),
                 embedding: generate_random_vector(args.dimension, args.seed.wrapping_add(i as u64)),
                 metadata: vec![],
+                text: String::new(),
             })
             .collect();
 
@@ -369,6 +370,7 @@ async fn benchmark_single_inserts(
             id: format!("{}-single-{:08}", id_prefix, i),
             vector,
             metadata: vec![],
+            text: String::new(),
         };
 
         let start = Instant::now();

@@ -9,6 +9,7 @@ license.workspace = true
 akidb-common = { path = "../common" }
 akidb-faiss = { path = "../faiss-wrapper" }
 akidb-storage = { path = "../storage" }
+akidb-retrieval = { path = "../retrieval" }
 
 tonic.workspace = true
 prost.workspace = true
