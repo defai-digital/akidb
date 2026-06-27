@@ -12,7 +12,10 @@ deployment procedures are not supported in active operations.
 ./scripts/build-on-mac-arm64.sh
 cargo check --workspace
 cargo test --workspace
-cargo build --release -p akidb-server
+cargo build --release -p akidb-cli
+akidb server --standalone --config config/default.toml
+akidb coordinator --shards 127.0.0.1:50051
+akidb tui --coordinator 127.0.0.1:50050
 ```
 
 ## Docker Compose Stack

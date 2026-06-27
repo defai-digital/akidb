@@ -82,6 +82,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "akidb-cli"
+version = "0.2.0"
+dependencies = [
+ "akidb-coordinator",
+ "akidb-server",
+ "akidb-tui",
+ "anyhow",
+ "clap",
+ "tokio",
+]
+
+[[package]]
 name = "akidb-common"
 version = "0.2.0"
 dependencies = [

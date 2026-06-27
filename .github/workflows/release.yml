@@ -37,8 +37,10 @@ jobs:
       - name: Package binary
         run: |
           mkdir -p dist
+          cp target/${{ matrix.target }}/release/akidb dist/
           cp target/${{ matrix.target }}/release/akidb-server dist/ 2>/dev/null || true
           cp target/${{ matrix.target }}/release/akidb-coordinator dist/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/akidb-tui dist/ 2>/dev/null || true
           tar -czvf akidb-${{ matrix.target }}.tar.gz -C dist .
 
       - name: Upload artifact

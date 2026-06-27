@@ -1,7 +1,7 @@
 # Local Agent Configuration
 
 Agent and MCP client configuration is intentionally local-only. Files such as
-`.gemini/settings.json`, `.ax-grok/settings.json`, `.automatosx/config.json`,
+`.gemini/settings.json`, `.ax-grok/settings.json`,
 `.claude/settings.local.json`, and `opencode.json` can contain absolute paths,
 user-specific tool locations, and local credentials.
 
@@ -14,7 +14,7 @@ Example MCP server command shape:
 ```json
 {
   "mcpServers": {
-    "automatosx": {
+    "local-agent": {
       "command": "node",
       "args": ["/path/to/ax", "mcp", "server"]
     }

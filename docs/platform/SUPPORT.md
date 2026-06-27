@@ -18,7 +18,7 @@ Use Apple Silicon Macs for the primary local runtime:
 ```
 
 This script verifies `Darwin/arm64`, checks the Rust workspace, runs tests, and
-builds `akidb-server`.
+builds the `akidb` single entry point.
 
 Do not enable GPU/CUDA feature paths. Apple Silicon support is CPU/portable only.
 Optional text embeddings use local `ax-engine` through

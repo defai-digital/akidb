@@ -9,6 +9,7 @@ members = [
     "crates/grpc-server",
     "crates/coordinator",
     "crates/server",
+    "crates/cli",
     "crates/benchmark",
     "crates/ingestion-orchestrator",
     "crates/tui",

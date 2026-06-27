@@ -19,7 +19,11 @@ Thumbs.db
 .env.*.local
 
 # Local AI/agent tool configuration
-/.automatosx/
+/AGENTS.md
+/CLAUDE.md
+/ax-internal/
+/.ax-internal/
+/docs/archive/ax-internal/
 /.ax-grok/
 /.claude/settings.local.json
 /.gemini/

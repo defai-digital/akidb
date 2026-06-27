@@ -45,6 +45,11 @@ cd akidb
 cargo build
 cargo test
 
+# Run AkiDB through the single CLI entry point
+cargo run -p akidb-cli -- server --standalone --config config/default.toml
+cargo run -p akidb-cli -- coordinator --shards 127.0.0.1:50051
+cargo run -p akidb-cli -- tui --coordinator 127.0.0.1:50050
+
 # Format and lint
 cargo fmt
 cargo clippy
@@ -67,7 +72,8 @@ akidb/
 │   ├── faiss-wrapper/   # Optional FAISS FFI bindings
 │   ├── storage/         # RocksDB, WAL, ID mapping
 │   ├── grpc-server/     # gRPC API service
-│   └── coordinator/     # Fan-out search coordination
+│   ├── coordinator/     # Fan-out search coordination
+│   └── cli/             # Single akidb command entry point
 ├── services/            # Python sidecar services
 ├── config/              # Configuration files
 ├── deploy/              # Deployment manifests

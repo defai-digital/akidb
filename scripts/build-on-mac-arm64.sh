@@ -25,8 +25,8 @@ echo "Target: $(rustc -vV | awk -F': ' '/host/ {print $2}')"
 
 cargo check --workspace
 cargo test --workspace
-cargo build --release -p akidb-server
+cargo build --release -p akidb-cli
 
 echo ""
 echo "=== macOS Apple Silicon build complete ==="
-echo "Binary: target/release/akidb-server"
+echo "Binary: target/release/akidb"

@@ -1,0 +1,20 @@
+[package]
+name = "akidb-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Single entry point CLI for AkiDB"
+
+[[bin]]
+name = "akidb"
+path = "src/main.rs"
+
+[dependencies]
+akidb-coordinator = { path = "../coordinator" }
+akidb-server = { path = "../server" }
+akidb-tui = { path = "../tui" }
+
+anyhow.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+tokio.workspace = true

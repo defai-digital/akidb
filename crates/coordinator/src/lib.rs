@@ -22,10 +22,13 @@ pub mod fanout;
 pub mod merger;
 pub mod metrics;
 pub mod router;
+pub mod server;
 pub mod slo;
 pub mod workflow;
 
-pub use backpressure::{BackpressureConfig, BackpressureController, BackpressureError, BackpressureStats};
+pub use backpressure::{
+    BackpressureConfig, BackpressureController, BackpressureError, BackpressureStats,
+};
 pub use batch::{BatchConfig, BatchProcessor, BatchResult};
 pub use compaction::{CompactionConfig, CompactionScheduler, CompactionStats, CompactionTrigger};
 pub use consistency::{ConsistencyConfig, ConsistencyStats, ConsistencyTracker, WriteEntry};
@@ -34,13 +37,15 @@ pub use discovery::{
     DiscoveryService, ShardAnnouncement,
 };
 pub use embedding::{
-    ax_engine::AxEngineEmbedding,
-    CacheStats, CachedEmbeddingService, EmbeddingConfig, EmbeddingError, EmbeddingService,
-    FallbackEmbeddingService, MockEmbeddingService,
+    ax_engine::AxEngineEmbedding, CacheStats, CachedEmbeddingService, EmbeddingConfig,
+    EmbeddingError, EmbeddingService, FallbackEmbeddingService, MockEmbeddingService,
 };
-pub use fanout::{BroadcastDeleteResult, BroadcastUpdateResult, FanoutExecutor, FanoutResult, PoolStats};
+pub use fanout::{
+    BroadcastDeleteResult, BroadcastUpdateResult, FanoutExecutor, FanoutResult, PoolStats,
+};
 pub use merger::ResultMerger;
-pub use metrics::{metrics as coordinator_metrics, export_metrics, CoordinatorMetrics};
+pub use metrics::{export_metrics, metrics as coordinator_metrics, CoordinatorMetrics};
 pub use router::{DistributionStats, ShardInfo, ShardRouter};
+pub use server::{run as run_server, Args as ServerArgs, CoordinatorService};
 pub use slo::{SloConfig, SloEstimate, SloEstimator, SloStats};
 pub use workflow::{QueryCoverage, QueryState, QueryTiming, QueryWorkflow, QueryWorkflowResult};

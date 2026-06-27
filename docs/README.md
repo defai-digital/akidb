@@ -15,9 +15,3 @@ Supporting documents:
 - [Security Review](security/SECURITY_REVIEW.md)
 - [Runbooks](runbooks/)
 - [Ingestion Orchestrator](services/ingestion-orchestrator/)
-
-Archive:
-
-- [AutomatosX archive](archive/automatosx/) contains historical planning,
-  ADR/PRD drafts, implementation reports, and analysis artifacts. Archive files
-  are not authoritative unless a canonical document explicitly references them.
