@@ -62,7 +62,8 @@ as optional adapters, not default runtime dependencies.
 The Kuzu evaluation entry point is currently compile-gated with
 `akidb-graph/kuzu`. It exposes the adapter boundary and schema scaffold without
 linking Kuzu into the default build; real Kuzu binding support remains behind
-the benchmark and maintenance gates.
+the benchmark and maintenance gates. Native-vs-Kuzu benchmark decisions should
+be validated with `scripts/validate-kuzu-decision.py`.
 
 ## Quick Start
 
@@ -229,6 +230,7 @@ it defines the evidence required to mark that validation complete.
 - [Platform Support](docs/platform/SUPPORT.md) - macOS Apple Silicon support matrix
 - [One-Mac Benchmark](docs/quality/one-mac-benchmark.md) - reproducible benchmark artifact workflow
 - [Four-Mac Cell Validation](docs/quality/four-mac-cell-validation.md) - Thunderbolt cell validation artifact gate
+- [Kuzu Decision Gate](docs/quality/kuzu-decision-gate.md) - native-vs-Kuzu graph adapter benchmark gate
 - [Vector Quality Gates](docs/quality/vector-quality.md) - recall and semantic retrieval QA
 
 Product requirements, architecture decisions, and the technical specification are
@@ -258,10 +260,11 @@ maintained as internal documents and are not part of this public repository.
 - [x] Planner-driven SQL metadata retrieval mode for scalar JSON filters
 - [x] Optional PostgreSQL metadata adapter behind `akidb-server/postgres`
 - [x] Kuzu adapter evaluation scaffold behind optional `akidb-graph/kuzu` feature
+- [x] Kuzu native-vs-Kuzu decision artifact validator
 - [x] One-Mac benchmark artifact validator
 - [x] Four-Mac cell validation artifact validator
 - [ ] One-Mac reference benchmark
-- [ ] Kuzu binding and native-vs-Kuzu benchmark decision gate
+- [ ] Kuzu binding and native-vs-Kuzu benchmark artifact
 - [ ] Four-Mac Thunderbolt cell validation
 
 ## License

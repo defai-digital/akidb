@@ -13,6 +13,7 @@ Supporting documents:
 - [Development Notes](development/AGENT_CONFIGS.md)
 - [One-Mac Benchmark](quality/one-mac-benchmark.md)
 - [Four-Mac Cell Validation](quality/four-mac-cell-validation.md)
+- [Kuzu Decision Gate](quality/kuzu-decision-gate.md)
 - [Vector Quality Gates](quality/vector-quality.md) - exact-vector and semantic retrieval QA
 - [Security Review](security/SECURITY_REVIEW.md)
 - [Runbooks](runbooks/)
