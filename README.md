@@ -1,6 +1,6 @@
 # AkiDB
 
-A Mac-first vector search engine for private local RAG, Apple Silicon
+A Mac-first AI knowledge retrieval engine for private local RAG, Apple Silicon
 appliance deployments, and four-Mac Thunderbolt cells.
 
 ## Features
@@ -10,6 +10,10 @@ appliance deployments, and four-Mac Thunderbolt cells.
 - **Cell-Based Horizontal Scale**: Add four-Mac cells instead of growing an unbounded mesh
 - **Portable Backend First**: CPU/portable backend for Mac M2 or later ARM64 systems
 - **Sub-50ms Latency**: Optimized for real-time RAG applications
+- **Hybrid Retrieval**: Dense vector search plus BM25 lexical retrieval and RRF fusion
+- **Metadata Filtering**: Typed metadata/tag filters backed by RocksDB indexes
+- **Native Graph Foundation**: RocksDB-backed graph retrieval primitives for GraphRAG expansion
+- **Context Builder**: Source-grounded context packing with citation support
 - **Rust Performance**: Memory-safe, async-first implementation
 
 ## Architecture
@@ -28,6 +32,30 @@ appliance deployments, and four-Mac Thunderbolt cells.
           ▼                 ▼                 ▼
        Shards           Replicas          Snapshots
 ```
+
+Retrieval is evolving toward an AI-native knowledge stack:
+
+```
+Text Query
+   │
+   ▼
+Query Planner
+   │
+   ├── Vector Search
+   ├── BM25 / Full Text
+   ├── Metadata Filters
+   └── Native Graph Index
+           │
+        Fusion
+           │
+      Rerank / MMR
+           │
+    Context Builder
+```
+
+The default hot path stays self-contained on Apple Silicon. SQL backends and
+external graph engines such as Kuzu or Apache AGE are planned as optional
+adapters, not default runtime dependencies.
 
 ## Quick Start
 
@@ -67,6 +95,8 @@ akidb/
 ├── crates/
 │   ├── common/          # Shared types, errors, config
 │   ├── faiss-wrapper/   # Optional FAISS FFI bindings
+│   ├── graph/           # Native GraphRAG graph index and traversal contract
+│   ├── retrieval/       # BM25, RRF, rerank, context packing
 │   ├── storage/         # RocksDB, WAL, ID mapping
 │   ├── grpc-server/     # gRPC API service
 │   ├── coordinator/     # Fan-out search coordination
@@ -189,7 +219,12 @@ maintained as internal documents and are not part of this public repository.
 - [x] CI/CD pipeline configured
 - [x] Security baseline (cargo-audit, deny.toml)
 - [x] Canonical PRD/ADR/technical specification
+- [x] Native graph retrieval crate initialized
+- [x] BM25 + RRF hybrid retrieval foundation
 - [ ] One-Mac reference benchmark
+- [ ] Query planner integration for vector/BM25/metadata/graph routing
+- [ ] Kuzu adapter evaluation behind an optional feature
+- [ ] Optional SQL metadata adapter design
 - [ ] Four-Mac Thunderbolt cell validation
 
 ## License

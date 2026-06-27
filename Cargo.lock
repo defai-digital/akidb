@@ -177,6 +177,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "akidb-graph"
+version = "0.6.1"
+dependencies = [
+ "akidb-common",
+ "akidb-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "akidb-grpc"
 version = "0.6.1"
 dependencies = [
