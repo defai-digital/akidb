@@ -321,11 +321,17 @@ where
     S: StorageBackend + 'static,
 {
     let s = service.index_stats();
+    let graph = service.graph_stats();
     json!({
         "active_vectors": s.active_vectors,
         "total_vectors": s.total_vectors,
         "tombstoned_vectors": s.tombstoned_vectors,
         "dimensions": s.dimensions,
+        "graph": graph.map(|g| json!({
+            "nodes": g.nodes,
+            "edges": g.edges,
+            "chunk_links": g.chunk_links,
+        })),
     })
     .to_string()
 }

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use akidb_faiss::{HnswConfig, HnswIndex};
+use akidb_graph::{EdgeKind, GraphEdge, GraphIndex, GraphNode, NativeGraphIndex, NodeKind};
 use akidb_grpc::mcp::handle_request;
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
 use akidb_storage::{IdMapping, RocksDbBackend};
@@ -26,6 +27,21 @@ fn setup() -> AkiDbService<HnswIndex, RocksDbBackend> {
     let id_mapping = Arc::new(IdMapping::new(storage, "default"));
     let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
     AkiDbService::new(index, id_mapping, "default").with_embedding_provider(Arc::new(StubEmbedder))
+}
+
+fn setup_with_graph() -> (
+    AkiDbService<HnswIndex, RocksDbBackend>,
+    Arc<NativeGraphIndex<RocksDbBackend>>,
+) {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
+    let id_mapping = Arc::new(IdMapping::new(storage.clone(), "default"));
+    let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
+    let graph = Arc::new(NativeGraphIndex::new(storage));
+    let service = AkiDbService::new(index, id_mapping, "default")
+        .with_embedding_provider(Arc::new(StubEmbedder))
+        .with_graph_index(graph.clone());
+    (service, graph)
 }
 
 async fn call(svc: &AkiDbService<HnswIndex, RocksDbBackend>, raw: &str) -> Value {
@@ -145,4 +161,25 @@ async fn test_status_tool() {
     .await;
     let text = v["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("dimensions"), "status: {text}");
+}
+
+#[tokio::test]
+async fn test_status_tool_reports_graph_stats_when_configured() {
+    let (svc, graph) = setup_with_graph();
+    graph.upsert_node(GraphNode::new("chunk:a", NodeKind::Chunk)).unwrap();
+    graph.upsert_node(GraphNode::new("chunk:b", NodeKind::Chunk)).unwrap();
+    graph
+        .upsert_edge(GraphEdge::new("ab", "chunk:a", "chunk:b", EdgeKind::RelatedTo))
+        .unwrap();
+
+    let v = call(
+        &svc,
+        r#"{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"status","arguments":{}}}"#,
+    )
+    .await;
+    let text = v["result"]["content"][0]["text"].as_str().unwrap();
+    let status: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(status["graph"]["nodes"], 2);
+    assert_eq!(status["graph"]["edges"], 1);
+    assert_eq!(status["graph"]["chunk_links"], 1);
 }

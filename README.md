@@ -224,6 +224,7 @@ maintained as internal documents and are not part of this public repository.
 - [x] Deterministic query planner scaffolding
 - [x] Graph-expanded context packing when a graph index is configured
 - [x] Best-effort graph indexing from `parent_id` and `related_ids` metadata
+- [x] MCP status reports graph stats when graph expansion is configured
 - [ ] One-Mac reference benchmark
 - [ ] Full planner-driven vector/BM25/metadata/graph routing
 - [ ] Kuzu adapter evaluation behind an optional feature

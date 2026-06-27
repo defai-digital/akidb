@@ -9,7 +9,7 @@ use crate::proto::{
 };
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
-use akidb_graph::{EdgeKind, GraphEdge, GraphIndex, GraphNode, GraphNodeId, NodeKind};
+use akidb_graph::{EdgeKind, GraphEdge, GraphIndex, GraphNode, GraphNodeId, GraphStats, NodeKind};
 use akidb_retrieval::{
     expand_to_parents, mmr, pack, plan_query, Bm25Index, HybridFuser, LexicalOverlapReranker,
     MatchedChunk, MmrItem, PackerConfig, PlannerInput, Reranker, RerankItem, ScoredId,
@@ -202,6 +202,17 @@ where
     /// Current index statistics (active/total/tombstoned vectors, dimensions).
     pub fn index_stats(&self) -> akidb_faiss::IndexStats {
         self.index.stats()
+    }
+
+    /// Current graph statistics, when graph expansion is configured.
+    pub fn graph_stats(&self) -> Option<GraphStats> {
+        self.graph_index.as_ref().and_then(|graph| match graph.stats() {
+            Ok(stats) => Some(stats),
+            Err(e) => {
+                warn!(error = %e, "failed to load graph stats");
+                None
+            }
+        })
     }
 
     /// Convert AkiDbError to tonic Status
