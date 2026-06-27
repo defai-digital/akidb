@@ -1,7 +1,7 @@
 # AkiDB TypeScript SDK
 
-A typed TypeScript client for [AkiDB](../../README.md) — a Mac-native retrieval
-memory engine for private AI agents.
+A typed, production-grade TypeScript client for [AkiDB](../../README.md) — a
+Mac-native retrieval memory engine for private AI agents.
 
 ## Install
 
@@ -15,24 +15,39 @@ npm run build
 ```ts
 import { AkiDBClient } from '@akidb/client';
 
-const client = new AkiDBClient({ target: 'localhost:50051' });
+const client = new AkiDBClient({
+  target: 'localhost:50051',
+  timeoutMs: 5000,     // per-call deadline
+  maxRetries: 3,       // retries on transient errors, exponential backoff
+  tls: true,           // TLS channel (optional rootCerts)
+  authToken: '…',      // sent as `authorization: Bearer …`
+});
 
 await client.insert('doc-1', embedding, { text: 'the source text' });
 
 const result = await client.textSearch('why does token refresh fail?', {
-  topK: 5,
-  hybrid: true,
-  rerank: true,
-  diversity: true,
-  pack: true,
-  tokenBudget: 1024,
+  topK: 5, hybrid: true, rerank: true, diversity: true, pack: true, tokenBudget: 1024,
 });
 for (const hit of result.hits) console.log(hit.id, hit.score);
 console.log(result.contextPack);
+
+// Agent memory
+await client.memoryWrite('m1', embedding, 'remember this', { kind: 'note', conversationId: 'c1' });
+const hits = await client.memoryRead(queryEmbedding, { conversationId: 'c1' });
 ```
 
-The proto is loaded at runtime from `proto/akidb.proto` (no codegen step). For
-unit testing, inject a `rawClient` via the constructor to exercise the wrapper
+## Features
+
+- Per-call **deadlines**, **retry with exponential backoff** on transient codes
+  (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`).
+- **TLS** + **bearer-token auth**; custom metadata.
+- **Typed errors** (`NotFoundError`, `InvalidArgumentError`, `UnavailableError`, …)
+  mapped from gRPC status; see `./errors`.
+- Typed responses and full RPC coverage: insert, insertBatch, update, get, delete,
+  search, searchBatch, textSearch, health, clusterState, plus memoryWrite/Read.
+- Proto loaded at runtime via `@grpc/proto-loader` (no codegen step).
+
+For unit testing, inject a `rawClient` via the constructor to exercise the wrapper
 without a running server.
 
 ## Tests
@@ -40,3 +55,6 @@ without a running server.
 ```bash
 npm test
 ```
+
+Includes a proto-drift test that fails if the vendored `proto/akidb.proto` drifts
+from the canonical engine proto (`../check-proto-drift.sh` checks both SDKs).

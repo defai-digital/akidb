@@ -1,13 +1,33 @@
 export {
   AkiDBClient,
-  loadRawClient,
+  buildMemoryMetadata,
   metadataJson,
   DEFAULT_COLLECTION,
 } from './client.js';
 export type {
   AkiDBClientOptions,
+  BatchInsertResponse,
+  GetResult,
+  HealthStatus,
+  InsertResponse,
+  MemoryWriteOptions,
   RawClient,
   SearchHit,
   TextSearchOptions,
   TextSearchResult,
+  VectorInput,
 } from './client.js';
+export {
+  AkiDBError,
+  AlreadyExistsError,
+  DeadlineExceededError,
+  FailedPreconditionError,
+  InternalError,
+  InvalidArgumentError,
+  NotFoundError,
+  PermissionDeniedError,
+  ResourceExhaustedError,
+  UnauthenticatedError,
+  UnavailableError,
+  mapError,
+} from './errors.js';
