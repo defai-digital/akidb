@@ -21,6 +21,7 @@ pub mod fusion;
 pub mod lexical;
 pub mod memory;
 pub mod packer;
+pub mod planner;
 pub mod rerank;
 
 pub use code::{chunk_code, CodeChunk, Language, SymbolKind};
@@ -31,6 +32,7 @@ pub use fusion::{Fusion, HybridFuser, RankedInput, Rrf};
 pub use lexical::Bm25Index;
 pub use memory::{MemoryEntry, MemoryKind};
 pub use packer::{pack, Citation, ContextPack, PackStrategy, PackerConfig, Passage};
+pub use planner::{plan_query, PlannerInput, PlannerTrace, RetrievalMode};
 pub use rerank::{
     cosine_similarity, mmr, IdentityReranker, LexicalOverlapReranker, MmrItem, RerankItem, Reranker,
 };

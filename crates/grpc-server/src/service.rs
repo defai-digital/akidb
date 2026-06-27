@@ -9,14 +9,15 @@ use crate::proto::{
 };
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
+use akidb_graph::{GraphIndex, GraphNodeId};
 use akidb_retrieval::{
-    expand_to_parents, mmr, pack, Bm25Index, HybridFuser, LexicalOverlapReranker, MatchedChunk,
-    MmrItem, PackerConfig, Reranker, RerankItem, ScoredId,
+    expand_to_parents, mmr, pack, plan_query, Bm25Index, HybridFuser, LexicalOverlapReranker,
+    MatchedChunk, MmrItem, PackerConfig, PlannerInput, Reranker, RerankItem, ScoredId,
 };
-use std::collections::HashMap;
 use akidb_storage::{IdMapping, StorageBackend};
 use dashmap::DashSet;
 use parking_lot::RwLock;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
@@ -83,6 +84,11 @@ where
     /// packing. Populated alongside `lexical` from insert `text`; same
     /// in-memory-only limitation applies.
     documents: Arc<RwLock<HashMap<VectorId, String>>>,
+    /// Optional graph index used to expand packed context with related chunks.
+    ///
+    /// This is deliberately opt-in: constructing a service without a graph keeps
+    /// the existing TextSearch behavior unchanged.
+    graph_index: Option<Arc<dyn GraphIndex>>,
 }
 
 impl<I, S> AkiDbService<I, S>
@@ -126,12 +132,19 @@ where
             embedding_provider: None,
             lexical: Arc::new(RwLock::new(Bm25Index::new())),
             documents: Arc::new(RwLock::new(HashMap::new())),
+            graph_index: None,
         }
     }
 
     /// Set the embedding provider for text search support
     pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
+        self
+    }
+
+    /// Set the graph index used for GraphRAG context expansion.
+    pub fn with_graph_index(mut self, graph_index: Arc<dyn GraphIndex>) -> Self {
+        self.graph_index = Some(graph_index);
         self
     }
 
@@ -216,6 +229,19 @@ where
             }
             _ => String::new(),
         }
+    }
+
+    fn parent_id_from_metadata(metadata: &str) -> Option<String> {
+        if metadata.is_empty() {
+            return None;
+        }
+        serde_json::from_str::<serde_json::Value>(metadata)
+            .ok()
+            .and_then(|m| {
+                m.get("parent_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
     }
 
     /// FIX BUG-052: Internal update implementation called while holding the per-key lock
@@ -821,6 +847,15 @@ where
             "TextSearch embedding generated"
         );
 
+        let planner_trace =
+            plan_query(&PlannerInput::new(req.text.clone()).with_pack(req.pack));
+        debug!(
+            mode = ?planner_trace.mode,
+            graph_enabled = planner_trace.graph_enabled,
+            reasons = ?planner_trace.reasons,
+            "TextSearch planner trace"
+        );
+
         let top_k = req.top_k as usize;
         // Over-fetch a candidate pool when a later stage (fusion, rerank,
         // diversity) needs room to reorder; otherwise fetch exactly top_k.
@@ -909,25 +944,51 @@ where
         let context_pack = if req.pack {
             let budget = req.pack_token_budget.unwrap_or(1024) as usize;
             let docs = self.documents.read();
-            let matched: Vec<MatchedChunk> = response_results
+            let mut seen = HashSet::new();
+            let mut matched: Vec<MatchedChunk> = response_results
                 .iter()
                 .map(|r| {
-                    let parent_id = if r.metadata.is_empty() {
-                        None
-                    } else {
-                        serde_json::from_str::<serde_json::Value>(&r.metadata)
-                            .ok()
-                            .and_then(|m| {
-                                m.get("parent_id")
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from)
-                            })
-                    };
+                    let parent_id = Self::parent_id_from_metadata(&r.metadata);
                     let id = VectorId::new(&r.id);
+                    seen.insert(id.clone());
                     let text = docs.get(&id).cloned().unwrap_or_default();
                     MatchedChunk::new(id, parent_id, text, r.score)
                 })
                 .collect();
+
+            if let Some(graph) = &self.graph_index {
+                for result in &response_results {
+                    let seed = GraphNodeId::new(format!("chunk:{}", result.id));
+                    match graph.related_chunks(&seed, top_k.saturating_mul(2).max(1)) {
+                        Ok(chunks) => {
+                            for chunk in chunks {
+                                let id = chunk.vector_id;
+                                if !seen.insert(id.clone()) {
+                                    continue;
+                                }
+                                let Some(text) = docs.get(&id).cloned() else {
+                                    continue;
+                                };
+                                if text.is_empty() {
+                                    continue;
+                                }
+                                let metadata = self.load_metadata_string(&id);
+                                let parent_id = Self::parent_id_from_metadata(&metadata);
+                                matched.push(MatchedChunk::new(
+                                    id,
+                                    parent_id,
+                                    text,
+                                    result.score * 0.85,
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            warn!(seed = %seed, error = %e, "graph context expansion failed");
+                        }
+                    }
+                }
+            }
+
             let mut passages =
                 expand_to_parents(&matched, |pid| docs.get(&VectorId::new(pid)).cloned());
             passages.retain(|p| !p.text.is_empty());

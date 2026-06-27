@@ -10,6 +10,7 @@ akidb-common = { path = "../common" }
 akidb-faiss = { path = "../faiss-wrapper" }
 akidb-storage = { path = "../storage" }
 akidb-retrieval = { path = "../retrieval" }
+akidb-graph = { path = "../graph" }
 
 tonic.workspace = true
 prost.workspace = true

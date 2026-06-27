@@ -195,6 +195,7 @@ version = "0.6.1"
 dependencies = [
  "akidb-common",
  "akidb-faiss",
+ "akidb-graph",
  "akidb-retrieval",
  "akidb-storage",
  "anyhow",

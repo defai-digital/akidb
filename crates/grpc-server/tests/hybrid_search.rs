@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use akidb_faiss::{HnswConfig, HnswIndex};
+use akidb_graph::{EdgeKind, GraphEdge, GraphIndex, GraphNode, NativeGraphIndex, NodeKind};
 use akidb_grpc::proto::akidb_server::Akidb;
 use akidb_grpc::proto::{DeleteRequest, InsertRequest, TextSearchRequest};
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
@@ -42,6 +43,21 @@ fn setup() -> AkiDbService<HnswIndex, RocksDbBackend> {
     let id_mapping = Arc::new(IdMapping::new(storage, "test"));
     let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
     AkiDbService::new(index, id_mapping, "test").with_embedding_provider(Arc::new(StubEmbedder))
+}
+
+fn setup_with_graph() -> (
+    AkiDbService<HnswIndex, RocksDbBackend>,
+    Arc<NativeGraphIndex<RocksDbBackend>>,
+) {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
+    let id_mapping = Arc::new(IdMapping::new(storage.clone(), "test"));
+    let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
+    let graph = Arc::new(NativeGraphIndex::new(storage));
+    let svc = AkiDbService::new(index, id_mapping, "test")
+        .with_embedding_provider(Arc::new(StubEmbedder))
+        .with_graph_index(graph.clone());
+    (svc, graph)
 }
 
 async fn insert(
@@ -408,6 +424,42 @@ async fn test_pack_dedups_siblings_to_single_parent() {
     let pack = pack_for(&svc, "needle", 5).await;
     let occurrences = pack.matches("shared parent context body").count();
     assert_eq!(occurrences, 1, "parent must appear once for sibling children, got: {pack}");
+}
+
+#[tokio::test]
+async fn test_pack_includes_graph_related_chunk() {
+    let (svc, graph) = setup_with_graph();
+    insert(&svc, "anchor", vec![1.0, 0.0, 0.0], "needle anchor text", b"").await;
+    insert(
+        &svc,
+        "related",
+        vec![0.0, 0.0, 1.0],
+        "graph expanded implementation context",
+        b"",
+    )
+    .await;
+
+    graph
+        .upsert_node(GraphNode::new("chunk:anchor", NodeKind::Chunk))
+        .unwrap();
+    graph
+        .upsert_node(GraphNode::new("chunk:related", NodeKind::Chunk))
+        .unwrap();
+    graph
+        .upsert_edge(GraphEdge::new(
+            "anchor-related",
+            "chunk:anchor",
+            "chunk:related",
+            EdgeKind::RelatedTo,
+        ))
+        .unwrap();
+
+    let pack = pack_for(&svc, "needle", 1).await;
+    assert!(pack.contains("needle anchor text"), "anchor context expected, got: {pack}");
+    assert!(
+        pack.contains("graph expanded implementation context"),
+        "graph-expanded context expected despite top_k=1, got: {pack}"
+    );
 }
 
 #[tokio::test]

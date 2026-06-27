@@ -221,8 +221,10 @@ maintained as internal documents and are not part of this public repository.
 - [x] Canonical PRD/ADR/technical specification
 - [x] Native graph retrieval crate initialized
 - [x] BM25 + RRF hybrid retrieval foundation
+- [x] Deterministic query planner scaffolding
+- [x] Graph-expanded context packing when a graph index is configured
 - [ ] One-Mac reference benchmark
-- [ ] Query planner integration for vector/BM25/metadata/graph routing
+- [ ] Full planner-driven vector/BM25/metadata/graph routing
 - [ ] Kuzu adapter evaluation behind an optional feature
 - [ ] Optional SQL metadata adapter design
 - [ ] Four-Mac Thunderbolt cell validation
