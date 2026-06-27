@@ -100,6 +100,8 @@ async fn search(
             rerank: false,
             diversity: false,
             mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
         }))
         .await
         .expect("text_search failed")
@@ -119,9 +121,30 @@ fn ids(results: &[(String, String)]) -> Vec<String> {
 /// - doc_dense:   near embedding, no query term.
 /// - doc_lexical: orthogonal embedding, strongest query term frequency.
 async fn seed_disagreeing(svc: &AkiDbService<HnswIndex, RocksDbBackend>) {
-    insert(svc, "doc_both", vec![1.0, 0.0, 0.0], "needle in the document", b"{\"kind\":\"both\"}").await;
-    insert(svc, "doc_dense", vec![0.9, 0.1, 0.0], "haystack only filler", b"").await;
-    insert(svc, "doc_lexical", vec![0.0, 1.0, 0.0], "needle needle needle", b"").await;
+    insert(
+        svc,
+        "doc_both",
+        vec![1.0, 0.0, 0.0],
+        "needle in the document",
+        b"{\"kind\":\"both\"}",
+    )
+    .await;
+    insert(
+        svc,
+        "doc_dense",
+        vec![0.9, 0.1, 0.0],
+        "haystack only filler",
+        b"",
+    )
+    .await;
+    insert(
+        svc,
+        "doc_lexical",
+        vec![0.0, 1.0, 0.0],
+        "needle needle needle",
+        b"",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -160,7 +183,11 @@ async fn test_hybrid_with_empty_lexical_degrades_to_dense() {
     let dense = search(&svc, "anything", 3, false, None, None).await;
     let hybrid = search(&svc, "anything", 3, true, None, None).await;
     assert_eq!(ids(&dense), vec!["a", "b", "c"]);
-    assert_eq!(ids(&hybrid), ids(&dense), "empty lexical must not change order");
+    assert_eq!(
+        ids(&hybrid),
+        ids(&dense),
+        "empty lexical must not change order"
+    );
 }
 
 #[tokio::test]
@@ -180,7 +207,10 @@ async fn test_delete_removes_from_hybrid_results() {
     .expect("delete failed");
 
     let after = search(&svc, "alpha", 10, true, None, None).await;
-    assert!(!ids(&after).contains(&"drop".to_string()), "deleted doc must be gone");
+    assert!(
+        !ids(&after).contains(&"drop".to_string()),
+        "deleted doc must be gone"
+    );
     assert!(ids(&after).contains(&"keep".to_string()));
 }
 
@@ -203,13 +233,18 @@ async fn test_pack_returns_cited_context() {
             rerank: false,
             diversity: false,
             mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
         }))
         .await
         .expect("text_search failed")
         .into_inner();
 
     // The pack should contain the top doc's source text and a citation marker.
-    assert!(!resp.context_pack.is_empty(), "expected a non-empty context pack");
+    assert!(
+        !resp.context_pack.is_empty(),
+        "expected a non-empty context pack"
+    );
     assert!(resp.context_pack.contains("needle in the document"));
     assert!(
         resp.context_pack.contains("[doc_both]"),
@@ -238,6 +273,8 @@ async fn test_pack_respects_token_budget() {
             rerank: false,
             diversity: false,
             mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
         }))
         .await
         .expect("text_search failed")
@@ -266,6 +303,8 @@ async fn test_no_pack_leaves_context_empty() {
             rerank: false,
             diversity: false,
             mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
         }))
         .await
         .expect("text_search failed")
@@ -285,19 +324,30 @@ async fn test_lexical_index_persists_across_restart() {
         let svc_a = AkiDbService::new(index, id_mapping, "test")
             .with_embedding_provider(Arc::new(StubEmbedder));
         insert(&svc_a, "doc1", vec![1.0, 0.0, 0.0], "needle alpha", b"").await;
-        insert(&svc_a, "doc2", vec![0.0, 1.0, 0.0], "needle beta gamma", b"").await;
+        insert(
+            &svc_a,
+            "doc2",
+            vec![0.0, 1.0, 0.0],
+            "needle beta gamma",
+            b"",
+        )
+        .await;
     }
 
     // "Process B": a fresh service (empty in-memory indexes) over the same
     // storage, as if the server restarted.
     let id_mapping = Arc::new(IdMapping::new(storage.clone(), "test"));
     let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
-    let svc_b =
-        AkiDbService::new(index, id_mapping, "test").with_embedding_provider(Arc::new(StubEmbedder));
+    let svc_b = AkiDbService::new(index, id_mapping, "test")
+        .with_embedding_provider(Arc::new(StubEmbedder));
 
     // Before rebuild, the lexical index is empty.
     let before = search(&svc_b, "needle", 10, true, None, None).await;
-    assert!(before.is_empty(), "expected empty before rebuild, got {:?}", ids(&before));
+    assert!(
+        before.is_empty(),
+        "expected empty before rebuild, got {:?}",
+        ids(&before)
+    );
 
     let loaded = svc_b.rebuild_lexical_index();
     assert_eq!(loaded, 2, "both persisted documents should be rebuilt");
@@ -336,11 +386,16 @@ async fn test_rerank_promotes_query_term_match() {
             rerank: true,
             diversity: false,
             mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
         }))
         .await
         .expect("text_search failed")
         .into_inner();
-    assert_eq!(resp.results.first().map(|r| r.id.as_str()), Some("doc_match"));
+    assert_eq!(
+        resp.results.first().map(|r| r.id.as_str()),
+        Some("doc_match")
+    );
 }
 
 #[tokio::test]
@@ -366,13 +421,18 @@ async fn test_diversity_demotes_near_duplicate() {
             rerank: false,
             diversity: true,
             mmr_lambda: Some(0.5),
+            filter: vec![],
+            tag_filter: None,
         }))
         .await
         .expect("text_search failed")
         .into_inner();
     let order: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(order[0], "a", "most relevant stays first");
-    assert_eq!(order[1], "b", "diverse item promoted above the near-duplicate");
+    assert_eq!(
+        order[1], "b",
+        "diverse item promoted above the near-duplicate"
+    );
     assert_eq!(order[2], "a_dup");
 }
 
@@ -394,6 +454,8 @@ async fn pack_for(
         rerank: false,
         diversity: false,
         mmr_lambda: None,
+        filter: vec![],
+        tag_filter: None,
     }))
     .await
     .expect("text_search failed")
@@ -406,30 +468,81 @@ async fn test_pack_expands_child_to_parent() {
     let svc = setup();
     // Parent: full context, embedding orthogonal to the query and no query term,
     // so it is not itself retrieved. Child: matches query, points at the parent.
-    insert(&svc, "P", vec![0.0, 0.0, 1.0], "the complete section with lots of detail and context", b"").await;
-    insert(&svc, "C", vec![1.0, 0.0, 0.0], "needle marker", br#"{"parent_id":"P"}"#).await;
+    insert(
+        &svc,
+        "P",
+        vec![0.0, 0.0, 1.0],
+        "the complete section with lots of detail and context",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "C",
+        vec![1.0, 0.0, 0.0],
+        "needle marker",
+        br#"{"parent_id":"P"}"#,
+    )
+    .await;
 
     let pack = pack_for(&svc, "needle", 5).await;
-    assert!(pack.contains("complete section"), "parent context expected, got: {pack}");
-    assert!(pack.contains("[P]"), "parent citation expected, got: {pack}");
+    assert!(
+        pack.contains("complete section"),
+        "parent context expected, got: {pack}"
+    );
+    assert!(
+        pack.contains("[P]"),
+        "parent citation expected, got: {pack}"
+    );
 }
 
 #[tokio::test]
 async fn test_pack_dedups_siblings_to_single_parent() {
     let svc = setup();
-    insert(&svc, "P", vec![0.0, 0.0, 1.0], "shared parent context body", b"").await;
-    insert(&svc, "C1", vec![1.0, 0.0, 0.0], "needle alpha", br#"{"parent_id":"P"}"#).await;
-    insert(&svc, "C2", vec![0.9, 0.1, 0.0], "needle beta", br#"{"parent_id":"P"}"#).await;
+    insert(
+        &svc,
+        "P",
+        vec![0.0, 0.0, 1.0],
+        "shared parent context body",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "C1",
+        vec![1.0, 0.0, 0.0],
+        "needle alpha",
+        br#"{"parent_id":"P"}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "C2",
+        vec![0.9, 0.1, 0.0],
+        "needle beta",
+        br#"{"parent_id":"P"}"#,
+    )
+    .await;
 
     let pack = pack_for(&svc, "needle", 5).await;
     let occurrences = pack.matches("shared parent context body").count();
-    assert_eq!(occurrences, 1, "parent must appear once for sibling children, got: {pack}");
+    assert_eq!(
+        occurrences, 1,
+        "parent must appear once for sibling children, got: {pack}"
+    );
 }
 
 #[tokio::test]
 async fn test_pack_includes_graph_related_chunk() {
     let (svc, graph) = setup_with_graph();
-    insert(&svc, "anchor", vec![1.0, 0.0, 0.0], "needle anchor text", b"").await;
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle anchor text",
+        b"",
+    )
+    .await;
     insert(
         &svc,
         "related",
@@ -455,7 +568,10 @@ async fn test_pack_includes_graph_related_chunk() {
         .unwrap();
 
     let pack = pack_for(&svc, "needle", 1).await;
-    assert!(pack.contains("needle anchor text"), "anchor context expected, got: {pack}");
+    assert!(
+        pack.contains("needle anchor text"),
+        "anchor context expected, got: {pack}"
+    );
     assert!(
         pack.contains("graph expanded implementation context"),
         "graph-expanded context expected despite top_k=1, got: {pack}"
@@ -532,5 +648,106 @@ async fn test_hybrid_result_carries_metadata() {
     let hybrid = search(&svc, "needle", 3, true, None, None).await;
     let (top_id, top_meta) = &hybrid[0];
     assert_eq!(top_id, "doc_both");
-    assert!(top_meta.contains("both"), "fused result should carry stored metadata, got {top_meta:?}");
+    assert!(
+        top_meta.contains("both"),
+        "fused result should carry stored metadata, got {top_meta:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_text_search_applies_legacy_metadata_filter_to_hybrid_results() {
+    let svc = setup();
+    insert(
+        &svc,
+        "tenant_a",
+        vec![1.0, 0.0, 0.0],
+        "needle shared text",
+        br#"{"tenant":"a"}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "tenant_b",
+        vec![0.9, 0.1, 0.0],
+        "needle shared text",
+        br#"{"tenant":"b"}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"tenant":"a"}"#.to_vec(),
+            tag_filter: None,
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["tenant_a"]);
+}
+
+#[tokio::test]
+async fn test_text_search_filter_blocks_graph_expanded_context() {
+    let (svc, _graph) = setup_with_graph();
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle allowed context",
+        br#"{"tenant":"a","related_ids":["secret"]}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "secret",
+        vec![0.0, 0.0, 1.0],
+        "graph secret context",
+        br#"{"tenant":"b"}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: true,
+            pack_token_budget: Some(1024),
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"tenant":"a"}"#.to_vec(),
+            tag_filter: None,
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+
+    assert!(
+        resp.context_pack.contains("needle allowed context"),
+        "allowed anchor context expected, got: {}",
+        resp.context_pack
+    );
+    assert!(
+        !resp.context_pack.contains("graph secret context"),
+        "filtered graph expansion leaked context: {}",
+        resp.context_pack
+    );
 }

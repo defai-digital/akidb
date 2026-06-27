@@ -95,6 +95,18 @@ describe('AkiDBClient (hardened)', () => {
     expect(result.contextPack).toBe('[x] ctx');
   });
 
+  it('textSearch forwards metadata filters', async () => {
+    const { raw, calls } = fakeClient({ TextSearch: { results: [] } });
+    const client = new AkiDBClient({ rawClient: raw });
+    const filter = new Uint8Array([123, 125]);
+    const tagFilter = { condition: { key: 'tenant', value: { text: 'a' }, op: 'TAG_OP_EQ' } };
+
+    await client.textSearch('q', { filter, tagFilter });
+
+    expect(calls.TextSearch!.request.filter).toBe(filter);
+    expect(calls.TextSearch!.request.tag_filter).toBe(tagFilter);
+  });
+
   it('insertBatch / get / update / searchBatch', async () => {
     const { raw, calls } = fakeClient({
       InsertBatch: { success: true, inserted_count: 2, failed_ids: [] },

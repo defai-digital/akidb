@@ -1,5 +1,6 @@
 //! AkiDB gRPC service implementation
 
+use crate::filter::MetadataFilter;
 use crate::proto::{
     akidb_server::Akidb, DeleteRequest, DeleteResponse, DeleteStatus, GetClusterStateRequest,
     GetClusterStateResponse, GetRequest, GetResponse, HealthRequest, HealthResponse,
@@ -240,6 +241,27 @@ where
             }
             _ => String::new(),
         }
+    }
+
+    fn load_metadata_value(&self, id: &VectorId) -> Option<serde_json::Value> {
+        match self.id_mapping.get_vector(id) {
+            Ok(Some(entry)) => {
+                if entry.metadata.is_empty() {
+                    Some(serde_json::Value::Null)
+                } else {
+                    Some(
+                        serde_json::from_slice(&entry.metadata)
+                            .unwrap_or(serde_json::Value::Null),
+                    )
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn metadata_matches_filter(&self, id: &VectorId, filter: &MetadataFilter) -> bool {
+        self.load_metadata_value(id)
+            .is_some_and(|metadata| filter.matches(&metadata))
     }
 
     fn parent_id_from_metadata(metadata: &str) -> Option<String> {
@@ -977,6 +999,12 @@ where
             return Err(Status::invalid_argument("top_k exceeds maximum of 10000"));
         }
 
+        let metadata_filter = match MetadataFilter::build(&req.filter, req.tag_filter.clone()) {
+            Ok(Some(filter)) => Some(Arc::new(filter)),
+            Ok(None) => None,
+            Err(msg) => return Err(Status::invalid_argument(msg)),
+        };
+
         // Generate embedding from text
         let query_vector = provider
             .embed_text(&req.text)
@@ -988,8 +1016,11 @@ where
             "TextSearch embedding generated"
         );
 
-        let planner_trace =
-            plan_query(&PlannerInput::new(req.text.clone()).with_pack(req.pack));
+        let planner_trace = plan_query(
+            &PlannerInput::new(req.text.clone())
+                .with_pack(req.pack)
+                .with_metadata_filter(metadata_filter.is_some()),
+        );
         debug!(
             mode = ?planner_trace.mode,
             graph_enabled = planner_trace.graph_enabled,
@@ -1006,7 +1037,24 @@ where
         } else {
             top_k
         };
-        let params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
+        let mut params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
+        if let Some(metadata_filter) = metadata_filter.clone() {
+            let id_mapping = self.id_mapping.clone();
+            params = params.with_filter(Arc::new(move |id: &VectorId| {
+                match id_mapping.get_vector(id) {
+                    Ok(Some(entry)) => {
+                        let meta = if entry.metadata.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::from_slice(&entry.metadata)
+                                .unwrap_or(serde_json::Value::Null)
+                        };
+                        metadata_filter.matches(&meta)
+                    }
+                    _ => false,
+                }
+            }));
+        }
 
         // Dense stage.
         let dense = self
@@ -1033,6 +1081,10 @@ where
                 .map(|r| ScoredId::new(r.id.clone(), r.score))
                 .collect()
         };
+
+        if let Some(metadata_filter) = &metadata_filter {
+            ranked.retain(|s| self.metadata_matches_filter(&s.id, metadata_filter));
+        }
 
         // Optional reranking (RET-005): re-score candidates by query-text
         // relevance over their stored source text.
@@ -1106,6 +1158,11 @@ where
                                 let id = chunk.vector_id;
                                 if !seen.insert(id.clone()) {
                                     continue;
+                                }
+                                if let Some(metadata_filter) = &metadata_filter {
+                                    if !self.metadata_matches_filter(&id, metadata_filter) {
+                                        continue;
+                                    }
                                 }
                                 let Some(text) = docs.get(&id).cloned() else {
                                     continue;

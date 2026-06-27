@@ -91,6 +91,24 @@ def test_text_search_sets_flags_and_budget():
     assert [h.id for h in result] == ["x"]
 
 
+def test_text_search_sets_metadata_filters():
+    client, stub = make_client()
+    stub.TextSearch.return_value = pb.SearchResponse()
+    tag_filter = pb.TagFilter(
+        condition=pb.TagCondition(
+            key="tenant",
+            value=pb.TagValue(text="a"),
+            op=pb.TAG_OP_EQ,
+        )
+    )
+
+    client.text_search("q", filter=b'{"tenant":"a"}', tag_filter=tag_filter)
+
+    req = stub.TextSearch.call_args[0][0]
+    assert req.filter == b'{"tenant":"a"}'
+    assert req.tag_filter.condition.key == "tenant"
+
+
 def test_insert_batch_and_search_batch():
     client, stub = make_client()
     stub.InsertBatch.return_value = pb.InsertBatchResponse(success=True, inserted_count=2)

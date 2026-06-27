@@ -100,6 +100,8 @@ export interface TextSearchOptions {
   diversity?: boolean;
   pack?: boolean;
   tokenBudget?: number;
+  filter?: Uint8Array;
+  tagFilter?: unknown;
 }
 
 export interface MemoryWriteOptions {
@@ -325,6 +327,8 @@ export class AkiDBClient {
       pack: opts.pack ?? false,
     };
     if (opts.tokenBudget !== undefined) request.pack_token_budget = opts.tokenBudget;
+    if (opts.filter !== undefined) request.filter = opts.filter;
+    if (opts.tagFilter !== undefined) request.tag_filter = opts.tagFilter;
     const resp = await this.call<{ results?: SearchHit[]; context_pack?: string }>(
       this.raw.TextSearch,
       request,

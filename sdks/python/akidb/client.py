@@ -269,6 +269,8 @@ class AkiDBClient:
         diversity: bool = False,
         pack: bool = False,
         token_budget: Optional[int] = None,
+        filter: Optional[bytes] = None,
+        tag_filter: Optional[pb.TagFilter] = None,
     ) -> TextSearchResult:
         req = pb.TextSearchRequest(
             collection=self.collection,
@@ -281,6 +283,10 @@ class AkiDBClient:
         )
         if token_budget is not None:
             req.pack_token_budget = token_budget
+        if filter is not None:
+            req.filter = filter
+        if tag_filter is not None:
+            req.tag_filter.CopyFrom(tag_filter)
         resp = self._invoke(self._stub.TextSearch, req)
         return TextSearchResult(hits=_hits(resp.results), context_pack=resp.context_pack)
 

@@ -55,6 +55,24 @@ def test_async_text_search_pack():
     assert stub.TextSearch.call_args[0][0].pack_token_budget == 128
 
 
+def test_async_text_search_sets_metadata_filters():
+    client, stub = make_client()
+    stub.TextSearch = AsyncMock(return_value=pb.SearchResponse())
+    tag_filter = pb.TagFilter(
+        condition=pb.TagCondition(
+            key="tenant",
+            value=pb.TagValue(text="a"),
+            op=pb.TAG_OP_EQ,
+        )
+    )
+
+    run(client.text_search("q", filter=b'{"tenant":"a"}', tag_filter=tag_filter))
+
+    req = stub.TextSearch.call_args[0][0]
+    assert req.filter == b'{"tenant":"a"}'
+    assert req.tag_filter.condition.key == "tenant"
+
+
 def test_async_retries_then_succeeds():
     client, stub = make_client(max_retries=2)
     stub.Search = AsyncMock(

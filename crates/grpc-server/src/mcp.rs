@@ -195,6 +195,8 @@ fn text_search_request(text: String, top_k: u32, hybrid: bool, pack: bool, budge
         rerank: false,
         diversity: false,
         mmr_lambda: None,
+        filter: vec![],
+        tag_filter: None,
     }
 }
 
