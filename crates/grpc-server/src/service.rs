@@ -9,7 +9,7 @@ use crate::proto::{
 };
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
-use akidb_graph::{GraphIndex, GraphNodeId};
+use akidb_graph::{EdgeKind, GraphEdge, GraphIndex, GraphNode, GraphNodeId, NodeKind};
 use akidb_retrieval::{
     expand_to_parents, mmr, pack, plan_query, Bm25Index, HybridFuser, LexicalOverlapReranker,
     MatchedChunk, MmrItem, PackerConfig, PlannerInput, Reranker, RerankItem, ScoredId,
@@ -244,6 +244,133 @@ where
             })
     }
 
+    fn chunk_node_id(vector_id: &VectorId) -> GraphNodeId {
+        GraphNodeId::new(format!("chunk:{}", vector_id.as_str()))
+    }
+
+    fn related_ids_from_metadata(metadata: &str) -> Vec<String> {
+        if metadata.is_empty() {
+            return Vec::new();
+        }
+        serde_json::from_str::<serde_json::Value>(metadata)
+            .ok()
+            .and_then(|m| {
+                m.get("related_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|ids| {
+                        ids.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+            })
+            .unwrap_or_default()
+    }
+
+    fn index_graph_chunk(&self, vector_id: &VectorId, metadata: &[u8]) {
+        let Some(graph) = &self.graph_index else {
+            return;
+        };
+
+        let metadata = String::from_utf8_lossy(metadata);
+        let chunk_node_id = Self::chunk_node_id(vector_id);
+        let chunk_node = GraphNode::new(chunk_node_id.clone(), NodeKind::Chunk)
+            .with_property("vector_id", serde_json::json!(vector_id.as_str()));
+
+        if let Err(e) = graph.upsert_node(chunk_node) {
+            warn!(vector_id = %vector_id, error = %e, "failed to index graph chunk node");
+            return;
+        }
+
+        if let Some(parent_id) = Self::parent_id_from_metadata(&metadata) {
+            let parent_vector_id = VectorId::new(parent_id);
+            let parent_node_id = Self::chunk_node_id(&parent_vector_id);
+            if let Err(e) = graph.upsert_node(
+                GraphNode::new(parent_node_id.clone(), NodeKind::Chunk)
+                    .with_property("vector_id", serde_json::json!(parent_vector_id.as_str())),
+            ) {
+                warn!(vector_id = %vector_id, parent = %parent_vector_id, error = %e, "failed to index graph parent node");
+            } else {
+                let parent_edge_id = format!(
+                    "auto:parent_of:{}:{}",
+                    parent_vector_id.as_str(),
+                    vector_id.as_str()
+                );
+                if let Err(e) = graph.upsert_edge(GraphEdge::new(
+                    parent_edge_id,
+                    parent_node_id.clone(),
+                    chunk_node_id.clone(),
+                    EdgeKind::ParentOf,
+                )) {
+                    warn!(vector_id = %vector_id, parent = %parent_vector_id, error = %e, "failed to index graph parent edge");
+                }
+
+                let child_edge_id = format!(
+                    "auto:child_of:{}:{}",
+                    vector_id.as_str(),
+                    parent_vector_id.as_str()
+                );
+                if let Err(e) = graph.upsert_edge(GraphEdge::new(
+                    child_edge_id,
+                    chunk_node_id.clone(),
+                    parent_node_id,
+                    EdgeKind::ChildOf,
+                )) {
+                    warn!(vector_id = %vector_id, parent = %parent_vector_id, error = %e, "failed to index graph child edge");
+                }
+            }
+        }
+
+        for related_id in Self::related_ids_from_metadata(&metadata) {
+            let related_vector_id = VectorId::new(related_id);
+            let related_node_id = Self::chunk_node_id(&related_vector_id);
+            if let Err(e) = graph.upsert_node(
+                GraphNode::new(related_node_id.clone(), NodeKind::Chunk)
+                    .with_property("vector_id", serde_json::json!(related_vector_id.as_str())),
+            ) {
+                warn!(vector_id = %vector_id, related = %related_vector_id, error = %e, "failed to index graph related node");
+                continue;
+            }
+
+            let forward_edge_id = format!(
+                "auto:related_to:{}:{}",
+                vector_id.as_str(),
+                related_vector_id.as_str()
+            );
+            if let Err(e) = graph.upsert_edge(GraphEdge::new(
+                forward_edge_id,
+                chunk_node_id.clone(),
+                related_node_id.clone(),
+                EdgeKind::RelatedTo,
+            )) {
+                warn!(vector_id = %vector_id, related = %related_vector_id, error = %e, "failed to index graph related edge");
+            }
+
+            let reverse_edge_id = format!(
+                "auto:related_to:{}:{}",
+                related_vector_id.as_str(),
+                vector_id.as_str()
+            );
+            if let Err(e) = graph.upsert_edge(GraphEdge::new(
+                reverse_edge_id,
+                related_node_id,
+                chunk_node_id.clone(),
+                EdgeKind::RelatedTo,
+            )) {
+                warn!(vector_id = %vector_id, related = %related_vector_id, error = %e, "failed to index graph reverse related edge");
+            }
+        }
+    }
+
+    fn delete_graph_chunk(&self, vector_id: &VectorId) {
+        let Some(graph) = &self.graph_index else {
+            return;
+        };
+        let node_id = Self::chunk_node_id(vector_id);
+        if let Err(e) = graph.delete_node(&node_id) {
+            warn!(vector_id = %vector_id, error = %e, "failed to delete graph chunk node");
+        }
+    }
+
     /// FIX BUG-052: Internal update implementation called while holding the per-key lock
     fn do_update_locked(
         &self,
@@ -397,6 +524,7 @@ where
                 warn!(vector_id = %vector_id, error = %e, "failed to persist source text");
             }
         }
+        self.index_graph_chunk(&vector_id, &req.metadata);
 
         let elapsed = start.elapsed();
         info!("Inserted vector {} in {:?}", req.id, elapsed);
@@ -523,6 +651,7 @@ where
                 if let Err(e) = self.id_mapping.delete_text(&vector_id) {
                     warn!(vector_id = %vector_id, error = %e, "failed to delete persisted text");
                 }
+                self.delete_graph_chunk(&vector_id);
                 DeleteStatus::Deleted
             }
             None => {
@@ -697,6 +826,7 @@ where
                                     warn!(vector_id = %vector_id, error = %e, "failed to persist source text");
                                 }
                             }
+                            self.index_graph_chunk(&vector_id, &vector.metadata);
                         }
                         Err(e) => {
                             // FIX BUG-046, BUG-HUNT-601: Rollback and log failures

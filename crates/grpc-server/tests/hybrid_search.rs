@@ -463,6 +463,68 @@ async fn test_pack_includes_graph_related_chunk() {
 }
 
 #[tokio::test]
+async fn test_insert_metadata_indexes_graph_related_ids_for_pack() {
+    let (svc, _graph) = setup_with_graph();
+    insert(
+        &svc,
+        "related",
+        vec![0.0, 0.0, 1.0],
+        "auto indexed graph context",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle anchor text",
+        br#"{"related_ids":["related"]}"#,
+    )
+    .await;
+
+    let pack = pack_for(&svc, "needle", 1).await;
+    assert!(
+        pack.contains("auto indexed graph context"),
+        "related_ids metadata should create graph context edge, got: {pack}"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_removes_auto_indexed_graph_chunk() {
+    let (svc, _graph) = setup_with_graph();
+    insert(
+        &svc,
+        "related",
+        vec![0.0, 0.0, 1.0],
+        "auto indexed graph context",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle anchor text",
+        br#"{"related_ids":["related"]}"#,
+    )
+    .await;
+
+    svc.delete(Request::new(DeleteRequest {
+        collection: "test".into(),
+        id: "anchor".into(),
+    }))
+    .await
+    .expect("delete failed");
+
+    let pack = pack_for(&svc, "auto indexed", 1).await;
+    assert!(pack.contains("auto indexed graph context"));
+    assert!(
+        !pack.contains("needle anchor text"),
+        "deleted chunk should not be reintroduced through graph expansion, got: {pack}"
+    );
+}
+
+#[tokio::test]
 async fn test_hybrid_result_carries_metadata() {
     let svc = setup();
     seed_disagreeing(&svc).await;

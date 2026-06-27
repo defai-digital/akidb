@@ -223,6 +223,7 @@ maintained as internal documents and are not part of this public repository.
 - [x] BM25 + RRF hybrid retrieval foundation
 - [x] Deterministic query planner scaffolding
 - [x] Graph-expanded context packing when a graph index is configured
+- [x] Best-effort graph indexing from `parent_id` and `related_ids` metadata
 - [ ] One-Mac reference benchmark
 - [ ] Full planner-driven vector/BM25/metadata/graph routing
 - [ ] Kuzu adapter evaluation behind an optional feature
