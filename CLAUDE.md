@@ -4,99 +4,154 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AkiDB Thor Edition is a distributed vector search engine optimized for NVIDIA Jetson Thor edge clusters. It provides GPU-accelerated FAISS-based vector search with sub-50ms latency targets for real-time RAG applications.
+AkiDB is a **Mac-first** vector search engine for private, local RAG. It targets
+single-node Apple Silicon appliances and four-Mac Thunderbolt cells (the v2
+distributed design). It uses the `usearch` HNSW index for CPU/portable vector
+search with sub-50ms latency targets.
 
-## Build Commands
+> **Important:** Thor, CUDA, NVIDIA GPU, and Linux ARM paths are **unsupported and
+> deprecated**. Do not reintroduce them in code, CI, or active docs. (Some legacy
+> references may still exist in history; ignore them.) The portable Apple Silicon
+> path is the only supported target.
+
+## Build & Test Commands
 
 ```bash
-# Development build (Mac - CPU mode)
-cargo build --features cpu
+# Fast portable compile check (preferred first step)
+cargo check --workspace
 
-# Production build (Jetson Thor - GPU mode)
-cargo build --release --features gpu
+# Build
+cargo build                              # debug, all crates
+cargo build --release -p akidb-server    # release server binary
 
-# Run tests
-cargo test --features cpu
+# Validate the full Apple Silicon dev path
+./scripts/build-on-mac-arm64.sh
 
-# Run a single test
-cargo test --features cpu test_name
+# Tests
+cargo test --workspace                   # unit, integration, and doc tests
+cargo test -p akidb-storage              # single crate
+cargo test -p akidb-faiss test_name      # single test by name
 
-# Format and lint
+# Format & lint (run fmt before focused changes; avoid broad format-only churn)
 cargo fmt
-cargo clippy
-
-# Run specific crate tests
-cargo test -p akidb-storage --features cpu
-cargo test -p akidb-faiss --features cpu
+cargo clippy --workspace --all-targets
 ```
+
+There are **no `cpu`/`gpu` feature flags** anymore — crates build with default
+(empty) features. The index backend is `usearch`, not raw FAISS, despite the
+`faiss-wrapper` crate name (package `akidb-faiss`).
+
+### Running the system (single `akidb` CLI entry point)
+
+`akidb-cli` is the single entry binary; it dispatches to the server, coordinator,
+and TUI:
+
+```bash
+cargo run -p akidb-cli -- server --standalone --config config/default.toml
+cargo run -p akidb-cli -- coordinator --shards 127.0.0.1:50051
+cargo run -p akidb-cli -- tui --coordinator 127.0.0.1:50050
+```
+
+### Python sidecar services
+
+Python services live in `services/doc-parser` and `services/upload-gateway`. From
+a service directory:
+
+```bash
+pip install -e ".[dev]" && pytest tests/ -v
+ruff check .
+```
+
+The local embedding wrapper is `scripts/ax_engine_embedding_server.py`. Point it
+at native artifacts via `AX_ENGINE_MODEL_DIR` (must contain `model-manifest.json`).
+Do **not** wire AkiDB to `ax-engine serve <embedding-alias>`.
 
 ## Architecture
 
-### Crate Dependency Graph
+### Workspace crates (package name → purpose)
 
 ```
-akidb-server (binary)
-├── akidb-grpc (gRPC service layer)
-│   ├── akidb-faiss (vector index abstraction)
-│   │   └── akidb-common (types, errors)
-│   └── akidb-storage (persistence layer)
-│       └── akidb-common
-└── akidb-common
-
-akidb-coordinator (binary - stateless fan-out coordinator)
-├── akidb-grpc
-└── akidb-common
+akidb-cli            Single `akidb` entry point; dispatches server/coordinator/tui
+akidb-server         Shard server binary (run() takes Args)
+akidb-coordinator    Stateless fan-out query coordinator (run_server() takes ServerArgs)
+akidb-tui            Terminal operations UI
+akidb-grpc           gRPC service layer (proto + tonic-generated code)
+akidb-faiss          Vector index abstraction (usearch HNSW; crate dir is faiss-wrapper)
+akidb-storage        RocksDB backend, WAL, ID mapping, S3/MinIO snapshots
+akidb-common         Shared types (Vector, VectorId, InternalId, SearchResult), AkiDbError, config
+akidb-contracts      Boundary validation: validation contracts + type-safe newtypes at gRPC/WAL/storage edges
+akidb-invariants     debug_invariant! / critical_invariant! macros (debug-only vs always-on assertions)
+akidb-ingestion      Document ingestion orchestrator (ingestion-orchestrator dir)
+akidb-benchmark      Benchmark harness
 ```
 
-### Key Crates
+### Dependency direction
 
-- **akidb-common**: Shared types (`Vector`, `VectorId`, `InternalId`, `SearchResult`), error types (`AkiDbError`), config parsing
-- **akidb-faiss**: Vector index trait (`VectorIndex`) with implementations for CPU, GPU, cuVS, and Mock. Handles tombstone bitsets and index rebuild
-- **akidb-storage**: RocksDB backend, WAL, ID mapping (external ID ↔ internal ID), S3/MinIO snapshot storage
-- **akidb-grpc**: gRPC service implementing `akidb.v1.Akidb` proto service. Proto definition at `crates/grpc-server/proto/akidb.proto`
-- **akidb-coordinator**: Stateless query coordinator handling fan-out search, result merging (min-heap), shard routing, backpressure, read-your-writes consistency, and embedding service integration
+`akidb-cli` sits on top of `akidb-server`, `akidb-coordinator`, and `akidb-tui`.
+`akidb-server` pulls in `akidb-grpc`, `akidb-faiss`, `akidb-storage`, and
+`akidb-coordinator`. `akidb-faiss` and `akidb-storage` depend on `akidb-common`;
+`akidb-faiss` and the boundary layers also use `akidb-contracts` / `akidb-invariants`.
 
-### Feature Flags
+### Distributed design
 
-The `akidb-faiss` and `akidb-server` crates use feature flags for index implementation:
-- `cpu` (default): CPU-only FAISS implementation for development
-- `gpu`: CUDA-enabled GPU FAISS for production on Jetson Thor
+- **Shards**: each Mac node runs one shard server (`akidb-server`).
+- **Coordinator**: stateless; fans queries out to shards, merges results with a
+  min-heap, handles shard routing, backpressure, and read-your-writes consistency.
+- **Four-Mac cell**: a deferred (P2) distributed target using Thunderbolt-connected
+  shards + replicas + MinIO snapshots. Detailed product/architecture docs (PRD,
+  ADRs, tech spec) are internal under `ax-internal/` and not part of the public repo.
+- **Partial results**: coordinator returns partial results with coverage metrics
+  when shards are unavailable.
 
-### Distributed Design
+### Key patterns
 
-- **Shards**: Each Thor node runs one shard server (`akidb-server`)
-- **Coordinator**: Stateless coordinator fans out queries to shards, merges results
-- **No replication**: Cost-effective edge design relies on MinIO snapshots for durability
-- **Partial results**: Coordinator returns partial results with coverage metrics when shards are unavailable
-
-### Key Patterns
-
-- **ID Mapping**: External string IDs are mapped to internal i64 IDs for FAISS. Storage layer maintains bidirectional mapping
-- **Tombstone Deletes**: Vectors are tombstone-deleted (GPU bitset filtering), not removed from index. Periodic rebuilds compact tombstones
-- **WAL + Snapshots**: Write-ahead log for durability, periodic snapshots to MinIO for recovery
-
-## Configuration
-
-Main config file: `config/default.toml`
-
-Key configuration sections:
-- `[index]`: FAISS index type (IVF4096,Flat), nprobe for search accuracy
-- `[index.gpu]`: GPU device ID, memory fraction (0.6 default)
-- `[storage]`: RocksDB and WAL paths
-- `[storage.minio]`: MinIO endpoint and credentials for snapshots
-- `[slo]`: P95 latency targets (50ms reference) and backpressure thresholds
+- **ID mapping**: external string IDs map to internal i64 IDs for the index; the
+  storage layer keeps the bidirectional mapping.
+- **Tombstone deletes**: vectors are tombstone-deleted (bitset filtering), not
+  removed from the index. Periodic rebuilds compact tombstones.
+- **WAL + snapshots**: write-ahead log for durability; periodic MinIO snapshots
+  for recovery.
+- **Contracts at boundaries, invariants inside**: validate untrusted data with
+  `akidb-contracts` at gRPC/WAL/storage edges; assert internal assumptions with
+  `akidb-invariants` macros (zero-cost in release for `debug_invariant!`).
 
 ## Proto API
 
-gRPC service definition: `crates/grpc-server/proto/akidb.proto`
+Service definition: `crates/grpc-server/proto/akidb.proto` (package `akidb.v1`).
+Regenerated automatically via `tonic-build` in `crates/grpc-server/build.rs`.
 
-Key operations: Insert, Search, Delete, Update, Get, InsertBatch, SearchBatch, Health
+Three services:
+- **Akidb**: Insert, Search, Delete, Update, Get, Health, InsertBatch, SearchBatch,
+  GetClusterState, TextSearch
+- **IngestionService**: TriggerSync, GetSyncStatus, UpdateTags, ReindexCategory,
+  DeleteCategory, ListCategories
+- **AdminService**: background task status/history, TriggerSnapshot, TriggerRebuild,
+  CancelTask, resource status, webhook config
 
-Proto regeneration happens automatically via `tonic-build` in `crates/grpc-server/build.rs`.
+## Configuration
+
+Main config: `config/default.toml`. Sections: `[server]`, `[index]`,
+`[index.rebuild]`, `[index.tombstone]`, `[storage]`, `[storage.minio]`,
+`[observability]`, `[slo]` (with `[slo.reference]` 50ms P95 target and
+`[slo.backpressure]`), `[embedding]`.
+
+## Conventions
+
+- Rust 2021: 4-space indent, `snake_case` functions/modules, `PascalCase` types,
+  explicit `Result` error handling.
+- Place unit tests near the module under `#[cfg(test)]`; integration tests in
+  `crates/*/tests/`, benchmarks in `benches/`. Name tests by behavior
+  (`test_wal_recovery`, `test_parser_routing`).
+- Commits: short imperative subjects; keep scoped; don't mix formatting with
+  behavior changes. PRs: summary, commands run, linked issues, screenshots only
+  for TUI/UI changes.
+- Don't commit secrets, `.env`, local data, or `deploy/compose/secrets/`.
 
 ## Scripts
 
-- `scripts/thor-validate.sh`: Validate Jetson Thor hardware
-- `scripts/faiss-benchmark.sh`: Run FAISS GPU benchmarks
-- `scripts/minio-setup.sh`: Setup MinIO for snapshot storage
-- `scripts/build-on-thor.sh`: Build on Jetson Thor with GPU support
+- `scripts/build-on-mac-arm64.sh`: validate the Apple Silicon build path
+- `scripts/benchmark-one-mac.sh`: single-Mac benchmark
+- `scripts/validate-standalone.sh`: validate a standalone server
+- `scripts/minio-setup.sh`: set up MinIO for snapshot storage
+- `scripts/qa_all.sh`, `scripts/qa_*.py`: QA / retrieval-quality checks
+- `scripts/ax_engine_embedding_server.py`: local embedding server wrapper

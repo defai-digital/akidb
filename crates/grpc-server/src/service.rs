@@ -318,7 +318,35 @@ where
             return Err(Status::invalid_argument("top_k exceeds maximum of 10000"));
         }
 
-        let params = SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
+        let mut params =
+            SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
+
+        // Wire optional metadata filtering (RET-003). The predicate loads each
+        // candidate's stored metadata and evaluates the request's tag/legacy
+        // filter against it; candidates that fail (or whose metadata cannot be
+        // read) are excluded.
+        match crate::filter::MetadataFilter::build(&req.filter, req.tag_filter.clone()) {
+            Ok(Some(metadata_filter)) => {
+                let metadata_filter = Arc::new(metadata_filter);
+                let id_mapping = self.id_mapping.clone();
+                params = params.with_filter(Arc::new(move |id: &VectorId| {
+                    match id_mapping.get_vector(id) {
+                        Ok(Some(entry)) => {
+                            let meta = if entry.metadata.is_empty() {
+                                serde_json::Value::Null
+                            } else {
+                                serde_json::from_slice(&entry.metadata)
+                                    .unwrap_or(serde_json::Value::Null)
+                            };
+                            metadata_filter.matches(&meta)
+                        }
+                        _ => false,
+                    }
+                }));
+            }
+            Ok(None) => {}
+            Err(msg) => return Err(Status::invalid_argument(msg)),
+        }
 
         let results = self
             .index

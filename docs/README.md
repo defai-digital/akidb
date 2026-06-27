@@ -2,10 +2,11 @@
 
 Canonical documents:
 
-- [Product Requirements](product/PRD.md)
-- [Architecture Decisions](adr/ADR-0001-mac-first-cell-architecture.md)
-- [Technical Specification](architecture/TECH_SPEC.md)
 - [Platform Support](platform/SUPPORT.md)
+
+> The Product Requirements (PRD), Architecture Decision Records (ADR), and
+> Technical Specification are maintained as internal documents under `ax-internal/`
+> and are intentionally excluded from this public repository.
 
 Supporting documents:
 

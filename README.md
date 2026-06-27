@@ -55,13 +55,10 @@ cargo fmt
 cargo clippy
 ```
 
-### Four-Mac Cell
+### Roadmap
 
-The four-Mac Thunderbolt cell is the v2 distributed design target. See:
-
-- [PRD](docs/product/PRD.md)
-- [ADR](docs/adr/ADR-0001-mac-first-cell-architecture.md)
-- [Technical Specification](docs/architecture/TECH_SPEC.md)
+Detailed product and architecture documents (PRD, ADRs, technical specification)
+are maintained internally and are not published in this repository.
 
 ## Project Structure
 
@@ -178,11 +175,11 @@ interpretation.
 
 - [Documentation Index](docs/README.md) - canonical docs and archive map
 - [Platform Support](docs/platform/SUPPORT.md) - macOS Apple Silicon support matrix
-- [ADR](docs/adr/ADR-0001-mac-first-cell-architecture.md) - Architecture Decision Records
-- [PRD](docs/product/PRD.md) - Product Requirements
-- [Technical Specification](docs/architecture/TECH_SPEC.md) - Mac appliance and Thunderbolt cell architecture
 - [One-Mac Benchmark](docs/quality/one-mac-benchmark.md) - reproducible benchmark artifact workflow
 - [Vector Quality Gates](docs/quality/vector-quality.md) - recall and semantic retrieval QA
+
+Product requirements, architecture decisions, and the technical specification are
+maintained as internal documents and are not part of this public repository.
 
 ## Development Status
 

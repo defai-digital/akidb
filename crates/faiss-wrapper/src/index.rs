@@ -61,7 +61,7 @@ impl SearchParams {
     pub fn try_new(top_k: usize) -> Result<Self> {
         if top_k == 0 {
             return Err(crate::AkiDbError::InvalidParameter(
-                "top_k must be > 0, got 0".to_string()
+                "top_k must be > 0, got 0".to_string(),
             ));
         }
         Ok(Self {
@@ -72,6 +72,14 @@ impl SearchParams {
 
     pub fn with_nprobe(mut self, nprobe: u32) -> Self {
         self.nprobe = nprobe;
+        self
+    }
+
+    /// Attach a predicate over external `VectorId`s. Only candidates for which
+    /// the predicate returns `true` are kept. Used to apply metadata filtering
+    /// during search.
+    pub fn with_filter(mut self, filter: Arc<dyn Fn(&VectorId) -> bool + Send + Sync>) -> Self {
+        self.filter = Some(filter);
         self
     }
 }
@@ -153,11 +161,8 @@ pub trait VectorIndex: Send + Sync {
 #[allow(async_fn_in_trait)]
 pub trait VectorIndexAsync: VectorIndex {
     /// Async search operation
-    async fn search_async(
-        &self,
-        query: &[f32],
-        params: &SearchParams,
-    ) -> Result<Vec<SearchResult>>;
+    async fn search_async(&self, query: &[f32], params: &SearchParams)
+        -> Result<Vec<SearchResult>>;
 
     /// Async batch search
     async fn search_batch_async(
