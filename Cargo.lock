@@ -187,6 +187,7 @@ dependencies = [
  "akidb-common",
  "akidb-storage",
  "kuzu",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

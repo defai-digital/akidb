@@ -218,6 +218,10 @@ def validate_decision(report: dict[str, Any], args: argparse.Namespace) -> list[
             enforce_ratio_gates(ratios, args)
 
     require_str(report, "decision.rationale")
+    require_str(report, "decision.rollback_plan")
+    require_str(report, "decision.packaging_source")
+    require_str(report, "decision.upstream_status")
+    require_str(report, "decision.maintenance_owner")
 
     return [
         "validated Kuzu decision artifact: "

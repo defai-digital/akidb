@@ -214,6 +214,27 @@ VECTORS=1000000 DIMENSIONS=768 QUERIES=5000 ./scripts/benchmark-one-mac.sh
 See `docs/quality/one-mac-benchmark.md` for artifact requirements and
 interpretation.
 
+### Kuzu Benchmark
+
+Run the native-vs-Kuzu graph benchmark and validate the generated decision
+artifact:
+
+```bash
+./scripts/benchmark-kuzu-decision.sh
+```
+
+For a small smoke run:
+
+```bash
+NODES=50 EDGES=150 QUERIES_PER_KIND=5 \
+OUTPUT=/tmp/akidb-kuzu-decision-smoke.json \
+./scripts/benchmark-kuzu-decision.sh
+```
+
+See `docs/quality/kuzu-decision-gate.md` for artifact requirements. A smoke
+artifact proves the toolchain works; a product decision still requires a
+representative dataset and review of Kuzu's maintenance status.
+
 ### Four-Mac Cell Validation
 
 Before any production claim for a four-Mac Thunderbolt cell, validate a
@@ -273,10 +294,11 @@ maintained as internal documents and are not part of this public repository.
 - [x] Optional PostgreSQL metadata adapter behind `akidb-server/postgres`
 - [x] Optional Kuzu graph adapter binding behind `akidb-graph/kuzu`
 - [x] Kuzu native-vs-Kuzu decision artifact validator
+- [x] Kuzu native-vs-Kuzu benchmark artifact generator
 - [x] One-Mac benchmark artifact validator
 - [x] Four-Mac cell validation artifact validator
 - [ ] One-Mac reference benchmark
-- [ ] Kuzu native-vs-Kuzu benchmark artifact
+- [ ] Kuzu representative benchmark artifact
 - [ ] Four-Mac Thunderbolt cell validation
 
 ## License

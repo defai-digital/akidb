@@ -15,6 +15,20 @@ KUZU_INCLUDE_DIR=/opt/homebrew/include \
 cargo test -p akidb-graph --features kuzu
 ```
 
+Generate and validate a native-vs-Kuzu decision artifact:
+
+```bash
+./scripts/benchmark-kuzu-decision.sh
+```
+
+For a quick toolchain smoke run:
+
+```bash
+NODES=50 EDGES=150 QUERIES_PER_KIND=5 \
+OUTPUT=/tmp/akidb-kuzu-decision-smoke.json \
+./scripts/benchmark-kuzu-decision.sh
+```
+
 The current Homebrew formula marks Kuzu as deprecated because the upstream
 repository is archived. Treat that as a maintenance risk: Kuzu can remain an
 optional adapter only if the adoption artifact records the packaging source,
@@ -146,7 +160,11 @@ GraphRAG retrieval index.
   },
   "decision": {
     "recommendation": "ship_optional_kuzu",
-    "rationale": "Passes parity and optional-adapter gates; native remains faster for hot-path GraphRAG."
+    "rationale": "Passes parity and optional-adapter gates; native remains faster for hot-path GraphRAG.",
+    "rollback_plan": "Keep native graph as the default hot path and disable akidb-graph/kuzu.",
+    "packaging_source": "Homebrew shared Kuzu library plus kuzu Rust crate",
+    "upstream_status": "Homebrew marks Kuzu deprecated because upstream is archived.",
+    "maintenance_owner": "AkiDB maintainers"
   }
 }
 ```
