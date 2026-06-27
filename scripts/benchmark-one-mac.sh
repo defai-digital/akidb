@@ -19,6 +19,7 @@ CONCURRENCY="${CONCURRENCY:-1}"
 SLO_MS="${SLO_MS:-50}"
 SEED="${SEED:-42}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_ROOT/benchmark-results}"
+ONE_MAC_REFERENCE="${ONE_MAC_REFERENCE:-0}"
 SERVER_PID=""
 
 cleanup() {
@@ -102,15 +103,19 @@ echo "=== Running one-Mac benchmark ==="
     --output-json "$OUTPUT"
 
 echo "=== Validating benchmark artifact ==="
-python3 "$PROJECT_ROOT/scripts/validate-one-mac-benchmark.py" "$OUTPUT" \
-    --expected-dimensions "$DIMENSIONS" \
-    --expected-vectors "$VECTORS" \
-    --expected-queries "$QUERIES" \
-    --expected-top-k "$TOP_K" \
-    --expected-nprobe "$NPROBE" \
-    --expected-concurrency "$CONCURRENCY" \
-    --expected-slo-ms "$SLO_MS" \
-    --max-p95-ms "$SLO_MS" \
-    --min-slo-compliance 95
+if [ "$ONE_MAC_REFERENCE" = "1" ]; then
+    python3 "$PROJECT_ROOT/scripts/validate-one-mac-benchmark.py" "$OUTPUT" --reference
+else
+    python3 "$PROJECT_ROOT/scripts/validate-one-mac-benchmark.py" "$OUTPUT" \
+        --expected-dimensions "$DIMENSIONS" \
+        --expected-vectors "$VECTORS" \
+        --expected-queries "$QUERIES" \
+        --expected-top-k "$TOP_K" \
+        --expected-nprobe "$NPROBE" \
+        --expected-concurrency "$CONCURRENCY" \
+        --expected-slo-ms "$SLO_MS" \
+        --max-p95-ms "$SLO_MS" \
+        --min-slo-compliance 95
+fi
 
 echo "Benchmark artifact: $OUTPUT"

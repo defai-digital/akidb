@@ -34,13 +34,12 @@ the artifact before exiting.
 Use the product reference shape when the Mac has enough memory:
 
 ```bash
-VECTORS=1000000 \
-DIMENSIONS=768 \
-QUERIES=5000 \
-BATCH_SIZE=1000 \
-CONCURRENCY=1 \
-./scripts/benchmark-one-mac.sh
+./scripts/benchmark-one-mac-reference.sh
 ```
+
+The reference runner fixes `DIMENSIONS=768`, `VECTORS=1000000`,
+`QUERIES=5000`, `TOP_K=10`, `NPROBE=64`, `CONCURRENCY=1`, and validates the
+artifact with `scripts/validate-one-mac-benchmark.py --reference`.
 
 For 1536-dimensional embeddings:
 
@@ -52,6 +51,9 @@ BATCH_SIZE=500 \
 CONCURRENCY=1 \
 ./scripts/benchmark-one-mac.sh
 ```
+
+The 1536-dimensional run is a comparison artifact, not the README reference
+gate unless the validator is called with explicit matching parameters.
 
 ## Concurrency Sweep
 

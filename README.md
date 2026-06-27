@@ -208,7 +208,7 @@ Run the clean standalone synthetic benchmark and write a JSON artifact:
 For the reference target shape:
 
 ```bash
-VECTORS=1000000 DIMENSIONS=768 QUERIES=5000 ./scripts/benchmark-one-mac.sh
+./scripts/benchmark-one-mac-reference.sh
 ```
 
 See `docs/quality/one-mac-benchmark.md` for artifact requirements and
@@ -311,6 +311,7 @@ maintained as internal documents and are not part of this public repository.
 - [x] Kuzu native-vs-Kuzu decision artifact validator
 - [x] Kuzu native-vs-Kuzu benchmark artifact generator
 - [x] One-Mac benchmark artifact validator
+- [x] One-Mac reference benchmark runner
 - [x] Four-Mac cell validation artifact validator
 - [x] Four-Mac cell validation artifact builder
 - [ ] One-Mac reference benchmark
