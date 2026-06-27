@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-27T22:24:25Z",
+  "hardware": {
+    "os": "macOS 26.5.1",
+    "arch": "aarch64",
+    "mac_model": "unknown",
+    "memory_bytes": null
+  },
+  "software": {
+    "akidb_commit": "cefa36d",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25) (Homebrew)",
+    "kuzu_version": "Kuzu 0.11.3"
+  },
+  "dataset": {
+    "shape": "synthetic_code_graph",
+    "nodes": 1000,
+    "edges": 5000,
+    "related_chunk_edges": 1000
+  },
+  "query_mix": [
+    {
+      "kind": "neighbors",
+      "count": 250
+    },
+    {
+      "kind": "two_hop",
+      "count": 250
+    },
+    {
+      "kind": "path_exists",
+      "count": 250
+    },
+    {
+      "kind": "related_chunks",
+      "count": 250
+    }
+  ],
+  "backends": {
+    "native": {
+      "available": true,
+      "implementation": "akidb-native-graph",
+      "ingest": {
+        "wall_time_ms": 114.822666,
+        "nodes_per_sec": 8709.081881098284,
+        "edges_per_sec": 43545.40940549142
+      },
+      "storage": {
+        "bytes": 432322
+      },
+      "memory": {
+        "peak_rss_bytes": 27066368
+      },
+      "queries": {
+        "qps": 3022.3963315942588,
+        "errors": 0,
+        "latency": {
+          "count": 1000,
+          "min_ms": 0.010084000000000001,
+          "p50_ms": 0.15820900000000002,
+          "p95_ms": 1.0650410000000001,
+          "p99_ms": 1.249584,
+          "max_ms": 1.921041
+        }
+      }
+    },
+    "kuzu": {
+      "available": true,
+      "implementation": "kuzu-rust",
+      "ingest": {
+        "wall_time_ms": 120167.280375,
+        "nodes_per_sec": 8.321732811788285,
+        "edges_per_sec": 41.60866405894143
+      },
+      "storage": {
+        "bytes": 7847936
+      },
+      "memory": {
+        "peak_rss_bytes": 274153472
+      },
+      "queries": {
+        "qps": 435.2476139997831,
+        "errors": 0,
+        "latency": {
+          "count": 1000,
+          "min_ms": 0.6317090000000001,
+          "p50_ms": 1.304041,
+          "p95_ms": 6.414459,
+          "p99_ms": 7.1209999999999996,
+          "max_ms": 11.871041
+        }
+      }
+    }
+  },
+  "correctness": {
+    "result_parity_percent": 100.0,
+    "native_node_count": 1000,
+    "kuzu_node_count": 1000,
+    "native_edge_count": 5000,
+    "kuzu_edge_count": 5000
+  },
+  "decision": {
+    "recommendation": "reject_kuzu",
+    "rationale": "Kuzu does not currently clear optional-adapter benchmark gates at 100.00% parity, so native remains the only supported hot path.",
+    "rollback_plan": "Keep the native graph index as the default hot path and disable the akidb-graph/kuzu feature.",
+    "packaging_source": "Homebrew shared Kuzu library plus kuzu Rust crate",
+    "upstream_status": "Homebrew currently marks Kuzu deprecated because the upstream repository is archived.",
+    "maintenance_owner": "AkiDB maintainers"
+  }
+}

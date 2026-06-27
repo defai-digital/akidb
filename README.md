@@ -315,8 +315,8 @@ maintained as internal documents and are not part of this public repository.
 - [x] One-Mac reference benchmark runner
 - [x] Four-Mac cell validation artifact validator
 - [x] Four-Mac cell validation artifact builder
+- [x] Kuzu representative benchmark artifact
 - [ ] One-Mac reference benchmark
-- [ ] Kuzu representative benchmark artifact
 - [ ] Four-Mac Thunderbolt cell validation
 
 ## License

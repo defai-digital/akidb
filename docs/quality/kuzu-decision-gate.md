@@ -34,6 +34,17 @@ repository is archived. Treat that as a maintenance risk: Kuzu can remain an
 optional adapter only if the adoption artifact records the packaging source,
 upstream status, rollback plan, and owner for monitoring future breakage.
 
+Current representative artifact:
+
+```bash
+python3 scripts/validate-kuzu-decision.py \
+  docs/reports/kuzu-decision-20260627T222221Z.json
+```
+
+The current representative artifact recommends `reject_kuzu`: result parity is
+100%, but Kuzu misses the optional-adapter latency/QPS gates and Homebrew marks
+the upstream as archived. Native remains the only graph hot path.
+
 Validate an artifact for optional adapter readiness:
 
 ```bash
