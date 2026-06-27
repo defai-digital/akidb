@@ -1,0 +1,447 @@
+//! Code-aware chunking (CODE-001).
+//!
+//! Fixed-size chunking is destructive for code: it splits signatures from bodies
+//! and tests from sources. This module instead chunks source by *top-level
+//! symbol* (functions, types, classes), keeping each definition intact along with
+//! its immediately-preceding doc comments and attributes.
+//!
+//! It is a deliberately dependency-free heuristic: Rust blocks are found by brace
+//! matching, Python blocks by indentation. This avoids pulling in tree-sitter's
+//! compiled C grammars. A tree-sitter backend (precise spans, nested symbols,
+//! call/import edges) is the documented future upgrade behind this same API.
+//! Known limitation: braces inside strings/comments are not specially handled.
+
+/// Source language for chunking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    Rust,
+    Python,
+    Other,
+}
+
+impl Language {
+    /// Map a file extension (without dot) to a language.
+    pub fn from_extension(ext: &str) -> Self {
+        match ext.to_ascii_lowercase().as_str() {
+            "rs" => Language::Rust,
+            "py" => Language::Python,
+            _ => Language::Other,
+        }
+    }
+}
+
+/// The kind of a code symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    Function,
+    Struct,
+    Enum,
+    Trait,
+    Impl,
+    Module,
+    Class,
+    Other,
+}
+
+/// One code chunk: a top-level symbol with its source span (1-based lines).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeChunk {
+    pub kind: SymbolKind,
+    pub name: Option<String>,
+    pub text: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+/// Chunk source code into top-level symbol chunks.
+///
+/// For [`Language::Other`], returns a single whole-source chunk (or none if the
+/// source is blank).
+pub fn chunk_code(source: &str, lang: Language) -> Vec<CodeChunk> {
+    match lang {
+        Language::Rust => chunk_rust(source),
+        Language::Python => chunk_python(source),
+        Language::Other => {
+            if source.trim().is_empty() {
+                Vec::new()
+            } else {
+                let line_count = source.lines().count().max(1);
+                vec![CodeChunk {
+                    kind: SymbolKind::Other,
+                    name: None,
+                    text: source.to_string(),
+                    start_line: 1,
+                    end_line: line_count,
+                }]
+            }
+        }
+    }
+}
+
+fn leading_indent(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// Walk backward from `start` over contiguous attribute / doc-comment / comment
+/// lines so they are attached to the symbol below them.
+fn extend_start_with_decorations(lines: &[&str], start: usize) -> usize {
+    let mut s = start;
+    while s > 0 {
+        let prev = lines[s - 1].trim_start();
+        let is_decoration = prev.starts_with("#[")
+            || prev.starts_with("#!")
+            || prev.starts_with("///")
+            || prev.starts_with("//!")
+            || prev.starts_with("//")
+            || prev.starts_with('@'); // Python decorator
+        if is_decoration {
+            s -= 1;
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+fn rust_symbol_start(trimmed: &str) -> Option<SymbolKind> {
+    // Strip leading modifiers.
+    let mut t = trimmed;
+    for m in ["pub(crate) ", "pub(super) ", "pub ", "async ", "unsafe ", "default ", "const "] {
+        if let Some(rest) = t.strip_prefix(m) {
+            t = rest;
+        }
+    }
+    let kind = if t.starts_with("fn ") {
+        SymbolKind::Function
+    } else if t.starts_with("struct ") {
+        SymbolKind::Struct
+    } else if t.starts_with("enum ") {
+        SymbolKind::Enum
+    } else if t.starts_with("trait ") {
+        SymbolKind::Trait
+    } else if t == "impl" || t.starts_with("impl ") || t.starts_with("impl<") {
+        SymbolKind::Impl
+    } else if t.starts_with("mod ") {
+        SymbolKind::Module
+    } else {
+        return None;
+    };
+    Some(kind)
+}
+
+fn rust_symbol_name(trimmed: &str, kind: SymbolKind) -> Option<String> {
+    let mut t = trimmed;
+    for m in ["pub(crate) ", "pub(super) ", "pub ", "async ", "unsafe ", "default ", "const "] {
+        if let Some(rest) = t.strip_prefix(m) {
+            t = rest;
+        }
+    }
+    let keyword = match kind {
+        SymbolKind::Function => "fn ",
+        SymbolKind::Struct => "struct ",
+        SymbolKind::Enum => "enum ",
+        SymbolKind::Trait => "trait ",
+        SymbolKind::Module => "mod ",
+        SymbolKind::Impl => return impl_name(t),
+        _ => return None,
+    };
+    let rest = t.strip_prefix(keyword)?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Best-effort name for an impl block: the implemented type (after `for`, else
+/// the trait/type token).
+fn impl_name(t: &str) -> Option<String> {
+    let body = t.strip_prefix("impl").unwrap_or(t).trim_start();
+    // Drop generic params like `<T>` right after impl.
+    let body = if let Some(stripped) = body.strip_prefix('<') {
+        // skip to matching '>' (shallow)
+        match stripped.find('>') {
+            Some(idx) => stripped[idx + 1..].trim_start(),
+            None => body,
+        }
+    } else {
+        body
+    };
+    let target = if let Some(idx) = body.find(" for ") {
+        &body[idx + 5..]
+    } else {
+        body
+    };
+    let name: String = target
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
+        .collect();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Find the line index where a Rust item starting at `start` ends.
+fn rust_block_end(lines: &[&str], start: usize) -> usize {
+    let mut depth: i32 = 0;
+    let mut opened = false;
+    for (offset, line) in lines[start..].iter().enumerate() {
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        if opened && depth <= 0 {
+            return start + offset;
+        }
+        // One-liner item (no body): terminated by ';' before any '{'.
+        if !opened && line.contains(';') {
+            return start + offset;
+        }
+    }
+    lines.len() - 1
+}
+
+fn chunk_rust(source: &str) -> Vec<CodeChunk> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut chunks = Vec::new();
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if depth == 0 {
+            if let Some(kind) = rust_symbol_start(trimmed) {
+                let name = rust_symbol_name(trimmed, kind);
+                let end = rust_block_end(&lines, i);
+                let chunk_start = extend_start_with_decorations(&lines, i);
+                chunks.push(CodeChunk {
+                    kind,
+                    name,
+                    text: lines[chunk_start..=end].join("\n"),
+                    start_line: chunk_start + 1,
+                    end_line: end + 1,
+                });
+                i = end + 1;
+                continue;
+            }
+        }
+        for ch in lines[i].chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    chunks
+}
+
+fn chunk_python(source: &str) -> Vec<CodeChunk> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut chunks = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+        // Only top-level (column 0) defs/classes; methods stay within their class.
+        let is_top_level = leading_indent(line) == 0 && !trimmed.is_empty();
+        let kind = if is_top_level {
+            if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+                Some(SymbolKind::Function)
+            } else if trimmed.starts_with("class ") {
+                Some(SymbolKind::Class)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(kind) = kind {
+            // Block extends over following lines indented beyond column 0.
+            let mut end = i;
+            let mut j = i + 1;
+            while j < lines.len() {
+                if lines[j].trim().is_empty() {
+                    j += 1;
+                    continue;
+                }
+                if leading_indent(lines[j]) == 0 {
+                    break;
+                }
+                end = j;
+                j += 1;
+            }
+            let name = python_name(trimmed, kind);
+            let chunk_start = extend_start_with_decorations(&lines, i);
+            chunks.push(CodeChunk {
+                kind,
+                name,
+                text: lines[chunk_start..=end].join("\n"),
+                start_line: chunk_start + 1,
+                end_line: end + 1,
+            });
+            i = end + 1;
+            continue;
+        }
+        i += 1;
+    }
+    chunks
+}
+
+fn python_name(trimmed: &str, kind: SymbolKind) -> Option<String> {
+    let rest = match kind {
+        SymbolKind::Function => trimmed
+            .strip_prefix("async def ")
+            .or_else(|| trimmed.strip_prefix("def "))?,
+        SymbolKind::Class => trimmed.strip_prefix("class ")?,
+        _ => return None,
+    };
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_language_from_extension() {
+        assert_eq!(Language::from_extension("rs"), Language::Rust);
+        assert_eq!(Language::from_extension("PY"), Language::Python);
+        assert_eq!(Language::from_extension("txt"), Language::Other);
+    }
+
+    #[test]
+    fn test_rust_extracts_top_level_symbols() {
+        let src = "\
+use std::fmt;
+
+/// Adds two numbers.
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+struct Point {
+    x: i32,
+    y: i32,
+}";
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].kind, SymbolKind::Function);
+        assert_eq!(chunks[0].name.as_deref(), Some("add"));
+        // doc comment is attached to the function chunk
+        assert!(chunks[0].text.contains("/// Adds two numbers."));
+        assert!(chunks[0].text.contains("a + b"));
+        assert_eq!(chunks[1].kind, SymbolKind::Struct);
+        assert_eq!(chunks[1].name.as_deref(), Some("Point"));
+        assert!(chunks[1].text.contains("x: i32"));
+    }
+
+    #[test]
+    fn test_rust_function_body_not_split() {
+        let src = "\
+fn outer() {
+    let x = 1;
+    {
+        let y = 2;
+    }
+}";
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].text.contains("let y = 2;"), "nested block kept in body");
+        assert_eq!(chunks[0].end_line, 6);
+    }
+
+    #[test]
+    fn test_rust_impl_and_attributes() {
+        let src = "\
+#[derive(Debug)]
+pub struct Foo;
+
+impl Foo {
+    fn bar(&self) {}
+}";
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].kind, SymbolKind::Struct);
+        assert!(chunks[0].text.contains("#[derive(Debug)]"), "attribute attached");
+        assert_eq!(chunks[1].kind, SymbolKind::Impl);
+        assert_eq!(chunks[1].name.as_deref(), Some("Foo"));
+    }
+
+    #[test]
+    fn test_rust_impl_trait_for_type_name() {
+        let src = "impl fmt::Display for Point {\n    fn fmt(&self) {}\n}";
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks[0].kind, SymbolKind::Impl);
+        assert_eq!(chunks[0].name.as_deref(), Some("Point"));
+    }
+
+    #[test]
+    fn test_python_extracts_functions_and_classes() {
+        let src = "\
+import os
+
+def top_level():
+    return 1
+
+class Greeter:
+    def __init__(self, name):
+        self.name = name
+
+    def greet(self):
+        return self.name
+";
+        let chunks = chunk_code(src, Language::Python);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].kind, SymbolKind::Function);
+        assert_eq!(chunks[0].name.as_deref(), Some("top_level"));
+        assert_eq!(chunks[1].kind, SymbolKind::Class);
+        assert_eq!(chunks[1].name.as_deref(), Some("Greeter"));
+        // methods stay inside the class chunk
+        assert!(chunks[1].text.contains("def greet"));
+    }
+
+    #[test]
+    fn test_python_decorator_attached() {
+        let src = "\
+@decorator
+def decorated():
+    pass
+";
+        let chunks = chunk_code(src, Language::Python);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].text.contains("@decorator"));
+        assert_eq!(chunks[0].name.as_deref(), Some("decorated"));
+    }
+
+    #[test]
+    fn test_other_language_single_chunk() {
+        let chunks = chunk_code("hello\nworld", Language::Other);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].kind, SymbolKind::Other);
+        assert_eq!(chunks[0].end_line, 2);
+        assert!(chunk_code("   ", Language::Other).is_empty());
+    }
+}

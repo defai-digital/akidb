@@ -13,6 +13,7 @@
 //! - [`packer`]: source-grounded context packing — assembles ranked passages
 //!   into a token-budget-aware, citation-bearing context block for an LLM.
 
+pub mod code;
 pub mod context;
 pub mod expansion;
 pub mod fusion;
@@ -21,6 +22,7 @@ pub mod memory;
 pub mod packer;
 pub mod rerank;
 
+pub use code::{chunk_code, CodeChunk, Language, SymbolKind};
 pub use context::{contextualize, Contextualization};
 pub use expansion::{expand_to_parents, MatchedChunk};
 pub use fusion::{Fusion, HybridFuser, RankedInput, Rrf};
