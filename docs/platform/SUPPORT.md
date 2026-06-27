@@ -36,6 +36,15 @@ The production distributed shape is a four-Mac cell:
 - Horizontal scale by adding another four-Mac cell, not by adding a fifth node
   to an existing cell.
 
+Before a cell is marked production-ready, store a validation JSON artifact and
+run:
+
+```bash
+python3 scripts/validate-four-mac-cell.py docs/reports/four-mac-cell-YYYYMMDD.json
+```
+
+See `docs/quality/four-mac-cell-validation.md` for the required evidence.
+
 Product requirements, architecture decisions, and the technical specification are
 maintained as internal documents (`ax-internal/`) and are not part of this public
 repository.

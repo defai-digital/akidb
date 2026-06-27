@@ -201,6 +201,19 @@ VECTORS=1000000 DIMENSIONS=768 QUERIES=5000 ./scripts/benchmark-one-mac.sh
 See `docs/quality/one-mac-benchmark.md` for artifact requirements and
 interpretation.
 
+### Four-Mac Cell Validation
+
+Before any production claim for a four-Mac Thunderbolt cell, validate a
+machine-readable artifact:
+
+```bash
+python3 scripts/validate-four-mac-cell.py docs/reports/four-mac-cell-YYYYMMDD.json
+```
+
+See `docs/quality/four-mac-cell-validation.md` for the artifact schema and
+default gates. This validator does not replace the real four-Mac hardware run;
+it defines the evidence required to mark that validation complete.
+
 ## Performance Targets
 
 | Metric | Target | Reference Config |
@@ -215,6 +228,7 @@ interpretation.
 - [Documentation Index](docs/README.md) - canonical docs and archive map
 - [Platform Support](docs/platform/SUPPORT.md) - macOS Apple Silicon support matrix
 - [One-Mac Benchmark](docs/quality/one-mac-benchmark.md) - reproducible benchmark artifact workflow
+- [Four-Mac Cell Validation](docs/quality/four-mac-cell-validation.md) - Thunderbolt cell validation artifact gate
 - [Vector Quality Gates](docs/quality/vector-quality.md) - recall and semantic retrieval QA
 
 Product requirements, architecture decisions, and the technical specification are
@@ -245,6 +259,7 @@ maintained as internal documents and are not part of this public repository.
 - [x] Optional PostgreSQL metadata adapter behind `akidb-server/postgres`
 - [x] Kuzu adapter evaluation scaffold behind optional `akidb-graph/kuzu` feature
 - [x] One-Mac benchmark artifact validator
+- [x] Four-Mac cell validation artifact validator
 - [ ] One-Mac reference benchmark
 - [ ] Kuzu binding and native-vs-Kuzu benchmark decision gate
 - [ ] Four-Mac Thunderbolt cell validation
