@@ -269,6 +269,7 @@ version = "0.2.0"
 dependencies = [
  "akidb-common",
  "serde",
+ "serde_json",
  "tracing",
 ]
 

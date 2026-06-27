@@ -16,12 +16,14 @@
 pub mod expansion;
 pub mod fusion;
 pub mod lexical;
+pub mod memory;
 pub mod packer;
 pub mod rerank;
 
 pub use expansion::{expand_to_parents, MatchedChunk};
 pub use fusion::{Fusion, HybridFuser, RankedInput, Rrf};
 pub use lexical::Bm25Index;
+pub use memory::{MemoryEntry, MemoryKind};
 pub use packer::{pack, Citation, ContextPack, PackStrategy, PackerConfig, Passage};
 pub use rerank::{
     cosine_similarity, mmr, IdentityReranker, LexicalOverlapReranker, MmrItem, RerankItem, Reranker,
