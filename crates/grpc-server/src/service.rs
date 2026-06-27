@@ -132,6 +132,30 @@ where
         self
     }
 
+    /// Rebuild the in-memory lexical index and document store from persisted
+    /// source text. Call once at startup so hybrid retrieval and context packing
+    /// work after a restart. Returns the number of documents loaded.
+    pub fn rebuild_lexical_index(&self) -> usize {
+        let texts = match self.id_mapping.load_all_texts() {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(error = %e, "failed to load persisted text for lexical rebuild");
+                return 0;
+            }
+        };
+        let mut lexical = self.lexical.write();
+        let mut documents = self.documents.write();
+        let count = texts.len();
+        for (id, text) in texts {
+            lexical.insert(id.clone(), &text);
+            documents.insert(id, text);
+        }
+        if count > 0 {
+            info!(documents = count, "rebuilt lexical index from persisted text");
+        }
+        count
+    }
+
     /// Create a new service instance from SloConfig
     ///
     /// FIX BUG-HUNT-202: Convenience constructor that extracts threshold from config
@@ -320,6 +344,11 @@ where
         if !req.text.is_empty() {
             self.lexical.write().insert(vector_id.clone(), &req.text);
             self.documents.write().insert(vector_id.clone(), req.text.clone());
+            // Persist text so the lexical index / document store can be rebuilt
+            // after a restart. Best-effort: dense search is already durable.
+            if let Err(e) = self.id_mapping.store_text(&vector_id, &req.text) {
+                warn!(vector_id = %vector_id, error = %e, "failed to persist source text");
+            }
         }
 
         let elapsed = start.elapsed();
@@ -444,6 +473,9 @@ where
                 // Keep the lexical index and document store in sync.
                 self.lexical.write().remove(&vector_id);
                 self.documents.write().remove(&vector_id);
+                if let Err(e) = self.id_mapping.delete_text(&vector_id) {
+                    warn!(vector_id = %vector_id, error = %e, "failed to delete persisted text");
+                }
                 DeleteStatus::Deleted
             }
             None => {
@@ -612,6 +644,11 @@ where
                                 self.documents
                                     .write()
                                     .insert(vector_id.clone(), vector.text.clone());
+                                if let Err(e) =
+                                    self.id_mapping.store_text(&vector_id, &vector.text)
+                                {
+                                    warn!(vector_id = %vector_id, error = %e, "failed to persist source text");
+                                }
                             }
                         }
                         Err(e) => {

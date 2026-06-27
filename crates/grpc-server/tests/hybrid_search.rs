@@ -246,6 +246,42 @@ async fn test_no_pack_leaves_context_empty() {
 }
 
 #[tokio::test]
+async fn test_lexical_index_persists_across_restart() {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
+
+    // "Process A": insert documents with source text (persists text to storage).
+    {
+        let id_mapping = Arc::new(IdMapping::new(storage.clone(), "test"));
+        let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
+        let svc_a = AkiDbService::new(index, id_mapping, "test")
+            .with_embedding_provider(Arc::new(StubEmbedder));
+        insert(&svc_a, "doc1", vec![1.0, 0.0, 0.0], "needle alpha", b"").await;
+        insert(&svc_a, "doc2", vec![0.0, 1.0, 0.0], "needle beta gamma", b"").await;
+    }
+
+    // "Process B": a fresh service (empty in-memory indexes) over the same
+    // storage, as if the server restarted.
+    let id_mapping = Arc::new(IdMapping::new(storage.clone(), "test"));
+    let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
+    let svc_b =
+        AkiDbService::new(index, id_mapping, "test").with_embedding_provider(Arc::new(StubEmbedder));
+
+    // Before rebuild, the lexical index is empty.
+    let before = search(&svc_b, "needle", 10, true, None, None).await;
+    assert!(before.is_empty(), "expected empty before rebuild, got {:?}", ids(&before));
+
+    let loaded = svc_b.rebuild_lexical_index();
+    assert_eq!(loaded, 2, "both persisted documents should be rebuilt");
+
+    // After rebuild, lexical retrieval finds the persisted docs (the dense index
+    // is empty in this fresh process, so matches come from the rebuilt lexical).
+    let after = ids(&search(&svc_b, "needle", 10, true, None, None).await);
+    assert!(after.contains(&"doc1".to_string()), "got {after:?}");
+    assert!(after.contains(&"doc2".to_string()), "got {after:?}");
+}
+
+#[tokio::test]
 async fn test_hybrid_result_carries_metadata() {
     let svc = setup();
     seed_disagreeing(&svc).await;

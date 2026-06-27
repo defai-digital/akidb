@@ -98,6 +98,7 @@ impl IdMappingEntry {
 
 const ID_MAPPING_PREFIX: &[u8] = b"id:";
 const VECTOR_PREFIX: &[u8] = b"vec:";
+const TEXT_PREFIX: &[u8] = b"txt:";
 
 fn current_timestamp_ms() -> u64 {
     std::time::SystemTime::now()
@@ -187,6 +188,45 @@ impl<S: StorageBackend> IdMapping<S> {
 
     fn make_vector_key(&self, external_id: &VectorId) -> Vec<u8> {
         self.make_key_with_prefix(VECTOR_PREFIX, external_id)
+    }
+
+    fn make_text_key(&self, external_id: &VectorId) -> Vec<u8> {
+        self.make_key_with_prefix(TEXT_PREFIX, external_id)
+    }
+
+    /// Persist the source text for a vector, used to rebuild the lexical (BM25)
+    /// index and document store on startup. Stored under a separate key
+    /// namespace so it does not affect the vector-payload schema.
+    pub fn store_text(&self, external_id: &VectorId, text: &str) -> Result<()> {
+        self.storage
+            .put(&self.make_text_key(external_id), text.as_bytes())
+    }
+
+    /// Delete the persisted source text for a vector.
+    pub fn delete_text(&self, external_id: &VectorId) -> Result<()> {
+        self.storage.delete(&self.make_text_key(external_id))
+    }
+
+    /// Load all persisted (id, text) pairs for this collection, for rebuilding
+    /// the in-memory lexical index and document store after a restart.
+    pub fn load_all_texts(&self) -> Result<Vec<(VectorId, String)>> {
+        let prefix = self.make_collection_prefix(TEXT_PREFIX);
+        let entries = self.storage.scan_prefix_limited(&prefix, None)?;
+        let mut out = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            // The id is the key remainder after the collection prefix (see
+            // make_key_with_prefix: prefix + collection-prefix + id).
+            if key.len() <= prefix.len() {
+                continue;
+            }
+            let id = String::from_utf8_lossy(&key[prefix.len()..]).into_owned();
+            if id.is_empty() {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&value).into_owned();
+            out.push((VectorId::new(id), text));
+        }
+        Ok(out)
     }
 
     fn serialize_mapping(entry: &IdMappingEntry) -> Result<Vec<u8>> {
@@ -511,6 +551,37 @@ mod tests {
         let entry = mapping.create(&ext_id, int_id).unwrap();
         assert_eq!(entry.internal_id, 42);
         assert!(!entry.deleted);
+    }
+
+    #[test]
+    fn test_text_persistence_roundtrip() {
+        let storage = create_test_storage();
+        let mapping = IdMapping::new(storage, "test_collection");
+
+        mapping.store_text(&VectorId::new("a"), "the quick brown fox").unwrap();
+        mapping.store_text(&VectorId::new("b"), "lazy dog").unwrap();
+
+        let mut texts = mapping.load_all_texts().unwrap();
+        texts.sort_by(|x, y| x.0.as_str().cmp(y.0.as_str()));
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0], (VectorId::new("a"), "the quick brown fox".to_string()));
+        assert_eq!(texts[1], (VectorId::new("b"), "lazy dog".to_string()));
+
+        // Delete removes it from the loaded set.
+        mapping.delete_text(&VectorId::new("a")).unwrap();
+        let after = mapping.load_all_texts().unwrap();
+        assert_eq!(after, vec![(VectorId::new("b"), "lazy dog".to_string())]);
+    }
+
+    #[test]
+    fn test_text_persistence_isolated_by_collection() {
+        let storage = create_test_storage();
+        let c1 = IdMapping::new(storage.clone(), "c1");
+        let c2 = IdMapping::new(storage, "c2");
+        c1.store_text(&VectorId::new("x"), "in c1").unwrap();
+        c2.store_text(&VectorId::new("x"), "in c2").unwrap();
+        assert_eq!(c1.load_all_texts().unwrap(), vec![(VectorId::new("x"), "in c1".to_string())]);
+        assert_eq!(c2.load_all_texts().unwrap(), vec![(VectorId::new("x"), "in c2".to_string())]);
     }
 
     #[test]

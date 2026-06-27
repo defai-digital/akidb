@@ -189,6 +189,13 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Rebuild the lexical index / document store from persisted source text so
+    // hybrid retrieval and context packing work after a restart.
+    let loaded = service.rebuild_lexical_index();
+    if loaded > 0 {
+        info!("Rebuilt lexical index from {} persisted documents", loaded);
+    }
+
     // Parse listen address
     let addr: SocketAddr = args.listen.parse()?;
     info!("Starting gRPC server on {}", addr);
