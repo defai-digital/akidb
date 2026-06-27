@@ -15,6 +15,7 @@
 
 pub mod code;
 pub mod context;
+pub mod eval;
 pub mod expansion;
 pub mod fusion;
 pub mod lexical;
@@ -24,6 +25,7 @@ pub mod rerank;
 
 pub use code::{chunk_code, CodeChunk, Language, SymbolKind};
 pub use context::{contextualize, Contextualization};
+pub use eval::{ndcg_at_k, recall_at_k, run_controlled_eval, EvalSummary};
 pub use expansion::{expand_to_parents, MatchedChunk};
 pub use fusion::{Fusion, HybridFuser, RankedInput, Rrf};
 pub use lexical::Bm25Index;

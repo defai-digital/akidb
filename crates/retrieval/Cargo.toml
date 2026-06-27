@@ -10,3 +10,7 @@ akidb-common = { path = "../common" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# Used only by the latency benchmark example (real HNSW dense backend).
+akidb-faiss = { path = "../faiss-wrapper" }
