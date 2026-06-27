@@ -244,6 +244,9 @@ message TextSearchRequest {
   optional float lexical_weight = 7;  // RRF weight for lexical results (default 1.0)
   bool pack = 8;  // Assemble a source-grounded, citation-bearing context pack
   optional uint32 pack_token_budget = 9;  // Token budget for the pack (default 1024)
+  bool rerank = 10;  // Re-score candidates by query-text relevance (RET-005)
+  bool diversity = 11;  // MMR diversity reselection to reduce near-duplicates (RET-006)
+  optional float mmr_lambda = 12;  // MMR relevance/diversity tradeoff (default 0.5)
 }
 
 // ============================================

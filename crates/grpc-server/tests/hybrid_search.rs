@@ -81,6 +81,9 @@ async fn search(
             lexical_weight,
             pack: false,
             pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
         }))
         .await
         .expect("text_search failed")
@@ -181,6 +184,9 @@ async fn test_pack_returns_cited_context() {
             lexical_weight: None,
             pack: true,
             pack_token_budget: Some(1024),
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
         }))
         .await
         .expect("text_search failed")
@@ -213,6 +219,9 @@ async fn test_pack_respects_token_budget() {
             lexical_weight: None,
             pack: true,
             pack_token_budget: Some(3),
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
         }))
         .await
         .expect("text_search failed")
@@ -238,6 +247,9 @@ async fn test_no_pack_leaves_context_empty() {
             lexical_weight: None,
             pack: false,
             pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
         }))
         .await
         .expect("text_search failed")
@@ -279,6 +291,73 @@ async fn test_lexical_index_persists_across_restart() {
     let after = ids(&search(&svc_b, "needle", 10, true, None, None).await);
     assert!(after.contains(&"doc1".to_string()), "got {after:?}");
     assert!(after.contains(&"doc2".to_string()), "got {after:?}");
+}
+
+#[tokio::test]
+async fn test_rerank_promotes_query_term_match() {
+    let svc = setup();
+    // doc_dense is closest by embedding but lacks the query term; doc_match is
+    // farther but contains it.
+    insert(&svc, "doc_dense", vec![1.0, 0.0, 0.0], "haystack only", b"").await;
+    insert(&svc, "doc_match", vec![0.9, 0.1, 0.0], "needle needle", b"").await;
+
+    // Dense-only ordering: doc_dense first.
+    let plain = ids(&search(&svc, "needle", 10, false, None, None).await);
+    assert_eq!(plain.first().map(String::as_str), Some("doc_dense"));
+
+    // With reranking, the query-term match is promoted to the top.
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: true,
+            diversity: false,
+            mmr_lambda: None,
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+    assert_eq!(resp.results.first().map(|r| r.id.as_str()), Some("doc_match"));
+}
+
+#[tokio::test]
+async fn test_diversity_demotes_near_duplicate() {
+    let svc = setup();
+    // a and a_dup are near-identical embeddings; b is orthogonal. All match the
+    // query term equally, so relevance ranks a, a_dup, b.
+    insert(&svc, "a", vec![1.0, 0.0, 0.0], "needle one", b"").await;
+    insert(&svc, "a_dup", vec![0.99, 0.01, 0.0], "needle two", b"").await;
+    insert(&svc, "b", vec![0.0, 1.0, 0.0], "needle three", b"").await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 3,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: true,
+            mmr_lambda: Some(0.5),
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+    let order: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(order[0], "a", "most relevant stays first");
+    assert_eq!(order[1], "b", "diverse item promoted above the near-duplicate");
+    assert_eq!(order[2], "a_dup");
 }
 
 #[tokio::test]

@@ -9,7 +9,10 @@ use crate::proto::{
 };
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
-use akidb_retrieval::{pack, Bm25Index, Citation, HybridFuser, PackerConfig, Passage, ScoredId};
+use akidb_retrieval::{
+    mmr, pack, Bm25Index, Citation, HybridFuser, LexicalOverlapReranker, MmrItem, PackerConfig,
+    Passage, Reranker, RerankItem, ScoredId,
+};
 use std::collections::HashMap;
 use akidb_storage::{IdMapping, StorageBackend};
 use dashmap::DashSet;
@@ -801,9 +804,10 @@ where
         );
 
         let top_k = req.top_k as usize;
-        // For hybrid, over-fetch a candidate pool per stage so RRF has room to
-        // reorder; for dense-only, fetch exactly top_k.
-        let search_k = if req.hybrid {
+        // Over-fetch a candidate pool when a later stage (fusion, rerank,
+        // diversity) needs room to reorder; otherwise fetch exactly top_k.
+        let needs_pool = req.hybrid || req.rerank || req.diversity;
+        let search_k = if needs_pool {
             top_k.saturating_mul(4).clamp(top_k, 200)
         } else {
             top_k
@@ -816,10 +820,9 @@ where
             .search(&query_vector, &params)
             .map_err(Self::to_status)?;
 
-        let response_results: Vec<SearchResult> = if req.hybrid {
-            // Lexical (BM25) stage over the same query text, fused with dense via
-            // Reciprocal Rank Fusion. An empty lexical index degrades cleanly to
-            // dense-only ranking.
+        // Base ranked list: hybrid fusion (dense + lexical via RRF) or dense-only.
+        // An empty lexical index degrades hybrid cleanly to dense ranking.
+        let mut ranked: Vec<ScoredId> = if req.hybrid {
             let lexical = self.lexical.read().search(&req.text, search_k);
             let dense_scored: Vec<ScoredId> = dense
                 .iter()
@@ -829,26 +832,57 @@ where
                 req.dense_weight.unwrap_or(1.0),
                 req.lexical_weight.unwrap_or(1.0),
             );
-            fuser
-                .fuse(&dense_scored, &lexical, top_k)
-                .into_iter()
-                .map(|s| SearchResult {
-                    metadata: self.load_metadata_string(&s.id),
-                    id: s.id.to_string(),
-                    score: s.score,
-                })
-                .collect()
+            fuser.fuse(&dense_scored, &lexical, search_k)
         } else {
             dense
-                .into_iter()
-                .take(top_k)
-                .map(|r| SearchResult {
-                    id: r.id.to_string(),
-                    score: r.score,
-                    metadata: r.metadata.map(|m| m.to_string()).unwrap_or_default(),
-                })
+                .iter()
+                .map(|r| ScoredId::new(r.id.clone(), r.score))
                 .collect()
         };
+
+        // Optional reranking (RET-005): re-score candidates by query-text
+        // relevance over their stored source text.
+        if req.rerank {
+            let docs = self.documents.read();
+            let items: Vec<RerankItem> = ranked
+                .iter()
+                .map(|s| {
+                    let text = docs.get(&s.id).cloned().unwrap_or_default();
+                    RerankItem::new(s.id.clone(), text, s.score)
+                })
+                .collect();
+            drop(docs);
+            ranked = LexicalOverlapReranker.rerank(&req.text, items);
+        }
+
+        // Optional diversity (RET-006): MMR reselection over candidate embeddings
+        // to suppress near-duplicate results.
+        if req.diversity {
+            let lambda = req.mmr_lambda.unwrap_or(0.5);
+            let items: Vec<MmrItem> = ranked
+                .iter()
+                .filter_map(|s| {
+                    self.id_mapping
+                        .get_vector(&s.id)
+                        .ok()
+                        .flatten()
+                        .map(|e| MmrItem::new(s.id.clone(), s.score, e.vector))
+                })
+                .collect();
+            if !items.is_empty() {
+                ranked = mmr(&items, lambda, ranked.len());
+            }
+        }
+
+        ranked.truncate(top_k);
+        let response_results: Vec<SearchResult> = ranked
+            .iter()
+            .map(|s| SearchResult {
+                metadata: self.load_metadata_string(&s.id),
+                id: s.id.to_string(),
+                score: s.score,
+            })
+            .collect();
 
         // Optionally assemble a source-grounded, citation-bearing context pack
         // (PACK-*). Passages are built from results whose source text is known
