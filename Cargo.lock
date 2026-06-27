@@ -263,6 +263,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "akidb-retrieval"
+version = "0.2.0"
+dependencies = [
+ "akidb-common",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "akidb-server"
 version = "0.2.0"
 dependencies = [

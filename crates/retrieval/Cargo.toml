@@ -1,0 +1,11 @@
+[package]
+name = "akidb-retrieval"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+akidb-common = { path = "../common" }
+serde.workspace = true
+tracing.workspace = true

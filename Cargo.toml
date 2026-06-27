@@ -5,6 +5,7 @@ members = [
     "crates/contracts",
     "crates/invariants",
     "crates/faiss-wrapper",
+    "crates/retrieval",
     "crates/storage",
     "crates/grpc-server",
     "crates/coordinator",
