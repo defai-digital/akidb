@@ -244,6 +244,21 @@ machine-readable artifact:
 python3 scripts/validate-four-mac-cell.py docs/reports/four-mac-cell-YYYYMMDD.json
 ```
 
+Build an artifact from measured node, link, failure-test, and benchmark inputs:
+
+```bash
+python3 scripts/build-four-mac-cell-artifact.py \
+  --nodes docs/reports/four-mac-nodes.json \
+  --links docs/reports/four-mac-links.json \
+  --failure-tests docs/reports/four-mac-failure-tests.json \
+  --one-mac-qps 1000 \
+  --cell-qps 2600 \
+  --cell-p95-ms 45 \
+  --cell-p99-ms 90 \
+  --output docs/reports/four-mac-cell-YYYYMMDD.json \
+  --validate
+```
+
 See `docs/quality/four-mac-cell-validation.md` for the artifact schema and
 default gates. This validator does not replace the real four-Mac hardware run;
 it defines the evidence required to mark that validation complete.
@@ -297,6 +312,7 @@ maintained as internal documents and are not part of this public repository.
 - [x] Kuzu native-vs-Kuzu benchmark artifact generator
 - [x] One-Mac benchmark artifact validator
 - [x] Four-Mac cell validation artifact validator
+- [x] Four-Mac cell validation artifact builder
 - [ ] One-Mac reference benchmark
 - [ ] Kuzu representative benchmark artifact
 - [ ] Four-Mac Thunderbolt cell validation

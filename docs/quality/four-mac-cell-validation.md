@@ -10,6 +10,29 @@ Validate an artifact:
 python3 scripts/validate-four-mac-cell.py docs/reports/four-mac-cell-YYYYMMDD.json
 ```
 
+Create a measured-input template:
+
+```bash
+python3 scripts/build-four-mac-cell-artifact.py \
+  --write-template docs/reports/four-mac-input-template.json
+```
+
+After replacing the template values with real node inventory, six Thunderbolt
+link measurements, and failure-test results, build and validate the artifact:
+
+```bash
+python3 scripts/build-four-mac-cell-artifact.py \
+  --nodes docs/reports/four-mac-nodes.json \
+  --links docs/reports/four-mac-links.json \
+  --failure-tests docs/reports/four-mac-failure-tests.json \
+  --one-mac-qps 1000 \
+  --cell-qps 2600 \
+  --cell-p95-ms 45 \
+  --cell-p99-ms 90 \
+  --output docs/reports/four-mac-cell-YYYYMMDD.json \
+  --validate
+```
+
 The validator checks:
 
 - exactly four healthy Apple Silicon nodes
