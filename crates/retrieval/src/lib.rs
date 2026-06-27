@@ -8,12 +8,13 @@
 //! - [`lexical`]: a self-contained in-memory BM25 keyword/identifier index, the
 //!   lexical half of hybrid retrieval (the dense half is the `usearch` HNSW index
 //!   in `akidb-faiss`).
-//!
-//! Fusion (Reciprocal Rank Fusion) and the hybrid orchestrator that combines
-//! dense + lexical results land in follow-up modules.
+//! - [`fusion`]: rank fusion (Reciprocal Rank Fusion) and a two-list hybrid
+//!   orchestrator that merges dense + lexical ranked results.
 
+pub mod fusion;
 pub mod lexical;
 
+pub use fusion::{Fusion, HybridFuser, RankedInput, Rrf};
 pub use lexical::Bm25Index;
 
 use akidb_common::VectorId;
