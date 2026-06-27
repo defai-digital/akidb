@@ -10,12 +10,16 @@
 //!   in `akidb-faiss`).
 //! - [`fusion`]: rank fusion (Reciprocal Rank Fusion) and a two-list hybrid
 //!   orchestrator that merges dense + lexical ranked results.
+//! - [`packer`]: source-grounded context packing — assembles ranked passages
+//!   into a token-budget-aware, citation-bearing context block for an LLM.
 
 pub mod fusion;
 pub mod lexical;
+pub mod packer;
 
 pub use fusion::{Fusion, HybridFuser, RankedInput, Rrf};
 pub use lexical::Bm25Index;
+pub use packer::{pack, Citation, ContextPack, PackStrategy, PackerConfig, Passage};
 
 use akidb_common::VectorId;
 
