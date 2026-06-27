@@ -101,4 +101,16 @@ echo "=== Running one-Mac benchmark ==="
     --id-prefix "$ID_PREFIX" \
     --output-json "$OUTPUT"
 
+echo "=== Validating benchmark artifact ==="
+python3 "$PROJECT_ROOT/scripts/validate-one-mac-benchmark.py" "$OUTPUT" \
+    --expected-dimensions "$DIMENSIONS" \
+    --expected-vectors "$VECTORS" \
+    --expected-queries "$QUERIES" \
+    --expected-top-k "$TOP_K" \
+    --expected-nprobe "$NPROBE" \
+    --expected-concurrency "$CONCURRENCY" \
+    --expected-slo-ms "$SLO_MS" \
+    --max-p95-ms "$SLO_MS" \
+    --min-slo-compliance 95
+
 echo "Benchmark artifact: $OUTPUT"

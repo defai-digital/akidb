@@ -243,6 +243,7 @@ maintained as internal documents and are not part of this public repository.
 - [x] Optional SQLite metadata SQL adapter design
 - [x] Planner-driven SQL metadata retrieval mode for scalar JSON filters
 - [x] Kuzu adapter evaluation scaffold behind optional `akidb-graph/kuzu` feature
+- [x] One-Mac benchmark artifact validator
 - [ ] One-Mac reference benchmark
 - [ ] Kuzu binding and native-vs-Kuzu benchmark decision gate
 - [ ] PostgreSQL metadata adapter
