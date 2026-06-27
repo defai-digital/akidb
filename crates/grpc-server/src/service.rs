@@ -299,12 +299,65 @@ where
             .unwrap_or_default()
     }
 
+    fn metadata_string_values(metadata: Option<&serde_json::Value>, key: &str) -> Vec<String> {
+        let Some(value) = metadata.and_then(|m| m.get(key)) else {
+            return Vec::new();
+        };
+        match value {
+            serde_json::Value::String(s) if !s.is_empty() => vec![s.clone()],
+            serde_json::Value::Array(values) => values
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn graph_node_id(kind: NodeKind, id: &str) -> GraphNodeId {
+        GraphNodeId::new(format!("{}:{}", kind.as_key(), id))
+    }
+
+    fn graph_edge_id(kind: EdgeKind, from: &GraphNodeId, to: &GraphNodeId) -> String {
+        format!("auto:{}:{}:{}", kind.as_key(), from.as_str(), to.as_str())
+    }
+
+    fn upsert_graph_node(
+        graph: &dyn GraphIndex,
+        node_id: GraphNodeId,
+        kind: NodeKind,
+        raw_id: &str,
+    ) -> bool {
+        graph
+            .upsert_node(
+                GraphNode::new(node_id, kind)
+                    .with_property("id", serde_json::json!(raw_id)),
+            )
+            .is_ok()
+    }
+
+    fn upsert_graph_edge(
+        graph: &dyn GraphIndex,
+        from: &GraphNodeId,
+        to: &GraphNodeId,
+        kind: EdgeKind,
+    ) -> Result<(), akidb_graph::GraphError> {
+        graph.upsert_edge(GraphEdge::new(
+            Self::graph_edge_id(kind, from, to),
+            from.clone(),
+            to.clone(),
+            kind,
+        ))
+    }
+
     fn index_graph_chunk(&self, vector_id: &VectorId, metadata: &[u8]) {
         let Some(graph) = &self.graph_index else {
             return;
         };
 
         let metadata = String::from_utf8_lossy(metadata);
+        let metadata_json = serde_json::from_str::<serde_json::Value>(&metadata).ok();
         let chunk_node_id = Self::chunk_node_id(vector_id);
         let chunk_node = GraphNode::new(chunk_node_id.clone(), NodeKind::Chunk)
             .with_property("vector_id", serde_json::json!(vector_id.as_str()));
@@ -390,6 +443,107 @@ where
                 EdgeKind::RelatedTo,
             )) {
                 warn!(vector_id = %vector_id, related = %related_vector_id, error = %e, "failed to index graph reverse related edge");
+            }
+        }
+
+        let chunk_edge_fields = [
+            ("imports", EdgeKind::Imports),
+            ("calls", EdgeKind::Calls),
+            ("depends_on", EdgeKind::DependsOn),
+            ("tests", EdgeKind::Tests),
+            ("tested_by", EdgeKind::TestedBy),
+        ];
+        for (field, edge_kind) in chunk_edge_fields {
+            for target_id in Self::metadata_string_values(metadata_json.as_ref(), field) {
+                let target_vector_id = VectorId::new(target_id);
+                let target_node_id = Self::chunk_node_id(&target_vector_id);
+                if let Err(e) = graph.upsert_node(
+                    GraphNode::new(target_node_id.clone(), NodeKind::Chunk)
+                        .with_property("vector_id", serde_json::json!(target_vector_id.as_str())),
+                ) {
+                    warn!(vector_id = %vector_id, target = %target_vector_id, field, error = %e, "failed to index graph code target node");
+                    continue;
+                }
+                if let Err(e) = Self::upsert_graph_edge(
+                    graph.as_ref(),
+                    &chunk_node_id,
+                    &target_node_id,
+                    edge_kind,
+                ) {
+                    warn!(vector_id = %vector_id, target = %target_vector_id, field, error = %e, "failed to index graph code edge");
+                }
+            }
+        }
+
+        for owner in Self::metadata_string_values(metadata_json.as_ref(), "owned_by") {
+            let owner_node_id = Self::graph_node_id(NodeKind::Person, &owner);
+            if Self::upsert_graph_node(
+                graph.as_ref(),
+                owner_node_id.clone(),
+                NodeKind::Person,
+                &owner,
+            ) {
+                if let Err(e) = Self::upsert_graph_edge(
+                    graph.as_ref(),
+                    &chunk_node_id,
+                    &owner_node_id,
+                    EdgeKind::OwnedBy,
+                ) {
+                    warn!(vector_id = %vector_id, owner, error = %e, "failed to index graph owner edge");
+                }
+            }
+        }
+
+        for commit in Self::metadata_string_values(metadata_json.as_ref(), "changed_by") {
+            let commit_node_id = Self::graph_node_id(NodeKind::Commit, &commit);
+            if Self::upsert_graph_node(
+                graph.as_ref(),
+                commit_node_id.clone(),
+                NodeKind::Commit,
+                &commit,
+            ) {
+                if let Err(e) = Self::upsert_graph_edge(
+                    graph.as_ref(),
+                    &chunk_node_id,
+                    &commit_node_id,
+                    EdgeKind::ChangedBy,
+                ) {
+                    warn!(vector_id = %vector_id, commit, error = %e, "failed to index graph changed_by edge");
+                }
+            }
+        }
+
+        for file in Self::metadata_string_values(metadata_json.as_ref(), "file") {
+            let file_node_id = Self::graph_node_id(NodeKind::File, &file);
+            if Self::upsert_graph_node(graph.as_ref(), file_node_id.clone(), NodeKind::File, &file)
+            {
+                if let Err(e) = Self::upsert_graph_edge(
+                    graph.as_ref(),
+                    &file_node_id,
+                    &chunk_node_id,
+                    EdgeKind::Contains,
+                ) {
+                    warn!(vector_id = %vector_id, file, error = %e, "failed to index graph file edge");
+                }
+            }
+        }
+
+        for symbol in Self::metadata_string_values(metadata_json.as_ref(), "symbol") {
+            let symbol_node_id = Self::graph_node_id(NodeKind::Function, &symbol);
+            if Self::upsert_graph_node(
+                graph.as_ref(),
+                symbol_node_id.clone(),
+                NodeKind::Function,
+                &symbol,
+            ) {
+                if let Err(e) = Self::upsert_graph_edge(
+                    graph.as_ref(),
+                    &symbol_node_id,
+                    &chunk_node_id,
+                    EdgeKind::Contains,
+                ) {
+                    warn!(vector_id = %vector_id, symbol, error = %e, "failed to index graph symbol edge");
+                }
             }
         }
     }

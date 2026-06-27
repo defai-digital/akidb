@@ -128,7 +128,15 @@ impl<S: StorageBackend> NativeGraphIndex<S> {
         edge.to.as_chunk_vector_id().is_some()
             && matches!(
                 edge.kind,
-                EdgeKind::Contains | EdgeKind::Mentions | EdgeKind::RelatedTo | EdgeKind::ParentOf
+                EdgeKind::Calls
+                    | EdgeKind::Contains
+                    | EdgeKind::DependsOn
+                    | EdgeKind::Imports
+                    | EdgeKind::Mentions
+                    | EdgeKind::ParentOf
+                    | EdgeKind::RelatedTo
+                    | EdgeKind::TestedBy
+                    | EdgeKind::Tests
             )
     }
 }

@@ -13,7 +13,10 @@
 use std::sync::Arc;
 
 use akidb_faiss::{HnswConfig, HnswIndex};
-use akidb_graph::{EdgeKind, GraphEdge, GraphIndex, GraphNode, NativeGraphIndex, NodeKind};
+use akidb_graph::{
+    Direction, EdgeKind, GraphEdge, GraphIndex, GraphNode, GraphNodeId, NativeGraphIndex,
+    NeighborRequest, NodeKind,
+};
 use akidb_grpc::proto::akidb_server::Akidb;
 use akidb_grpc::proto::{DeleteRequest, InsertRequest, TextSearchRequest};
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
@@ -602,6 +605,84 @@ async fn test_insert_metadata_indexes_graph_related_ids_for_pack() {
     assert!(
         pack.contains("auto indexed graph context"),
         "related_ids metadata should create graph context edge, got: {pack}"
+    );
+}
+
+#[tokio::test]
+async fn test_insert_metadata_indexes_code_graph_edges_for_pack() {
+    let (svc, graph) = setup_with_graph();
+    insert(
+        &svc,
+        "callee",
+        vec![0.0, 0.0, 1.0],
+        "called implementation context",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "dependency",
+        vec![0.0, 1.0, 0.0],
+        "dependency implementation context",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle scheduler context",
+        br#"{
+            "calls":["callee"],
+            "depends_on":["dependency"],
+            "owned_by":"Akira",
+            "changed_by":"abc123",
+            "file":"src/mtp_scheduler.rs",
+            "symbol":"run_scheduler"
+        }"#,
+    )
+    .await;
+
+    let neighbors = graph
+        .neighbors(
+            NeighborRequest::new("chunk:anchor")
+                .with_direction(Direction::Out)
+                .with_limit(20),
+        )
+        .unwrap();
+    assert!(
+        neighbors
+            .iter()
+            .any(|n| n.edge.kind == EdgeKind::Calls && n.node.id.as_str() == "chunk:callee"),
+        "calls edge should point at callee chunk, got {neighbors:?}"
+    );
+    assert!(
+        neighbors
+            .iter()
+            .any(|n| n.edge.kind == EdgeKind::OwnedBy && n.node.id.as_str() == "person:Akira"),
+        "owned_by should create a person edge, got {neighbors:?}"
+    );
+    assert!(
+        neighbors
+            .iter()
+            .any(|n| n.edge.kind == EdgeKind::ChangedBy && n.node.id.as_str() == "commit:abc123"),
+        "changed_by should create a commit edge, got {neighbors:?}"
+    );
+
+    let file_chunks = graph
+        .related_chunks(&GraphNodeId::new("file:src/mtp_scheduler.rs"), 10)
+        .unwrap();
+    assert!(
+        file_chunks
+            .iter()
+            .any(|chunk| chunk.vector_id.as_str() == "anchor"),
+        "file contains edge should expose anchor as a related chunk, got {file_chunks:?}"
+    );
+
+    let pack = pack_for(&svc, "needle", 1).await;
+    assert!(
+        pack.contains("called implementation context"),
+        "calls metadata should create graph-expanded context, got: {pack}"
     );
 }
 

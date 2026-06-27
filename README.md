@@ -226,6 +226,7 @@ maintained as internal documents and are not part of this public repository.
 - [x] Best-effort graph indexing from `parent_id` and `related_ids` metadata
 - [x] MCP status reports graph stats when graph expansion is configured
 - [x] TextSearch metadata/tag filtering across hybrid and graph-expanded context
+- [x] Metadata-driven code graph edges for imports/calls/dependencies/owners/commits
 - [ ] One-Mac reference benchmark
 - [ ] Full planner-driven vector/BM25/metadata/graph routing
 - [ ] Kuzu adapter evaluation behind an optional feature
