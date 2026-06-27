@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "Optional SQL metadata index for AkiDB"
 
+[features]
+default = []
+postgres = ["dep:postgres"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -13,6 +17,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 rusqlite = { version = "0.33", features = ["bundled"] }
+postgres = { version = "0.19", features = ["with-serde_json-1"], optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

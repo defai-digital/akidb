@@ -136,10 +136,12 @@ impl Default for StorageConfig {
 pub struct SqlMetadataConfig {
     /// Whether the optional SQL metadata index is enabled.
     pub enabled: bool,
-    /// SQL backend name. Currently `sqlite`; PostgreSQL is reserved for a future adapter.
+    /// SQL backend name. Use `sqlite` by default; `postgres` requires the server postgres feature.
     pub backend: String,
     /// SQLite database path for standalone metadata filters and audit-ready records.
     pub sqlite_path: String,
+    /// PostgreSQL connection URL for enterprise metadata filters and structured RAG.
+    pub postgres_url: Option<String>,
 }
 
 impl Default for SqlMetadataConfig {
@@ -148,6 +150,7 @@ impl Default for SqlMetadataConfig {
             enabled: false,
             backend: "sqlite".to_string(),
             sqlite_path: "./data/akidb-metadata.sqlite".to_string(),
+            postgres_url: None,
         }
     }
 }
@@ -306,6 +309,7 @@ mod tests {
         assert_eq!(config.slo.reference.dimensions, 768);
         assert!(!config.sql.enabled);
         assert_eq!(config.sql.backend, "sqlite");
+        assert!(config.sql.postgres_url.is_none());
     }
 
     #[test]
@@ -378,6 +382,27 @@ mod tests {
 
         assert!(!config.sql.enabled);
         assert_eq!(config.sql.sqlite_path, "./data/akidb-metadata.sqlite");
+        assert!(config.sql.postgres_url.is_none());
+    }
+
+    #[test]
+    fn test_parse_postgres_sql_config() {
+        let config: SqlMetadataConfig = toml::from_str(
+            r#"
+            enabled = true
+            backend = "postgres"
+            sqlite_path = "./data/akidb-metadata.sqlite"
+            postgres_url = "postgres://user:pass@localhost:5432/akidb"
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.enabled);
+        assert_eq!(config.backend, "postgres");
+        assert_eq!(
+            config.postgres_url.as_deref(),
+            Some("postgres://user:pass@localhost:5432/akidb")
+        );
     }
 
     #[test]

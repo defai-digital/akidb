@@ -124,7 +124,7 @@ See `config/default.toml` for all configuration options.
 Key settings:
 - `slo.reference.*`: SLO reference configuration
 - `index.nprobe`: Search accuracy vs speed for FAISS-compatible backends
-- `sql.*`: optional SQLite metadata SQL adapter for structured filters
+- `sql.*`: optional metadata SQL adapter for structured filters. SQLite is the default; PostgreSQL requires `akidb-server --features postgres`.
 - `embedding.*`: optional local text embedding sidecar for `TextSearch`
 
 ### Local Text Embeddings
@@ -242,11 +242,11 @@ maintained as internal documents and are not part of this public repository.
 - [x] Local graph inspect CLI for stats, neighbors, and related chunks
 - [x] Optional SQLite metadata SQL adapter design
 - [x] Planner-driven SQL metadata retrieval mode for scalar JSON filters
+- [x] Optional PostgreSQL metadata adapter behind `akidb-server/postgres`
 - [x] Kuzu adapter evaluation scaffold behind optional `akidb-graph/kuzu` feature
 - [x] One-Mac benchmark artifact validator
 - [ ] One-Mac reference benchmark
 - [ ] Kuzu binding and native-vs-Kuzu benchmark decision gate
-- [ ] PostgreSQL metadata adapter
 - [ ] Four-Mac Thunderbolt cell validation
 
 ## License

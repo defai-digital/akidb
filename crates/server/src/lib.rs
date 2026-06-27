@@ -11,7 +11,9 @@ use akidb_faiss::{HnswConfig, HnswIndex, VectorIndex};
 use akidb_graph::NativeGraphIndex;
 use akidb_grpc::proto::akidb_server::AkidbServer;
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
-use akidb_sql::SqliteMetadataIndex;
+#[cfg(feature = "postgres")]
+use akidb_sql::PostgresMetadataIndex;
+use akidb_sql::{SqliteMetadataIndex, POSTGRES_BACKEND, SQLITE_BACKEND};
 use akidb_storage::{IdMapping, RocksDbBackend};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -216,25 +218,44 @@ fn build_service(
     info!("Native graph index enabled");
 
     if config.sql.enabled {
-        if !config.sql.backend.eq_ignore_ascii_case("sqlite") {
+        if config.sql.backend.eq_ignore_ascii_case(SQLITE_BACKEND) {
+            let sqlite_path = PathBuf::from(&config.sql.sqlite_path);
+            if let Some(parent) = sqlite_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)?;
+            }
+            let sql_index = Arc::new(SqliteMetadataIndex::open(&sqlite_path)?);
+            service = service.with_metadata_sql_index(sql_index);
+            let rebuilt = service.rebuild_sql_metadata_index();
+            info!(
+                path = %sqlite_path.display(),
+                records = rebuilt,
+                "SQLite metadata adapter enabled"
+            );
+        } else if config.sql.backend.eq_ignore_ascii_case(POSTGRES_BACKEND) {
+            #[cfg(feature = "postgres")]
+            {
+                let postgres_url = config.sql.postgres_url.as_deref().ok_or_else(|| {
+                    "sql.postgres_url is required when sql.backend = 'postgres'".to_string()
+                })?;
+                let sql_index = Arc::new(PostgresMetadataIndex::connect(postgres_url)?);
+                service = service.with_metadata_sql_index(sql_index);
+                let rebuilt = service.rebuild_sql_metadata_index();
+                info!(records = rebuilt, "PostgreSQL metadata adapter enabled");
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                return Err(
+                    "sql.backend = 'postgres' requires building akidb-server with --features postgres"
+                        .into(),
+                );
+            }
+        } else {
             return Err(format!(
-                "unsupported SQL metadata backend '{}'; expected 'sqlite'",
-                config.sql.backend
+                "unsupported SQL metadata backend '{}'; expected '{}' or '{}'",
+                config.sql.backend, SQLITE_BACKEND, POSTGRES_BACKEND
             )
             .into());
         }
-        let sqlite_path = PathBuf::from(&config.sql.sqlite_path);
-        if let Some(parent) = sqlite_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)?;
-        }
-        let sql_index = Arc::new(SqliteMetadataIndex::open(&sqlite_path)?);
-        service = service.with_metadata_sql_index(sql_index);
-        let rebuilt = service.rebuild_sql_metadata_index();
-        info!(
-            path = %sqlite_path.display(),
-            records = rebuilt,
-            "SQLite metadata adapter enabled"
-        );
     }
 
     // Wire embedding provider if enabled

@@ -38,6 +38,7 @@ use_ssl = false
 enabled = false
 backend = "sqlite"
 sqlite_path = "./data/akidb-metadata.sqlite"
+# postgres_url = "postgres://user:pass@localhost:5432/akidb"
 
 [observability]
 tracing_enabled = false

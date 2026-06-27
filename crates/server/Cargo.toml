@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [features]
 default = []
+postgres = ["akidb-sql/postgres"]
 
 [dependencies]
 akidb-common = { path = "../common" }
