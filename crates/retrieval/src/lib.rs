@@ -13,11 +13,13 @@
 //! - [`packer`]: source-grounded context packing — assembles ranked passages
 //!   into a token-budget-aware, citation-bearing context block for an LLM.
 
+pub mod expansion;
 pub mod fusion;
 pub mod lexical;
 pub mod packer;
 pub mod rerank;
 
+pub use expansion::{expand_to_parents, MatchedChunk};
 pub use fusion::{Fusion, HybridFuser, RankedInput, Rrf};
 pub use lexical::Bm25Index;
 pub use packer::{pack, Citation, ContextPack, PackStrategy, PackerConfig, Passage};

@@ -360,6 +360,56 @@ async fn test_diversity_demotes_near_duplicate() {
     assert_eq!(order[2], "a_dup");
 }
 
+async fn pack_for(
+    svc: &AkiDbService<HnswIndex, RocksDbBackend>,
+    query: &str,
+    top_k: u32,
+) -> String {
+    svc.text_search(Request::new(TextSearchRequest {
+        collection: "test".into(),
+        text: query.into(),
+        top_k,
+        nprobe: None,
+        hybrid: true,
+        dense_weight: None,
+        lexical_weight: None,
+        pack: true,
+        pack_token_budget: Some(1024),
+        rerank: false,
+        diversity: false,
+        mmr_lambda: None,
+    }))
+    .await
+    .expect("text_search failed")
+    .into_inner()
+    .context_pack
+}
+
+#[tokio::test]
+async fn test_pack_expands_child_to_parent() {
+    let svc = setup();
+    // Parent: full context, embedding orthogonal to the query and no query term,
+    // so it is not itself retrieved. Child: matches query, points at the parent.
+    insert(&svc, "P", vec![0.0, 0.0, 1.0], "the complete section with lots of detail and context", b"").await;
+    insert(&svc, "C", vec![1.0, 0.0, 0.0], "needle marker", br#"{"parent_id":"P"}"#).await;
+
+    let pack = pack_for(&svc, "needle", 5).await;
+    assert!(pack.contains("complete section"), "parent context expected, got: {pack}");
+    assert!(pack.contains("[P]"), "parent citation expected, got: {pack}");
+}
+
+#[tokio::test]
+async fn test_pack_dedups_siblings_to_single_parent() {
+    let svc = setup();
+    insert(&svc, "P", vec![0.0, 0.0, 1.0], "shared parent context body", b"").await;
+    insert(&svc, "C1", vec![1.0, 0.0, 0.0], "needle alpha", br#"{"parent_id":"P"}"#).await;
+    insert(&svc, "C2", vec![0.9, 0.1, 0.0], "needle beta", br#"{"parent_id":"P"}"#).await;
+
+    let pack = pack_for(&svc, "needle", 5).await;
+    let occurrences = pack.matches("shared parent context body").count();
+    assert_eq!(occurrences, 1, "parent must appear once for sibling children, got: {pack}");
+}
+
 #[tokio::test]
 async fn test_hybrid_result_carries_metadata() {
     let svc = setup();

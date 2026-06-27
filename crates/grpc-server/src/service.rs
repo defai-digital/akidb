@@ -10,8 +10,8 @@ use crate::proto::{
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
 use akidb_retrieval::{
-    mmr, pack, Bm25Index, Citation, HybridFuser, LexicalOverlapReranker, MmrItem, PackerConfig,
-    Passage, Reranker, RerankItem, ScoredId,
+    expand_to_parents, mmr, pack, Bm25Index, HybridFuser, LexicalOverlapReranker, MatchedChunk,
+    MmrItem, PackerConfig, Reranker, RerankItem, ScoredId,
 };
 use std::collections::HashMap;
 use akidb_storage::{IdMapping, StorageBackend};
@@ -885,19 +885,34 @@ where
             .collect();
 
         // Optionally assemble a source-grounded, citation-bearing context pack
-        // (PACK-*). Passages are built from results whose source text is known
-        // in the document store; results without text are skipped.
+        // (PACK-*). Matched child chunks are expanded to their parent context
+        // (CHUNK-003) via the `parent_id` metadata convention, deduped by parent,
+        // then assembled within the token budget.
         let context_pack = if req.pack {
             let budget = req.pack_token_budget.unwrap_or(1024) as usize;
             let docs = self.documents.read();
-            let passages: Vec<Passage> = response_results
+            let matched: Vec<MatchedChunk> = response_results
                 .iter()
-                .filter_map(|r| {
+                .map(|r| {
+                    let parent_id = if r.metadata.is_empty() {
+                        None
+                    } else {
+                        serde_json::from_str::<serde_json::Value>(&r.metadata)
+                            .ok()
+                            .and_then(|m| {
+                                m.get("parent_id")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from)
+                            })
+                    };
                     let id = VectorId::new(&r.id);
-                    docs.get(&id)
-                        .map(|text| Passage::new(id, text.clone(), r.score, Citation::new(&r.id)))
+                    let text = docs.get(&id).cloned().unwrap_or_default();
+                    MatchedChunk::new(id, parent_id, text, r.score)
                 })
                 .collect();
+            let mut passages =
+                expand_to_parents(&matched, |pid| docs.get(&VectorId::new(pid)).cloned());
+            passages.retain(|p| !p.text.is_empty());
             pack(&passages, &PackerConfig::new(budget)).text
         } else {
             String::new()
