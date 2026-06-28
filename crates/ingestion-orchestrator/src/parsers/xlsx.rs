@@ -49,8 +49,11 @@ impl DocumentParser for XlsxParser {
                     let text = match headers.as_deref() {
                         Some(headers) => row_text_with_headers(headers, &cells),
                         None => {
-                            headers = Some(cells.clone());
-                            row_text_from_cells(&cells)
+                            let row_text = row_text_from_cells(&cells);
+                            if is_likely_header_row(&cells, cols) {
+                                headers = Some(cells.clone());
+                            }
+                            row_text
                         }
                     };
                     if !text.is_empty() {
@@ -86,6 +89,11 @@ impl DocumentParser for XlsxParser {
 
 fn row_is_empty(cells: &[Option<String>]) -> bool {
     cells.iter().all(Option::is_none)
+}
+
+fn is_likely_header_row(cells: &[Option<String>], sheet_cols: usize) -> bool {
+    let non_empty = cells.iter().filter(|cell| cell.is_some()).count();
+    non_empty > 1 || sheet_cols <= 1
 }
 
 fn row_text_from_cells(cells: &[Option<String>]) -> String {
@@ -154,7 +162,7 @@ mod tests {
     #[test]
     fn test_parse_xlsx_preserves_header_value_pairs_for_retrieval() {
         let parser = XlsxParser::new();
-        let data = minimal_xlsx();
+        let data = minimal_xlsx_with_sheet_data(contract_sheet_rows());
 
         let result = parser.parse(&data).unwrap();
 
@@ -163,7 +171,65 @@ mod tests {
         assert!(result.text.contains("contract_amount 1200"));
     }
 
-    fn minimal_xlsx() -> Vec<u8> {
+    #[test]
+    fn test_parse_xlsx_ignores_title_row_when_selecting_headers() {
+        let parser = XlsxParser::new();
+        let data = minimal_xlsx_with_sheet_data(
+            r#"<row r="1">
+      <c r="A1" t="inlineStr"><is><t>Contract Export</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>customer</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>year</t></is></c>
+      <c r="C2" t="inlineStr"><is><t>contract_amount</t></is></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="inlineStr"><is><t>HGC</t></is></c>
+      <c r="B3"><v>2025</v></c>
+      <c r="C3"><v>1200</v></c>
+    </row>"#,
+        );
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("Contract Export"));
+        assert!(result.text.contains("customer HGC"));
+        assert!(result.text.contains("year 2025"));
+        assert!(result.text.contains("contract_amount 1200"));
+        assert!(!result.text.contains("Contract Export HGC"));
+    }
+
+    #[test]
+    fn test_parse_xlsx_single_column_still_uses_first_row_as_header() {
+        let parser = XlsxParser::new();
+        let data = minimal_xlsx_with_sheet_data(
+            r#"<row r="1">
+      <c r="A1" t="inlineStr"><is><t>customer</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>HGC</t></is></c>
+    </row>"#,
+        );
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("customer HGC"));
+    }
+
+    fn contract_sheet_rows() -> &'static str {
+        r#"<row r="1">
+      <c r="A1" t="inlineStr"><is><t>customer</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>year</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>contract_amount</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>HGC</t></is></c>
+      <c r="B2"><v>2025</v></c>
+      <c r="C2"><v>1200</v></c>
+    </row>"#
+    }
+
+    fn minimal_xlsx_with_sheet_data(sheet_data: &str) -> Vec<u8> {
         let mut cursor = Cursor::new(Vec::new());
         {
             let mut zip = ZipWriter::new(&mut cursor);
@@ -216,21 +282,14 @@ mod tests {
                 &mut zip,
                 options,
                 "xl/worksheets/sheet1.xml",
-                r#"<?xml version="1.0" encoding="UTF-8"?>
+                &format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetData>
-    <row r="1">
-      <c r="A1" t="inlineStr"><is><t>customer</t></is></c>
-      <c r="B1" t="inlineStr"><is><t>year</t></is></c>
-      <c r="C1" t="inlineStr"><is><t>contract_amount</t></is></c>
-    </row>
-    <row r="2">
-      <c r="A2" t="inlineStr"><is><t>HGC</t></is></c>
-      <c r="B2"><v>2025</v></c>
-      <c r="C2"><v>1200</v></c>
-    </row>
+    {sheet_data}
   </sheetData>
-</worksheet>"#,
+</worksheet>"#
+                ),
             );
             zip.finish().unwrap();
         }
