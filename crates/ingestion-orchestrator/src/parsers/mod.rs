@@ -97,7 +97,10 @@ impl DocumentFormat {
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             | "application/msword" => DocumentFormat::Docx,
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            | "application/vnd.ms-excel" => DocumentFormat::Xlsx,
+            | "application/vnd.ms-excel"
+            | "application/vnd.ms-excel.sheet.macroenabled.12"
+            | "application/vnd.ms-excel.sheet.binary.macroenabled.12"
+            | "application/vnd.oasis.opendocument.spreadsheet" => DocumentFormat::Xlsx,
             "text/plain" | "text/markdown" => DocumentFormat::Txt,
             _ if media_type.ends_with("+json") => DocumentFormat::Json,
             _ if media_type.ends_with("+xml") => DocumentFormat::Xml,
@@ -287,6 +290,24 @@ mod tests {
         assert_eq!(
             DocumentFormat::from_content_type("text/plain"),
             DocumentFormat::Txt
+        );
+    }
+
+    #[test]
+    fn test_format_detection_accepts_spreadsheet_content_types() {
+        assert_eq!(
+            DocumentFormat::from_content_type("application/vnd.ms-excel.sheet.macroEnabled.12"),
+            DocumentFormat::Xlsx
+        );
+        assert_eq!(
+            DocumentFormat::from_content_type(
+                "application/vnd.ms-excel.sheet.binary.macroEnabled.12"
+            ),
+            DocumentFormat::Xlsx
+        );
+        assert_eq!(
+            DocumentFormat::from_content_type("application/vnd.oasis.opendocument.spreadsheet"),
+            DocumentFormat::Xlsx
         );
     }
 
