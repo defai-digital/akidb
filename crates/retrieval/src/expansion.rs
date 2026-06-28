@@ -67,7 +67,13 @@ where
         // Resolve each match to the (id, text) it should contribute: its parent
         // when one resolves, otherwise the child itself.
         let (resolved_id, text) = match m.parent_id.as_deref().and_then(|pid| {
-            parent_text(pid).map(|t| (pid.to_string(), t))
+            parent_text(pid).and_then(|text| {
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some((pid.to_string(), text))
+                }
+            })
         }) {
             Some(parent) => parent,
             None => (m.id.to_string(), m.text.clone()),
@@ -107,7 +113,12 @@ mod tests {
     #[test]
     fn test_child_expands_to_parent() {
         let p = parents();
-        let matched = [MatchedChunk::new(id("c1"), Some("P1".into()), "child snippet", 0.9)];
+        let matched = [MatchedChunk::new(
+            id("c1"),
+            Some("P1".into()),
+            "child snippet",
+            0.9,
+        )];
         let out = expand_to_parents(&matched, |pid| p.get(pid).cloned());
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, id("P1"));
@@ -126,7 +137,10 @@ mod tests {
         let out = expand_to_parents(&matched, |pid| p.get(pid).cloned());
         assert_eq!(out.len(), 1, "siblings collapse to one parent");
         assert_eq!(out[0].id, id("P1"));
-        assert_eq!(out[0].score, 0.9, "keeps the best-ranked occurrence's score");
+        assert_eq!(
+            out[0].score, 0.9,
+            "keeps the best-ranked occurrence's score"
+        );
     }
 
     #[test]
@@ -141,11 +155,31 @@ mod tests {
     #[test]
     fn test_missing_parent_text_falls_back_to_child() {
         let p = parents();
-        let matched = [MatchedChunk::new(id("c9"), Some("UNKNOWN".into()), "child only", 0.4)];
+        let matched = [MatchedChunk::new(
+            id("c9"),
+            Some("UNKNOWN".into()),
+            "child only",
+            0.4,
+        )];
         let out = expand_to_parents(&matched, |pid| p.get(pid).cloned());
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, id("c9"));
         assert_eq!(out[0].text, "child only");
+    }
+
+    #[test]
+    fn test_empty_parent_text_falls_back_to_child() {
+        let matched = [MatchedChunk::new(
+            id("c1"),
+            Some("P1".into()),
+            "child text",
+            0.8,
+        )];
+        let out = expand_to_parents(&matched, |_| Some("   ".to_string()));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, id("c1"));
+        assert_eq!(out[0].text, "child text");
+        assert_eq!(out[0].citation.source_uri, "c1");
     }
 
     #[test]
