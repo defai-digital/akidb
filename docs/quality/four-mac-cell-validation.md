@@ -56,6 +56,16 @@ python3 scripts/assemble-four-mac-input.py \
   --output docs/reports/four-mac-input.json
 ```
 
+Run the cell benchmark against the existing four-Mac endpoint. The runner does
+not start or mutate local services; it writes a benchmark artifact with the same
+schema as `akidb-bench --output-json`:
+
+```bash
+OUTPUT=docs/reports/four-mac-benchmark-YYYYMMDD.json \
+SERVER=http://mac-1.local:50051 \
+./scripts/benchmark-four-mac-cell.sh
+```
+
 After replacing template/example values with real node inventory, all six
 Thunderbolt link measurements, and failure-test results, build and validate the
 artifact:

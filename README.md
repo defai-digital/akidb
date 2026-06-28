@@ -279,6 +279,10 @@ python3 scripts/assemble-four-mac-input.py \
   --failure-test docs/reports/four-mac-failure-tests.json \
   --output docs/reports/four-mac-input.json
 
+OUTPUT=docs/reports/four-mac-benchmark-YYYYMMDD.json \
+SERVER=http://mac-1.local:50051 \
+./scripts/benchmark-four-mac-cell.sh
+
 python3 scripts/build-four-mac-cell-artifact.py \
   --input docs/reports/four-mac-input.json \
   --one-mac-artifact docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json \
