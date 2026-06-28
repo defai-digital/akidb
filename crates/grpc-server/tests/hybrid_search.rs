@@ -1662,6 +1662,52 @@ async fn test_text_search_applies_legacy_metadata_filter_to_hybrid_results() {
 }
 
 #[tokio::test]
+async fn test_text_search_applies_nested_legacy_metadata_filter() {
+    let svc = setup();
+    insert(
+        &svc,
+        "contract-2025",
+        vec![1.0, 0.0, 0.0],
+        "needle contract text",
+        br#"{"contract":{"customer":"HGC","year":2025,"amount":1200}}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "contract-2024",
+        vec![0.9, 0.1, 0.0],
+        "needle contract text",
+        br#"{"contract":{"customer":"HGC","year":2024,"amount":900}}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"contract":{"year":2025}}"#.to_vec(),
+            tag_filter: None,
+            retrieval_mode: String::new(),
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["contract-2025"]);
+}
+
+#[tokio::test]
 async fn test_text_search_filter_blocks_graph_expanded_context() {
     let (svc, _graph) = setup_with_graph();
     insert(

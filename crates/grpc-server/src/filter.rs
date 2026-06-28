@@ -64,7 +64,11 @@ impl MetadataFilter {
     /// the filter. Both the legacy and tag filters must pass when present.
     pub fn matches(&self, metadata: &Value) -> bool {
         if let Some(legacy) = &self.legacy {
-            if !legacy.iter().all(|(k, v)| metadata.get(k) == Some(v)) {
+            if !legacy.iter().all(|(k, expected)| {
+                metadata
+                    .get(k)
+                    .is_some_and(|actual| value_subset_matches(expected, actual))
+            }) {
                 return false;
             }
         }
@@ -74,6 +78,19 @@ impl MetadataFilter {
             }
         }
         true
+    }
+}
+
+fn value_subset_matches(expected: &Value, actual: &Value) -> bool {
+    match (expected, actual) {
+        (Value::Object(expected), Value::Object(actual)) => {
+            expected.iter().all(|(key, expected)| {
+                actual
+                    .get(key)
+                    .is_some_and(|actual| value_subset_matches(expected, actual))
+            })
+        }
+        _ => actual == expected,
     }
 }
 
@@ -430,6 +447,28 @@ mod tests {
         assert!(mf.matches(&json!({"category":"docs","lang":"rust","extra":1})));
         assert!(!mf.matches(&json!({"category":"docs"})));
         assert!(!mf.matches(&json!({"category":"code","lang":"rust"})));
+    }
+
+    #[test]
+    fn test_build_legacy_nested_subset_match() {
+        let bytes = br#"{"contract":{"year":2025}}"#;
+        let mf = MetadataFilter::build(bytes, None).unwrap().unwrap();
+
+        assert!(mf.matches(&json!({
+            "contract": {
+                "customer": "HGC",
+                "year": 2025,
+                "amount": 1200
+            },
+            "tenant": "defai"
+        })));
+        assert!(!mf.matches(&json!({
+            "contract": {
+                "customer": "HGC",
+                "year": 2024,
+                "amount": 1200
+            }
+        })));
     }
 
     #[test]
