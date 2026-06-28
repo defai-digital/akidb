@@ -86,7 +86,34 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
                 " updated",
             ],
         );
+    let does_relationship = starts_with_any(
+        &lower,
+        &[
+            "what does",
+            "what do",
+            "which file does",
+            "which files does",
+            "which module does",
+            "which modules does",
+            "who does",
+        ],
+    ) && contains_any(
+        &lower,
+        &[
+            " call",
+            " calls",
+            " import",
+            " imports",
+            " use",
+            " uses",
+            " reference",
+            " references",
+            " depend on",
+            " depends on",
+        ],
+    );
     let relationship = where_relationship
+        || does_relationship
         || starts_with_any(
             &lower,
             &[
@@ -336,6 +363,27 @@ mod tests {
     #[test]
     fn test_where_question_without_relation_does_not_enable_graph() {
         let trace = plan_query(&PlannerInput::new("where is the ingestion guide"));
+        assert_eq!(trace.mode, RetrievalMode::Hybrid);
+        assert!(!trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_what_does_query_with_relation_enables_graph() {
+        for query in [
+            "what does mtp_scheduler.rs call",
+            "what does ax-engine import",
+            "which modules does draft_model.rs use",
+            "who does scheduler::run reference",
+        ] {
+            let trace = plan_query(&PlannerInput::new(query));
+            assert_eq!(trace.mode, RetrievalMode::GraphHybrid, "{query}");
+            assert!(trace.graph_enabled, "{query}");
+        }
+    }
+
+    #[test]
+    fn test_what_does_query_without_relation_does_not_enable_graph() {
+        let trace = plan_query(&PlannerInput::new("what does mtp scheduler do"));
         assert_eq!(trace.mode, RetrievalMode::Hybrid);
         assert!(!trace.graph_enabled);
     }
