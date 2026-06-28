@@ -53,8 +53,9 @@ fn finite_f32(score: f64) -> f32 {
 ///
 /// Splitting on any non-identifier character keeps identifiers like
 /// `tokenRefresh` as exact tokens while breaking `foo.bar(baz)` into
-/// `foo`, `bar`, `baz`. Snake_case and camelCase identifiers keep their exact
-/// token and also emit split subterms so plain-word queries can still recall them.
+/// `foo`, `bar`, `baz`. Snake_case, kebab-case, and camelCase identifiers keep
+/// their exact token and also emit split subterms so plain-word queries can still
+/// recall them.
 pub fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for raw in text
@@ -74,11 +75,11 @@ pub fn tokenize(text: &str) -> Vec<String> {
 }
 
 fn is_token_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+    c.is_alphanumeric() || c == '_' || c == '-'
 }
 
 fn identifier_subterms(raw: &str) -> Vec<String> {
-    raw.split('_')
+    raw.split(['_', '-'])
         .filter(|part| !part.is_empty())
         .flat_map(split_camel_case)
         .collect()
@@ -360,6 +361,11 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenize_preserves_kebab_case_identifier_and_parts() {
+        assert_eq!(tokenize("ax-code"), vec!["ax-code", "ax", "code"]);
+    }
+
+    #[test]
     fn test_empty_index_returns_no_results() {
         let index = Bm25Index::new();
         assert!(index.is_empty());
@@ -441,11 +447,35 @@ mod tests {
     }
 
     #[test]
+    fn test_exact_kebab_case_identifier_ranks_above_split_words() {
+        let mut index = Bm25Index::new();
+        index.insert(id("z_exact"), "ax-code");
+        index.insert(id("a_words"), "ax code");
+
+        let hits = index.search("ax-code", 10);
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, id("z_exact"));
+        assert!(hits[0].score > hits[1].score);
+    }
+
+    #[test]
     fn test_camel_case_identifier_matches_split_word_query() {
         let mut index = Bm25Index::new();
         index.insert(id("doc"), "tokenRefresh");
 
         let hits = index.search("token refresh", 10);
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, id("doc"));
+    }
+
+    #[test]
+    fn test_kebab_case_identifier_matches_split_word_query() {
+        let mut index = Bm25Index::new();
+        index.insert(id("doc"), "upload-gateway");
+
+        let hits = index.search("upload gateway", 10);
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, id("doc"));
