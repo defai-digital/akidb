@@ -376,8 +376,7 @@ fn impl_name(t: &str) -> Option<String> {
     let body = t.strip_prefix("impl").unwrap_or(t).trim_start();
     // Drop generic params like `<T>` right after impl.
     let body = if let Some(stripped) = body.strip_prefix('<') {
-        // skip to matching '>' (shallow)
-        match stripped.find('>') {
+        match rust_generic_params_end(stripped) {
             Some(idx) => stripped[idx + 1..].trim_start(),
             None => body,
         }
@@ -399,6 +398,23 @@ fn impl_name(t: &str) -> Option<String> {
     } else {
         Some(name)
     }
+}
+
+fn rust_generic_params_end(s: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    for (idx, ch) in s.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Find the line index where a Rust item starting at `start` ends.
@@ -1293,6 +1309,22 @@ pub struct Second;";
         let chunks = chunk_code(src, Language::Rust);
         assert_eq!(chunks[0].kind, SymbolKind::Impl);
         assert_eq!(chunks[0].name.as_deref(), Some("Point"));
+    }
+
+    #[test]
+    fn test_rust_impl_name_skips_nested_generic_params() {
+        let src = "impl<T: Into<Vec<u8>>> Foo<T> {\n    fn build(value: T) {}\n}";
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks[0].kind, SymbolKind::Impl);
+        assert_eq!(chunks[0].name.as_deref(), Some("Foo"));
+    }
+
+    #[test]
+    fn test_rust_trait_impl_name_skips_nested_generic_params() {
+        let src = "impl<T: Into<Vec<u8>>> From<T> for Foo<T> {\n    fn from(value: T) -> Self { Self }\n}";
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks[0].kind, SymbolKind::Impl);
+        assert_eq!(chunks[0].name.as_deref(), Some("Foo"));
     }
 
     #[test]
