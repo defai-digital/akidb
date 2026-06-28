@@ -698,16 +698,49 @@ fn python_block_end(lines: &[&str], start: usize) -> usize {
 }
 
 fn python_header_complete(line: &str, depth: &mut i32) -> bool {
-    for ch in line.chars() {
-        match ch {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        match chars[i] {
+            '"' | '\'' => {
+                i = skip_python_string(&chars, i);
+            }
             '(' | '[' | '{' => *depth += 1,
             ')' | ']' | '}' => *depth = (*depth - 1).max(0),
             ':' if *depth == 0 => return true,
             '#' if *depth == 0 => break,
             _ => {}
         }
+        i += 1;
     }
     false
+}
+
+fn skip_python_string(chars: &[char], start: usize) -> usize {
+    let quote = chars[start];
+    let triple_quoted =
+        chars.get(start + 1) == Some(&quote) && chars.get(start + 2) == Some(&quote);
+    let mut i = if triple_quoted { start + 3 } else { start + 1 };
+    let mut escaped = false;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if triple_quoted {
+            if ch == quote && chars.get(i + 1) == Some(&quote) && chars.get(i + 2) == Some(&quote) {
+                return i + 2;
+            }
+        } else if ch == quote {
+            return i;
+        }
+        i += 1;
+    }
+
+    chars.len().saturating_sub(1)
 }
 
 fn python_name(trimmed: &str, kind: SymbolKind) -> Option<String> {
@@ -1115,6 +1148,27 @@ def next_symbol():
         assert_eq!(chunks[0].end_line, 5);
         assert_eq!(chunks[1].name.as_deref(), Some("next_symbol"));
         assert_eq!(chunks[1].start_line, 7);
+    }
+
+    #[test]
+    fn test_python_multiline_signature_ignores_colon_inside_default_string() {
+        let src = "\
+def build_context(
+    pattern=\"):\",
+):
+    return pattern
+
+def next_symbol():
+    return None
+";
+        let chunks = chunk_code(src, Language::Python);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].name.as_deref(), Some("build_context"));
+        assert!(chunks[0].text.contains("pattern=\"):\","));
+        assert!(chunks[0].text.contains("return pattern"));
+        assert_eq!(chunks[0].end_line, 4);
+        assert_eq!(chunks[1].name.as_deref(), Some("next_symbol"));
+        assert_eq!(chunks[1].start_line, 6);
     }
 
     #[test]
