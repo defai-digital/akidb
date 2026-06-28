@@ -1,6 +1,7 @@
 //! Discovery configuration.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +77,16 @@ impl Default for DiscoveryConfig {
     }
 }
 
+impl DiscoveryConfig {
+    /// Maximum age before a peer is considered stale.
+    pub fn stale_peer_max_age(&self) -> Duration {
+        Duration::from_millis(
+            self.heartbeat_interval_ms
+                .saturating_mul(self.missed_heartbeats_threshold as u64),
+        )
+    }
+}
+
 /// Coordinator operating mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -144,5 +155,17 @@ mod tests {
         assert!(config.cluster_secret.is_some());
         assert_eq!(config.announce_interval_ms, 5000);
         assert_eq!(config.mode, CoordinatorMode::Bootstrap);
+    }
+
+    #[test]
+    fn test_stale_peer_max_age_does_not_overflow() {
+        let config = DiscoveryConfig {
+            heartbeat_interval_ms: u64::MAX,
+            missed_heartbeats_threshold: 2,
+            ..DiscoveryConfig::default()
+        };
+
+        let result = std::panic::catch_unwind(|| config.stale_peer_max_age());
+        assert!(result.is_ok(), "stale peer age calculation should saturate");
     }
 }

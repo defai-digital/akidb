@@ -283,9 +283,7 @@ impl DiscoveryService {
 
     /// Clean up stale peers
     async fn cleanup_stale_peers(&mut self) {
-        let max_age = Duration::from_millis(
-            self.config.heartbeat_interval_ms * self.config.missed_heartbeats_threshold as u64,
-        );
+        let max_age = self.config.stale_peer_max_age();
 
         let events = self.mdns_handler.cleanup_stale(max_age);
         for event in events {
