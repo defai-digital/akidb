@@ -32,6 +32,7 @@ pub struct MemoryCoordinator {
 impl MemoryCoordinator {
     /// Create a new memory coordinator
     pub fn new(config: MemoryConfig) -> Self {
+        let config = normalize_config(config);
         Self {
             paused: AtomicBool::new(false),
             usage_pct: AtomicU32::new(0.0_f32.to_bits()),
@@ -110,6 +111,13 @@ impl MemoryCoordinator {
             total_mb: self.total_mb.load(Ordering::SeqCst),
             used_mb: self.used_mb.load(Ordering::SeqCst),
         }
+    }
+}
+
+fn normalize_config(config: MemoryConfig) -> MemoryConfig {
+    MemoryConfig {
+        poll_interval_ms: config.poll_interval_ms.max(1),
+        ..config
     }
 }
 
@@ -257,5 +265,25 @@ Pages active:                            10000.
         };
         let mc = MemoryCoordinator::new(config);
         assert!(!mc.is_paused());
+    }
+
+    #[tokio::test]
+    async fn test_zero_poll_interval_does_not_panic_monitoring_task() {
+        let config = MemoryConfig {
+            pause_threshold_pct: 70.0,
+            resume_threshold_pct: 60.0,
+            poll_interval_ms: 0,
+            max_pause_duration_secs: 300,
+        };
+        let mc = Arc::new(MemoryCoordinator::new(config));
+
+        let handle = mc.start_monitoring();
+        tokio::task::yield_now().await;
+
+        assert!(
+            !handle.is_finished(),
+            "memory monitoring task should keep running with a normalized poll interval"
+        );
+        handle.abort();
     }
 }

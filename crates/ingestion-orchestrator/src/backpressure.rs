@@ -45,7 +45,7 @@ impl BackpressureController {
     pub fn update_latency(&self, latency_us: u64) {
         self.current_latency_us.store(latency_us, Ordering::SeqCst);
 
-        let threshold_us = self.config.latency_threshold_ms * 1000;
+        let threshold_us = self.config.latency_threshold_ms.saturating_mul(1000);
 
         if latency_us > threshold_us {
             if !self.active.swap(true, Ordering::SeqCst) {
@@ -210,6 +210,19 @@ mod tests {
         assert!(bp.is_active());
 
         bp.deactivate();
+        assert!(!bp.is_active());
+    }
+
+    #[test]
+    fn test_latency_threshold_conversion_saturates() {
+        let bp = BackpressureController::new(BackpressureConfig {
+            latency_threshold_ms: u64::MAX,
+            queue_depth_high_water: 1000,
+            queue_depth_low_water: 500,
+            pause_duration_secs: 1,
+        });
+
+        bp.update_latency(1);
         assert!(!bp.is_active());
     }
 }

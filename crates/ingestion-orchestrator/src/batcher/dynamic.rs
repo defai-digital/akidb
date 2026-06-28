@@ -23,6 +23,7 @@ pub struct DynamicBatcher<T> {
 impl<T: Send + 'static> DynamicBatcher<T> {
     /// Create a new dynamic batcher
     pub fn new(config: BatcherConfig) -> Self {
+        let config = normalize_config(config);
         let (sender, receiver) = mpsc::channel(config.max_batch * 4);
 
         Self {
@@ -132,6 +133,17 @@ impl<T: Send + 'static> DynamicBatcher<T> {
     }
 }
 
+fn normalize_config(config: BatcherConfig) -> BatcherConfig {
+    let min_batch = config.min_batch.max(1);
+    let max_batch = config.max_batch.max(min_batch);
+
+    BatcherConfig {
+        min_batch,
+        max_batch,
+        timeout_ms: config.timeout_ms,
+    }
+}
+
 /// Batch statistics
 #[derive(Debug, Clone)]
 pub struct BatchStats {
@@ -189,5 +201,28 @@ mod tests {
         // High GPU util should reduce batch size by 50%
         let size = batcher.optimal_size();
         assert!(size <= 32); // max 64 * 0.5 = 32
+    }
+
+    #[test]
+    fn test_zero_max_batch_is_normalized() {
+        let batcher: DynamicBatcher<String> = DynamicBatcher::new(BatcherConfig {
+            min_batch: 0,
+            max_batch: 0,
+            timeout_ms: 100,
+        });
+
+        assert_eq!(batcher.optimal_size(), 1);
+    }
+
+    #[test]
+    fn test_max_batch_below_min_batch_is_normalized() {
+        let batcher: DynamicBatcher<String> = DynamicBatcher::new(BatcherConfig {
+            min_batch: 64,
+            max_batch: 16,
+            timeout_ms: 100,
+        });
+
+        batcher.update_queue_depth(1000);
+        assert_eq!(batcher.optimal_size(), 64);
     }
 }

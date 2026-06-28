@@ -73,7 +73,11 @@ pub fn mmr(items: &[MmrItem], lambda: f32, top_k: usize) -> Vec<ScoredId> {
     if items.is_empty() || top_k == 0 {
         return Vec::new();
     }
-    let lambda = lambda.clamp(0.0, 1.0);
+    let lambda = if lambda.is_finite() {
+        lambda.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
 
     let mut remaining: Vec<&MmrItem> = items.iter().collect();
     let mut selected: Vec<&MmrItem> = Vec::new();
@@ -290,6 +294,19 @@ mod tests {
             MmrItem::new(id("c"), 0.7, vec![1.0, 1.0]),
         ];
         assert_eq!(mmr(&items, 0.5, 2).len(), 2);
+    }
+
+    #[test]
+    fn test_mmr_non_finite_lambda_uses_default() {
+        let items = [
+            MmrItem::new(id("a"), 0.9, vec![1.0, 0.0]),
+            MmrItem::new(id("b"), 0.8, vec![0.0, 1.0]),
+        ];
+
+        let out = mmr(&items, f32::NAN, 2);
+
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|item| item.score.is_finite()));
     }
 
     #[test]

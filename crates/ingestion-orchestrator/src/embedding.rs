@@ -100,10 +100,11 @@ impl EmbeddingClient {
 
     /// Calculate delay for exponential backoff with jitter
     fn calculate_backoff(attempt: u32) -> Duration {
-        let base_delay = BASE_RETRY_DELAY_MS * 2u64.pow(attempt);
+        let multiplier = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+        let base_delay = BASE_RETRY_DELAY_MS.saturating_mul(multiplier);
         // Add jitter (0-50% of base delay)
         let jitter = (base_delay as f64 * rand_jitter()) as u64;
-        Duration::from_millis(base_delay + jitter)
+        Duration::from_millis(base_delay.saturating_add(jitter))
     }
 
     /// Embed a batch of texts with retry logic
@@ -299,5 +300,11 @@ mod tests {
         assert!(
             matches!(result, Err(crate::IngestionError::Embedding(message)) if message.contains("Embedding index mismatch"))
         );
+    }
+
+    #[test]
+    fn test_backoff_saturates_for_large_attempts() {
+        let backoff = EmbeddingClient::calculate_backoff(128);
+        assert!(backoff >= Duration::from_millis(BASE_RETRY_DELAY_MS));
     }
 }

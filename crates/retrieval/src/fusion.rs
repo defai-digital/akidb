@@ -111,7 +111,11 @@ impl Fusion for Rrf {
             let Some(w) = normalize_weight(list.weight) else {
                 continue;
             };
+            let mut seen_in_list = std::collections::HashSet::new();
             for (pos, id) in list.ids.iter().enumerate() {
+                if !seen_in_list.insert(id.clone()) {
+                    continue;
+                }
                 let rank = (pos + 1) as f64; // 1-based
                 let contribution = w / (k + rank);
                 if !contribution.is_finite() {
@@ -257,6 +261,20 @@ mod tests {
         // Scores strictly decrease with rank.
         assert!(out[0].score > out[1].score);
         assert!(out[1].score > out[2].score);
+    }
+
+    #[test]
+    fn test_rrf_ignores_duplicate_ids_within_one_list() {
+        let a = ids(&["dup", "dup", "other"]);
+        let rrf = Rrf::with_k(60.0);
+        let out = rrf.fuse(&[RankedInput::new(1.0, &a)], 10);
+
+        let score = |needle: &str| out.iter().find(|s| s.id.as_str() == needle).unwrap().score;
+        let approx = |got: f32, want: f64| (got as f64 - want).abs() < 1e-6;
+
+        assert_eq!(out.len(), 2);
+        assert!(approx(score("dup"), 1.0 / 61.0));
+        assert!(approx(score("other"), 1.0 / 63.0));
     }
 
     #[test]
