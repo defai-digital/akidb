@@ -58,7 +58,7 @@ impl HtmlParser {
             .filter_map(|declaration| declaration.split_once(':'))
             .any(|(property, value)| {
                 let property = property.trim();
-                let value = value.trim();
+                let value = value.split('!').next().map(str::trim).unwrap_or_default();
                 (property.eq_ignore_ascii_case("display") && value.eq_ignore_ascii_case("none"))
                     || (property.eq_ignore_ascii_case("visibility")
                         && value.eq_ignore_ascii_case("hidden"))
@@ -278,6 +278,8 @@ mod tests {
                     <div aria-hidden="true">Screen-reader hidden token</div>
                     <div style="display:none">Inline display none token</div>
                     <div style="visibility: hidden">Inline visibility hidden token</div>
+                    <div style="display: none !important">Important display none token</div>
+                    <div style="visibility: hidden !important">Important visibility hidden token</div>
                 </body>
             </html>
         "#;
@@ -289,5 +291,7 @@ mod tests {
         assert!(!result.text.contains("Screen-reader hidden token"));
         assert!(!result.text.contains("Inline display none token"));
         assert!(!result.text.contains("Inline visibility hidden token"));
+        assert!(!result.text.contains("Important display none token"));
+        assert!(!result.text.contains("Important visibility hidden token"));
     }
 }
