@@ -176,8 +176,19 @@ where
     }
 }
 
-fn arg_str(args: &Value, key: &str) -> Option<String> {
-    args.get(key).and_then(|v| v.as_str()).map(String::from)
+fn arg_str(args: &Value, key: &str) -> Result<Option<String>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    value
+        .as_str()
+        .map(String::from)
+        .map(Some)
+        .ok_or_else(|| format!("'{key}' must be a string"))
+}
+
+fn required_str(args: &Value, key: &str) -> Result<String, String> {
+    arg_str(args, key)?.ok_or_else(|| format!("missing '{key}'"))
 }
 
 fn arg_u32(args: &Value, key: &str, default: u32) -> Result<u32, String> {
@@ -230,7 +241,7 @@ where
     I: VectorIndex + 'static,
     S: StorageBackend + 'static,
 {
-    let query = arg_str(args, "query").ok_or("missing 'query'")?;
+    let query = required_str(args, "query")?;
     let top_k = arg_u32(args, "top_k", 10)?;
     let hybrid = arg_bool(args, "hybrid", true)?;
     let resp = service
@@ -253,7 +264,7 @@ where
     I: VectorIndex + 'static,
     S: StorageBackend + 'static,
 {
-    let query = arg_str(args, "query").ok_or("missing 'query'")?;
+    let query = required_str(args, "query")?;
     let top_k = arg_u32(args, "top_k", 10)?;
     let budget = arg_u32(args, "token_budget", 1024)?;
     let resp = service
@@ -278,25 +289,25 @@ where
     I: VectorIndex + 'static,
     S: StorageBackend + 'static,
 {
-    let id = arg_str(args, "id").ok_or("missing 'id'")?;
-    let text = arg_str(args, "text").ok_or("missing 'text'")?;
-    let kind = match arg_str(args, "kind") {
+    let id = required_str(args, "id")?;
+    let text = required_str(args, "text")?;
+    let kind = match arg_str(args, "kind")? {
         Some(kind) => MemoryKind::parse(&kind)
             .ok_or_else(|| format!("unknown memory kind: {kind}"))?,
         None => MemoryKind::Note,
     };
 
     let mut entry = MemoryEntry::new(id.clone(), kind, text.clone());
-    if let Some(v) = arg_str(args, "conversation_id") {
+    if let Some(v) = arg_str(args, "conversation_id")? {
         entry = entry.with_conversation(v);
     }
-    if let Some(v) = arg_str(args, "task_id") {
+    if let Some(v) = arg_str(args, "task_id")? {
         entry = entry.with_task(v);
     }
-    if let Some(v) = arg_str(args, "tool") {
+    if let Some(v) = arg_str(args, "tool")? {
         entry = entry.with_tool(v);
     }
-    if let Some(v) = arg_str(args, "source_uri") {
+    if let Some(v) = arg_str(args, "source_uri")? {
         entry = entry.with_source(v);
     }
 
@@ -323,12 +334,12 @@ where
     I: VectorIndex + 'static,
     S: StorageBackend + 'static,
 {
-    let query = arg_str(args, "query").ok_or("missing 'query'")?;
+    let query = required_str(args, "query")?;
     let top_k = arg_u32(args, "top_k", 10)?;
     let vector = service.embed_text(&query)?;
 
     // Scope to a conversation when provided, via a typed tag filter.
-    let tag_filter = arg_str(args, "conversation_id").map(|cid| TagFilter {
+    let tag_filter = arg_str(args, "conversation_id")?.map(|cid| TagFilter {
         filter_type: Some(FilterType::Condition(TagCondition {
             key: "conversation_id".to_string(),
             value: Some(TagValue {

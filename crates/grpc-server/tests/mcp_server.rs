@@ -151,6 +151,31 @@ async fn test_memory_write_rejects_unknown_kind() {
 }
 
 #[tokio::test]
+async fn test_memory_read_rejects_non_string_conversation_scope() {
+    let svc = setup();
+
+    let write = call(
+        &svc,
+        r#"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"memory_write","arguments":{"id":"m-scoped","kind":"note","text":"scoped secret memory","conversation_id":"conv-1"}}}"#,
+    )
+    .await;
+    assert_eq!(write["result"]["isError"], false);
+
+    let read = call(
+        &svc,
+        r#"{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"memory_read","arguments":{"query":"secret","conversation_id":123}}}"#,
+    )
+    .await;
+
+    assert_eq!(read["result"]["isError"], true);
+    let text = read["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("conversation_id") && text.contains("string"),
+        "expected conversation_id type error, got: {text}"
+    );
+}
+
+#[tokio::test]
 async fn test_search_and_pack_tools() {
     let svc = setup();
     call(
