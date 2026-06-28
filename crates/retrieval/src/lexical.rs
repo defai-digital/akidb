@@ -60,6 +60,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for raw in text
         .split(|c: char| !is_token_char(c))
+        .map(trim_token_punctuation)
         .filter(|t| contains_semantic_token_char(t))
     {
         let token = raw.to_lowercase();
@@ -72,6 +73,10 @@ pub fn tokenize(text: &str) -> Vec<String> {
         }
     }
     tokens
+}
+
+fn trim_token_punctuation(token: &str) -> &str {
+    token.trim_matches(':')
 }
 
 fn is_token_char(c: char) -> bool {
@@ -374,6 +379,15 @@ mod tests {
         assert_eq!(
             tokenize("draft_model::decode"),
             vec!["draft_model::decode", "draft", "model", "decode"]
+        );
+    }
+
+    #[test]
+    fn test_tokenize_drops_single_colon_punctuation() {
+        assert_eq!(tokenize("Status: ready"), vec!["status", "ready"]);
+        assert_eq!(
+            tokenize("draft_model::decode: ready"),
+            vec!["draft_model::decode", "draft", "model", "decode", "ready"]
         );
     }
 
