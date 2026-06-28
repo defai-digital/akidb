@@ -269,7 +269,23 @@ impl VectorIndex for MockIndex {
 
     fn trigger_rebuild(&self) -> Result<()> {
         self.is_rebuilding.store(true, Ordering::SeqCst);
-        // In mock, just reset tombstones
+
+        let deleted_ids: Vec<i64> = {
+            let vectors = self.vectors.read();
+            vectors
+                .keys()
+                .copied()
+                .filter(|internal_id| self.tombstones.is_deleted(InternalId(*internal_id)))
+                .collect()
+        };
+
+        if !deleted_ids.is_empty() {
+            let mut vectors = self.vectors.write();
+            for internal_id in deleted_ids {
+                vectors.remove(&internal_id);
+            }
+        }
+
         self.tombstones.reset();
         self.is_rebuilding.store(false, Ordering::SeqCst);
         Ok(())
@@ -346,6 +362,28 @@ mod tests {
             results.iter().all(|result| result.id.as_str() != "vec-2"),
             "deleted vector from grown capacity should not be searchable"
         );
+    }
+
+    #[test]
+    fn test_mock_rebuild_keeps_deleted_vectors_hidden() {
+        let index = MockIndex::new(128, 1000);
+
+        let v1 = create_random_vector(128);
+        let id1 = index.insert(&VectorId::new("vec-1"), &v1).unwrap();
+
+        index.delete(id1).unwrap();
+        index.trigger_rebuild().unwrap();
+
+        let results = index.search(&v1, &SearchParams::new(10)).unwrap();
+        assert!(
+            results.iter().all(|result| result.id.as_str() != "vec-1"),
+            "mock rebuild should physically remove tombstoned vectors"
+        );
+
+        let stats = index.stats();
+        assert_eq!(stats.total_vectors, 0);
+        assert_eq!(stats.active_vectors, 0);
+        assert_eq!(stats.tombstoned_vectors, 0);
     }
 
     #[test]
