@@ -180,8 +180,35 @@ def validate_benchmark(report: dict[str, Any], args: argparse.Namespace) -> None
     ratio = require_float(report, "benchmark.throughput_ratio", min_value=0.0)
     require(abs((cell_qps / one_mac_qps) - ratio) <= 0.05, "benchmark.throughput_ratio must match cell_qps / one_mac_qps within 0.05")
     require(ratio >= args.min_throughput_ratio, f"cell throughput ratio {ratio:.2f} below {args.min_throughput_ratio:.2f}")
-    require_float(report, "benchmark.cell_p95_ms", min_value=0.0)
-    require_float(report, "benchmark.cell_p99_ms", min_value=0.0)
+    p95_ms = require_float(report, "benchmark.cell_p95_ms", min_value=0.0)
+    p99_ms = require_float(report, "benchmark.cell_p99_ms", min_value=0.0)
+    require(p99_ms >= p95_ms, "benchmark.cell_p99_ms must be >= benchmark.cell_p95_ms")
+    validate_benchmark_references(report)
+
+
+def validate_benchmark_references(report: dict[str, Any]) -> None:
+    benchmark = get_path(report, "benchmark")
+    require(isinstance(benchmark, dict), "benchmark must be an object")
+    one_ref = benchmark.get("one_mac_reference")
+    cell_ref = benchmark.get("cell_reference")
+    if one_ref is None and cell_ref is None:
+        return
+    if one_ref is not None:
+        require(isinstance(one_ref, dict), "benchmark.one_mac_reference must be an object")
+        require_str(one_ref, "artifact")
+    if cell_ref is not None:
+        require(isinstance(cell_ref, dict), "benchmark.cell_reference must be an object")
+        require_str(cell_ref, "artifact")
+    if one_ref is None or cell_ref is None:
+        return
+
+    for field in ["dimension", "vectors", "top_k", "nprobe"]:
+        one_value = get_path(one_ref, field)
+        cell_value = get_path(cell_ref, field)
+        require(
+            one_value == cell_value,
+            f"benchmark reference workload mismatch for {field}: one-Mac={one_value}, cell={cell_value}",
+        )
 
 
 def validate_artifact(report: dict[str, Any], args: argparse.Namespace) -> list[str]:

@@ -86,6 +86,8 @@ The validator checks:
 - RF>=2 shard placement with primary and replicas on distinct Macs
 - node-loss and link-loss degraded-mode tests
 - throughput ratio versus the one-Mac reference benchmark
+- matching benchmark reference workload for dimensions, vector count, topK, and
+  `nprobe` when both one-Mac and cell benchmark artifacts are attached
 - no Kubernetes dependency for the initial production path
 
 Default gates:

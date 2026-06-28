@@ -61,6 +61,10 @@ def benchmark_summary_from_artifact(path: Path, flag_name: str) -> tuple[float, 
         "git_commit": software.get("git_commit") if isinstance(software, dict) else None,
         "dimension": dataset.get("dimension") if isinstance(dataset, dict) else None,
         "vectors": dataset.get("vectors") if isinstance(dataset, dict) else None,
+        "queries": search.get("queries_requested"),
+        "top_k": search.get("top_k"),
+        "nprobe": search.get("nprobe"),
+        "concurrency": search.get("concurrency"),
     }
     return float(qps), float(p95_us) / 1000.0, float(p99_us) / 1000.0, reference
 
