@@ -371,7 +371,7 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
         let mut seen = HashSet::new();
         let one_hop = self.neighbors(
             NeighborRequest::new(entity_id.clone())
-                .with_direction(Direction::Out)
+                .with_direction(Direction::Both)
                 .with_limit(limit.saturating_mul(4)),
         )?;
         for neighbor in one_hop {
@@ -387,6 +387,7 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
                 break;
             }
         }
+        chunks.sort_by(|a, b| a.vector_id.as_str().cmp(b.vector_id.as_str()));
         Ok(chunks)
     }
 
@@ -633,6 +634,39 @@ mod tests {
                 via_node: GraphNodeId::from("chunk:new"),
             }],
             "old direct chunk link must be removed on edge replacement"
+        );
+    }
+
+    #[test]
+    fn test_related_chunks_includes_incoming_chunk_edges() {
+        let (_dir, graph) = index();
+        graph
+            .upsert_node(node("chunk:vec-1", NodeKind::Chunk))
+            .unwrap();
+        graph
+            .upsert_node(node("person:Akira", NodeKind::Person))
+            .unwrap();
+        graph
+            .upsert_edge(edge(
+                "owner",
+                "chunk:vec-1",
+                "person:Akira",
+                EdgeKind::OwnedBy,
+                1.0,
+            ))
+            .unwrap();
+
+        let chunks = graph
+            .related_chunks(&GraphNodeId::from("person:Akira"), 10)
+            .unwrap();
+
+        assert_eq!(
+            chunks,
+            vec![RelatedChunk {
+                vector_id: akidb_common::VectorId::new("vec-1"),
+                via_node: GraphNodeId::from("chunk:vec-1"),
+            }],
+            "entity nodes should resolve chunks connected by incoming metadata edges"
         );
     }
 
