@@ -79,11 +79,17 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "who calls",
             "what depends",
             "what imports",
+            "what uses",
             "who imports",
+            "who uses",
             "which imports",
+            "which uses",
             "what files import",
+            "what files use",
             "which files import",
+            "which files use",
             "which modules import",
+            "which modules use",
             "show call",
             "show calls",
             "show caller",
@@ -94,6 +100,8 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "show dependencies",
             "show import",
             "show imports",
+            "show use",
+            "show uses",
             "list call",
             "list calls",
             "list caller",
@@ -104,6 +112,8 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "list dependencies",
             "list import",
             "list imports",
+            "list use",
+            "list uses",
             "find call",
             "find calls",
             "find caller",
@@ -114,6 +124,8 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "find dependencies",
             "find import",
             "find imports",
+            "find use",
+            "find uses",
             "who changed",
             "what changed",
             "who modified",
@@ -131,12 +143,15 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             " depends on",
             " depend on",
             " imported by",
+            " used by",
             " called by",
             " callers of",
             " caller of",
             " callees of",
             " callee of",
             " calls to",
+            " uses of",
+            " use of",
         ],
     );
     let explanatory = starts_with_any(
@@ -283,6 +298,20 @@ mod tests {
         let trace = plan_query(&PlannerInput::new("which files import draft_model.rs"));
         assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
         assert!(trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_who_uses_query_enables_graph() {
+        let trace = plan_query(&PlannerInput::new("who uses kv_cache.rs"));
+        assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
+        assert!(trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_how_to_use_query_does_not_false_positive_graph() {
+        let trace = plan_query(&PlannerInput::new("how to use kv_cache.rs"));
+        assert_eq!(trace.mode, RetrievalMode::Hybrid);
+        assert!(!trace.graph_enabled);
     }
 
     #[test]
