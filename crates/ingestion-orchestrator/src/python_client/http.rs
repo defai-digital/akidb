@@ -153,12 +153,17 @@ impl PythonParserClient {
 
 fn parsed_document_from_response(parse_response: ParseResponse, filename: &str) -> ParsedDocument {
     let format = document_format_from_response(&parse_response.format, filename);
+    let text = response_text_for_retrieval(
+        &parse_response.text,
+        &parse_response.tables,
+        &parse_response.images,
+    );
 
     // Extract metadata fields if present
     let title = metadata_string(&parse_response.metadata, "title");
     let author = metadata_string(&parse_response.metadata, "author");
     let word_count = metadata_usize(&parse_response.metadata, "word_count")
-        .or_else(|| Some(parse_response.text.split_whitespace().count()));
+        .or_else(|| Some(text.split_whitespace().count()));
     let pages = usize::try_from(parse_response.page_count).ok();
     let extra = Some(serde_json::json!({
         "parser_format": parse_response.format,
@@ -169,7 +174,7 @@ fn parsed_document_from_response(parse_response: ParseResponse, filename: &str) 
     }));
 
     ParsedDocument {
-        text: parse_response.text,
+        text,
         metadata: DocumentMetadata {
             title,
             author,
@@ -179,6 +184,44 @@ fn parsed_document_from_response(parse_response: ParseResponse, filename: &str) 
             ..Default::default()
         },
         format,
+    }
+}
+
+fn response_text_for_retrieval(text: &str, tables: &[TableData], images: &[ImageRef]) -> String {
+    let mut pieces = Vec::new();
+    push_non_empty_piece(&mut pieces, text);
+
+    for table in tables {
+        push_non_empty_piece(&mut pieces, &table.headers.join(" "));
+        for row in &table.rows {
+            if table.headers.len() == row.len() {
+                let row_text = table
+                    .headers
+                    .iter()
+                    .zip(row.iter())
+                    .map(|(header, value)| format!("{header} {value}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                push_non_empty_piece(&mut pieces, &row_text);
+            } else {
+                push_non_empty_piece(&mut pieces, &row.join(" "));
+            }
+        }
+    }
+
+    for image in images {
+        if let Some(alt_text) = image.alt_text.as_deref() {
+            push_non_empty_piece(&mut pieces, alt_text);
+        }
+    }
+
+    pieces.join("\n")
+}
+
+fn push_non_empty_piece(pieces: &mut Vec<String>, piece: &str) {
+    let piece = piece.trim();
+    if !piece.is_empty() {
+        pieces.push(piece.to_string());
     }
 }
 
@@ -342,6 +385,37 @@ mod tests {
         assert_eq!(extra["tables"][0]["headers"][0], "customer");
         assert_eq!(extra["images"][0]["alt_text"], "architecture diagram");
         assert_eq!(extra["parse_time_ms"], 12.5);
+    }
+
+    #[test]
+    fn test_parse_response_adds_structured_content_to_retrieval_text() {
+        let response = ParseResponse {
+            text: "body".to_string(),
+            format: "pdf".to_string(),
+            page_count: 2,
+            metadata: HashMap::new(),
+            tables: vec![TableData {
+                headers: vec!["customer".to_string(), "contract_amount".to_string()],
+                rows: vec![vec!["HGC".to_string(), "1200".to_string()]],
+                page: Some(1),
+            }],
+            images: vec![ImageRef {
+                index: 0,
+                page: Some(2),
+                width: Some(640),
+                height: Some(480),
+                alt_text: Some("AkiDB query planner diagram".to_string()),
+            }],
+            parse_time_ms: 12.5,
+        };
+
+        let parsed = parsed_document_from_response(response, "upload.bin");
+
+        assert!(parsed.text.contains("body"));
+        assert!(parsed.text.contains("customer HGC"));
+        assert!(parsed.text.contains("contract_amount 1200"));
+        assert!(parsed.text.contains("AkiDB query planner diagram"));
+        assert_eq!(parsed.metadata.word_count, Some(11));
     }
 
     #[test]
