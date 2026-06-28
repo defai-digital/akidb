@@ -714,6 +714,7 @@ fn python_decorator_block_before(lines: &[&str], end: usize) -> Option<usize> {
 
 fn python_decorator_block_reaches(lines: &[&str], start: usize, end: usize) -> bool {
     let mut depth = 0i32;
+    let mut state = PythonScanState::default();
     for (offset, line) in lines[start..end].iter().enumerate() {
         if offset > 0 && is_python_top_level_symbol(line) {
             return false;
@@ -725,9 +726,23 @@ fn python_decorator_block_reaches(lines: &[&str], start: usize, end: usize) -> b
         let chars: Vec<char> = trimmed.chars().collect();
         let mut i = 0;
         while i < chars.len() {
+            if let Some(quote) = state.triple_quote {
+                if let Some(end) = python_triple_string_closing_end(&chars, i, quote) {
+                    state.triple_quote = None;
+                    i = end + 1;
+                } else {
+                    break;
+                }
+                continue;
+            }
+
             match chars[i] {
                 '"' | '\'' => {
-                    i = skip_python_string(&chars, i);
+                    let Some(end) = skip_python_string_or_update_state(&chars, i, &mut state)
+                    else {
+                        break;
+                    };
+                    i = end;
                 }
                 '(' | '[' | '{' => depth += 1,
                 ')' | ']' | '}' => depth = (depth - 1).max(0),
@@ -750,7 +765,9 @@ fn is_python_top_level_symbol(line: &str) -> bool {
 fn python_block_end(lines: &[&str], start: usize) -> usize {
     let mut end = start;
     let mut header_depth = 0i32;
-    let mut header_complete = python_header_complete(lines[start], &mut header_depth);
+    let mut header_state = PythonScanState::default();
+    let mut header_complete =
+        python_header_complete(lines[start], &mut header_depth, &mut header_state);
     let mut j = start + 1;
 
     while j < lines.len() {
@@ -762,7 +779,7 @@ fn python_block_end(lines: &[&str], start: usize) -> usize {
 
         if !header_complete {
             end = j;
-            header_complete = python_header_complete(trimmed, &mut header_depth);
+            header_complete = python_header_complete(trimmed, &mut header_depth, &mut header_state);
             j += 1;
             continue;
         }
@@ -778,14 +795,32 @@ fn python_block_end(lines: &[&str], start: usize) -> usize {
     end
 }
 
-fn python_header_complete(line: &str, depth: &mut i32) -> bool {
+#[derive(Debug, Default, Clone, Copy)]
+struct PythonScanState {
+    triple_quote: Option<char>,
+}
+
+fn python_header_complete(line: &str, depth: &mut i32, state: &mut PythonScanState) -> bool {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0;
 
     while i < chars.len() {
+        if let Some(quote) = state.triple_quote {
+            if let Some(end) = python_triple_string_closing_end(&chars, i, quote) {
+                state.triple_quote = None;
+                i = end + 1;
+            } else {
+                break;
+            }
+            continue;
+        }
+
         match chars[i] {
             '"' | '\'' => {
-                i = skip_python_string(&chars, i);
+                let Some(end) = skip_python_string_or_update_state(&chars, i, state) else {
+                    break;
+                };
+                i = end;
             }
             '(' | '[' | '{' => *depth += 1,
             ')' | ']' | '}' => *depth = (*depth - 1).max(0),
@@ -798,10 +833,44 @@ fn python_header_complete(line: &str, depth: &mut i32) -> bool {
     false
 }
 
+fn skip_python_string_or_update_state(
+    chars: &[char],
+    start: usize,
+    state: &mut PythonScanState,
+) -> Option<usize> {
+    let quote = chars[start];
+    if is_python_triple_string_start(chars, start, quote) {
+        let content_start = start + 3;
+        if let Some(end) = python_triple_string_closing_end(chars, content_start, quote) {
+            Some(end)
+        } else {
+            state.triple_quote = Some(quote);
+            None
+        }
+    } else {
+        Some(skip_python_string(chars, start))
+    }
+}
+
+fn is_python_triple_string_start(chars: &[char], start: usize, quote: char) -> bool {
+    chars.get(start + 1) == Some(&quote) && chars.get(start + 2) == Some(&quote)
+}
+
+fn python_triple_string_closing_end(chars: &[char], start: usize, quote: char) -> Option<usize> {
+    let mut i = start;
+    while i < chars.len() {
+        if chars[i] == quote && chars.get(i + 1) == Some(&quote) && chars.get(i + 2) == Some(&quote)
+        {
+            return Some(i + 2);
+        }
+        i += 1;
+    }
+    None
+}
+
 fn skip_python_string(chars: &[char], start: usize) -> usize {
     let quote = chars[start];
-    let triple_quoted =
-        chars.get(start + 1) == Some(&quote) && chars.get(start + 2) == Some(&quote);
+    let triple_quoted = is_python_triple_string_start(chars, start, quote);
     let mut i = if triple_quoted { start + 3 } else { start + 1 };
     let mut escaped = false;
 
@@ -1272,6 +1341,23 @@ def contract_lookup():
     }
 
     #[test]
+    fn test_python_multiline_decorator_ignores_parens_inside_triple_strings() {
+        let src = r#"@router.get(
+    path="""
+/contracts/(legacy
+""",
+)
+def contract_lookup():
+    return None
+"#;
+        let chunks = chunk_code(src, Language::Python);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].name.as_deref(), Some("contract_lookup"));
+        assert!(chunks[0].text.contains("@router.get("));
+        assert!(chunks[0].text.contains("/contracts/(legacy"));
+    }
+
+    #[test]
     fn test_python_decorator_does_not_leak_to_next_function() {
         let src = "\
 @decorator
@@ -1329,6 +1415,27 @@ def next_symbol():
         assert_eq!(chunks[0].end_line, 4);
         assert_eq!(chunks[1].name.as_deref(), Some("next_symbol"));
         assert_eq!(chunks[1].start_line, 6);
+    }
+
+    #[test]
+    fn test_python_multiline_signature_ignores_colon_inside_triple_string() {
+        let src = r#"def build_context(
+    pattern="""
+):
+""",
+):
+    return pattern
+
+def next_symbol():
+    return None
+"#;
+        let chunks = chunk_code(src, Language::Python);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].name.as_deref(), Some("build_context"));
+        assert!(chunks[0].text.contains("return pattern"));
+        assert_eq!(chunks[0].end_line, 6);
+        assert_eq!(chunks[1].name.as_deref(), Some("next_symbol"));
+        assert_eq!(chunks[1].start_line, 8);
     }
 
     #[test]
