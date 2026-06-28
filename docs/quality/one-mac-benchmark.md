@@ -115,3 +115,17 @@ Do not use it as product proof.
 
 For a release claim, the benchmark should be run on a documented reference Mac
 SKU with the reference workload and checked into a dated report under `docs/`.
+
+## Current Reference Artifact
+
+The current checked-in reference artifact is
+`docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json`.
+
+- Commit: `2c80fe06f8d0312484d2aa6f9109ccff47631c68`
+- Hardware: Apple M3 Max, Mac15,9, 128GB memory, macOS 26.5.1
+- Workload: 1,000,000 vectors, 768 dimensions, 5,000 queries, `topK=10`,
+  `nprobe=64`, concurrency 1
+- Insert throughput: 311 vectors/sec
+- Search throughput: 586 queries/sec
+- Search latency: P50 1.66ms, P95 2.16ms, P99 2.43ms
+- SLO compliance: 100% under 50ms

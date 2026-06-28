@@ -215,6 +215,12 @@ See `docs/quality/one-mac-benchmark.md` for artifact requirements and
 interpretation. The reference runner uses optimized release binaries by
 default.
 
+Current reference artifact:
+`docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json` on an Apple M3 Max
+Mac15,9 with 128GB memory. The run indexed 1,000,000 768-dimensional vectors,
+served 5,000 `topK=10` queries at 586 QPS, and measured P95/P99 search latency
+of 2.16ms/2.43ms.
+
 ### Kuzu Benchmark
 
 Run the native-vs-Kuzu graph benchmark and validate the generated decision
@@ -316,7 +322,7 @@ maintained as internal documents and are not part of this public repository.
 - [x] Four-Mac cell validation artifact validator
 - [x] Four-Mac cell validation artifact builder
 - [x] Kuzu representative benchmark artifact
-- [ ] One-Mac reference benchmark
+- [x] One-Mac reference benchmark
 - [ ] Four-Mac Thunderbolt cell validation
 
 ## License
