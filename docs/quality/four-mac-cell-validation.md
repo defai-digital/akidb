@@ -67,16 +67,15 @@ SERVER=http://mac-1.local:50051 \
 ```
 
 After replacing template/example values with real node inventory, all six
-Thunderbolt link measurements, and failure-test results, build and validate the
-artifact:
+Thunderbolt link measurements, and failure-test results, validate the evidence
+bundle and write the final artifact:
 
 ```bash
-python3 scripts/build-four-mac-cell-artifact.py \
+python3 scripts/validate-four-mac-evidence.py \
   --input docs/reports/four-mac-input.json \
   --one-mac-artifact docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json \
-  --cell-artifact docs/reports/four-mac-benchmark-YYYYMMDD.json \
-  --output docs/reports/four-mac-cell-YYYYMMDD.json \
-  --validate
+  --cell-benchmark-artifact docs/reports/four-mac-benchmark-YYYYMMDD.json \
+  --output docs/reports/four-mac-cell-YYYYMMDD.json
 ```
 
 The builder also supports split list files directly with `--nodes`, `--links`,

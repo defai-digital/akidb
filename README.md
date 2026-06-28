@@ -283,12 +283,11 @@ OUTPUT=docs/reports/four-mac-benchmark-YYYYMMDD.json \
 SERVER=http://mac-1.local:50051 \
 ./scripts/benchmark-four-mac-cell.sh
 
-python3 scripts/build-four-mac-cell-artifact.py \
+python3 scripts/validate-four-mac-evidence.py \
   --input docs/reports/four-mac-input.json \
   --one-mac-artifact docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json \
-  --cell-artifact docs/reports/four-mac-benchmark-YYYYMMDD.json \
-  --output docs/reports/four-mac-cell-YYYYMMDD.json \
-  --validate
+  --cell-benchmark-artifact docs/reports/four-mac-benchmark-YYYYMMDD.json \
+  --output docs/reports/four-mac-cell-YYYYMMDD.json
 ```
 
 See `docs/quality/four-mac-cell-validation.md` for the artifact schema and
