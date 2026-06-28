@@ -1,6 +1,6 @@
 //! HTML Document Parser
 
-use scraper::{Html, Selector, ElementRef};
+use scraper::{ElementRef, Html, Selector};
 use std::collections::HashSet;
 
 use crate::parsers::{DocumentFormat, DocumentMetadata, DocumentParser, ParsedDocument};
@@ -15,7 +15,11 @@ impl HtmlParser {
     }
 
     /// Recursively extract text from an element, skipping script and style elements
-    fn extract_text_excluding_scripts(element: ElementRef, text: &mut String, excluded_tags: &HashSet<&str>) {
+    fn extract_text_excluding_scripts(
+        element: ElementRef,
+        text: &mut String,
+        excluded_tags: &HashSet<&str>,
+    ) {
         for child in element.children() {
             if let Some(el) = ElementRef::wrap(child) {
                 let tag_name = el.value().name();
@@ -56,7 +60,10 @@ impl DocumentParser for HtmlParser {
             .map(|el| el.text().collect::<String>());
 
         // Tags to exclude from text extraction
-        let excluded_tags: HashSet<&str> = ["script", "style", "noscript", "template"].iter().copied().collect();
+        let excluded_tags: HashSet<&str> = ["script", "style", "noscript", "template"]
+            .iter()
+            .copied()
+            .collect();
 
         let mut text = String::new();
 
@@ -69,7 +76,23 @@ impl DocumentParser for HtmlParser {
 
         // Fallback: if no body, extract from root but still exclude scripts/styles
         if text.is_empty() {
-            Self::extract_text_excluding_scripts(document.root_element(), &mut text, &excluded_tags);
+            Self::extract_text_excluding_scripts(
+                document.root_element(),
+                &mut text,
+                &excluded_tags,
+            );
+        }
+
+        if let Some(title_text) = title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+        {
+            if text.is_empty() {
+                text.push_str(title_text);
+            } else if !text.contains(title_text) {
+                text = format!("{} {}", title_text, text);
+            }
         }
 
         let word_count = text.split_whitespace().count();
@@ -110,6 +133,23 @@ mod tests {
         assert!(result.text.contains("Hello World"));
         assert!(result.text.contains("This is a test"));
         assert_eq!(result.metadata.title, Some("Test Page".to_string()));
+    }
+
+    #[test]
+    fn test_parse_html_includes_title_in_retrieval_text() {
+        let parser = HtmlParser::new();
+        let data = br#"
+            <html>
+                <head><title>AkiDB Contract Portal</title></head>
+                <body>
+                    <p>Welcome.</p>
+                </body>
+            </html>
+        "#;
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("AkiDB Contract Portal"));
+        assert!(result.text.contains("Welcome."));
     }
 
     #[test]
