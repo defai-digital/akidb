@@ -23,7 +23,7 @@ pub struct ParseRequest {
 }
 
 /// Table data from the Python parser
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TableData {
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
@@ -31,7 +31,7 @@ pub struct TableData {
 }
 
 /// Image reference from the Python parser
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ImageRef {
     pub index: i32,
     pub page: Option<i32>,
@@ -152,9 +152,7 @@ impl PythonParserClient {
 }
 
 fn parsed_document_from_response(parse_response: ParseResponse, filename: &str) -> ParsedDocument {
-    // Determine format from response or fallback to extension
-    let ext = filename.rsplit('.').next().unwrap_or("");
-    let format = DocumentFormat::from_extension(ext);
+    let format = document_format_from_response(&parse_response.format, filename);
 
     // Extract metadata fields if present
     let title = parse_response
@@ -173,6 +171,13 @@ fn parsed_document_from_response(parse_response: ParseResponse, filename: &str) 
         .and_then(|v| v.as_u64())
         .and_then(|n| usize::try_from(n).ok());
     let pages = usize::try_from(parse_response.page_count).ok();
+    let extra = Some(serde_json::json!({
+        "parser_format": parse_response.format,
+        "metadata": parse_response.metadata,
+        "tables": parse_response.tables,
+        "images": parse_response.images,
+        "parse_time_ms": parse_response.parse_time_ms,
+    }));
 
     ParsedDocument {
         text: parse_response.text,
@@ -181,10 +186,21 @@ fn parsed_document_from_response(parse_response: ParseResponse, filename: &str) 
             author,
             pages,
             word_count,
+            extra,
             ..Default::default()
         },
         format,
     }
+}
+
+fn document_format_from_response(response_format: &str, filename: &str) -> DocumentFormat {
+    let response_format = DocumentFormat::from_extension(response_format.trim());
+    if response_format != DocumentFormat::Unknown {
+        return response_format;
+    }
+
+    let ext = filename.rsplit('.').next().unwrap_or("");
+    DocumentFormat::from_extension(ext)
 }
 
 #[cfg(test)]
@@ -218,5 +234,79 @@ mod tests {
         let parsed = parsed_document_from_response(response, "doc.pdf");
 
         assert_eq!(parsed.metadata.pages, None);
+    }
+
+    #[test]
+    fn test_parse_response_format_overrides_filename_extension() {
+        let response = ParseResponse {
+            text: "body".to_string(),
+            format: "pdf".to_string(),
+            page_count: 3,
+            metadata: HashMap::new(),
+            tables: vec![],
+            images: vec![],
+            parse_time_ms: 1.0,
+        };
+
+        let parsed = parsed_document_from_response(response, "upload.bin");
+
+        assert_eq!(parsed.format, DocumentFormat::Pdf);
+        assert_eq!(parsed.metadata.pages, Some(3));
+    }
+
+    #[test]
+    fn test_parse_response_unknown_format_falls_back_to_filename_extension() {
+        let response = ParseResponse {
+            text: "body".to_string(),
+            format: "application/octet-stream".to_string(),
+            page_count: 1,
+            metadata: HashMap::new(),
+            tables: vec![],
+            images: vec![],
+            parse_time_ms: 1.0,
+        };
+
+        let parsed = parsed_document_from_response(response, "report.docx");
+
+        assert_eq!(parsed.format, DocumentFormat::Docx);
+    }
+
+    #[test]
+    fn test_parse_response_preserves_parser_extra_metadata() {
+        let mut metadata = HashMap::new();
+        metadata.insert("title".to_string(), serde_json::json!("Annual Report"));
+        metadata.insert("word_count".to_string(), serde_json::json!(42));
+        metadata.insert("producer".to_string(), serde_json::json!("Acrobat"));
+
+        let response = ParseResponse {
+            text: "body".to_string(),
+            format: "pdf".to_string(),
+            page_count: 2,
+            metadata,
+            tables: vec![TableData {
+                headers: vec!["customer".to_string(), "amount".to_string()],
+                rows: vec![vec!["HGC".to_string(), "1200".to_string()]],
+                page: Some(1),
+            }],
+            images: vec![ImageRef {
+                index: 0,
+                page: Some(2),
+                width: Some(640),
+                height: Some(480),
+                alt_text: Some("architecture diagram".to_string()),
+            }],
+            parse_time_ms: 12.5,
+        };
+
+        let parsed = parsed_document_from_response(response, "upload.bin");
+        let extra = parsed.metadata.extra.as_ref().unwrap();
+
+        assert_eq!(parsed.metadata.title.as_deref(), Some("Annual Report"));
+        assert_eq!(parsed.metadata.word_count, Some(42));
+        assert_eq!(extra["parser_format"], "pdf");
+        assert_eq!(extra["metadata"]["producer"], "Acrobat");
+        assert_eq!(extra["tables"][0]["headers"][0], "customer");
+        assert_eq!(extra["images"][0]["alt_text"], "architecture diagram");
+        assert_eq!(extra["parse_time_ms"], 12.5);
     }
 }
