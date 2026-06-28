@@ -147,7 +147,9 @@ fn value_equals(field: &Value, value: &TagVal) -> bool {
             };
             let mut want: Vec<&str> = list.values.iter().map(|s| s.as_str()).collect();
             field_set.sort_unstable();
+            field_set.dedup();
             want.sort_unstable();
+            want.dedup();
             field_set == want
         }
     }
@@ -355,6 +357,19 @@ mod tests {
             &meta,
             &cond("tags", TagOperator::TagOpEq, diff)
         ));
+    }
+
+    #[test]
+    fn test_eq_text_list_ignores_duplicates_as_set_equality() {
+        let meta = json!({"tags": ["rust", "rust", "cli"]});
+        let same_set = TagVal::TextList(TextList {
+            values: vec!["cli".into(), "rust".into(), "cli".into()],
+        });
+
+        assert!(
+            tag_filter_matches(&meta, &cond("tags", TagOperator::TagOpEq, same_set)),
+            "TextList equality is documented as set equality, so duplicates should not matter"
+        );
     }
 
     #[test]
