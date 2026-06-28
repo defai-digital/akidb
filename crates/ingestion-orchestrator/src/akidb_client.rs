@@ -13,6 +13,8 @@ use akidb_grpc::proto::{
     InsertBatchResponse, SearchRequest as GrpcSearchRequest, Vector as ProtoVector,
 };
 
+const MAX_SEARCH_TOP_K: usize = 10_000;
+
 /// Vector to insert into AkiDB
 #[derive(Debug, Clone)]
 pub struct VectorInsert {
@@ -256,6 +258,17 @@ impl AkiDbClient {
 }
 
 fn search_top_k(k: usize) -> Result<u32> {
+    if k == 0 {
+        return Err(crate::IngestionError::Storage(
+            "Search top_k must be greater than 0".to_string(),
+        ));
+    }
+    if k > MAX_SEARCH_TOP_K {
+        return Err(crate::IngestionError::Storage(format!(
+            "Search top_k {} exceeds maximum of {}",
+            k, MAX_SEARCH_TOP_K
+        )));
+    }
     u32::try_from(k).map_err(|_| {
         crate::IngestionError::Storage(format!("Search top_k {} exceeds u32 range", k))
     })
@@ -399,7 +412,30 @@ mod tests {
         let result = search_top_k((u32::MAX as usize) + 1);
 
         assert!(
-            matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("exceeds u32 range"))
+            matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("exceeds maximum"))
+        );
+    }
+
+    #[test]
+    fn test_search_top_k_rejects_zero() {
+        let result = search_top_k(0);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("greater than 0"))
+        );
+    }
+
+    #[test]
+    fn test_search_top_k_allows_service_maximum() {
+        assert_eq!(search_top_k(10_000).unwrap(), 10_000);
+    }
+
+    #[test]
+    fn test_search_top_k_rejects_above_service_maximum() {
+        let result = search_top_k(10_001);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("exceeds maximum"))
         );
     }
 
