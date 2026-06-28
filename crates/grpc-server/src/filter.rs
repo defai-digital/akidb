@@ -131,7 +131,9 @@ pub fn tag_filter_matches(metadata: &Value, filter: &TagFilter) -> bool {
 }
 
 fn condition_matches(metadata: &Value, cond: &TagCondition) -> bool {
-    let op = TagOperator::try_from(cond.op).unwrap_or(TagOperator::TagOpEq);
+    let Ok(op) = TagOperator::try_from(cond.op) else {
+        return false;
+    };
     let field = metadata_field(metadata, &cond.key);
 
     // EXISTS only checks presence of a non-null value.
@@ -600,6 +602,21 @@ mod tests {
 
         let err = MetadataFilter::build(&[], Some(tag)).unwrap_err();
         assert!(err.contains("unknown tag operator"));
+    }
+
+    #[test]
+    fn test_direct_tag_filter_does_not_fallback_unknown_operator_to_eq() {
+        let tag = TagFilter {
+            filter_type: Some(FilterType::Condition(TagCondition {
+                key: "score".to_string(),
+                value: Some(TagValue {
+                    value: Some(TagVal::Number(70.0)),
+                }),
+                op: 999,
+            })),
+        };
+
+        assert!(!tag_filter_matches(&json!({"score": 70.0}), &tag));
     }
 
     #[test]
