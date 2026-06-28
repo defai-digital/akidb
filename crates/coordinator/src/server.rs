@@ -127,6 +127,18 @@ impl CoordinatorService {
         Ok(())
     }
 
+    fn validate_query_vector(query: &[f32]) -> Result<(), Status> {
+        if query.is_empty() {
+            return Err(Status::invalid_argument("Query vector cannot be empty"));
+        }
+        if query.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(Status::invalid_argument(
+                "Query vector contains NaN or Infinity values",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_unique_batch_ids(vectors: &[Vector]) -> Result<(), Status> {
         let mut seen = std::collections::HashSet::with_capacity(vectors.len());
         for vector in vectors {
@@ -231,6 +243,7 @@ impl Akidb for CoordinatorService {
         let start = Instant::now();
 
         Self::validate_search_controls(req.top_k, req.nprobe)?;
+        Self::validate_query_vector(&req.query)?;
 
         // Apply backpressure
         let _guard = self.backpressure.try_acquire().await.map_err(|e| {
@@ -578,6 +591,9 @@ impl Akidb for CoordinatorService {
         let req = request.into_inner();
 
         Self::validate_search_controls(req.top_k, req.nprobe)?;
+        for query in &req.queries {
+            Self::validate_query_vector(&query.vector)?;
+        }
 
         // FIX BUG-HUNT-503: Process queries in parallel instead of sequentially
         // Previously, each query waited for the previous one to complete, resulting in
@@ -829,6 +845,7 @@ async fn run_metrics_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use akidb_grpc::proto::Query;
     use tonic::Code;
 
     fn test_service() -> CoordinatorService {
@@ -905,6 +922,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_rejects_nan_query_before_fanout() {
+        let service = test_service();
+        let mut request = search_request(1, None);
+        request.query = vec![0.0, f32::NAN, 1.0];
+
+        let result = service.search(Request::new(request)).await;
+
+        let status = result.expect_err("NaN query should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status
+            .message()
+            .contains("Query vector contains NaN or Infinity values"));
+    }
+
+    #[tokio::test]
     async fn test_search_batch_rejects_zero_top_k_even_when_empty() {
         let service = test_service();
         let result = service
@@ -926,6 +958,23 @@ mod tests {
         let status = result.expect_err("zero nprobe should be rejected");
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("nprobe"));
+    }
+
+    #[tokio::test]
+    async fn test_search_batch_rejects_empty_query_before_fanout() {
+        let service = test_service();
+        let result = service
+            .search_batch(Request::new(SearchBatchRequest {
+                collection: "test".to_string(),
+                queries: vec![Query { vector: vec![] }],
+                top_k: 1,
+                nprobe: None,
+            }))
+            .await;
+
+        let status = result.expect_err("empty batch query should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("Query vector cannot be empty"));
     }
 
     #[test]
