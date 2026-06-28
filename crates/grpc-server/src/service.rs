@@ -6,7 +6,7 @@ use crate::proto::{
     GetClusterStateResponse, GetRequest, GetResponse, HealthRequest, HealthResponse,
     InsertBatchRequest, InsertBatchResponse, InsertRequest, InsertResponse, SearchBatchRequest,
     SearchBatchResponse, SearchRequest, SearchResponse, SearchResult, TextSearchRequest,
-    UpdateRequest, UpdateResponse, UpdateStatus, VisibilityInfo,
+    UpdateRequest, UpdateResponse, UpdateStatus, Vector, VisibilityInfo,
 };
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
@@ -324,6 +324,19 @@ where
                 "collection '{}' does not match shard collection '{}'",
                 collection, self.collection
             )));
+        }
+        Ok(())
+    }
+
+    fn validate_unique_batch_ids(vectors: &[Vector]) -> Result<(), Status> {
+        let mut seen = HashSet::with_capacity(vectors.len());
+        for vector in vectors {
+            if !seen.insert(vector.id.as_str()) {
+                return Err(Status::invalid_argument(format!(
+                    "insert_batch contains duplicate vector id '{}'",
+                    vector.id
+                )));
+            }
         }
         Ok(())
     }
@@ -1560,6 +1573,7 @@ where
 
         debug!("Insert batch request for {} vectors", req.vectors.len());
         self.validate_request_collection(&req.collection)?;
+        Self::validate_unique_batch_ids(&req.vectors)?;
 
         let mut inserted_count = 0u32;
         let mut failed_ids = Vec::new();
@@ -2345,6 +2359,36 @@ mod tests {
                 .await
                 .expect_err("get should reject wrong collection"),
         );
+    }
+
+    #[tokio::test]
+    async fn test_insert_batch_rejects_duplicate_ids_before_writes() {
+        let (service, _dir) = test_service();
+
+        let result = service
+            .insert_batch(Request::new(InsertBatchRequest {
+                collection: "test".to_string(),
+                vectors: vec![
+                    Vector {
+                        id: "dup".to_string(),
+                        embedding: vec![1.0, 0.0],
+                        metadata: vec![],
+                        text: "first".to_string(),
+                    },
+                    Vector {
+                        id: "dup".to_string(),
+                        embedding: vec![0.0, 1.0],
+                        metadata: vec![],
+                        text: "second".to_string(),
+                    },
+                ],
+            }))
+            .await;
+
+        let status = result.expect_err("duplicate batch IDs should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("duplicate"));
+        assert_eq!(service.index_stats().active_vectors, 0);
     }
 
     #[tokio::test]

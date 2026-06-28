@@ -14,7 +14,7 @@ use akidb_grpc::proto::{
     InsertBatchRequest, InsertBatchResponse, InsertRequest, InsertResponse, NodeStatus,
     SearchBatchRequest, SearchBatchResponse, SearchRequest, SearchResponse,
     SearchResult as ProtoSearchResult, ShardNode, TextSearchRequest, UpdateRequest, UpdateResponse,
-    UpdateStatus, VisibilityInfo,
+    UpdateStatus, Vector, VisibilityInfo,
 };
 use http_body_util::Full;
 use hyper::body::Bytes;
@@ -123,6 +123,19 @@ impl CoordinatorService {
         }
         if nprobe == Some(0) {
             return Err(Status::invalid_argument("nprobe must be greater than 0"));
+        }
+        Ok(())
+    }
+
+    fn validate_unique_batch_ids(vectors: &[Vector]) -> Result<(), Status> {
+        let mut seen = std::collections::HashSet::with_capacity(vectors.len());
+        for vector in vectors {
+            if !seen.insert(vector.id.as_str()) {
+                return Err(Status::invalid_argument(format!(
+                    "insert_batch contains duplicate vector id '{}'",
+                    vector.id
+                )));
+            }
         }
         Ok(())
     }
@@ -401,11 +414,13 @@ impl Akidb for CoordinatorService {
         request: Request<InsertBatchRequest>,
     ) -> Result<Response<InsertBatchResponse>, Status> {
         let req = request.into_inner();
+        Self::validate_unique_batch_ids(&req.vectors)?;
         let router = self.router.read().await;
 
         // Partition vectors by shard using consistent hashing
         let mut shard_batches: std::collections::HashMap<String, Vec<akidb_grpc::proto::Vector>> =
             std::collections::HashMap::new();
+        let mut unrouted_ids = Vec::new();
 
         for vector in req.vectors {
             let id = akidb_common::VectorId::new(&vector.id);
@@ -414,6 +429,8 @@ impl Akidb for CoordinatorService {
                     .entry(shard.id.clone())
                     .or_default()
                     .push(vector);
+            } else {
+                unrouted_ids.push(vector.id);
             }
         }
 
@@ -469,7 +486,7 @@ impl Akidb for CoordinatorService {
 
         // Aggregate results
         let mut total_inserted = 0u32;
-        let mut all_failed_ids = Vec::new();
+        let mut all_failed_ids = unrouted_ids;
 
         for handle in handles {
             match handle.await {
@@ -793,6 +810,15 @@ mod tests {
         }
     }
 
+    fn batch_vector(id: &str) -> Vector {
+        Vector {
+            id: id.to_string(),
+            embedding: vec![0.0; 4],
+            metadata: vec![],
+            text: String::new(),
+        }
+    }
+
     #[tokio::test]
     async fn test_search_rejects_zero_top_k_before_fanout() {
         let service = test_service();
@@ -849,5 +875,37 @@ mod tests {
         let status = result.expect_err("zero nprobe should be rejected");
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("nprobe"));
+    }
+
+    #[tokio::test]
+    async fn test_insert_batch_rejects_duplicate_ids_before_routing() {
+        let service = test_service();
+        let result = service
+            .insert_batch(Request::new(InsertBatchRequest {
+                collection: "test".to_string(),
+                vectors: vec![batch_vector("dup"), batch_vector("dup")],
+            }))
+            .await;
+
+        let status = result.expect_err("duplicate batch IDs should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("duplicate"));
+    }
+
+    #[tokio::test]
+    async fn test_insert_batch_marks_unrouted_vectors_failed() {
+        let service = test_service();
+        let response = service
+            .insert_batch(Request::new(InsertBatchRequest {
+                collection: "test".to_string(),
+                vectors: vec![batch_vector("doc1")],
+            }))
+            .await
+            .expect("unrouted batch should return a failed batch response")
+            .into_inner();
+
+        assert!(!response.success);
+        assert_eq!(response.inserted_count, 0);
+        assert_eq!(response.failed_ids, vec!["doc1"]);
     }
 }
