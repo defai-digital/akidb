@@ -1173,7 +1173,7 @@ where
 
         // Now safe to delete old vector (after mapping updated)
         // FIX BUG-HUNT-601: Log failures when deleting old vector
-        if let Some(old_id) = old_internal_id {
+        if let Some(old_id) = old_internal_id.filter(|old_id| *old_id != new_internal_id) {
             if let Err(delete_err) = self.index.delete(old_id) {
                 tracing::warn!(
                     vector_id = %vector_id,
@@ -2135,6 +2135,44 @@ mod tests {
         assert!(response.results[0].results[0]
             .metadata
             .contains("Annual Report"));
+    }
+
+    #[tokio::test]
+    async fn test_update_keeps_upserted_vector_searchable() {
+        let (service, _dir) = test_service();
+        insert_text(&service, "doc1", vec![1.0, 0.0], "original searchable text").await;
+
+        service
+            .update(Request::new(UpdateRequest {
+                collection: "test".to_string(),
+                id: "doc1".to_string(),
+                vector: vec![0.0, 1.0],
+                metadata: br#"{"title":"Updated"}"#.to_vec(),
+            }))
+            .await
+            .unwrap();
+
+        let response = service
+            .search(Request::new(SearchRequest {
+                collection: "test".to_string(),
+                query: vec![0.0, 1.0],
+                top_k: 1,
+                nprobe: None,
+                filter: vec![],
+                tag_filter: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].id, "doc1");
+        assert!(response.results[0].metadata.contains("Updated"));
+
+        let stats = service.index_stats();
+        assert_eq!(stats.total_vectors, 1);
+        assert_eq!(stats.active_vectors, 1);
+        assert_eq!(stats.tombstoned_vectors, 0);
     }
 
     #[tokio::test]
