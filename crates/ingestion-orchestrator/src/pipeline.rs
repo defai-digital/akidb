@@ -431,6 +431,7 @@ fn build_vector_metadata(
     metadata.insert("content_hash".to_string(), content_hash.to_string());
     metadata.insert("start_offset".to_string(), chunk.start_offset.to_string());
     metadata.insert("end_offset".to_string(), chunk.end_offset.to_string());
+    metadata.insert("token_count".to_string(), chunk.token_count.to_string());
     metadata.insert(
         "document_format".to_string(),
         format_label(document_format).to_string(),
@@ -643,6 +644,7 @@ mod tests {
         assert_eq!(metadata["word_count"], "1200");
         assert_eq!(metadata["start_offset"], "10");
         assert_eq!(metadata["end_offset"], "34");
+        assert_eq!(metadata["token_count"], "6");
         assert!(metadata["metadata_extra"].contains("\"parser_format\":\"pdf\""));
         assert!(metadata["metadata_extra"].contains("\"customer\""));
     }
