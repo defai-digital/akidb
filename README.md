@@ -254,12 +254,17 @@ python3 scripts/validate-four-mac-cell.py docs/reports/four-mac-cell-YYYYMMDD.js
 Build an artifact from measured node, link, failure-test, and benchmark inputs:
 
 ```bash
+python3 scripts/collect-four-mac-node.py \
+  --id mac-1 \
+  --role voter \
+  --output docs/reports/mac-1-node.json
+
 python3 scripts/build-four-mac-cell-artifact.py \
   --write-template docs/reports/four-mac-input-template.json
 
 python3 scripts/build-four-mac-cell-artifact.py \
   --input docs/reports/four-mac-input-template.json \
-  --one-mac-qps 586.434 \
+  --one-mac-artifact docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json \
   --cell-qps 2600 \
   --cell-p95-ms 45 \
   --cell-p99-ms 90 \

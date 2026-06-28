@@ -30,6 +30,27 @@ def read_json(path: Path) -> Any:
         raise BuildError(f"{path} is not valid JSON: {exc}") from exc
 
 
+def one_mac_qps_from_artifact(path: Path) -> tuple[float, dict[str, Any]]:
+    artifact = read_json(path)
+    require(isinstance(artifact, dict), "--one-mac-artifact must be a JSON object")
+    search = artifact.get("search")
+    require(isinstance(search, dict), "--one-mac-artifact missing search object")
+    qps = search.get("throughput_queries_per_sec")
+    require(
+        isinstance(qps, (int, float)) and not isinstance(qps, bool) and float(qps) > 0,
+        "--one-mac-artifact search.throughput_queries_per_sec must be > 0",
+    )
+
+    dataset = artifact.get("dataset")
+    software = artifact.get("software")
+    return float(qps), {
+        "artifact": str(path),
+        "git_commit": software.get("git_commit") if isinstance(software, dict) else None,
+        "dimension": dataset.get("dimension") if isinstance(dataset, dict) else None,
+        "vectors": dataset.get("vectors") if isinstance(dataset, dict) else None,
+    }
+
+
 def require_objects(value: Any, name: str) -> list[dict[str, Any]]:
     require(isinstance(value, list), f"{name} must be a JSON list")
     out: list[dict[str, Any]] = []
@@ -160,7 +181,20 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
     node_ids = {str(node["id"]) for node in nodes}
     links = normalize_links(raw_links, node_ids)
     failure_tests = normalize_failure_tests(raw_failure_tests)
-    throughput_ratio = args.cell_qps / args.one_mac_qps
+    one_mac_qps = args.one_mac_qps
+    one_mac_reference: dict[str, Any] | None = None
+    if args.one_mac_artifact:
+        one_mac_qps, one_mac_reference = one_mac_qps_from_artifact(args.one_mac_artifact)
+    throughput_ratio = args.cell_qps / one_mac_qps
+    benchmark = {
+        "one_mac_qps": one_mac_qps,
+        "cell_qps": args.cell_qps,
+        "throughput_ratio": throughput_ratio,
+        "cell_p95_ms": args.cell_p95_ms,
+        "cell_p99_ms": args.cell_p99_ms,
+    }
+    if one_mac_reference:
+        benchmark["one_mac_reference"] = one_mac_reference
 
     return {
         "schema_version": 1,
@@ -185,13 +219,7 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
             nodes=nodes,
         ),
         "failure_tests": failure_tests,
-        "benchmark": {
-            "one_mac_qps": args.one_mac_qps,
-            "cell_qps": args.cell_qps,
-            "throughput_ratio": throughput_ratio,
-            "cell_p95_ms": args.cell_p95_ms,
-            "cell_p99_ms": args.cell_p99_ms,
-        },
+        "benchmark": benchmark,
     }
 
 
@@ -297,6 +325,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replication-factor", type=int, default=2)
     parser.add_argument("--shards", type=int, default=4)
     parser.add_argument("--one-mac-qps", type=float)
+    parser.add_argument("--one-mac-artifact", type=Path, help="Read one-Mac QPS from a benchmark artifact")
     parser.add_argument("--cell-qps", type=float)
     parser.add_argument("--cell-p95-ms", type=float)
     parser.add_argument("--cell-p99-ms", type=float)
@@ -331,9 +360,14 @@ def main() -> int:
                 "--failure-tests": args.failure_tests,
             }.items():
                 require(value is None, f"{name} cannot be combined with --input")
-        for name in ["one_mac_qps", "cell_qps", "cell_p95_ms", "cell_p99_ms"]:
+        require(
+            (args.one_mac_qps is None) != (args.one_mac_artifact is None),
+            "provide exactly one of --one-mac-qps or --one-mac-artifact",
+        )
+        for name in ["cell_qps", "cell_p95_ms", "cell_p99_ms"]:
             require(getattr(args, name) is not None, f"--{name.replace('_', '-')} is required")
-        require(args.one_mac_qps > 0, "--one-mac-qps must be > 0")
+        if args.one_mac_qps is not None:
+            require(args.one_mac_qps > 0, "--one-mac-qps must be > 0")
         require(args.cell_qps > 0, "--cell-qps must be > 0")
         require(args.cell_p95_ms >= 0, "--cell-p95-ms must be >= 0")
         require(args.cell_p99_ms >= args.cell_p95_ms, "--cell-p99-ms must be >= --cell-p95-ms")

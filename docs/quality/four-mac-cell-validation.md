@@ -17,13 +17,22 @@ python3 scripts/build-four-mac-cell-artifact.py \
   --write-template docs/reports/four-mac-input-template.json
 ```
 
+Collect each node inventory record on the target Mac:
+
+```bash
+python3 scripts/collect-four-mac-node.py \
+  --id mac-1 \
+  --role voter \
+  --output docs/reports/mac-1-node.json
+```
+
 After replacing the template values with real node inventory, six Thunderbolt
 link measurements, and failure-test results, build and validate the artifact:
 
 ```bash
 python3 scripts/build-four-mac-cell-artifact.py \
   --input docs/reports/four-mac-input-template.json \
-  --one-mac-qps 586.434 \
+  --one-mac-artifact docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json \
   --cell-qps 2600 \
   --cell-p95-ms 45 \
   --cell-p99-ms 90 \
@@ -33,7 +42,9 @@ python3 scripts/build-four-mac-cell-artifact.py \
 
 The builder also supports split measured-input files with `--nodes`,
 `--links`, and `--failure-tests` when the collection workflow stores those
-measurements separately.
+measurements separately. Use `--one-mac-qps` only when the reference benchmark
+artifact is unavailable; otherwise prefer `--one-mac-artifact` so the
+throughput ratio is derived from the checked-in baseline.
 
 The validator checks:
 
