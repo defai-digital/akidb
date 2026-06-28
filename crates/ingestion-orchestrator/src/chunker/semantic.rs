@@ -7,17 +7,16 @@ use std::sync::OnceLock;
 use tiktoken_rs::CoreBPE;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::config::ChunkerConfig;
 use crate::chunker::Chunk;
+use crate::config::ChunkerConfig;
 
 /// Global tokenizer instance (cl100k_base - used by text-embedding-ada-002 and GPT-4)
 static TOKENIZER: OnceLock<CoreBPE> = OnceLock::new();
 
 /// Get or initialize the tokenizer
 fn get_tokenizer() -> &'static CoreBPE {
-    TOKENIZER.get_or_init(|| {
-        tiktoken_rs::cl100k_base().expect("Failed to load cl100k_base tokenizer")
-    })
+    TOKENIZER
+        .get_or_init(|| tiktoken_rs::cl100k_base().expect("Failed to load cl100k_base tokenizer"))
 }
 
 /// Semantic chunker that respects sentence boundaries
@@ -58,8 +57,8 @@ impl SemanticChunker {
 
         let mut chunks = Vec::new();
         let mut current_chunk = String::new();
-        let mut current_start: usize = 0;  // Byte offset in original text
-        let mut current_end: usize = 0;    // Byte offset of end of current chunk content
+        let mut current_start: usize = 0; // Byte offset in original text
+        let mut current_end: usize = 0; // Byte offset of end of current chunk content
         let mut chunk_index = 0;
 
         // FIX: Track actual byte offsets in original text using find()
@@ -85,7 +84,7 @@ impl SemanticChunker {
                     chunks.push(Chunk {
                         text: chunk_text.clone(),
                         start_offset: current_start,
-                        end_offset: current_end,  // FIX: Use tracked end offset
+                        end_offset: current_end, // FIX: Use tracked end offset
                         token_count: count_tokens(&chunk_text),
                         index: chunk_index,
                     });
@@ -93,7 +92,11 @@ impl SemanticChunker {
                 }
 
                 // Start new chunk with overlap
-                let overlap_text = get_overlap(&current_chunk, self.config.min_overlap, self.config.max_overlap);
+                let overlap_text = get_overlap(
+                    &current_chunk,
+                    self.config.min_overlap,
+                    self.config.max_overlap,
+                );
                 current_chunk = overlap_text.clone();
 
                 // FIX: Calculate overlap start offset properly
@@ -113,8 +116,7 @@ impl SemanticChunker {
             }
 
             current_chunk.push_str(sentence);
-            current_chunk.push(' ');
-            current_end = sentence_end;  // FIX: Track actual end offset
+            current_end = sentence_end; // FIX: Track actual end offset
         }
 
         // Don't forget the last chunk
@@ -123,7 +125,7 @@ impl SemanticChunker {
             chunks.push(Chunk {
                 text: chunk_text.clone(),
                 start_offset: current_start,
-                end_offset: current_end,  // FIX: Use tracked end offset instead of text.len()
+                end_offset: current_end, // FIX: Use tracked end offset instead of text.len()
                 token_count: count_tokens(&chunk_text),
                 index: chunk_index,
             });
@@ -210,6 +212,28 @@ mod tests {
         for chunk in &chunks {
             assert!(!chunk.text.is_empty());
             assert!(chunk.token_count > 0);
+        }
+    }
+
+    #[test]
+    fn test_offsets_round_trip_repeated_unicode_sentences() {
+        let chunker = SemanticChunker::new(ChunkerConfig {
+            target_tokens: 12,
+            min_overlap: 0,
+            max_overlap: 0,
+        });
+
+        let text = "Alpha repeats.  Alpha repeats.\nBeta uses unicode 雪. Gamma closes.";
+        let chunks = chunker.chunk(text);
+
+        assert!(chunks.len() > 1);
+        for chunk in chunks {
+            assert_eq!(
+                text[chunk.start_offset..chunk.end_offset].trim(),
+                chunk.text,
+                "chunk {} offsets should round-trip to original text",
+                chunk.index
+            );
         }
     }
 
