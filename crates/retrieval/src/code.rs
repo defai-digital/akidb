@@ -379,7 +379,7 @@ struct RustBraceScan {
 
 #[derive(Debug, Default, Clone, Copy)]
 struct RustScanState {
-    in_block_comment: bool,
+    block_comment_depth: u32,
     raw_string_hashes: Option<usize>,
 }
 
@@ -400,9 +400,12 @@ fn rust_brace_scan_with_state(line: &str, state: &mut RustScanState) -> RustBrac
             continue;
         }
 
-        if state.in_block_comment {
-            if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
-                state.in_block_comment = false;
+        if state.block_comment_depth > 0 {
+            if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                state.block_comment_depth += 1;
+                i += 2;
+            } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                state.block_comment_depth -= 1;
                 i += 2;
             } else {
                 i += 1;
@@ -413,7 +416,7 @@ fn rust_brace_scan_with_state(line: &str, state: &mut RustScanState) -> RustBrac
         match chars[i] {
             '/' if chars.get(i + 1) == Some(&'/') => break,
             '/' if chars.get(i + 1) == Some(&'*') => {
-                state.in_block_comment = true;
+                state.block_comment_depth = 1;
                 i += 1;
             }
             'r' => {
@@ -856,6 +859,30 @@ fn second() {}";
         assert_eq!(names, vec!["first", "second"]);
         assert!(chunks[0].text.contains("let value = 1;"));
         assert_eq!(chunks[1].start_line, 8);
+    }
+
+    #[test]
+    fn test_rust_braces_inside_nested_block_comments_do_not_break_scanning() {
+        let src = "\
+fn first() {
+    /*
+     * outer comment starts
+     * /* inner comment */
+     * still outer comment with }
+     */
+    let value = 1;
+}
+
+fn second() {}";
+        let chunks = chunk_code(src, Language::Rust);
+        let names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| chunk.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["first", "second"]);
+        assert!(chunks[0].text.contains("let value = 1;"));
+        assert_eq!(chunks[0].end_line, 8);
+        assert_eq!(chunks[1].start_line, 10);
     }
 
     #[test]
