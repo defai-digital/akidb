@@ -35,6 +35,12 @@ struct PoolCreationTracker {
     state: parking_lot::Mutex<std::collections::HashMap<String, FailureState>>,
 }
 
+fn fanout_top_k(top_k: usize) -> Result<u32> {
+    u32::try_from(top_k).map_err(|_| {
+        AkiDbError::CoordinatorError(format!("Search top_k {} exceeds u32 range", top_k))
+    })
+}
+
 /// Failure state for a single address
 #[derive(Clone)]
 struct FailureState {
@@ -254,6 +260,7 @@ impl FanoutExecutor {
         top_k: usize,
         nprobe: u32,
     ) -> Result<FanoutResult> {
+        let request_top_k = fanout_top_k(top_k)?;
         let router = self.router.read().await;
         let shards: Vec<ShardInfo> = router.healthy_shards().iter().map(|s| (*s).clone()).collect();
         drop(router);
@@ -297,7 +304,7 @@ impl FanoutExecutor {
                 let request = SearchRequest {
                     collection: "default".to_string(),
                     query: query_clone,
-                    top_k: top_k as u32,
+                    top_k: request_top_k,
                     nprobe: Some(nprobe),
                     filter: vec![],
                     tag_filter: None,
@@ -771,5 +778,24 @@ impl BroadcastUpdateResult {
     /// Check if the overall update was successful
     pub fn is_success(&self) -> bool {
         self.update_success
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fanout_top_k_rejects_u32_overflow() {
+        let result = fanout_top_k((u32::MAX as usize) + 1);
+
+        assert!(
+            matches!(result, Err(AkiDbError::CoordinatorError(message)) if message.contains("exceeds u32 range"))
+        );
+    }
+
+    #[test]
+    fn test_fanout_top_k_allows_u32_max() {
+        assert_eq!(fanout_top_k(u32::MAX as usize).unwrap(), u32::MAX);
     }
 }
