@@ -3,12 +3,12 @@
 //! Rust-native parsers for common document formats.
 //! Delegates to Python sidecar for complex formats (PDF, complex DOCX).
 
-pub mod json;
 pub mod csv;
-pub mod html;
-pub mod xml;
-pub mod xlsx;
 pub mod docx;
+pub mod html;
+pub mod json;
+pub mod xlsx;
+pub mod xml;
 
 use crate::Result;
 
@@ -52,6 +52,7 @@ pub struct DocumentMetadata {
 pub enum DocumentFormat {
     Json,
     Csv,
+    Tsv,
     Html,
     Xml,
     Xlsx,
@@ -66,7 +67,8 @@ impl DocumentFormat {
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
             "json" => DocumentFormat::Json,
-            "csv" | "tsv" => DocumentFormat::Csv,
+            "csv" => DocumentFormat::Csv,
+            "tsv" => DocumentFormat::Tsv,
             "html" | "htm" => DocumentFormat::Html,
             "xml" => DocumentFormat::Xml,
             "xlsx" | "xls" => DocumentFormat::Xlsx,
@@ -86,6 +88,7 @@ impl DocumentFormat {
             self,
             DocumentFormat::Json
                 | DocumentFormat::Csv
+                | DocumentFormat::Tsv
                 | DocumentFormat::Html
                 | DocumentFormat::Xml
                 | DocumentFormat::Xlsx
@@ -127,6 +130,7 @@ pub fn route_parser(format: DocumentFormat) -> Option<Box<dyn DocumentParser>> {
     match format {
         DocumentFormat::Json => Some(Box::new(json::JsonParser::new())),
         DocumentFormat::Csv => Some(Box::new(csv::CsvParser::new())),
+        DocumentFormat::Tsv => Some(Box::new(csv::CsvParser::tsv())),
         DocumentFormat::Html => Some(Box::new(html::HtmlParser::new())),
         DocumentFormat::Xml => Some(Box::new(xml::XmlParser::new())),
         DocumentFormat::Xlsx => Some(Box::new(xlsx::XlsxParser::new())),
@@ -140,7 +144,10 @@ pub fn route_parser(format: DocumentFormat) -> Option<Box<dyn DocumentParser>> {
 ///
 /// For DOCX files, checks if the file is simple enough for Rust parsing.
 /// Returns None if the file should be routed to Python.
-pub fn route_parser_with_data(format: DocumentFormat, data: &[u8]) -> Option<Box<dyn DocumentParser>> {
+pub fn route_parser_with_data(
+    format: DocumentFormat,
+    data: &[u8],
+) -> Option<Box<dyn DocumentParser>> {
     match format {
         DocumentFormat::Docx => {
             if can_parse_docx_in_rust(data) {
@@ -184,15 +191,20 @@ mod tests {
     fn test_format_detection() {
         assert_eq!(DocumentFormat::from_extension("json"), DocumentFormat::Json);
         assert_eq!(DocumentFormat::from_extension("PDF"), DocumentFormat::Pdf);
+        assert_eq!(DocumentFormat::from_extension("tsv"), DocumentFormat::Tsv);
         assert_eq!(DocumentFormat::from_extension("xlsx"), DocumentFormat::Xlsx);
         assert_eq!(DocumentFormat::from_extension("docx"), DocumentFormat::Docx);
-        assert_eq!(DocumentFormat::from_extension("foo"), DocumentFormat::Unknown);
+        assert_eq!(
+            DocumentFormat::from_extension("foo"),
+            DocumentFormat::Unknown
+        );
     }
 
     #[test]
     fn test_rust_native_check() {
         assert!(DocumentFormat::Json.is_rust_native());
         assert!(DocumentFormat::Csv.is_rust_native());
+        assert!(DocumentFormat::Tsv.is_rust_native());
         assert!(DocumentFormat::Docx.is_rust_native());
         assert!(!DocumentFormat::Pdf.is_rust_native());
     }
@@ -209,5 +221,22 @@ mod tests {
         assert!(route_parser(DocumentFormat::Json).is_some());
         assert!(route_parser(DocumentFormat::Docx).is_some());
         assert!(route_parser(DocumentFormat::Pdf).is_none());
+    }
+
+    #[test]
+    fn test_tsv_extension_routes_to_tab_delimited_parser() {
+        let format = DocumentFormat::from_extension("tsv");
+        let parser = route_parser(format).unwrap();
+        let parsed = parser.parse(b"name\tage\nAlice\t30").unwrap();
+
+        assert_eq!(
+            parsed
+                .metadata
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.get("columns"))
+                .and_then(|columns| columns.as_u64()),
+            Some(2)
+        );
     }
 }

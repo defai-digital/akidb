@@ -6,15 +6,29 @@ use crate::Result;
 /// CSV document parser
 pub struct CsvParser {
     delimiter: u8,
+    format: DocumentFormat,
 }
 
 impl CsvParser {
     pub fn new() -> Self {
-        Self { delimiter: b',' }
+        Self {
+            delimiter: b',',
+            format: DocumentFormat::Csv,
+        }
     }
 
     pub fn with_delimiter(delimiter: u8) -> Self {
-        Self { delimiter }
+        Self {
+            delimiter,
+            format: DocumentFormat::Csv,
+        }
+    }
+
+    pub fn tsv() -> Self {
+        Self {
+            delimiter: b'\t',
+            format: DocumentFormat::Tsv,
+        }
     }
 }
 
@@ -52,7 +66,7 @@ impl DocumentParser for CsvParser {
                         })),
                         ..Default::default()
                     },
-                    format: DocumentFormat::Csv,
+                    format: self.format,
                 });
             }
             Err(e) => {
@@ -85,12 +99,12 @@ impl DocumentParser for CsvParser {
                 })),
                 ..Default::default()
             },
-            format: DocumentFormat::Csv,
+            format: self.format,
         })
     }
 
     fn format(&self) -> DocumentFormat {
-        DocumentFormat::Csv
+        self.format
     }
 }
 
@@ -109,10 +123,11 @@ mod tests {
 
     #[test]
     fn test_parse_tsv() {
-        let parser = CsvParser::with_delimiter(b'\t');
+        let parser = CsvParser::tsv();
         let data = b"name\tage\nAlice\t30";
         let result = parser.parse(data).unwrap();
         assert!(result.text.contains("Alice"));
+        assert_eq!(result.format, DocumentFormat::Tsv);
     }
 
     #[test]

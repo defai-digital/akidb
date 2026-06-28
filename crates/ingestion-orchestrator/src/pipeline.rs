@@ -418,6 +418,7 @@ fn format_label(format: DocumentFormat) -> &'static str {
     match format {
         DocumentFormat::Json => "json",
         DocumentFormat::Csv => "csv",
+        DocumentFormat::Tsv => "tsv",
         DocumentFormat::Html => "html",
         DocumentFormat::Xml => "xml",
         DocumentFormat::Xlsx => "xlsx",
