@@ -35,6 +35,11 @@ impl Citation {
     }
 
     pub fn with_span(mut self, start: usize, end: usize) -> Self {
+        let (start, end) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
         self.span = Some((start, end));
         self
     }
@@ -336,6 +341,22 @@ mod tests {
         let out = pack(std::slice::from_ref(&p), &cfg);
         assert_eq!(out.text, "[guide.md@v3#10:20] the answer");
         assert_eq!(out.citations[0], p.citation);
+    }
+
+    #[test]
+    fn test_citation_span_normalizes_reversed_bounds() {
+        let p = Passage::new(
+            VectorId::new("doc"),
+            "the answer",
+            0.9,
+            Citation::new("guide.md").with_span(20, 10),
+        );
+        let cfg = PackerConfig::new(100).with_strategy(PackStrategy::Citation);
+
+        let out = pack(std::slice::from_ref(&p), &cfg);
+
+        assert_eq!(out.text, "[guide.md#10:20] the answer");
+        assert_eq!(out.citations[0].span, Some((10, 20)));
     }
 
     #[test]
