@@ -201,6 +201,23 @@ impl Reindexer {
         for (i, doc) in plan.documents.iter().enumerate() {
             match process_document(doc.clone(), plan.new_version).await {
                 Ok(vectors_inserted) => {
+                    let update_result =
+                        self.update_manifest_version(&doc.source_path, plan.new_version);
+                    if let Err(e) = update_result {
+                        error!(
+                            %run_id,
+                            path = %doc.source_path,
+                            error = ?e,
+                            "Failed to update manifest version after reindex"
+                        );
+                        result.error = Some(format!(
+                            "Failed to update manifest for {}: {}",
+                            doc.source_path, e
+                        ));
+                        result.duration_ms = start.elapsed().as_millis() as u64;
+                        return Ok(result);
+                    }
+
                     result.documents_processed += 1;
                     result.vectors_inserted += vectors_inserted;
 
@@ -238,6 +255,14 @@ impl Reindexer {
         );
 
         Ok(result)
+    }
+
+    fn update_manifest_version(&self, source_path: &str, new_version: u64) -> Result<()> {
+        let mut manifest = self.manifest.get(source_path)?.ok_or_else(|| {
+            IngestionError::Manifest(format!("Manifest not found: {}", source_path))
+        })?;
+        manifest.version = new_version;
+        self.manifest.upsert(&manifest)
     }
 
     /// Tombstone vectors with a specific version for a category
@@ -433,6 +458,39 @@ mod tests {
         assert_eq!(result.documents_processed, 2);
         assert_eq!(result.vectors_inserted, 10);
         assert_eq!(result.new_version, 1);
+    }
+
+    #[tokio::test]
+    async fn test_execute_reindex_updates_manifest_versions() {
+        let store = create_test_store();
+        let reindexer = Reindexer::new(Arc::clone(&store), ReindexConfig::default());
+
+        store
+            .upsert(&create_categorized_manifest("doc1.pdf", "test-cat"))
+            .unwrap();
+        store
+            .upsert(&create_categorized_manifest("doc2.pdf", "test-cat"))
+            .unwrap();
+
+        let plan = reindexer.plan_reindex_category("test-cat").unwrap();
+        let result = reindexer
+            .execute_reindex(&plan, |_doc, _version| async { Ok(3) })
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(
+            store.get("doc1.pdf").unwrap().unwrap().version,
+            plan.new_version
+        );
+        assert_eq!(
+            store.get("doc2.pdf").unwrap().unwrap().version,
+            plan.new_version
+        );
+        assert_eq!(
+            reindexer.get_category_version("test-cat").unwrap(),
+            Some(plan.new_version)
+        );
     }
 
     #[tokio::test]
