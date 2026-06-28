@@ -4,25 +4,25 @@
 
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{info, warn, error, debug};
+use tracing::{debug, error, info, warn};
 
-use crate::config::IngestionConfig;
-use crate::nats::{NatsConsumer, DlqPublisher, UploadEvent};
-use crate::parsers::{DocumentFormat, route_parser, ParsedDocument};
-use crate::python_client::PythonParserClient;
-use crate::chunker::SemanticChunker;
-use crate::batcher::DynamicBatcher;
-use crate::circuit_breaker::{CircuitBreaker, CircuitState};
+use crate::akidb_client::{AkiDbClient, VectorInsert};
 use crate::backpressure::BackpressureController;
-use crate::memory::MemoryCoordinator;
+use crate::batcher::DynamicBatcher;
+use crate::chunker::SemanticChunker;
+use crate::circuit_breaker::{CircuitBreaker, CircuitState};
+use crate::config::IngestionConfig;
 use crate::embedding::EmbeddingClient;
 use crate::idempotency::IdempotencyChecker;
-use crate::state::{StateTracker, DocumentState};
+use crate::memory::MemoryCoordinator;
 use crate::metrics::IngestionMetrics;
-use crate::storage::StorageClient;
-use crate::akidb_client::{AkiDbClient, VectorInsert};
-use crate::Result;
 use crate::nats::publisher::DlqEntry;
+use crate::nats::{DlqPublisher, NatsConsumer, UploadEvent};
+use crate::parsers::{route_parser_with_data, DocumentFormat, ParsedDocument};
+use crate::python_client::PythonParserClient;
+use crate::state::{DocumentState, StateTracker};
+use crate::storage::StorageClient;
+use crate::Result;
 
 /// Main ingestion pipeline
 pub struct IngestionPipeline {
@@ -79,9 +79,13 @@ impl IngestionPipeline {
         // Initialize state tracking with persistence
         let idempotency = IdempotencyChecker::new_persistent(
             "/var/lib/akidb/idempotency.db",
-            100_000
-        ).unwrap_or_else(|e| {
-            warn!(?e, "Failed to create persistent idempotency checker, falling back to in-memory");
+            100_000,
+        )
+        .unwrap_or_else(|e| {
+            warn!(
+                ?e,
+                "Failed to create persistent idempotency checker, falling back to in-memory"
+            );
             IdempotencyChecker::new(100_000)
         });
         let state = StateTracker::new("/var/lib/akidb/ingestion.db")
@@ -120,7 +124,8 @@ impl IngestionPipeline {
 
         // FIX BUG-H052: Track when memory pressure pause started
         let mut memory_pause_start: Option<std::time::Instant> = None;
-        let max_pause_duration = std::time::Duration::from_secs(self.config.memory.max_pause_duration_secs);
+        let max_pause_duration =
+            std::time::Duration::from_secs(self.config.memory.max_pause_duration_secs);
 
         loop {
             // Check memory pressure with timeout to prevent indefinite stalls
@@ -215,10 +220,16 @@ impl IngestionPipeline {
         self.state.record_document(&content_hash, &event.key)?;
 
         // FIX: Call internal processing with error handling for state tracking
-        if let Err(e) = self.process_document_internal(&event, &content_hash, &data, start).await {
+        if let Err(e) = self
+            .process_document_internal(&event, &content_hash, &data, start)
+            .await
+        {
             // Record failure in state tracker
             let error_msg = e.to_string();
-            if let Err(state_err) = self.state.update_state_with_error(&content_hash, DocumentState::Failed, &error_msg) {
+            if let Err(state_err) =
+                self.state
+                    .update_state_with_error(&content_hash, DocumentState::Failed, &error_msg)
+            {
                 error!(?state_err, hash = %content_hash, "Failed to update state to Failed");
             }
             return Err(e);
@@ -238,48 +249,58 @@ impl IngestionPipeline {
         data: &[u8],
         start: Instant,
     ) -> Result<()> {
-
         // Detect format
         let ext = event.key.rsplit('.').next().unwrap_or("");
         let format = DocumentFormat::from_extension(ext);
 
         // Parse document
-        self.state.update_state(&content_hash, DocumentState::Parsing)?;
+        self.state
+            .update_state(&content_hash, DocumentState::Parsing)?;
         let parsed = self.parse_document(&event, format, &data).await?;
 
         // Chunk document
-        self.state.update_state(&content_hash, DocumentState::Chunking)?;
+        self.state
+            .update_state(&content_hash, DocumentState::Chunking)?;
         let chunks = self.chunker.chunk(&parsed.text);
         self.state.update_chunk_count(&content_hash, chunks.len())?;
         self.metrics.chunks_created.inc_by(chunks.len() as f64);
 
         // Embed chunks
-        self.state.update_state(&content_hash, DocumentState::Embedding)?;
+        self.state
+            .update_state(&content_hash, DocumentState::Embedding)?;
         let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
         let embeddings = self.embedding_client.embed(texts).await?;
         ensure_embedding_alignment(chunks.len(), embeddings.len())?;
-        self.metrics.embeddings_generated.inc_by(embeddings.len() as f64);
+        self.metrics
+            .embeddings_generated
+            .inc_by(embeddings.len() as f64);
 
         // Insert into AkiDB
-        self.state.update_state(&content_hash, DocumentState::Inserting)?;
+        self.state
+            .update_state(&content_hash, DocumentState::Inserting)?;
 
         // Build vectors for insertion
-        let vectors: Vec<VectorInsert> = chunks.iter().zip(embeddings.iter()).enumerate().map(|(i, (chunk, embedding))| {
-            let mut metadata = std::collections::HashMap::new();
-            metadata.insert("document_key".to_string(), event.key.clone());
-            metadata.insert("bucket".to_string(), event.bucket.clone());
-            metadata.insert("chunk_index".to_string(), i.to_string());
-            metadata.insert("content_hash".to_string(), content_hash.to_string());
-            metadata.insert("start_offset".to_string(), chunk.start_offset.to_string());
-            metadata.insert("end_offset".to_string(), chunk.end_offset.to_string());
+        let vectors: Vec<VectorInsert> = chunks
+            .iter()
+            .zip(embeddings.iter())
+            .enumerate()
+            .map(|(i, (chunk, embedding))| {
+                let mut metadata = std::collections::HashMap::new();
+                metadata.insert("document_key".to_string(), event.key.clone());
+                metadata.insert("bucket".to_string(), event.bucket.clone());
+                metadata.insert("chunk_index".to_string(), i.to_string());
+                metadata.insert("content_hash".to_string(), content_hash.to_string());
+                metadata.insert("start_offset".to_string(), chunk.start_offset.to_string());
+                metadata.insert("end_offset".to_string(), chunk.end_offset.to_string());
 
-            VectorInsert {
-                id: format!("{}:{}", content_hash, i),
-                embedding: embedding.clone(),
-                metadata,
-                text: chunk.text.clone(),
-            }
-        }).collect();
+                VectorInsert {
+                    id: format!("{}:{}", content_hash, i),
+                    embedding: embedding.clone(),
+                    metadata,
+                    text: chunk.text.clone(),
+                }
+            })
+            .collect();
 
         // Insert into AkiDB with backpressure awareness
         let insert_start = Instant::now();
@@ -287,7 +308,8 @@ impl IngestionPipeline {
         let insert_latency = insert_start.elapsed();
 
         // Update backpressure based on insert latency (convert to microseconds)
-        self.backpressure.update_latency(insert_latency.as_micros() as u64);
+        self.backpressure
+            .update_latency(insert_latency.as_micros() as u64);
 
         if result.failed > 0 {
             warn!(
@@ -297,10 +319,13 @@ impl IngestionPipeline {
             );
         }
 
-        self.metrics.vectors_inserted.inc_by(result.successful as f64);
+        self.metrics
+            .vectors_inserted
+            .inc_by(result.successful as f64);
 
         // Mark completed
-        self.state.update_state(&content_hash, DocumentState::Completed)?;
+        self.state
+            .update_state(&content_hash, DocumentState::Completed)?;
 
         let duration = start.elapsed();
         info!(
@@ -312,7 +337,8 @@ impl IngestionPipeline {
             "Document processed"
         );
 
-        self.metrics.documents_processed
+        self.metrics
+            .documents_processed
             .with_label_values(&[format_label(format), parser_label(format)])
             .inc();
 
@@ -320,7 +346,12 @@ impl IngestionPipeline {
     }
 
     /// Parse document using appropriate parser
-    async fn parse_document(&self, event: &UploadEvent, format: DocumentFormat, data: &[u8]) -> Result<ParsedDocument> {
+    async fn parse_document(
+        &self,
+        event: &UploadEvent,
+        format: DocumentFormat,
+        data: &[u8],
+    ) -> Result<ParsedDocument> {
         let start = Instant::now();
         let data_size = data.len();
 
@@ -331,14 +362,11 @@ impl IngestionPipeline {
             "Parsing document"
         );
 
-        let result = if format.is_rust_native() {
+        let rust_parser = route_parser_with_data(format, data);
+        let result = if let Some(parser) = rust_parser {
             // Use Rust parser
-            if let Some(parser) = route_parser(format) {
-                parser.parse(data)
-            } else {
-                Err(crate::IngestionError::Parse("No parser for format".to_string()))
-            }
-        } else if format.requires_python() {
+            parser.parse(data)
+        } else if should_use_python_parser(format, data) {
             // Check circuit breaker
             if self.circuit_breaker.state() == CircuitState::Open {
                 warn!("Circuit breaker open, rejecting Python parser request");
@@ -354,10 +382,7 @@ impl IngestionPipeline {
             match self.python_client.parse(data, &event.key).await {
                 Ok(parsed) => {
                     self.circuit_breaker.record_success();
-                    debug!(
-                        text_len = parsed.text.len(),
-                        "Python parser succeeded"
-                    );
+                    debug!(text_len = parsed.text.len(), "Python parser succeeded");
                     Ok(parsed)
                 }
                 Err(e) => {
@@ -367,16 +392,26 @@ impl IngestionPipeline {
                 }
             }
         } else {
-            Err(crate::IngestionError::Parse(format!("Unsupported format: {:?}", format)))
+            Err(crate::IngestionError::Parse(format!(
+                "Unsupported format: {:?}",
+                format
+            )))
         };
 
         let duration = start.elapsed();
-        self.metrics.parse_latency
+        self.metrics
+            .parse_latency
             .with_label_values(&[format_label(format)])
             .observe(duration.as_secs_f64());
 
         result
     }
+}
+
+fn should_use_python_parser(format: DocumentFormat, data: &[u8]) -> bool {
+    format.requires_python()
+        || (matches!(format, DocumentFormat::Docx)
+            && route_parser_with_data(format, data).is_none())
 }
 
 fn format_label(format: DocumentFormat) -> &'static str {
@@ -427,5 +462,21 @@ mod tests {
     #[test]
     fn test_ensure_embedding_alignment_allows_exact_match() {
         assert!(ensure_embedding_alignment(2, 2).is_ok());
+    }
+
+    #[test]
+    fn test_non_simple_docx_routes_to_python_parser() {
+        assert!(should_use_python_parser(
+            DocumentFormat::Docx,
+            b"not a zip file"
+        ));
+    }
+
+    #[test]
+    fn test_rust_native_json_does_not_route_to_python_parser() {
+        assert!(!should_use_python_parser(
+            DocumentFormat::Json,
+            br#"{"ok":true}"#
+        ));
     }
 }
