@@ -190,11 +190,12 @@ impl AkiDbClient {
             .ok_or_else(|| crate::IngestionError::Storage("Not connected to AkiDB".to_string()))?;
 
         debug!(k, dim = query.len(), collection = %self.collection, "Searching AkiDB");
+        let top_k = search_top_k(k)?;
 
         let request = tonic::Request::new(GrpcSearchRequest {
             collection: self.collection.clone(),
             query,
-            top_k: k as u32,
+            top_k,
             nprobe: Some(32),
             filter: vec![],
             tag_filter: None,
@@ -252,6 +253,12 @@ impl AkiDbClient {
     pub fn endpoint(&self) -> &str {
         &self.endpoint
     }
+}
+
+fn search_top_k(k: usize) -> Result<u32> {
+    u32::try_from(k).map_err(|_| {
+        crate::IngestionError::Storage(format!("Search top_k {} exceeds u32 range", k))
+    })
 }
 
 fn build_batch_insert_result(
@@ -365,6 +372,15 @@ mod tests {
         };
         assert_eq!(result.total, 10);
         assert_eq!(result.successful, 8);
+    }
+
+    #[test]
+    fn test_search_top_k_rejects_u32_overflow() {
+        let result = search_top_k((u32::MAX as usize) + 1);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("exceeds u32 range"))
+        );
     }
 
     #[test]
