@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use crate::parsers::{DocumentMetadata, ParsedDocument, DocumentFormat};
+use crate::parsers::{DocumentFormat, DocumentMetadata, ParsedDocument};
 use crate::Result;
 
 /// Request to the Python parser service (matches Python's ParseRequest model)
@@ -106,7 +106,8 @@ impl PythonParserClient {
 
         debug!(filename, "Sending parse request to Python service");
 
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/parse", self.base_url))
             .json(&request)
             .send()
@@ -130,37 +131,13 @@ impl PythonParserClient {
 
         let parse_response: ParseResponse = response.json().await?;
 
-        // Determine format from response or fallback to extension
-        let ext = filename.rsplit('.').next().unwrap_or("");
-        let format = DocumentFormat::from_extension(ext);
-
-        // Extract metadata fields if present
-        let title = parse_response.metadata.get("title")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let author = parse_response.metadata.get("author")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let word_count = parse_response.metadata.get("word_count")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as usize);
-
-        Ok(ParsedDocument {
-            text: parse_response.text,
-            metadata: DocumentMetadata {
-                title,
-                author,
-                pages: Some(parse_response.page_count as usize),
-                word_count,
-                ..Default::default()
-            },
-            format,
-        })
+        Ok(parsed_document_from_response(parse_response, filename))
     }
 
     /// Check if the Python parser service is healthy
     pub async fn health_check(&self) -> bool {
-        match self.client
+        match self
+            .client
             .get(format!("{}/health", self.base_url))
             .send()
             .await
@@ -174,8 +151,41 @@ impl PythonParserClient {
     }
 }
 
-// Use base64 crate properly
-use base64::Engine as _;
+fn parsed_document_from_response(parse_response: ParseResponse, filename: &str) -> ParsedDocument {
+    // Determine format from response or fallback to extension
+    let ext = filename.rsplit('.').next().unwrap_or("");
+    let format = DocumentFormat::from_extension(ext);
+
+    // Extract metadata fields if present
+    let title = parse_response
+        .metadata
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let author = parse_response
+        .metadata
+        .get("author")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let word_count = parse_response
+        .metadata
+        .get("word_count")
+        .and_then(|v| v.as_u64())
+        .and_then(|n| usize::try_from(n).ok());
+    let pages = usize::try_from(parse_response.page_count).ok();
+
+    ParsedDocument {
+        text: parse_response.text,
+        metadata: DocumentMetadata {
+            title,
+            author,
+            pages,
+            word_count,
+            ..Default::default()
+        },
+        format,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -191,5 +201,22 @@ mod tests {
     fn test_client_url_normalization() {
         let client = PythonParserClient::new("http://localhost:8080/");
         assert_eq!(client.base_url, "http://localhost:8080");
+    }
+
+    #[test]
+    fn test_parse_response_negative_page_count_is_ignored() {
+        let response = ParseResponse {
+            text: "body".to_string(),
+            format: "pdf".to_string(),
+            page_count: -1,
+            metadata: HashMap::new(),
+            tables: vec![],
+            images: vec![],
+            parse_time_ms: 1.0,
+        };
+
+        let parsed = parsed_document_from_response(response, "doc.pdf");
+
+        assert_eq!(parsed.metadata.pages, None);
     }
 }

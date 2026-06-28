@@ -32,14 +32,12 @@ impl Ord for ScoredResult {
         // - NaN is treated as the smallest value (goes to bottom of heap)
         // - This ensures NaN scores don't corrupt the heap invariants
         match (self.result.score.is_nan(), other.result.score.is_nan()) {
-            (true, true) => Ordering::Equal,   // Both NaN: equal
-            (true, false) => Ordering::Less,   // self is NaN: self < other (NaN goes to bottom)
+            (true, true) => Ordering::Equal,    // Both NaN: equal
+            (true, false) => Ordering::Less,    // self is NaN: self < other (NaN goes to bottom)
             (false, true) => Ordering::Greater, // other is NaN: self > other
             (false, false) => {
                 // Neither is NaN, safe to compare (reverse for min-heap)
-                let score_cmp = other.result.score
-                    .partial_cmp(&self.result.score)
-                    .unwrap(); // Safe: neither is NaN
+                let score_cmp = other.result.score.partial_cmp(&self.result.score).unwrap();
                 // Tie-break by ID for deterministic ordering
                 if score_cmp == Ordering::Equal {
                     self.result.id.as_str().cmp(other.result.id.as_str())
@@ -96,10 +94,16 @@ impl ResultMerger {
         let id_str = result.id.to_string();
         let score = result.score;
 
+        // Reject invalid shard scores before they enter the heap or duplicate
+        // tracker. Infinity would otherwise outrank every valid result.
+        if !score.is_finite() {
+            return;
+        }
+
         // FIX BUG-066: Check if we've seen this ID and if the new score is better
         if let Some(&existing_score) = self.best_scores.get(&id_str) {
             // Skip if existing score is better or equal (keep first seen on tie)
-            if existing_score >= score || score.is_nan() {
+            if existing_score >= score {
                 return;
             }
             // New score is better - we need to add this result
@@ -126,7 +130,9 @@ impl ResultMerger {
                         (true, true) => std::cmp::Ordering::Equal,
                         (true, false) => std::cmp::Ordering::Greater, // NaN goes to end
                         (false, true) => std::cmp::Ordering::Less,
-                        (false, false) => b.result.score
+                        (false, false) => b
+                            .result
+                            .score
                             .partial_cmp(&a.result.score)
                             .unwrap_or(std::cmp::Ordering::Equal),
                     }
@@ -177,14 +183,15 @@ impl ResultMerger {
     }
 
     /// Get the final merged results, sorted by score descending
-    /// NaN scores are filtered out as they indicate invalid results
+    /// Non-finite scores are filtered out as they indicate invalid results
     /// FIX BUG-066: Deduplicates by ID, keeping only the best score per ID
     pub fn finish(self) -> Vec<SearchResult> {
-        let mut results: Vec<SearchResult> = self.heap
+        let mut results: Vec<SearchResult> = self
+            .heap
             .into_iter()
             .map(|sr| sr.result)
-            // Filter out NaN scores as they're invalid
-            .filter(|r| !r.score.is_nan())
+            // Filter out invalid scores as a final defense for stale callers.
+            .filter(|r| r.score.is_finite())
             .collect();
 
         // Sort by score descending with tie-breaking by ID for deterministic ordering
@@ -218,10 +225,10 @@ impl ResultMerger {
             self.capacity
         );
 
-        // INVARIANT: All scores must be valid (not NaN)
+        // INVARIANT: All scores must be valid finite values
         debug_invariant!(
-            results.iter().all(|r| !r.score.is_nan()),
-            "Merged results contain NaN scores"
+            results.iter().all(|r| r.score.is_finite()),
+            "Merged results contain non-finite scores"
         );
 
         results
@@ -287,9 +294,9 @@ mod tests {
         let mut merger = ResultMerger::new(5);
 
         // Same ID from different shards with different scores
-        merger.add(make_result("dup-id", 0.5));  // First score
-        merger.add(make_result("dup-id", 0.9));  // Better score
-        merger.add(make_result("dup-id", 0.3));  // Worse score
+        merger.add(make_result("dup-id", 0.5)); // First score
+        merger.add(make_result("dup-id", 0.9)); // Better score
+        merger.add(make_result("dup-id", 0.3)); // Worse score
         merger.add(make_result("other", 0.8));
 
         let results = merger.finish();
@@ -298,6 +305,40 @@ mod tests {
         assert_eq!(results.len(), 2);
         // dup-id should have the best score (0.9)
         let dup_result = results.iter().find(|r| r.id.as_str() == "dup-id").unwrap();
-        assert!((dup_result.score - 0.9).abs() < 0.001, "Expected 0.9, got {}", dup_result.score);
+        assert!(
+            (dup_result.score - 0.9).abs() < 0.001,
+            "Expected 0.9, got {}",
+            dup_result.score
+        );
+    }
+
+    #[test]
+    fn test_merger_rejects_non_finite_scores() {
+        let mut merger = ResultMerger::new(3);
+
+        merger.add(make_result("nan", f32::NAN));
+        merger.add(make_result("pos_inf", f32::INFINITY));
+        merger.add(make_result("neg_inf", f32::NEG_INFINITY));
+        merger.add(make_result("valid", 0.7));
+
+        let results = merger.finish();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id.as_str(), "valid");
+        assert!(results.iter().all(|result| result.score.is_finite()));
+    }
+
+    #[test]
+    fn test_invalid_duplicate_does_not_block_later_valid_score() {
+        let mut merger = ResultMerger::new(3);
+
+        merger.add(make_result("same-id", f32::INFINITY));
+        merger.add(make_result("same-id", 0.6));
+
+        let results = merger.finish();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id.as_str(), "same-id");
+        assert_eq!(results[0].score, 0.6);
     }
 }
