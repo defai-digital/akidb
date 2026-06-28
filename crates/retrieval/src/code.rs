@@ -500,7 +500,7 @@ fn chunk_python(source: &str) -> Vec<CodeChunk> {
         if let Some(kind) = kind {
             let end = python_block_end(&lines, i);
             let name = python_name(trimmed, kind);
-            let chunk_start = extend_start_with_decorations(&lines, i);
+            let chunk_start = extend_start_with_python_decorators(&lines, i);
             chunks.push(CodeChunk {
                 kind,
                 name,
@@ -514,6 +514,58 @@ fn chunk_python(source: &str) -> Vec<CodeChunk> {
         i += 1;
     }
     chunks
+}
+
+fn extend_start_with_python_decorators(lines: &[&str], start: usize) -> usize {
+    let mut s = start;
+    while let Some(decorator_start) = python_decorator_block_before(lines, s) {
+        s = decorator_start;
+    }
+    s
+}
+
+fn python_decorator_block_before(lines: &[&str], end: usize) -> Option<usize> {
+    let mut i = end;
+    while i > 0 {
+        i -= 1;
+        let trimmed = lines[i].trim_start();
+        if trimmed.is_empty() || is_python_top_level_symbol(lines[i]) {
+            return None;
+        }
+        if trimmed.starts_with('@') {
+            return python_decorator_block_reaches(lines, i, end).then_some(i);
+        }
+    }
+    None
+}
+
+fn python_decorator_block_reaches(lines: &[&str], start: usize, end: usize) -> bool {
+    let mut depth = 0i32;
+    for (offset, line) in lines[start..end].iter().enumerate() {
+        if offset > 0 && is_python_top_level_symbol(line) {
+            return false;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            return false;
+        }
+        for ch in trimmed.chars() {
+            match ch {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth = (depth - 1).max(0),
+                '#' if depth == 0 => break,
+                _ => {}
+            }
+        }
+    }
+    depth == 0
+}
+
+fn is_python_top_level_symbol(line: &str) -> bool {
+    leading_indent(line) == 0
+        && (line.starts_with("def ")
+            || line.starts_with("async def ")
+            || line.starts_with("class "))
 }
 
 fn python_block_end(lines: &[&str], start: usize) -> usize {
@@ -849,6 +901,42 @@ def decorated():
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].text.contains("@decorator"));
         assert_eq!(chunks[0].name.as_deref(), Some("decorated"));
+    }
+
+    #[test]
+    fn test_python_multiline_decorator_attached() {
+        let src = "\
+@router.get(
+    \"/contracts/{customer}\",
+    tags=[\"rag\", \"contracts\"],
+)
+@requires_acl(\"contracts:read\")
+def contract_lookup(customer):
+    return customer
+";
+        let chunks = chunk_code(src, Language::Python);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].name.as_deref(), Some("contract_lookup"));
+        assert!(chunks[0].text.contains("@router.get("));
+        assert!(chunks[0].text.contains("\"/contracts/{customer}\""));
+        assert!(chunks[0].text.contains("@requires_acl"));
+    }
+
+    #[test]
+    fn test_python_decorator_does_not_leak_to_next_function() {
+        let src = "\
+@decorator
+def first():
+    pass
+
+def second():
+    pass
+";
+        let chunks = chunk_code(src, Language::Python);
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].text.contains("@decorator"));
+        assert!(!chunks[1].text.contains("@decorator"));
+        assert_eq!(chunks[1].name.as_deref(), Some("second"));
     }
 
     #[test]
