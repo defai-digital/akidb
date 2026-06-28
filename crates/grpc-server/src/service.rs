@@ -302,6 +302,19 @@ where
         self.embedding_provider.is_some()
     }
 
+    fn validate_search_controls(top_k: u32, nprobe: Option<u32>) -> Result<(), Status> {
+        if top_k == 0 {
+            return Err(Status::invalid_argument("top_k must be greater than 0"));
+        }
+        if top_k > 10000 {
+            return Err(Status::invalid_argument("top_k exceeds maximum of 10000"));
+        }
+        if nprobe == Some(0) {
+            return Err(Status::invalid_argument("nprobe must be greater than 0"));
+        }
+        Ok(())
+    }
+
     /// Current index statistics (active/total/tombstoned vectors, dimensions).
     pub fn index_stats(&self) -> akidb_faiss::IndexStats {
         self.index.stats()
@@ -1284,13 +1297,7 @@ where
 
         debug!("Search request, top_k: {}", req.top_k);
 
-        // FIX BUG-H013: Validate top_k to prevent panic in SearchParams::new()
-        if req.top_k == 0 {
-            return Err(Status::invalid_argument("top_k must be greater than 0"));
-        }
-        if req.top_k > 10000 {
-            return Err(Status::invalid_argument("top_k exceeds maximum of 10000"));
-        }
+        Self::validate_search_controls(req.top_k, req.nprobe)?;
 
         let mut params =
             SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
@@ -1632,13 +1639,7 @@ where
 
         debug!("Search batch request for {} queries", req.queries.len());
 
-        // FIX BUG-H013: Validate top_k to prevent panic in SearchParams::new()
-        if req.top_k == 0 {
-            return Err(Status::invalid_argument("top_k must be greater than 0"));
-        }
-        if req.top_k > 10000 {
-            return Err(Status::invalid_argument("top_k exceeds maximum of 10000"));
-        }
+        Self::validate_search_controls(req.top_k, req.nprobe)?;
 
         let params = SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
 
@@ -1703,12 +1704,7 @@ where
         if req.text.trim().is_empty() {
             return Err(Status::invalid_argument("Text cannot be empty"));
         }
-        if req.top_k == 0 {
-            return Err(Status::invalid_argument("top_k must be greater than 0"));
-        }
-        if req.top_k > 10000 {
-            return Err(Status::invalid_argument("top_k exceeds maximum of 10000"));
-        }
+        Self::validate_search_controls(req.top_k, req.nprobe)?;
 
         let metadata_filter = match MetadataFilter::build(&req.filter, req.tag_filter.clone()) {
             Ok(Some(filter)) => Some(Arc::new(filter)),
@@ -2028,6 +2024,7 @@ mod tests {
     use akidb_faiss::mock::MockIndex;
     use akidb_storage::RocksDbBackend;
     use tempfile::TempDir;
+    use tonic::Code;
 
     fn test_service() -> (AkiDbService<MockIndex, RocksDbBackend>, TempDir) {
         let dir = TempDir::new().unwrap();
@@ -2141,6 +2138,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dense_search_rejects_zero_nprobe() {
+        let (service, _dir) = test_service();
+        let result = service
+            .search(Request::new(SearchRequest {
+                collection: "test".to_string(),
+                query: vec![1.0, 0.0],
+                top_k: 1,
+                nprobe: Some(0),
+                filter: vec![],
+                tag_filter: None,
+            }))
+            .await;
+
+        let status = result.expect_err("zero nprobe should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("nprobe"));
+    }
+
+    #[tokio::test]
+    async fn test_batch_search_rejects_zero_nprobe_before_queries() {
+        let (service, _dir) = test_service();
+        let result = service
+            .search_batch(Request::new(SearchBatchRequest {
+                collection: "test".to_string(),
+                queries: vec![],
+                top_k: 1,
+                nprobe: Some(0),
+            }))
+            .await;
+
+        let status = result.expect_err("zero nprobe should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("nprobe"));
+    }
+
+    #[tokio::test]
     async fn test_bm25_text_search_uses_inserted_source_text_without_embedding_provider() {
         let (service, _dir) = test_service();
         insert_text(
@@ -2163,6 +2196,19 @@ mod tests {
 
         assert_eq!(response.results.len(), 1);
         assert_eq!(response.results[0].id, "doc-keyword");
+    }
+
+    #[tokio::test]
+    async fn test_text_search_rejects_zero_nprobe() {
+        let (service, _dir) = test_service();
+        let mut request = bm25_text_search_request("rare_contract_keyword", 10);
+        request.nprobe = Some(0);
+
+        let result = service.text_search(Request::new(request)).await;
+
+        let status = result.expect_err("zero nprobe should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("nprobe"));
     }
 
     #[tokio::test]
