@@ -93,7 +93,19 @@ fn row_is_empty(cells: &[Option<String>]) -> bool {
 
 fn is_likely_header_row(cells: &[Option<String>], sheet_cols: usize) -> bool {
     let non_empty = cells.iter().filter(|cell| cell.is_some()).count();
-    non_empty > 1 || sheet_cols <= 1
+    let has_multiple_columns = non_empty > 1 || (sheet_cols <= 1 && non_empty == 1);
+    has_multiple_columns
+        && cells
+            .iter()
+            .flatten()
+            .all(|cell| is_likely_header_cell(cell))
+}
+
+fn is_likely_header_cell(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    !trimmed.is_empty()
+        && trimmed.chars().any(char::is_alphabetic)
+        && trimmed.parse::<f64>().is_err()
 }
 
 fn row_text_from_cells(cells: &[Option<String>]) -> String {
@@ -214,6 +226,30 @@ mod tests {
         let result = parser.parse(&data).unwrap();
 
         assert!(result.text.contains("customer HGC"));
+    }
+
+    #[test]
+    fn test_parse_xlsx_without_header_does_not_promote_first_data_row_to_headers() {
+        let parser = XlsxParser::new();
+        let data = minimal_xlsx_with_sheet_data(
+            r#"<row r="1">
+      <c r="A1" t="inlineStr"><is><t>HGC</t></is></c>
+      <c r="B1"><v>2025</v></c>
+      <c r="C1"><v>1200</v></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>DEF</t></is></c>
+      <c r="B2"><v>2024</v></c>
+      <c r="C2"><v>900</v></c>
+    </row>"#,
+        );
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("HGC 2025 1200"), "{}", result.text);
+        assert!(result.text.contains("DEF 2024 900"), "{}", result.text);
+        assert!(!result.text.contains("HGC DEF"), "{}", result.text);
+        assert!(!result.text.contains("2025 2024"), "{}", result.text);
     }
 
     fn contract_sheet_rows() -> &'static str {
