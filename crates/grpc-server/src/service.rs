@@ -449,7 +449,7 @@ where
             .ok_or_else(|| Status::invalid_argument("SQL metadata filter must be a JSON object"))?;
 
         for (key, value) in object {
-            query = Self::add_sql_legacy_predicate(query, key, value)?;
+            query = Self::add_sql_legacy_predicate(query, key, value, !key.contains('.'))?;
         }
         Ok(query)
     }
@@ -458,7 +458,11 @@ where
         query: MetadataQuery,
         field: &str,
         value: &serde_json::Value,
+        can_pushdown_as_path: bool,
     ) -> Result<MetadataQuery, Status> {
+        if !can_pushdown_as_path {
+            return Ok(query);
+        }
         match value {
             serde_json::Value::Object(map) => {
                 if map.is_empty() {
@@ -467,7 +471,12 @@ where
                 let mut query = query;
                 for (key, value) in map {
                     let nested_field = format!("{field}.{key}");
-                    query = Self::add_sql_legacy_predicate(query, &nested_field, value)?;
+                    query = Self::add_sql_legacy_predicate(
+                        query,
+                        &nested_field,
+                        value,
+                        !key.contains('.'),
+                    )?;
                 }
                 Ok(query)
             }
@@ -486,13 +495,18 @@ where
         let object = value
             .as_object()
             .ok_or_else(|| Status::invalid_argument("SQL metadata filter must be a JSON object"))?;
-        Ok(object.values().any(Self::value_needs_post_filter))
+        Ok(object
+            .iter()
+            .any(|(key, value)| key.contains('.') || Self::value_needs_post_filter(value)))
     }
 
     fn value_needs_post_filter(value: &serde_json::Value) -> bool {
         match value {
             serde_json::Value::Object(map) => {
-                map.is_empty() || map.values().any(Self::value_needs_post_filter)
+                map.is_empty()
+                    || map.iter().any(|(key, value)| {
+                        key.contains('.') || Self::value_needs_post_filter(value)
+                    })
             }
             serde_json::Value::Array(_) => true,
             _ => false,

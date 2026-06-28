@@ -616,6 +616,52 @@ async fn test_retrieval_mode_sql_applies_nested_legacy_metadata_filter() {
 }
 
 #[tokio::test]
+async fn test_retrieval_mode_sql_preserves_literal_dotted_legacy_filter_key() {
+    let svc = setup_with_sql();
+    insert(
+        &svc,
+        "literal-key",
+        vec![1.0, 0.0, 0.0],
+        "",
+        br#"{"contract.year":2025,"customer":"HGC"}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "nested-key",
+        vec![0.0, 1.0, 0.0],
+        "",
+        br#"{"contract":{"year":2025},"customer":"HGC"}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "HGC contract amount".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"contract.year":2025}"#.to_vec(),
+            tag_filter: None,
+            retrieval_mode: "sql".into(),
+        }))
+        .await
+        .expect("sql literal dotted metadata filter should succeed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["literal-key"]);
+}
+
+#[tokio::test]
 async fn test_retrieval_mode_sql_empty_object_filter_requires_object_value() {
     let svc = setup_with_sql();
     insert(
