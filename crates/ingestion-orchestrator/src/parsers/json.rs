@@ -20,7 +20,7 @@ impl Default for JsonParser {
 
 impl DocumentParser for JsonParser {
     fn parse(&self, data: &[u8]) -> Result<ParsedDocument> {
-        let value: serde_json::Value = serde_json::from_slice(data)?;
+        let value: serde_json::Value = serde_json::from_slice(strip_utf8_bom(data))?;
 
         // Extract text by flattening JSON values
         let text = extract_text_from_json(&value);
@@ -42,6 +42,10 @@ impl DocumentParser for JsonParser {
     fn format(&self) -> DocumentFormat {
         DocumentFormat::Json
     }
+}
+
+fn strip_utf8_bom(data: &[u8]) -> &[u8] {
+    data.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(data)
 }
 
 /// Extract text content from JSON value recursively
@@ -123,6 +127,17 @@ mod tests {
         assert!(result.text.contains("text_search"));
         assert!(result.text.contains("contract_amount"));
         assert!(result.text.contains("1200"));
+    }
+
+    #[test]
+    fn test_parse_json_accepts_utf8_bom() {
+        let parser = JsonParser::new();
+        let data = b"\xEF\xBB\xBF{\"customer\":\"HGC\",\"year\":2025}";
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("customer HGC"));
+        assert!(result.text.contains("year 2025"));
     }
 
     #[test]

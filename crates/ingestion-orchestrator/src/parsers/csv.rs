@@ -301,6 +301,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_csv_strips_utf8_bom_from_first_header() {
+        let parser = CsvParser::new();
+        let data = b"\xEF\xBB\xBFcustomer,year\nHGC,2025";
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("customer HGC"), "{}", result.text);
+        assert!(result.text.contains("year 2025"), "{}", result.text);
+        assert!(!result.text.contains('\u{feff}'), "{}", result.text);
+    }
+
+    #[test]
     fn test_parse_csv_ignores_title_row_when_selecting_headers() {
         let parser = CsvParser::new();
         let data = b"Contract Export\ncustomer,year,contract_amount\nHGC,2025,1200";

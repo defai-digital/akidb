@@ -199,6 +199,17 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_xml_accepts_utf8_bom() {
+        let parser = XmlParser::new();
+        let data = b"\xEF\xBB\xBF<contract><customer>HGC</customer><year>2025</year></contract>";
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("customer HGC"));
+        assert!(result.text.contains("year 2025"));
+    }
+
+    #[test]
     fn test_parse_xml_preserves_nested_element_paths_for_retrieval() {
         let parser = XmlParser::new();
         let data = br#"
