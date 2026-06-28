@@ -76,6 +76,16 @@ impl AxEngineEmbedding {
                 actual: embedding.len(),
             });
         }
+        if let Some((idx, value)) = embedding
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(EmbeddingError::BackendError(format!(
+                "embedding value at dimension {} must be finite, got {}",
+                idx, value
+            )));
+        }
         Ok(())
     }
 
@@ -91,6 +101,23 @@ impl AxEngineEmbedding {
                 expected_count,
                 response.data.len()
             )));
+        }
+
+        let mut seen_indices = vec![false; expected_count];
+        for item in &response.data {
+            if item.index >= expected_count {
+                return Err(EmbeddingError::BackendError(format!(
+                    "embedding response index {} out of range for {} inputs",
+                    item.index, expected_count
+                )));
+            }
+            if seen_indices[item.index] {
+                return Err(EmbeddingError::BackendError(format!(
+                    "duplicate embedding response index {}",
+                    item.index
+                )));
+            }
+            seen_indices[item.index] = true;
         }
 
         // Sort by index to preserve input order.
@@ -449,5 +476,82 @@ mod tests {
         // Expected 2 but got 1
         let result = client.parse_response(response, 2);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_response_rejects_duplicate_indices() {
+        let config = test_config();
+        let client = AxEngineEmbedding::new(config).unwrap();
+
+        let response = EmbeddingResponse {
+            data: vec![
+                EmbeddingData {
+                    embedding: vec![1.0, 1.0, 1.0, 1.0],
+                    index: 0,
+                    object: "embedding".to_string(),
+                },
+                EmbeddingData {
+                    embedding: vec![2.0, 2.0, 2.0, 2.0],
+                    index: 0,
+                    object: "embedding".to_string(),
+                },
+            ],
+            model: "test-model".to_string(),
+            usage: None,
+        };
+
+        let result = client.parse_response(response, 2);
+        assert!(
+            matches!(result, Err(EmbeddingError::BackendError(message)) if message.contains("duplicate embedding response index 0"))
+        );
+    }
+
+    #[test]
+    fn test_parse_response_rejects_out_of_range_index() {
+        let config = test_config();
+        let client = AxEngineEmbedding::new(config).unwrap();
+
+        let response = EmbeddingResponse {
+            data: vec![
+                EmbeddingData {
+                    embedding: vec![1.0, 1.0, 1.0, 1.0],
+                    index: 0,
+                    object: "embedding".to_string(),
+                },
+                EmbeddingData {
+                    embedding: vec![2.0, 2.0, 2.0, 2.0],
+                    index: 9,
+                    object: "embedding".to_string(),
+                },
+            ],
+            model: "test-model".to_string(),
+            usage: None,
+        };
+
+        let result = client.parse_response(response, 2);
+        assert!(
+            matches!(result, Err(EmbeddingError::BackendError(message)) if message.contains("embedding response index 9 out of range"))
+        );
+    }
+
+    #[test]
+    fn test_parse_response_rejects_non_finite_embedding_value() {
+        let config = test_config();
+        let client = AxEngineEmbedding::new(config).unwrap();
+
+        let response = EmbeddingResponse {
+            data: vec![EmbeddingData {
+                embedding: vec![1.0, f32::NAN, 3.0, 4.0],
+                index: 0,
+                object: "embedding".to_string(),
+            }],
+            model: "test-model".to_string(),
+            usage: None,
+        };
+
+        let result = client.parse_response(response, 1);
+        assert!(
+            matches!(result, Err(EmbeddingError::BackendError(message)) if message.contains("must be finite"))
+        );
     }
 }
