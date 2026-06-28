@@ -429,12 +429,18 @@ fn build_vector_metadata(
         format_label(document_format).to_string(),
     );
 
-    if let Some(title) = document_metadata.title.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(title) = document_metadata
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         metadata.insert("title".to_string(), title.to_string());
     }
     if let Some(author) = document_metadata
         .author
         .as_deref()
+        .map(str::trim)
         .filter(|s| !s.is_empty())
     {
         metadata.insert("author".to_string(), author.to_string());
@@ -604,8 +610,8 @@ mod tests {
             timestamp: "2026-06-28T08:00:00Z".to_string(),
         };
         let document_metadata = DocumentMetadata {
-            title: Some(String::new()),
-            author: Some(String::new()),
+            title: Some("  Release Notes  ".to_string()),
+            author: Some("   ".to_string()),
             ..Default::default()
         };
         let chunk = Chunk {
@@ -625,7 +631,7 @@ mod tests {
             0,
         );
 
-        assert!(!metadata.contains_key("title"));
+        assert_eq!(metadata["title"], "Release Notes");
         assert!(!metadata.contains_key("author"));
         assert!(!metadata.contains_key("metadata_extra"));
     }
