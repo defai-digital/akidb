@@ -388,8 +388,8 @@ fn impl_name(t: &str) -> Option<String> {
     } else {
         body
     };
+    let target = strip_rust_reference_target_prefix(target);
     let name: String = target
-        .trim_start()
         .chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
         .collect();
@@ -398,6 +398,32 @@ fn impl_name(t: &str) -> Option<String> {
     } else {
         Some(name)
     }
+}
+
+fn strip_rust_reference_target_prefix(mut target: &str) -> &str {
+    target = target.trim_start();
+    if let Some(rest) = target.strip_prefix('&') {
+        target = rest.trim_start();
+        if let Some(rest) = strip_rust_lifetime_prefix(target) {
+            target = rest.trim_start();
+        }
+        for prefix in ["mut", "const"] {
+            if let Some(rest) = strip_rust_word_prefix(target, prefix) {
+                target = rest;
+            }
+        }
+    }
+    target
+}
+
+fn strip_rust_lifetime_prefix(target: &str) -> Option<&str> {
+    let rest = target.strip_prefix('\'')?;
+    let lifetime_len = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .map(char::len_utf8)
+        .sum::<usize>();
+    (lifetime_len > 0).then_some(&rest[lifetime_len..])
 }
 
 fn rust_generic_params_end(s: &str) -> Option<usize> {
@@ -1322,6 +1348,14 @@ pub struct Second;";
     #[test]
     fn test_rust_trait_impl_name_skips_nested_generic_params() {
         let src = "impl<T: Into<Vec<u8>>> From<T> for Foo<T> {\n    fn from(value: T) -> Self { Self }\n}";
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks[0].kind, SymbolKind::Impl);
+        assert_eq!(chunks[0].name.as_deref(), Some("Foo"));
+    }
+
+    #[test]
+    fn test_rust_trait_impl_name_skips_reference_target_prefix() {
+        let src = "impl<'a> fmt::Display for &'a mut Foo {\n    fn fmt(&self) {}\n}";
         let chunks = chunk_code(src, Language::Rust);
         assert_eq!(chunks[0].kind, SymbolKind::Impl);
         assert_eq!(chunks[0].name.as_deref(), Some("Foo"));
