@@ -6,10 +6,10 @@
 //! # Storage Format
 //!
 //! Tags are indexed with keys in the format:
-//! - `tag:txt:{key}:{value}` for Text values
-//! - `tag:num:{key}:{value}` for Number values
-//! - `tag:bool:{key}:{value}` for Boolean values
-//! - `tag:lst:{key}:{item}` for TextList values (one entry per item)
+//! - `tag:txt:{escaped_key}:{escaped_value}` for Text values
+//! - `tag:num:{escaped_key}:{value}` for Number values
+//! - `tag:bool:{escaped_key}:{value}` for Boolean values
+//! - `tag:lst:{escaped_key}:{escaped_item}` for TextList values (one entry per item)
 //!
 //! Values are serialized RoaringBitmaps containing internal vector IDs.
 
@@ -25,6 +25,18 @@ use akidb_common::{AkiDbError, Result};
 
 /// Prefix for tag index keys in RocksDB
 const TAG_INDEX_PREFIX: &[u8] = b"tag:";
+
+fn escape_key_component(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '%' => escaped.push_str("%25"),
+            ':' => escaped.push_str("%3A"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
 
 /// FIX BUG-HUNT-203: Order-preserving encoding for f64 values
 ///
@@ -92,7 +104,13 @@ impl TagIndex {
 
     /// Build the index key for a tag value
     fn index_key(type_prefix: &str, key: &str, value: &str) -> Vec<u8> {
-        format!("tag:{}:{}:{}", type_prefix, key, value).into_bytes()
+        format!(
+            "tag:{}:{}:{}",
+            type_prefix,
+            escape_key_component(key),
+            escape_key_component(value)
+        )
+        .into_bytes()
     }
 
     /// Convert a TagValue to index keys (may return multiple for TextList)
@@ -454,12 +472,12 @@ impl TagIndex {
 
             TagOperator::Exists => {
                 // For EXISTS, we scan all tag entries for this key
-                let prefix = format!("tag:txt:{}:", cond.key);
                 let mut result = RoaringBitmap::new();
 
                 // Scan all type prefixes
                 for type_prefix in ["txt", "num", "bool", "lst"] {
-                    let scan_prefix = format!("tag:{}:{}:", type_prefix, cond.key);
+                    let scan_prefix =
+                        format!("tag:{}:{}:", type_prefix, escape_key_component(&cond.key));
                     let iter = self.db.prefix_iterator(scan_prefix.as_bytes());
 
                     for item in iter {
@@ -485,7 +503,6 @@ impl TagIndex {
                         }
                     }
                 }
-                let _ = prefix; // Suppress unused warning
                 Ok(result)
             }
 
@@ -525,7 +542,7 @@ impl TagIndex {
     ///
     /// FIX BUG-HUNT-203: Now properly decodes order-preserving hex encoding
     fn range_query(&self, key: &str, threshold: f64, op: &TagOperator) -> Result<RoaringBitmap> {
-        let scan_prefix = format!("tag:num:{}:", key);
+        let scan_prefix = format!("tag:num:{}:", escape_key_component(key));
         let mut result = RoaringBitmap::new();
 
         let iter = self.db.prefix_iterator(scan_prefix.as_bytes());
@@ -911,6 +928,34 @@ mod tests {
         let result = index.query(&filter).unwrap();
         assert!(result.contains(1));
         assert!(!result.contains(2));
+    }
+
+    #[test]
+    fn test_tag_key_and_value_colons_do_not_collide() {
+        let db = create_test_db();
+        let index = TagIndex::new(db);
+
+        let mut first = Tags::new();
+        first.insert("a", TagValue::Text("b:c".to_string()));
+        index.add(InternalId::new(1), &first).unwrap();
+
+        let mut second = Tags::new();
+        second.insert("a:b", TagValue::Text("c".to_string()));
+        index.add(InternalId::new(2), &second).unwrap();
+
+        let first_result = index
+            .query(&TagFilter::eq("a", TagValue::Text("b:c".to_string())))
+            .unwrap();
+        assert!(first_result.contains(1));
+        assert!(!first_result.contains(2));
+        assert_eq!(first_result.len(), 1);
+
+        let second_result = index
+            .query(&TagFilter::eq("a:b", TagValue::Text("c".to_string())))
+            .unwrap();
+        assert!(!second_result.contains(1));
+        assert!(second_result.contains(2));
+        assert_eq!(second_result.len(), 1);
     }
 
     #[test]
