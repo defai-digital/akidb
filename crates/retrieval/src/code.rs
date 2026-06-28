@@ -106,7 +106,15 @@ fn extend_start_with_decorations(lines: &[&str], start: usize) -> usize {
 fn rust_symbol_start(trimmed: &str) -> Option<SymbolKind> {
     // Strip leading modifiers.
     let mut t = trimmed;
-    for m in ["pub(crate) ", "pub(super) ", "pub ", "async ", "unsafe ", "default ", "const "] {
+    for m in [
+        "pub(crate) ",
+        "pub(super) ",
+        "pub ",
+        "async ",
+        "unsafe ",
+        "default ",
+        "const ",
+    ] {
         if let Some(rest) = t.strip_prefix(m) {
             t = rest;
         }
@@ -131,7 +139,15 @@ fn rust_symbol_start(trimmed: &str) -> Option<SymbolKind> {
 
 fn rust_symbol_name(trimmed: &str, kind: SymbolKind) -> Option<String> {
     let mut t = trimmed;
-    for m in ["pub(crate) ", "pub(super) ", "pub ", "async ", "unsafe ", "default ", "const "] {
+    for m in [
+        "pub(crate) ",
+        "pub(super) ",
+        "pub ",
+        "async ",
+        "unsafe ",
+        "default ",
+        "const ",
+    ] {
         if let Some(rest) = t.strip_prefix(m) {
             t = rest;
         }
@@ -193,16 +209,11 @@ fn rust_block_end(lines: &[&str], start: usize) -> usize {
     let mut depth: i32 = 0;
     let mut opened = false;
     for (offset, line) in lines[start..].iter().enumerate() {
-        for ch in line.chars() {
-            match ch {
-                '{' => {
-                    depth += 1;
-                    opened = true;
-                }
-                '}' => depth -= 1,
-                _ => {}
-            }
+        let delta = rust_brace_delta(line);
+        if delta > 0 {
+            opened = true;
         }
+        depth += delta;
         if opened && depth <= 0 {
             return start + offset;
         }
@@ -212,6 +223,79 @@ fn rust_block_end(lines: &[&str], start: usize) -> usize {
         }
     }
     lines.len() - 1
+}
+
+fn rust_brace_delta(line: &str) -> i32 {
+    let chars: Vec<char> = line.chars().collect();
+    let mut delta = 0;
+    let mut i = 0;
+
+    while i < chars.len() {
+        match chars[i] {
+            '/' if chars.get(i + 1) == Some(&'/') => break,
+            '"' => {
+                i = skip_rust_string(&chars, i);
+            }
+            '\'' => {
+                if let Some(end) = rust_char_literal_end(&chars, i) {
+                    i = end;
+                }
+            }
+            '{' => delta += 1,
+            '}' => delta -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+
+    delta
+}
+
+fn skip_rust_string(chars: &[char], start: usize) -> usize {
+    let mut i = start + 1;
+    let mut escaped = false;
+    while i < chars.len() {
+        let ch = chars[i];
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return i;
+        }
+        i += 1;
+    }
+    chars.len().saturating_sub(1)
+}
+
+fn rust_char_literal_end(chars: &[char], start: usize) -> Option<usize> {
+    let mut i = start + 1;
+    if i >= chars.len() {
+        return None;
+    }
+
+    if chars[i] == '\\' {
+        i += 1;
+        if i >= chars.len() {
+            return None;
+        }
+        if chars[i] == 'u' && chars.get(i + 1) == Some(&'{') {
+            i += 2;
+            while i < chars.len() && chars[i] != '}' {
+                i += 1;
+            }
+            if i >= chars.len() {
+                return None;
+            }
+        }
+    }
+
+    i += 1;
+    if chars.get(i) == Some(&'\'') {
+        Some(i)
+    } else {
+        None
+    }
 }
 
 fn chunk_rust(source: &str) -> Vec<CodeChunk> {
@@ -237,13 +321,7 @@ fn chunk_rust(source: &str) -> Vec<CodeChunk> {
                 continue;
             }
         }
-        for ch in lines[i].chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => depth -= 1,
-                _ => {}
-            }
-        }
+        depth += rust_brace_delta(lines[i]);
         i += 1;
     }
     chunks
@@ -369,8 +447,31 @@ fn outer() {
 }";
         let chunks = chunk_code(src, Language::Rust);
         assert_eq!(chunks.len(), 1);
-        assert!(chunks[0].text.contains("let y = 2;"), "nested block kept in body");
+        assert!(
+            chunks[0].text.contains("let y = 2;"),
+            "nested block kept in body"
+        );
         assert_eq!(chunks[0].end_line, 6);
+    }
+
+    #[test]
+    fn test_rust_braces_inside_strings_do_not_break_top_level_scanning() {
+        let src = "\
+fn first() {
+    let pattern = \"}\";
+}
+
+fn second() {
+    let pattern = \"{\";
+}";
+        let chunks = chunk_code(src, Language::Rust);
+        let names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| chunk.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["first", "second"]);
+        assert_eq!(chunks[0].end_line, 3);
+        assert_eq!(chunks[1].start_line, 5);
     }
 
     #[test]
@@ -385,7 +486,10 @@ impl Foo {
         let chunks = chunk_code(src, Language::Rust);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].kind, SymbolKind::Struct);
-        assert!(chunks[0].text.contains("#[derive(Debug)]"), "attribute attached");
+        assert!(
+            chunks[0].text.contains("#[derive(Debug)]"),
+            "attribute attached"
+        );
         assert_eq!(chunks[1].kind, SymbolKind::Impl);
         assert_eq!(chunks[1].name.as_deref(), Some("Foo"));
     }
