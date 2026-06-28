@@ -218,7 +218,7 @@ impl AkiDbClient {
                 metadata: if r.metadata.is_empty() {
                     std::collections::HashMap::new()
                 } else {
-                    serde_json::from_str(&r.metadata).unwrap_or_default()
+                    parse_search_metadata(&r.metadata)
                 },
             })
             .collect();
@@ -324,6 +324,26 @@ fn build_batch_insert_result(
         results,
         latency_ms,
     })
+}
+
+fn parse_search_metadata(metadata: &str) -> std::collections::HashMap<String, String> {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(metadata)
+    else {
+        return std::collections::HashMap::new();
+    };
+
+    map.into_iter()
+        .map(|(key, value)| {
+            let value = match value {
+                serde_json::Value::String(s) => s,
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Null => String::new(),
+                serde_json::Value::Array(_) | serde_json::Value::Object(_) => value.to_string(),
+            };
+            (key, value)
+        })
+        .collect()
 }
 
 /// Search result
@@ -447,5 +467,14 @@ mod tests {
         assert_eq!(result.failed, 1);
         assert!(result.results[0].success);
         assert!(!result.results[1].success);
+    }
+
+    #[test]
+    fn test_parse_search_metadata_preserves_non_string_scalars() {
+        let metadata = parse_search_metadata(r#"{"customer":"HGC","year":2025,"active":true}"#);
+
+        assert_eq!(metadata.get("customer").map(String::as_str), Some("HGC"));
+        assert_eq!(metadata.get("year").map(String::as_str), Some("2025"));
+        assert_eq!(metadata.get("active").map(String::as_str), Some("true"));
     }
 }
