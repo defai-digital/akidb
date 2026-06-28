@@ -196,6 +196,11 @@ fn metadata_usize(metadata: &HashMap<String, serde_json::Value>, key: &str) -> O
     if let Some(n) = value.as_u64() {
         return usize::try_from(n).ok();
     }
+    if let Some(n) = value.as_f64() {
+        if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 && n.fract() == 0.0 {
+            return usize::try_from(n as u64).ok();
+        }
+    }
 
     value
         .as_str()
@@ -344,6 +349,46 @@ mod tests {
         assert_eq!(parsed.metadata.title.as_deref(), Some("Annual Report"));
         assert_eq!(parsed.metadata.author, None);
         assert_eq!(parsed.metadata.word_count, Some(42));
+    }
+
+    #[test]
+    fn test_parse_response_accepts_integer_float_word_count() {
+        let mut metadata = HashMap::new();
+        metadata.insert("word_count".to_string(), serde_json::json!(42.0));
+
+        let response = ParseResponse {
+            text: "fallback text".to_string(),
+            format: "pdf".to_string(),
+            page_count: 1,
+            metadata,
+            tables: vec![],
+            images: vec![],
+            parse_time_ms: 1.0,
+        };
+
+        let parsed = parsed_document_from_response(response, "upload.bin");
+
+        assert_eq!(parsed.metadata.word_count, Some(42));
+    }
+
+    #[test]
+    fn test_parse_response_rejects_fractional_word_count() {
+        let mut metadata = HashMap::new();
+        metadata.insert("word_count".to_string(), serde_json::json!(42.5));
+
+        let response = ParseResponse {
+            text: "fallback text".to_string(),
+            format: "pdf".to_string(),
+            page_count: 1,
+            metadata,
+            tables: vec![],
+            images: vec![],
+            parse_time_ms: 1.0,
+        };
+
+        let parsed = parsed_document_from_response(response, "upload.bin");
+
+        assert_eq!(parsed.metadata.word_count, Some(2));
     }
 
     #[test]
