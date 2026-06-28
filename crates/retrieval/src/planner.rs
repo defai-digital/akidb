@@ -79,6 +79,12 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "who calls",
             "what depends",
             "what imports",
+            "show dependency",
+            "show dependencies",
+            "list dependency",
+            "list dependencies",
+            "find dependency",
+            "find dependencies",
             "who changed",
             "what changed",
             "who modified",
@@ -90,6 +96,9 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "dependency",
             "dependencies",
         ],
+    ) || contains_any(
+        &lower,
+        &[" depends on", " depend on", " imported by", " called by"],
     );
     let explanatory = starts_with_any(
         &lower,
@@ -151,6 +160,10 @@ fn starts_with_any(s: &str, prefixes: &[&str]) -> bool {
     prefixes.iter().any(|prefix| s.starts_with(prefix))
 }
 
+fn contains_any(s: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| s.contains(needle))
+}
+
 fn looks_like_identifier(token: &str) -> bool {
     let t = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != ':' && c != '.');
     t.contains("::")
@@ -192,6 +205,13 @@ mod tests {
     #[test]
     fn test_modified_query_enables_graph() {
         let trace = plan_query(&PlannerInput::new("who modified mtp_scheduler.rs"));
+        assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
+        assert!(trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_dependency_query_phrase_enables_graph() {
+        let trace = plan_query(&PlannerInput::new("show dependencies for mtp_scheduler.rs"));
         assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
         assert!(trace.graph_enabled);
     }
