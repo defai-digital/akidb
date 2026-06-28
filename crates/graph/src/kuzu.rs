@@ -588,9 +588,6 @@ impl GraphIndex for KuzuGraphAdapter {
                 .with_limit(limit.saturating_mul(8)),
         )?;
         for neighbor in one_hop {
-            if !Self::is_chunk_expansion_kind(neighbor.edge.kind) {
-                continue;
-            }
             if let Some(vector_id) = neighbor.node.id.as_chunk_vector_id() {
                 if seen.insert(vector_id.clone()) {
                     chunks.push(RelatedChunk {
@@ -783,7 +780,7 @@ mod tests {
                 "incoming",
                 "chunk:incoming",
                 "entity:mtp",
-                EdgeKind::Mentions,
+                EdgeKind::OwnedBy,
                 0.9,
             ))
             .unwrap();
