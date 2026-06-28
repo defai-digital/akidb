@@ -671,6 +671,7 @@ where
                         | '>'
                 )
             })
+            .trim_end_matches(|c: char| matches!(c, ':' | '.'))
             .to_string()
     }
 
