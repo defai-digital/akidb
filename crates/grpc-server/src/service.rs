@@ -331,6 +331,20 @@ where
         Ok(())
     }
 
+    fn validate_embedding_vector(vector: &[f32]) -> Result<(), Status> {
+        if vector.is_empty() {
+            return Err(Status::internal(
+                "Embedding provider returned invalid query vector: vector cannot be empty",
+            ));
+        }
+        if vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(Status::internal(
+                "Embedding provider returned invalid query vector: contains NaN or Infinity",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_request_collection(&self, collection: &str) -> Result<(), Status> {
         if collection.is_empty() {
             return Err(Status::invalid_argument("collection cannot be empty"));
@@ -1886,6 +1900,7 @@ where
             let query_vector = provider
                 .embed_text(&req.text)
                 .map_err(|e| Status::internal(format!("Embedding generation failed: {}", e)))?;
+            Self::validate_embedding_vector(&query_vector)?;
 
             debug!(
                 text_len = req.text.len(),
@@ -2116,6 +2131,18 @@ mod tests {
         let id_mapping = Arc::new(IdMapping::new(storage, "test"));
         let index = Arc::new(MockIndex::new(2, 16));
         (AkiDbService::new(index, id_mapping, "test"), dir)
+    }
+
+    struct BadEmbedder;
+
+    impl EmbeddingProvider for BadEmbedder {
+        fn embed_text(&self, _text: &str) -> std::result::Result<Vec<f32>, String> {
+            Ok(vec![f32::NAN, 0.0])
+        }
+
+        fn embedding_dimensions(&self) -> usize {
+            2
+        }
     }
 
     async fn insert_with_metadata(service: &AkiDbService<MockIndex, RocksDbBackend>) {
@@ -2559,6 +2586,20 @@ mod tests {
         let status = result.expect_err("zero nprobe should be rejected");
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("nprobe"));
+    }
+
+    #[tokio::test]
+    async fn test_text_search_rejects_invalid_embedding_vector() {
+        let (service, _dir) = test_service();
+        let service = service.with_embedding_provider(Arc::new(BadEmbedder));
+        let mut request = bm25_text_search_request("rare_contract_keyword", 10);
+        request.retrieval_mode = "vector".to_string();
+
+        let result = service.text_search(Request::new(request)).await;
+
+        let status = result.expect_err("invalid embedding vector should be rejected");
+        assert_eq!(status.code(), Code::Internal);
+        assert!(status.message().contains("invalid query vector"));
     }
 
     #[tokio::test]
