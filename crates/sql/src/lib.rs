@@ -156,6 +156,9 @@ pub trait MetadataSqlIndex: Send + Sync {
     /// Delete a record by collection/vector id.
     fn delete_record(&self, collection: &str, vector_id: &str) -> Result<()>;
 
+    /// Delete all mirrored records for a collection.
+    fn clear_collection(&self, collection: &str) -> Result<()>;
+
     /// Query vector ids matching a structured metadata query.
     fn query_ids(&self, query: &MetadataQuery) -> Result<Vec<String>>;
 
@@ -272,6 +275,14 @@ impl MetadataSqlIndex for SqliteMetadataIndex {
         self.conn()?.execute(
             "DELETE FROM akidb_chunks WHERE collection = ?1 AND vector_id = ?2",
             params![collection, vector_id],
+        )?;
+        Ok(())
+    }
+
+    fn clear_collection(&self, collection: &str) -> Result<()> {
+        self.conn()?.execute(
+            "DELETE FROM akidb_chunks WHERE collection = ?1",
+            params![collection],
         )?;
         Ok(())
     }
@@ -419,6 +430,14 @@ impl MetadataSqlIndex for PostgresMetadataIndex {
         self.client()?.execute(
             "DELETE FROM akidb_chunks WHERE collection = $1 AND vector_id = $2",
             &[&collection, &vector_id],
+        )?;
+        Ok(())
+    }
+
+    fn clear_collection(&self, collection: &str) -> Result<()> {
+        self.client()?.execute(
+            "DELETE FROM akidb_chunks WHERE collection = $1",
+            &[&collection],
         )?;
         Ok(())
     }

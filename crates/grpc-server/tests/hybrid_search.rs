@@ -439,6 +439,63 @@ async fn test_retrieval_mode_sql_uses_metadata_adapter_without_embedder() {
 }
 
 #[tokio::test]
+async fn test_rebuild_sql_metadata_index_removes_deleted_vectors() {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
+    let id_mapping = Arc::new(IdMapping::new(storage, "test"));
+    let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
+    let sql_index = Arc::new(SqliteMetadataIndex::in_memory().unwrap());
+    let svc = AkiDbService::new(index, id_mapping.clone(), "test")
+        .with_metadata_sql_index(sql_index.clone());
+
+    insert(
+        &svc,
+        "stale-contract",
+        vec![1.0, 0.0, 0.0],
+        "",
+        br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#,
+    )
+    .await;
+
+    id_mapping
+        .mark_deleted(&akidb_common::VectorId::new("stale-contract"))
+        .unwrap();
+
+    assert_eq!(svc.rebuild_sql_metadata_index(), 0);
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "HGC contract amount".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#.to_vec(),
+            tag_filter: None,
+            retrieval_mode: "sql".into(),
+        }))
+        .await
+        .expect("sql text_search after rebuild should succeed")
+        .into_inner();
+
+    assert!(
+        resp.results.is_empty(),
+        "SQL rebuild should clear mirror rows for deleted durable vectors, got {:?}",
+        resp.results
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn test_hybrid_with_empty_lexical_degrades_to_dense() {
     let svc = setup();
     // No text => lexical index stays empty.

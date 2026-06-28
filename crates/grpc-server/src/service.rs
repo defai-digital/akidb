@@ -219,6 +219,10 @@ where
         let Some(sql_index) = &self.metadata_sql_index else {
             return 0;
         };
+        if let Err(e) = sql_index.clear_collection(&self.collection) {
+            warn!(collection = %self.collection, error = %e, "failed to clear SQL metadata before rebuild");
+            return 0;
+        }
         let stored_vectors = match self.id_mapping.load_active_vectors() {
             Ok(vectors) => vectors,
             Err(e) => {
