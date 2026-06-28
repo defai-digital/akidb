@@ -46,23 +46,33 @@ impl DocumentParser for JsonParser {
 
 /// Extract text content from JSON value recursively
 fn extract_text_from_json(value: &serde_json::Value) -> String {
+    extract_text_from_json_path(value, None)
+}
+
+fn extract_text_from_json_path(value: &serde_json::Value, path: Option<&str>) -> String {
     match value {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Array(arr) => arr
             .iter()
-            .map(extract_text_from_json)
+            .map(|value| extract_text_from_json_path(value, path))
             .collect::<Vec<_>>()
             .join(" "),
         serde_json::Value::Object(obj) => obj
             .iter()
             .map(|(key, value)| {
-                let value_text = extract_text_from_json(value);
+                let full_key = match path {
+                    Some(prefix) if !prefix.is_empty() => format!("{prefix}.{key}"),
+                    _ => key.clone(),
+                };
+                let value_text = extract_text_from_json_path(value, Some(&full_key));
                 if value_text.is_empty() {
-                    key.clone()
-                } else {
+                    full_key
+                } else if full_key == *key {
                     format!("{} {}", key, value_text)
+                } else {
+                    format!("{} {} {} {}", key, value_text, full_key, value_text)
                 }
             })
             .collect::<Vec<_>>()
@@ -113,5 +123,18 @@ mod tests {
         assert!(result.text.contains("text_search"));
         assert!(result.text.contains("contract_amount"));
         assert!(result.text.contains("1200"));
+    }
+
+    #[test]
+    fn test_parse_json_preserves_nested_paths_for_retrieval() {
+        let parser = JsonParser::new();
+        let data = br#"{"contract":{"customer":"HGC","year":2025}}"#;
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("customer HGC"));
+        assert!(result.text.contains("year 2025"));
+        assert!(result.text.contains("contract.customer HGC"));
+        assert!(result.text.contains("contract.year 2025"));
     }
 }
