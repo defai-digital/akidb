@@ -2,13 +2,11 @@
 
 import base64
 
-import pytest
 from fastapi.testclient import TestClient
 
 from parser.api import app
 from parser.models import DocumentFormat
 from parser.parsers.base import detect_format
-
 
 client = TestClient(app)
 
@@ -41,6 +39,16 @@ def test_detect_format_docx():
     """Test DOCX format detection."""
     assert detect_format("document.docx") == DocumentFormat.DOCX
     assert detect_format("file.DOCX") == DocumentFormat.DOCX
+
+
+def test_detect_format_accepts_paths_and_url_suffixes():
+    """Test format detection with paths, query strings, and fragments."""
+    assert detect_format("contracts/2025/HGC.CONTRACT.PDF") == DocumentFormat.PDF
+    assert (
+        detect_format("https://example.test/docs/report.docx?download=1")
+        == DocumentFormat.DOCX
+    )
+    assert detect_format(r"C:\\docs\\library.enlx#record") == DocumentFormat.ENL
 
 
 def test_detect_format_unknown():

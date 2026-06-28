@@ -1,14 +1,8 @@
 """Base parser interface and factory."""
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
 
 from parser.models import DocumentFormat, ParsedDocument
-
-if TYPE_CHECKING:
-    from parser.parsers.pdf import PdfParser
-    from parser.parsers.docx import DocxParser
-    from parser.parsers.enl import EnlParser
 
 
 class BaseParser(ABC):
@@ -33,9 +27,9 @@ class BaseParser(ABC):
 
 def get_parser(format: DocumentFormat) -> BaseParser | None:
     """Get the appropriate parser for a document format."""
-    from parser.parsers.pdf import PdfParser
     from parser.parsers.docx import DocxParser
     from parser.parsers.enl import EnlParser
+    from parser.parsers.pdf import PdfParser
 
     parsers: dict[DocumentFormat, type[BaseParser]] = {
         DocumentFormat.PDF: PdfParser,
@@ -53,7 +47,15 @@ def get_parser(format: DocumentFormat) -> BaseParser | None:
 
 def detect_format(filename: str) -> DocumentFormat:
     """Detect document format from filename."""
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    normalized = (
+        filename.strip()
+        .split("?", 1)[0]
+        .split("#", 1)[0]
+        .rstrip("/\\")
+        .replace("\\", "/")
+    )
+    basename = normalized.rsplit("/", 1)[-1]
+    ext = basename.rsplit(".", 1)[-1].lower() if "." in basename else ""
 
     format_map = {
         "pdf": DocumentFormat.PDF,
