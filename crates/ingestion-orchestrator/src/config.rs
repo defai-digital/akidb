@@ -235,6 +235,16 @@ where
     }
 }
 
+fn env_parse_percentage(key: &str, default: f32) -> Result<f32> {
+    let value = env_parse(key, default)?;
+    if !value.is_finite() || !(0.0..=100.0).contains(&value) {
+        return Err(IngestionError::Config(format!(
+            "{key} must be finite and between 0 and 100"
+        )));
+    }
+    Ok(value)
+}
+
 impl IngestionConfig {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self> {
@@ -301,8 +311,8 @@ impl IngestionConfig {
                 pause_duration_secs: env_parse("BACKPRESSURE_PAUSE_SECS", 5)?,
             },
             memory: MemoryConfig {
-                pause_threshold_pct: env_parse("MEMORY_PAUSE_THRESHOLD_PCT", 70.0)?,
-                resume_threshold_pct: env_parse("MEMORY_RESUME_THRESHOLD_PCT", 60.0)?,
+                pause_threshold_pct: env_parse_percentage("MEMORY_PAUSE_THRESHOLD_PCT", 70.0)?,
+                resume_threshold_pct: env_parse_percentage("MEMORY_RESUME_THRESHOLD_PCT", 60.0)?,
                 poll_interval_ms: env_parse("MEMORY_POLL_INTERVAL_MS", 1000)?,
                 // FIX BUG-H052: Add max pause duration config
                 max_pause_duration_secs: env_parse("MEMORY_MAX_PAUSE_SECS", 300)?,
@@ -377,6 +387,9 @@ impl Default for BatcherConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
         key: &'static str,
@@ -421,6 +434,7 @@ mod tests {
 
     #[test]
     fn test_from_env_rejects_invalid_numeric_values() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let _guard = EnvGuard::set("AKIDB_TIMEOUT_MS", "not-a-number");
 
         let err = IngestionConfig::from_env()
@@ -430,6 +444,23 @@ mod tests {
             IngestionError::Config(message) => {
                 assert!(message.contains("AKIDB_TIMEOUT_MS"), "{message}");
                 assert!(message.contains("not-a-number"), "{message}");
+            }
+            other => panic!("expected config error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_env_rejects_non_finite_memory_thresholds() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::set("MEMORY_PAUSE_THRESHOLD_PCT", "NaN");
+
+        let err = IngestionConfig::from_env()
+            .expect_err("non-finite memory threshold should reject configuration");
+
+        match err {
+            IngestionError::Config(message) => {
+                assert!(message.contains("MEMORY_PAUSE_THRESHOLD_PCT"), "{message}");
+                assert!(message.contains("finite"), "{message}");
             }
             other => panic!("expected config error, got {other:?}"),
         }
