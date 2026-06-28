@@ -9,7 +9,7 @@
 //! matching, Python blocks by indentation. This avoids pulling in tree-sitter's
 //! compiled C grammars. A tree-sitter backend (precise spans, nested symbols,
 //! call/import edges) is the documented future upgrade behind this same API.
-//! Known limitation: braces inside strings/comments are not specially handled.
+//! Known limitation: this is still a heuristic scanner, not a full parser.
 
 /// Source language for chunking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,13 +145,65 @@ fn is_rust_attribute_start(trimmed: &str) -> bool {
 fn rust_attribute_block_reaches(lines: &[&str], start: usize, end: usize) -> bool {
     let mut depth = 0i32;
     let mut saw_attribute_start = false;
+    let mut state = RustScanState::default();
 
     for line in &lines[start..end] {
         let chars: Vec<char> = line.chars().collect();
         let mut i = 0;
         while i < chars.len() {
+            if let Some(hashes) = state.raw_string_hashes {
+                if let Some(end) = rust_raw_string_closing_end(&chars, i, hashes) {
+                    state.raw_string_hashes = None;
+                    i = end + 1;
+                } else {
+                    break;
+                }
+                continue;
+            }
+
+            if state.block_comment_depth > 0 {
+                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                    state.block_comment_depth += 1;
+                    i += 2;
+                } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    state.block_comment_depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+
             match chars[i] {
                 '/' if chars.get(i + 1) == Some(&'/') => break,
+                '/' if chars.get(i + 1) == Some(&'*') => {
+                    state.block_comment_depth = 1;
+                    i += 1;
+                }
+                'r' => {
+                    if let Some((hashes, content_start)) = rust_raw_string_start(&chars, i) {
+                        if let Some(end) =
+                            rust_raw_string_closing_end(&chars, content_start, hashes)
+                        {
+                            i = end;
+                        } else {
+                            state.raw_string_hashes = Some(hashes);
+                            break;
+                        }
+                    }
+                }
+                'b' if chars.get(i + 1) == Some(&'r') => {
+                    if let Some((hashes, content_start)) = rust_raw_string_start(&chars, i + 1) {
+                        if let Some(end) =
+                            rust_raw_string_closing_end(&chars, content_start, hashes)
+                        {
+                            i = end;
+                        } else {
+                            state.raw_string_hashes = Some(hashes);
+                            break;
+                        }
+                    }
+                }
                 '"' => i = skip_rust_string(&chars, i),
                 '\'' => {
                     if let Some(end) = rust_char_literal_end(&chars, i) {
@@ -1058,6 +1110,24 @@ pub fn next_symbol() {}";
         assert_eq!(chunks[0].start_line, 1);
         assert_eq!(chunks[1].name.as_deref(), Some("next_symbol"));
         assert!(!chunks[1].text.contains("cfg_attr"));
+    }
+
+    #[test]
+    fn test_rust_multiline_attribute_ignores_raw_string_brackets() {
+        let src = r###"#[cfg_attr(
+    feature = "docs",
+    doc = r#"literal " ] bracket"#
+)]
+pub fn documented() {}
+
+pub fn next_symbol() {}"###;
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].name.as_deref(), Some("documented"));
+        assert!(chunks[0].text.contains("literal \" ] bracket"));
+        assert_eq!(chunks[0].start_line, 1);
+        assert_eq!(chunks[1].name.as_deref(), Some("next_symbol"));
+        assert!(!chunks[1].text.contains("literal ] bracket"));
     }
 
     #[test]
