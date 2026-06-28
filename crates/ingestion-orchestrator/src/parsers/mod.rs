@@ -71,7 +71,7 @@ impl DocumentFormat {
             "tsv" => DocumentFormat::Tsv,
             "html" | "htm" => DocumentFormat::Html,
             "xml" => DocumentFormat::Xml,
-            "xlsx" | "xls" => DocumentFormat::Xlsx,
+            "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" => DocumentFormat::Xlsx,
             "pdf" => DocumentFormat::Pdf,
             "docx" | "doc" => DocumentFormat::Docx,
             "txt" | "text" | "md" => DocumentFormat::Txt,
@@ -208,6 +208,10 @@ mod tests {
         assert_eq!(DocumentFormat::from_extension("PDF"), DocumentFormat::Pdf);
         assert_eq!(DocumentFormat::from_extension("tsv"), DocumentFormat::Tsv);
         assert_eq!(DocumentFormat::from_extension("xlsx"), DocumentFormat::Xlsx);
+        assert_eq!(DocumentFormat::from_extension("xls"), DocumentFormat::Xlsx);
+        assert_eq!(DocumentFormat::from_extension("xlsm"), DocumentFormat::Xlsx);
+        assert_eq!(DocumentFormat::from_extension("xlsb"), DocumentFormat::Xlsx);
+        assert_eq!(DocumentFormat::from_extension("ods"), DocumentFormat::Xlsx);
         assert_eq!(DocumentFormat::from_extension("docx"), DocumentFormat::Docx);
         assert_eq!(
             DocumentFormat::from_extension("foo"),
@@ -252,6 +256,30 @@ mod tests {
         assert!(route_parser(DocumentFormat::Json).is_some());
         assert!(route_parser(DocumentFormat::Docx).is_some());
         assert!(route_parser(DocumentFormat::Pdf).is_none());
+    }
+
+    #[test]
+    fn test_spreadsheet_extensions_share_rust_parser_contract() {
+        for ext in ["xlsx", "xls", "xlsm", "xlsb", "ods"] {
+            let format = DocumentFormat::from_extension(ext);
+            assert_eq!(
+                format,
+                DocumentFormat::Xlsx,
+                "{ext} should route as spreadsheet"
+            );
+            assert!(
+                format.is_rust_native(),
+                "{ext} should use the Rust spreadsheet parser"
+            );
+            assert!(
+                !format.requires_python(),
+                "{ext} should not require the Python parser"
+            );
+
+            let parser = route_parser(format)
+                .unwrap_or_else(|| panic!("{ext} should have a routed spreadsheet parser"));
+            assert_eq!(parser.format(), DocumentFormat::Xlsx);
+        }
     }
 
     #[test]

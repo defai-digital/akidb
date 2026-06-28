@@ -1,12 +1,12 @@
-//! XLSX Document Parser
+//! Spreadsheet Document Parser
 
-use calamine::{Data, Reader, Xlsx};
+use calamine::{open_workbook_auto_from_rs, Data, Reader};
 use std::io::Cursor;
 
 use crate::parsers::{DocumentFormat, DocumentMetadata, DocumentParser, ParsedDocument};
 use crate::Result;
 
-/// XLSX document parser using calamine
+/// Spreadsheet parser using calamine's auto workbook reader.
 pub struct XlsxParser;
 
 impl XlsxParser {
@@ -24,8 +24,8 @@ impl Default for XlsxParser {
 impl DocumentParser for XlsxParser {
     fn parse(&self, data: &[u8]) -> Result<ParsedDocument> {
         let cursor = Cursor::new(data);
-        let mut workbook: Xlsx<_> = Xlsx::new(cursor)
-            .map_err(|e| crate::IngestionError::Parse(format!("XLSX error: {}", e)))?;
+        let mut workbook = open_workbook_auto_from_rs(cursor)
+            .map_err(|e| crate::IngestionError::Parse(format!("Spreadsheet error: {}", e)))?;
 
         let mut texts = Vec::new();
         let mut total_rows = 0;
