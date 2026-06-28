@@ -302,6 +302,10 @@ where
         self.embedding_provider.is_some()
     }
 
+    fn preview_text(text: &str, max_chars: usize) -> String {
+        text.chars().take(max_chars).collect()
+    }
+
     fn validate_search_controls(top_k: u32, nprobe: Option<u32>) -> Result<(), Status> {
         if top_k == 0 {
             return Err(Status::invalid_argument("top_k must be greater than 0"));
@@ -2035,7 +2039,7 @@ where
 
         info!(
             "TextSearch for '{}' returned {} results in {:?}",
-            &req.text[..req.text.len().min(50)],
+            Self::preview_text(&req.text, 50),
             response_results.len(),
             elapsed
         );
@@ -2103,6 +2107,13 @@ mod tests {
             tag_filter: None,
             retrieval_mode: "bm25".to_string(),
         }
+    }
+
+    #[test]
+    fn test_preview_text_does_not_split_utf8_codepoints() {
+        let preview = AkiDbService::<MockIndex, RocksDbBackend>::preview_text("測試文本", 3);
+
+        assert_eq!(preview, "測試文");
     }
 
     async fn insert_text(

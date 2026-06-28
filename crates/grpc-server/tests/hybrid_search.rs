@@ -1232,6 +1232,37 @@ async fn test_no_pack_leaves_context_empty() {
 }
 
 #[tokio::test]
+async fn test_text_search_accepts_long_multibyte_query() {
+    let svc = setup_without_embedder();
+    let query = "測試".repeat(30);
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: query,
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("long multibyte text_search should not panic")
+        .into_inner();
+
+    assert!(resp.results.is_empty());
+    assert!(resp.context_pack.is_empty());
+}
+
+#[tokio::test]
 async fn test_lexical_index_persists_across_restart() {
     let dir = tempfile::tempdir().unwrap().keep();
     let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
