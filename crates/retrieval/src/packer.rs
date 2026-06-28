@@ -193,6 +193,11 @@ pub fn pack(passages: &[Passage], config: &PackerConfig) -> ContextPack {
     let mut used_tokens = 0usize;
 
     for passage in passages {
+        if passage.text.trim().is_empty() {
+            dropped.push(passage.id.clone());
+            continue;
+        }
+
         let rendered = render(passage, config.strategy);
         let rendered_tokens = estimate_tokens(&rendered);
         // The separator only costs tokens when joining to an existing part.
@@ -242,6 +247,22 @@ mod tests {
         assert!(pack.included.is_empty());
         assert!(pack.dropped.is_empty());
         assert_eq!(pack.used_tokens, 0);
+    }
+
+    #[test]
+    fn test_blank_passages_are_dropped() {
+        let passages = [
+            passage("blank", "   \n\t  "),
+            passage("content", "useful text"),
+        ];
+        let cfg = PackerConfig::new(100).with_strategy(PackStrategy::Compact);
+
+        let out = pack(&passages, &cfg);
+
+        assert_eq!(out.included, vec![VectorId::new("content")]);
+        assert_eq!(out.dropped, vec![VectorId::new("blank")]);
+        assert_eq!(out.text, "useful text");
+        assert_eq!(out.citations.len(), 1);
     }
 
     #[test]
