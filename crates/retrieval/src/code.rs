@@ -104,21 +104,7 @@ fn extend_start_with_decorations(lines: &[&str], start: usize) -> usize {
 }
 
 fn rust_symbol_start(trimmed: &str) -> Option<SymbolKind> {
-    // Strip leading modifiers.
-    let mut t = trimmed;
-    for m in [
-        "pub(crate) ",
-        "pub(super) ",
-        "pub ",
-        "async ",
-        "unsafe ",
-        "default ",
-        "const ",
-    ] {
-        if let Some(rest) = t.strip_prefix(m) {
-            t = rest;
-        }
-    }
+    let t = strip_rust_item_prefixes(trimmed);
     let kind = if t.starts_with("fn ") {
         SymbolKind::Function
     } else if t.starts_with("struct ") {
@@ -138,20 +124,7 @@ fn rust_symbol_start(trimmed: &str) -> Option<SymbolKind> {
 }
 
 fn rust_symbol_name(trimmed: &str, kind: SymbolKind) -> Option<String> {
-    let mut t = trimmed;
-    for m in [
-        "pub(crate) ",
-        "pub(super) ",
-        "pub ",
-        "async ",
-        "unsafe ",
-        "default ",
-        "const ",
-    ] {
-        if let Some(rest) = t.strip_prefix(m) {
-            t = rest;
-        }
-    }
+    let t = strip_rust_item_prefixes(trimmed);
     let keyword = match kind {
         SymbolKind::Function => "fn ",
         SymbolKind::Struct => "struct ",
@@ -170,6 +143,59 @@ fn rust_symbol_name(trimmed: &str, kind: SymbolKind) -> Option<String> {
         None
     } else {
         Some(name)
+    }
+}
+
+fn strip_rust_item_prefixes(mut t: &str) -> &str {
+    loop {
+        let before = t;
+        if let Some(rest) = strip_rust_visibility(t) {
+            t = rest;
+        } else if let Some(rest) = strip_rust_word_prefix(t, "async") {
+            t = rest;
+        } else if let Some(rest) = strip_rust_word_prefix(t, "unsafe") {
+            t = rest;
+        } else if let Some(rest) = strip_rust_word_prefix(t, "default") {
+            t = rest;
+        } else if let Some(rest) = strip_rust_word_prefix(t, "const") {
+            t = rest;
+        } else if let Some(rest) = strip_rust_extern_prefix(t) {
+            t = rest;
+        }
+
+        if t == before {
+            return t;
+        }
+    }
+}
+
+fn strip_rust_visibility(t: &str) -> Option<&str> {
+    let rest = t.strip_prefix("pub")?;
+    match rest.chars().next() {
+        Some(c) if c.is_whitespace() => Some(rest.trim_start()),
+        Some('(') => {
+            let end = rest.find(')')?;
+            Some(rest[end + 1..].trim_start())
+        }
+        _ => None,
+    }
+}
+
+fn strip_rust_word_prefix<'a>(t: &'a str, word: &str) -> Option<&'a str> {
+    let rest = t.strip_prefix(word)?;
+    match rest.chars().next() {
+        Some(c) if c.is_whitespace() => Some(rest.trim_start()),
+        _ => None,
+    }
+}
+
+fn strip_rust_extern_prefix(t: &str) -> Option<&str> {
+    let rest = strip_rust_word_prefix(t, "extern")?;
+    if let Some(abi) = rest.strip_prefix('"') {
+        let end = abi.find('"')?;
+        Some(abi[end + 1..].trim_start())
+    } else {
+        Some(rest)
     }
 }
 
@@ -628,6 +654,26 @@ fn second() {}";
         assert_eq!(chunks[0].end_line, 1);
         assert_eq!(chunks[1].start_line, 2);
         assert_eq!(chunks[1].end_line, 2);
+    }
+
+    #[test]
+    fn test_rust_modifier_chains_are_chunked() {
+        let src = "\
+pub(in crate::api) async fn fetch_data() {
+    do_work().await;
+}
+
+pub extern \"C\" fn reset_state() {}
+
+pub(crate) const fn stable_id() -> u64 {
+    42
+}";
+        let chunks = chunk_code(src, Language::Rust);
+        let names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| chunk.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["fetch_data", "reset_state", "stable_id"]);
     }
 
     #[test]
