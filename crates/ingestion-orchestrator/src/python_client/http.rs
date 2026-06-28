@@ -155,21 +155,9 @@ fn parsed_document_from_response(parse_response: ParseResponse, filename: &str) 
     let format = document_format_from_response(&parse_response.format, filename);
 
     // Extract metadata fields if present
-    let title = parse_response
-        .metadata
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let author = parse_response
-        .metadata
-        .get("author")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let word_count = parse_response
-        .metadata
-        .get("word_count")
-        .and_then(|v| v.as_u64())
-        .and_then(|n| usize::try_from(n).ok());
+    let title = metadata_string(&parse_response.metadata, "title");
+    let author = metadata_string(&parse_response.metadata, "author");
+    let word_count = metadata_usize(&parse_response.metadata, "word_count");
     let pages = usize::try_from(parse_response.page_count).ok();
     let extra = Some(serde_json::json!({
         "parser_format": parse_response.format,
@@ -191,6 +179,29 @@ fn parsed_document_from_response(parse_response: ParseResponse, filename: &str) 
         },
         format,
     }
+}
+
+fn metadata_string(metadata: &HashMap<String, serde_json::Value>, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn metadata_usize(metadata: &HashMap<String, serde_json::Value>, key: &str) -> Option<usize> {
+    let value = metadata.get(key)?;
+    if let Some(n) = value.as_u64() {
+        return usize::try_from(n).ok();
+    }
+
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<u64>().ok())
+        .and_then(|n| usize::try_from(n).ok())
 }
 
 fn document_format_from_response(response_format: &str, filename: &str) -> DocumentFormat {
@@ -308,5 +319,29 @@ mod tests {
         assert_eq!(extra["tables"][0]["headers"][0], "customer");
         assert_eq!(extra["images"][0]["alt_text"], "architecture diagram");
         assert_eq!(extra["parse_time_ms"], 12.5);
+    }
+
+    #[test]
+    fn test_parse_response_normalizes_metadata_fields() {
+        let mut metadata = HashMap::new();
+        metadata.insert("title".to_string(), serde_json::json!("  Annual Report  "));
+        metadata.insert("author".to_string(), serde_json::json!("   "));
+        metadata.insert("word_count".to_string(), serde_json::json!("42"));
+
+        let response = ParseResponse {
+            text: "body".to_string(),
+            format: "pdf".to_string(),
+            page_count: 1,
+            metadata,
+            tables: vec![],
+            images: vec![],
+            parse_time_ms: 1.0,
+        };
+
+        let parsed = parsed_document_from_response(response, "upload.bin");
+
+        assert_eq!(parsed.metadata.title.as_deref(), Some("Annual Report"));
+        assert_eq!(parsed.metadata.author, None);
+        assert_eq!(parsed.metadata.word_count, Some(42));
     }
 }
