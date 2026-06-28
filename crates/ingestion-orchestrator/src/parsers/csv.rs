@@ -43,72 +43,44 @@ impl DocumentParser for CsvParser {
         let mut reader = csv::ReaderBuilder::new()
             .delimiter(self.delimiter)
             .flexible(true)
+            .has_headers(false)
             .from_reader(data);
 
         let mut texts = Vec::new();
         let mut row_count = 0;
-        let mut col_count;
+        let mut col_count = 0;
+        let mut rows = Vec::new();
 
-        // Get headers
-        let headers: Vec<String>;
-        match reader.headers() {
-            Ok(raw_headers) => {
-                headers = raw_headers
-                    .iter()
-                    .map(|header| header.to_string())
-                    .collect();
-                col_count = headers.len();
-                texts.push(headers.join(" "));
-            }
-            Err(_) if data.is_empty() => {
-                return Ok(ParsedDocument {
-                    text: String::new(),
-                    metadata: DocumentMetadata {
-                        word_count: Some(0),
-                        extra: Some(serde_json::json!({
-                            "rows": 0,
-                            "columns": 0,
-                        })),
-                        ..Default::default()
-                    },
-                    format: self.format,
-                });
-            }
-            Err(e) => {
-                return Err(crate::IngestionError::Parse(format!(
-                    "CSV header parse error: {}",
-                    e
-                )));
-            }
-        }
-
-        // Get rows
         for result in reader.records() {
             let record = result.map_err(|e| {
                 crate::IngestionError::Parse(format!("CSV record parse error: {}", e))
             })?;
             col_count = col_count.max(record.len());
-            let row_text = record
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, value)| {
-                    let value = value.trim();
-                    if value.is_empty() {
-                        return None;
+            rows.push(record.iter().map(cell_to_string).collect::<Vec<_>>());
+        }
+
+        let mut headers: Option<Vec<Option<String>>> = None;
+        for cells in rows {
+            if row_is_empty(&cells) {
+                continue;
+            }
+
+            let row_text = match headers.as_deref() {
+                Some(headers) => {
+                    row_count += 1;
+                    row_text_with_headers(headers, &cells)
+                }
+                None => {
+                    let row_text = row_text_from_cells(&cells);
+                    if is_likely_header_row(&cells, col_count) {
+                        headers = Some(cells);
                     }
-                    let header = headers.get(idx).map(|s| s.trim()).unwrap_or_default();
-                    if header.is_empty() {
-                        Some(value.to_string())
-                    } else {
-                        Some(format!("{} {}", header, value))
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
+                    row_text
+                }
+            };
             if !row_text.is_empty() {
                 texts.push(row_text);
             }
-            row_count += 1;
         }
 
         let text = texts.join("\n");
@@ -131,6 +103,53 @@ impl DocumentParser for CsvParser {
     fn format(&self) -> DocumentFormat {
         self.format
     }
+}
+
+fn cell_to_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn row_is_empty(cells: &[Option<String>]) -> bool {
+    cells.iter().all(Option::is_none)
+}
+
+fn is_likely_header_row(cells: &[Option<String>], file_cols: usize) -> bool {
+    let non_empty = cells.iter().filter(|cell| cell.is_some()).count();
+    non_empty > 1 || file_cols <= 1
+}
+
+fn row_text_from_cells(cells: &[Option<String>]) -> String {
+    cells
+        .iter()
+        .filter_map(|cell| cell.as_deref())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn row_text_with_headers(headers: &[Option<String>], cells: &[Option<String>]) -> String {
+    cells
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, cell)| {
+            let value = cell.as_deref()?;
+            let header = headers
+                .get(idx)
+                .and_then(|header| header.as_deref())
+                .unwrap_or_default()
+                .trim();
+            if header.is_empty() {
+                Some(value.to_string())
+            } else {
+                Some(format!("{} {}", header, value))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -164,6 +183,20 @@ mod tests {
         assert!(result.text.contains("customer HGC"));
         assert!(result.text.contains("year 2025"));
         assert!(result.text.contains("contract_amount 1200"));
+    }
+
+    #[test]
+    fn test_parse_csv_ignores_title_row_when_selecting_headers() {
+        let parser = CsvParser::new();
+        let data = b"Contract Export\ncustomer,year,contract_amount\nHGC,2025,1200";
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("Contract Export"));
+        assert!(result.text.contains("customer HGC"));
+        assert!(result.text.contains("year 2025"));
+        assert!(result.text.contains("contract_amount 1200"));
+        assert!(!result.text.contains("Contract Export HGC"));
     }
 
     #[test]
