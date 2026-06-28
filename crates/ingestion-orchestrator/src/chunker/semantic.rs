@@ -75,56 +75,25 @@ impl SemanticChunker {
             let sentence_end = sentence_offset + sentence.len();
             search_start = sentence_end; // Move search position past this sentence
 
-            let sentence_tokens = count_tokens(sentence);
-            let current_tokens = count_tokens(&current_chunk);
-
-            // If adding this sentence would exceed target, create a chunk
-            if current_tokens > 0 && current_tokens + sentence_tokens > self.config.target_tokens {
-                // Create chunk from current content
-                let chunk_text = current_chunk.trim().to_string();
-                if !chunk_text.is_empty() {
-                    chunks.push(Chunk {
-                        text: chunk_text.clone(),
-                        start_offset: current_start,
-                        end_offset: current_end, // FIX: Use tracked end offset
-                        token_count: count_tokens(&chunk_text),
-                        index: chunk_index,
-                    });
-                    chunk_index += 1;
-                }
-
-                // Start new chunk with overlap. Keep the overlap as an exact
-                // substring of the original text so citation offsets remain valid.
-                let overlap = get_overlap_span(
-                    &current_chunk,
-                    self.config.min_overlap,
-                    self.config.max_overlap,
+            let spans = split_oversized_span(
+                text,
+                sentence_offset,
+                sentence_end,
+                self.config.target_tokens,
+            );
+            for (span_start, span_end) in spans {
+                Self::append_span(
+                    text,
+                    span_start,
+                    span_end,
+                    &mut current_chunk,
+                    &mut current_start,
+                    &mut current_end,
+                    &mut chunk_index,
+                    &mut chunks,
+                    &self.config,
                 );
-
-                match overlap {
-                    Some((overlap_start, overlap_text)) => {
-                        current_start += overlap_start;
-                        current_chunk = overlap_text;
-                    }
-                    None => {
-                        current_chunk.clear();
-                        current_start = sentence_offset;
-                    }
-                }
             }
-
-            // If this is the start of a new chunk (empty), set start offset
-            if current_chunk.is_empty() {
-                current_start = sentence_offset;
-            }
-
-            let append_start = if current_chunk.is_empty() {
-                sentence_offset
-            } else {
-                current_end
-            };
-            current_chunk.push_str(&text[append_start..sentence_end]);
-            current_end = sentence_end; // FIX: Track actual end offset
         }
 
         // Don't forget the last chunk
@@ -141,6 +110,67 @@ impl SemanticChunker {
 
         chunks
     }
+
+    fn append_span(
+        text: &str,
+        span_start: usize,
+        span_end: usize,
+        current_chunk: &mut String,
+        current_start: &mut usize,
+        current_end: &mut usize,
+        chunk_index: &mut usize,
+        chunks: &mut Vec<Chunk>,
+        config: &ChunkerConfig,
+    ) {
+        let span_text = &text[span_start..span_end];
+        let sentence_tokens = count_tokens(span_text);
+        let current_tokens = count_tokens(&current_chunk);
+
+        // If adding this sentence would exceed target, create a chunk
+        if current_tokens > 0 && current_tokens + sentence_tokens > config.target_tokens {
+            // Create chunk from current content
+            let chunk_text = current_chunk.trim().to_string();
+            if !chunk_text.is_empty() {
+                chunks.push(Chunk {
+                    text: chunk_text.clone(),
+                    start_offset: *current_start,
+                    end_offset: *current_end, // FIX: Use tracked end offset
+                    token_count: count_tokens(&chunk_text),
+                    index: *chunk_index,
+                });
+                *chunk_index += 1;
+            }
+
+            // Start new chunk with overlap. Keep the overlap as an exact
+            // substring of the original text so citation offsets remain valid.
+            let overlap =
+                get_overlap_span(&current_chunk, config.min_overlap, config.max_overlap);
+
+            match overlap {
+                Some((overlap_start, overlap_text)) => {
+                    *current_start += overlap_start;
+                    *current_chunk = overlap_text;
+                }
+                None => {
+                    current_chunk.clear();
+                    *current_start = span_start;
+                }
+            }
+        }
+
+        // If this is the start of a new chunk (empty), set start offset
+        if current_chunk.is_empty() {
+            *current_start = span_start;
+        }
+
+        let append_start = if current_chunk.is_empty() {
+            span_start
+        } else {
+            *current_end
+        };
+        current_chunk.push_str(&text[append_start..span_end]);
+        *current_end = span_end; // FIX: Track actual end offset
+    }
 }
 
 fn normalize_config(mut config: ChunkerConfig) -> ChunkerConfig {
@@ -149,6 +179,66 @@ fn normalize_config(mut config: ChunkerConfig) -> ChunkerConfig {
         config.max_overlap = config.min_overlap;
     }
     config
+}
+
+fn split_oversized_span(
+    text: &str,
+    span_start: usize,
+    span_end: usize,
+    target_tokens: usize,
+) -> Vec<(usize, usize)> {
+    if count_tokens(text[span_start..span_end].trim()) <= target_tokens {
+        return vec![(span_start, span_end)];
+    }
+
+    let mut spans = Vec::new();
+    let mut chunk_start = span_start;
+
+    while chunk_start < span_end {
+        let mut last_good_end = None;
+        let mut last_break_end = None;
+        let mut overflowed = false;
+
+        for (relative_start, ch) in text[chunk_start..span_end].char_indices() {
+            let char_start = chunk_start + relative_start;
+            let char_end = char_start + ch.len_utf8();
+            let candidate = text[chunk_start..char_end].trim();
+            if !candidate.is_empty() && count_tokens(candidate) > target_tokens {
+                overflowed = true;
+                break;
+            }
+            last_good_end = Some(char_end);
+            if ch.is_whitespace() {
+                last_break_end = Some(char_end);
+            }
+        }
+
+        let split_end = if overflowed {
+            last_break_end
+                .filter(|end| *end > chunk_start)
+                .or_else(|| last_good_end.filter(|end| *end > chunk_start))
+                .unwrap_or_else(|| next_char_end(text, chunk_start, span_end))
+        } else {
+            span_end
+        };
+
+        if text[chunk_start..split_end].trim().is_empty() {
+            chunk_start = split_end;
+            continue;
+        }
+        spans.push((chunk_start, split_end));
+        chunk_start = split_end;
+    }
+
+    spans
+}
+
+fn next_char_end(text: &str, start: usize, end: usize) -> usize {
+    text[start..end]
+        .chars()
+        .next()
+        .map(|ch| start + ch.len_utf8())
+        .unwrap_or(end)
 }
 
 /// Count tokens using tiktoken cl100k_base tokenizer
@@ -291,6 +381,37 @@ mod tests {
                 chunk.text,
                 "chunk {} offsets should round-trip when overlap is enabled",
                 chunk.index
+            );
+        }
+    }
+
+    #[test]
+    fn test_long_single_sentence_is_split_to_target_tokens() {
+        let chunker = SemanticChunker::new(ChunkerConfig {
+            target_tokens: 8,
+            min_overlap: 0,
+            max_overlap: 0,
+        });
+
+        let text = "alpha ".repeat(40);
+        let chunks = chunker.chunk(&text);
+
+        assert!(
+            chunks.len() > 1,
+            "oversized single sentence should be hard-split"
+        );
+        for chunk in chunks {
+            assert!(
+                chunk.token_count <= chunker.config.target_tokens,
+                "chunk {} exceeded target: {} > {} ({:?})",
+                chunk.index,
+                chunk.token_count,
+                chunker.config.target_tokens,
+                chunk.text
+            );
+            assert_eq!(
+                text[chunk.start_offset..chunk.end_offset].trim(),
+                chunk.text
             );
         }
     }
