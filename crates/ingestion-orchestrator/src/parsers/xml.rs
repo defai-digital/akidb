@@ -52,13 +52,13 @@ impl DocumentParser for XmlParser {
                 Ok(Event::Start(e)) => {
                     element_count += 1;
                     let name = element_name(e.name().as_ref());
-                    texts.extend(attribute_texts(&name, &e));
+                    texts.extend(attribute_texts(&element_stack, &name, &e));
                     element_stack.push(name);
                 }
                 Ok(Event::Empty(e)) => {
                     element_count += 1;
                     let name = element_name(e.name().as_ref());
-                    texts.extend(attribute_texts(&name, &e));
+                    texts.extend(attribute_texts(&element_stack, &name, &e));
                 }
                 Ok(Event::End(_)) => {
                     element_stack.pop();
@@ -102,12 +102,29 @@ fn element_name(raw: &[u8]) -> String {
 
 fn text_with_current_element(element_stack: &[String], text: &str) -> String {
     match element_stack.last() {
-        Some(element) if !element.is_empty() => format!("{} {}", element, text),
+        Some(element) if !element.is_empty() => {
+            let full_path = element_stack.join(".");
+            if full_path == *element {
+                format!("{} {}", element, text)
+            } else {
+                format!("{} {} {} {}", element, text, full_path, text)
+            }
+        }
         _ => text.to_string(),
     }
 }
 
-fn attribute_texts(element: &str, start: &quick_xml::events::BytesStart<'_>) -> Vec<String> {
+fn attribute_texts(
+    element_stack: &[String],
+    element: &str,
+    start: &quick_xml::events::BytesStart<'_>,
+) -> Vec<String> {
+    let full_element_path = if element_stack.is_empty() {
+        element.to_string()
+    } else {
+        format!("{}.{}", element_stack.join("."), element)
+    };
+
     start
         .attributes()
         .filter_map(|attr| attr.ok())
@@ -121,8 +138,13 @@ fn attribute_texts(element: &str, start: &quick_xml::events::BytesStart<'_>) -> 
                 .to_string();
             if key.is_empty() || value.is_empty() {
                 None
-            } else {
+            } else if full_element_path == element {
                 Some(format!("{} {} {}", element, key, value))
+            } else {
+                Some(format!(
+                    "{} {} {} {}.{} {}",
+                    element, key, value, full_element_path, key, value
+                ))
             }
         })
         .collect()
@@ -177,6 +199,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_xml_preserves_nested_element_paths_for_retrieval() {
+        let parser = XmlParser::new();
+        let data = br#"
+            <contract>
+                <terms>
+                    <year>2025</year>
+                </terms>
+            </contract>
+        "#;
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("year 2025"));
+        assert!(result.text.contains("contract.terms.year 2025"));
+    }
+
+    #[test]
     fn test_parse_xml_preserves_attribute_value_pairs_for_retrieval() {
         let parser = XmlParser::new();
         let data = br#"
@@ -189,6 +228,21 @@ mod tests {
         assert!(result.text.contains("contract customer HGC"));
         assert!(result.text.contains("contract year 2025"));
         assert!(result.text.contains("contract contract_amount 1200"));
+    }
+
+    #[test]
+    fn test_parse_xml_preserves_nested_attribute_paths_for_retrieval() {
+        let parser = XmlParser::new();
+        let data = br#"
+            <contracts>
+                <contract year="2025" />
+            </contracts>
+        "#;
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("contract year 2025"));
+        assert!(result.text.contains("contracts.contract.year 2025"));
     }
 
     #[test]
