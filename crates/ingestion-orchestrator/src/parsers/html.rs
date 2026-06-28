@@ -129,7 +129,7 @@ impl DocumentParser for HtmlParser {
         if let Some(title_text) = title.as_deref() {
             if text.is_empty() {
                 text.push_str(title_text);
-            } else if !text.contains(title_text) {
+            } else if !contains_phrase_with_boundaries(&text, title_text) {
                 text = format!("{} {}", title_text, text);
             }
         }
@@ -150,6 +150,25 @@ impl DocumentParser for HtmlParser {
     fn format(&self) -> DocumentFormat {
         DocumentFormat::Html
     }
+}
+
+fn contains_phrase_with_boundaries(text: &str, phrase: &str) -> bool {
+    let phrase = phrase.trim();
+    if phrase.is_empty() {
+        return true;
+    }
+
+    text.match_indices(phrase).any(|(start, matched)| {
+        let end = start + matched.len();
+        let before_boundary = start == 0
+            || text[..start]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_whitespace);
+        let after_boundary =
+            end == text.len() || text[end..].chars().next().is_some_and(char::is_whitespace);
+        before_boundary && after_boundary
+    })
 }
 
 #[cfg(test)]
@@ -211,6 +230,28 @@ mod tests {
             Some("AkiDB Contract Portal".to_string())
         );
         assert!(result.text.starts_with("AkiDB Contract Portal"));
+    }
+
+    #[test]
+    fn test_parse_html_includes_title_when_only_present_as_body_substring() {
+        let parser = HtmlParser::new();
+        let data = br#"
+            <html>
+                <head><title>Contract</title></head>
+                <body>
+                    <p>Contractor portal status</p>
+                </body>
+            </html>
+        "#;
+
+        let result = parser.parse(data).unwrap();
+
+        assert_eq!(result.metadata.title, Some("Contract".to_string()));
+        assert!(
+            result.text.starts_with("Contract Contractor portal status"),
+            "{}",
+            result.text
+        );
     }
 
     #[test]
