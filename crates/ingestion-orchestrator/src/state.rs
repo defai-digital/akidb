@@ -27,6 +27,16 @@ fn sqlite_i64_to_usize(value: i64, column: usize, field: &str) -> rusqlite::Resu
     })
 }
 
+fn ensure_document_updated(rows_affected: usize, id: &str) -> Result<()> {
+    if rows_affected == 0 {
+        return Err(IngestionError::State(format!(
+            "Document '{}' does not exist in state tracker",
+            id
+        )));
+    }
+    Ok(())
+}
+
 /// Document processing state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentState {
@@ -154,11 +164,11 @@ impl StateTracker {
     /// Update document state
     pub fn update_state(&self, id: &str, state: DocumentState) -> Result<()> {
         let conn = self.lock_conn()?;
-        conn.execute(
+        let rows_affected = conn.execute(
             "UPDATE documents SET state = ?1, updated_at = datetime('now') WHERE id = ?2",
             params![state.as_str(), id],
         )?;
-        Ok(())
+        ensure_document_updated(rows_affected, id)
     }
 
     /// Update document state with error
@@ -169,22 +179,22 @@ impl StateTracker {
         error: &str,
     ) -> Result<()> {
         let conn = self.lock_conn()?;
-        conn.execute(
+        let rows_affected = conn.execute(
             "UPDATE documents SET state = ?1, error = ?2, updated_at = datetime('now') WHERE id = ?3",
             params![state.as_str(), error, id],
         )?;
-        Ok(())
+        ensure_document_updated(rows_affected, id)
     }
 
     /// Update chunk count
     pub fn update_chunk_count(&self, id: &str, count: usize) -> Result<()> {
         let conn = self.lock_conn()?;
         let count = usize_to_sqlite_i64(count, "chunk_count")?;
-        conn.execute(
+        let rows_affected = conn.execute(
             "UPDATE documents SET chunk_count = ?1, updated_at = datetime('now') WHERE id = ?2",
             params![count, id],
         )?;
-        Ok(())
+        ensure_document_updated(rows_affected, id)
     }
 
     /// Get document record
@@ -346,6 +356,27 @@ mod tests {
         );
         let doc = tracker.get_document("hash1")?.unwrap();
         assert_eq!(doc.chunk_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_updates_reject_missing_document() -> Result<()> {
+        let tracker = StateTracker::in_memory()?;
+
+        let state_result = tracker.update_state("missing", DocumentState::Parsing);
+        let error_result =
+            tracker.update_state_with_error("missing", DocumentState::Failed, "parse failed");
+        let count_result = tracker.update_chunk_count("missing", 3);
+
+        assert!(
+            matches!(state_result, Err(IngestionError::State(message)) if message.contains("does not exist"))
+        );
+        assert!(
+            matches!(error_result, Err(IngestionError::State(message)) if message.contains("does not exist"))
+        );
+        assert!(
+            matches!(count_result, Err(IngestionError::State(message)) if message.contains("does not exist"))
+        );
         Ok(())
     }
 
