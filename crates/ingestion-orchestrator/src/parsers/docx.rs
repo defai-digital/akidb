@@ -279,9 +279,11 @@ const COMMON_HEADER_LABELS: &[&str] = &[
     "description",
     "email",
     "file",
+    "first",
     "id",
     "key",
     "language",
+    "last",
     "name",
     "note",
     "notes",
@@ -501,6 +503,17 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_docx_table_preserves_name_header_value_pairs() {
+        let parser = DocxParser::new();
+        let data = minimal_docx_with_name_header_table();
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("First Name Alice"), "{}", result.text);
+        assert!(result.text.contains("Last Name Smith"), "{}", result.text);
+    }
+
+    #[test]
     fn test_parse_docx_table_preserves_uppercase_common_header_value_pairs() {
         let parser = DocxParser::new();
         let data = minimal_docx_with_uppercase_common_header_table();
@@ -639,6 +652,27 @@ mod tests {
       <w:tr>
         <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
         <w:tc><w:p><w:r><w:t>Premium</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+        )
+    }
+
+    fn minimal_docx_with_name_header_table() -> Vec<u8> {
+        minimal_docx_with_document_xml(
+            r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>First Name</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Last Name</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Alice</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Smith</w:t></w:r></w:p></w:tc>
       </w:tr>
     </w:tbl>
     <w:sectPr/>

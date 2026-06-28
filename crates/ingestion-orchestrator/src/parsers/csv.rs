@@ -205,9 +205,11 @@ const COMMON_HEADER_LABELS: &[&str] = &[
     "description",
     "email",
     "file",
+    "first",
     "id",
     "key",
     "language",
+    "last",
     "name",
     "note",
     "notes",
@@ -344,6 +346,17 @@ mod tests {
 
         assert!(result.text.contains("customer HGC"), "{}", result.text);
         assert!(result.text.contains("tier Premium"), "{}", result.text);
+    }
+
+    #[test]
+    fn test_parse_csv_preserves_name_header_value_pairs() {
+        let parser = CsvParser::new();
+        let data = b"First Name,Last Name\nAlice,Smith";
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("First Name Alice"), "{}", result.text);
+        assert!(result.text.contains("Last Name Smith"), "{}", result.text);
     }
 
     #[test]

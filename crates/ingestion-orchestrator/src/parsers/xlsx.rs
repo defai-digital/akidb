@@ -171,9 +171,11 @@ const COMMON_HEADER_LABELS: &[&str] = &[
     "description",
     "email",
     "file",
+    "first",
     "id",
     "key",
     "language",
+    "last",
     "name",
     "note",
     "notes",
@@ -383,6 +385,26 @@ mod tests {
 
         assert!(result.text.contains("customer HGC"), "{}", result.text);
         assert!(result.text.contains("tier Premium"), "{}", result.text);
+    }
+
+    #[test]
+    fn test_parse_xlsx_preserves_name_header_value_pairs() {
+        let parser = XlsxParser::new();
+        let data = minimal_xlsx_with_sheet_data(
+            r#"<row r="1">
+      <c r="A1" t="inlineStr"><is><t>First Name</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Last Name</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>Alice</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>Smith</t></is></c>
+    </row>"#,
+        );
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("First Name Alice"), "{}", result.text);
+        assert!(result.text.contains("Last Name Smith"), "{}", result.text);
     }
 
     #[test]
