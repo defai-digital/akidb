@@ -1451,7 +1451,13 @@ where
         };
 
         let lexical = if use_lexical {
-            self.lexical.read().search(&req.text, search_k)
+            let lexical = self.lexical.read();
+            let lexical_k = if metadata_filter.is_some() {
+                lexical.len().max(search_k)
+            } else {
+                search_k
+            };
+            lexical.search(&req.text, lexical_k)
         } else {
             Vec::new()
         };

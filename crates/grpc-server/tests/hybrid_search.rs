@@ -18,7 +18,10 @@ use akidb_graph::{
     NeighborRequest, NodeKind,
 };
 use akidb_grpc::proto::akidb_server::Akidb;
-use akidb_grpc::proto::{DeleteRequest, InsertRequest, TextSearchRequest};
+use akidb_grpc::proto::{
+    tag_filter::FilterType, tag_value::Value as TagVal, DeleteRequest, InsertRequest, TagCondition,
+    TagFilter, TagOperator, TagValue, TextSearchRequest,
+};
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
 use akidb_sql::SqliteMetadataIndex;
 use akidb_storage::{IdMapping, RocksDbBackend};
@@ -255,6 +258,106 @@ async fn test_retrieval_mode_bm25_does_not_require_embedding_provider() {
 
     let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(got, vec!["lexical"]);
+}
+
+#[tokio::test]
+async fn test_bm25_metadata_filter_applies_before_top_k_cutoff() {
+    let svc = setup_without_embedder();
+    insert(
+        &svc,
+        "tenant-a-strong",
+        vec![1.0, 0.0, 0.0],
+        "needle needle needle",
+        br#"{"tenant_id":"a"}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "tenant-b-match",
+        vec![0.0, 1.0, 0.0],
+        "needle",
+        br#"{"tenant_id":"b"}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"tenant_id":"b"}"#.to_vec(),
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 filter search failed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["tenant-b-match"]);
+}
+
+#[tokio::test]
+async fn test_bm25_tag_filter_applies_before_top_k_cutoff() {
+    let svc = setup_without_embedder();
+    insert(
+        &svc,
+        "team-a-strong",
+        vec![1.0, 0.0, 0.0],
+        "needle needle needle",
+        br#"{"team":"a"}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "team-b-match",
+        vec![0.0, 1.0, 0.0],
+        "needle",
+        br#"{"team":"b"}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: Some(TagFilter {
+                filter_type: Some(FilterType::Condition(TagCondition {
+                    key: "team".into(),
+                    value: Some(TagValue {
+                        value: Some(TagVal::Text("b".into())),
+                    }),
+                    op: TagOperator::TagOpEq as i32,
+                })),
+            }),
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 tag filter search failed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["team-b-match"]);
 }
 
 #[tokio::test]
