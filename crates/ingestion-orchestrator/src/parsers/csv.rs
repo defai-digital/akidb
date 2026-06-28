@@ -50,10 +50,15 @@ impl DocumentParser for CsvParser {
         let col_count;
 
         // Get headers
+        let headers: Vec<String>;
         match reader.headers() {
-            Ok(headers) => {
+            Ok(raw_headers) => {
+                headers = raw_headers
+                    .iter()
+                    .map(|header| header.to_string())
+                    .collect();
                 col_count = headers.len();
-                texts.push(headers.iter().collect::<Vec<_>>().join(" "));
+                texts.push(headers.join(" "));
             }
             Err(_) if data.is_empty() => {
                 return Ok(ParsedDocument {
@@ -82,7 +87,26 @@ impl DocumentParser for CsvParser {
             let record = result.map_err(|e| {
                 crate::IngestionError::Parse(format!("CSV record parse error: {}", e))
             })?;
-            texts.push(record.iter().collect::<Vec<_>>().join(" "));
+            let row_text = record
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, value)| {
+                    let value = value.trim();
+                    if value.is_empty() {
+                        return None;
+                    }
+                    let header = headers.get(idx).map(|s| s.trim()).unwrap_or_default();
+                    if header.is_empty() {
+                        Some(value.to_string())
+                    } else {
+                        Some(format!("{} {}", header, value))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !row_text.is_empty() {
+                texts.push(row_text);
+            }
             row_count += 1;
         }
 
@@ -128,6 +152,17 @@ mod tests {
         let result = parser.parse(data).unwrap();
         assert!(result.text.contains("Alice"));
         assert_eq!(result.format, DocumentFormat::Tsv);
+    }
+
+    #[test]
+    fn test_parse_csv_preserves_header_value_pairs_for_retrieval() {
+        let parser = CsvParser::new();
+        let data = b"customer,year,contract_amount\nHGC,2025,1200";
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("customer HGC"));
+        assert!(result.text.contains("year 2025"));
+        assert!(result.text.contains("contract_amount 1200"));
     }
 
     #[test]
