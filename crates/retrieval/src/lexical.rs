@@ -79,7 +79,7 @@ fn is_token_char(c: char) -> bool {
 }
 
 fn contains_semantic_token_char(token: &str) -> bool {
-    token.chars().any(|c| c.is_alphanumeric() || c == '_')
+    token.chars().any(char::is_alphanumeric)
 }
 
 fn identifier_subterms(raw: &str) -> Vec<String> {
@@ -382,6 +382,13 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenize_drops_underscore_only_runs() {
+        assert_eq!(tokenize("___"), Vec::<String>::new());
+        assert_eq!(tokenize("alpha ___ beta"), vec!["alpha", "beta"]);
+        assert_eq!(tokenize("__init__"), vec!["__init__", "init"]);
+    }
+
+    #[test]
     fn test_empty_index_returns_no_results() {
         let index = Bm25Index::new();
         assert!(index.is_empty());
@@ -443,6 +450,16 @@ mod tests {
 
         assert!(index.is_empty());
         assert!(index.search("---", 10).is_empty());
+    }
+
+    #[test]
+    fn test_underscore_only_document_is_not_indexed() {
+        let mut index = Bm25Index::new();
+
+        index.insert(id("separator"), "___ ___");
+
+        assert!(index.is_empty());
+        assert!(index.search("___", 10).is_empty());
     }
 
     #[test]
