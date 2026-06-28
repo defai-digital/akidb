@@ -449,17 +449,30 @@ where
             .ok_or_else(|| Status::invalid_argument("SQL metadata filter must be a JSON object"))?;
 
         for (key, value) in object {
-            if matches!(
-                value,
-                serde_json::Value::Array(_) | serde_json::Value::Object(_)
-            ) {
-                return Err(Status::invalid_argument(format!(
-                    "SQL metadata filter field '{key}' must be a scalar value"
-                )));
-            }
-            query = query.with_eq(key.clone(), value.clone());
+            query = Self::add_sql_legacy_predicate(query, key, value)?;
         }
         Ok(query)
+    }
+
+    fn add_sql_legacy_predicate(
+        query: MetadataQuery,
+        field: &str,
+        value: &serde_json::Value,
+    ) -> Result<MetadataQuery, Status> {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut query = query;
+                for (key, value) in map {
+                    let nested_field = format!("{field}.{key}");
+                    query = Self::add_sql_legacy_predicate(query, &nested_field, value)?;
+                }
+                Ok(query)
+            }
+            serde_json::Value::Array(_) => Err(Status::invalid_argument(format!(
+                "SQL metadata filter field '{field}' must be a scalar value"
+            ))),
+            _ => Ok(query.with_eq(field.to_string(), value.clone())),
+        }
     }
 
     fn sql_metadata_text_search(
@@ -1839,6 +1852,44 @@ mod tests {
             .unwrap();
     }
 
+    fn bm25_text_search_request(text: &str, top_k: u32) -> TextSearchRequest {
+        TextSearchRequest {
+            collection: "test".to_string(),
+            text: text.to_string(),
+            top_k,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".to_string(),
+        }
+    }
+
+    async fn insert_text(
+        service: &AkiDbService<MockIndex, RocksDbBackend>,
+        id: &str,
+        vector: Vec<f32>,
+        text: &str,
+    ) {
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: id.to_string(),
+                vector,
+                metadata: br#"{"source":"unit-test"}"#.to_vec(),
+                text: text.to_string(),
+            }))
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn test_dense_search_returns_durable_metadata() {
         let (service, _dir) = test_service();
@@ -1887,5 +1938,73 @@ mod tests {
         assert!(response.results[0].results[0]
             .metadata
             .contains("Annual Report"));
+    }
+
+    #[tokio::test]
+    async fn test_bm25_text_search_uses_inserted_source_text_without_embedding_provider() {
+        let (service, _dir) = test_service();
+        insert_text(
+            &service,
+            "doc-keyword",
+            vec![1.0, 0.0],
+            "rare_contract_keyword amount 2025",
+        )
+        .await;
+        insert_text(&service, "doc-other", vec![0.0, 1.0], "unrelated notes").await;
+
+        let response = service
+            .text_search(Request::new(bm25_text_search_request(
+                "rare_contract_keyword",
+                10,
+            )))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].id, "doc-keyword");
+    }
+
+    #[tokio::test]
+    async fn test_insert_empty_text_removes_previous_bm25_document() {
+        let (service, _dir) = test_service();
+        insert_text(&service, "doc1", vec![1.0, 0.0], "stale_contract_keyword").await;
+        insert_text(&service, "doc1", vec![0.0, 1.0], "").await;
+
+        let response = service
+            .text_search(Request::new(bm25_text_search_request(
+                "stale_contract_keyword",
+                10,
+            )))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(response.results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_removes_bm25_document() {
+        let (service, _dir) = test_service();
+        insert_text(&service, "doc1", vec![1.0, 0.0], "deleted_contract_keyword").await;
+
+        service
+            .delete(Request::new(DeleteRequest {
+                collection: "test".to_string(),
+                id: "doc1".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let response = service
+            .text_search(Request::new(bm25_text_search_request(
+                "deleted_contract_keyword",
+                10,
+            )))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(response.results.is_empty());
     }
 }

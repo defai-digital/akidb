@@ -516,6 +516,52 @@ async fn test_retrieval_mode_sql_matches_null_metadata_filter() {
 }
 
 #[tokio::test]
+async fn test_retrieval_mode_sql_applies_nested_legacy_metadata_filter() {
+    let svc = setup_with_sql();
+    insert(
+        &svc,
+        "contract-2025",
+        vec![1.0, 0.0, 0.0],
+        "",
+        br#"{"contract":{"customer":"HGC","year":2025,"amount":1200}}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "contract-2024",
+        vec![0.0, 1.0, 0.0],
+        "",
+        br#"{"contract":{"customer":"HGC","year":2024,"amount":900}}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "HGC contract amount".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"contract":{"customer":"HGC","year":2025}}"#.to_vec(),
+            tag_filter: None,
+            retrieval_mode: "sql".into(),
+        }))
+        .await
+        .expect("sql nested metadata text_search should succeed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["contract-2025"]);
+}
+
+#[tokio::test]
 async fn test_rebuild_sql_metadata_index_removes_deleted_vectors() {
     let dir = tempfile::tempdir().unwrap().keep();
     let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
