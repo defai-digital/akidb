@@ -3,12 +3,20 @@
 //! Content-hash based deduplication to prevent processing the same document twice.
 //! Persists processed hashes to SQLite to survive restarts.
 
-use sha2::{Sha256, Digest};
 use indexmap::IndexSet;
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Mutex, RwLock};
-use tracing::{info, warn, debug};
+use tracing::{info, warn};
+
+fn normalize_max_entries(max_entries: usize) -> usize {
+    max_entries.max(1)
+}
+
+fn sqlite_limit(max_entries: usize) -> Result<i64, String> {
+    i64::try_from(max_entries).map_err(|_| "max_entries exceeds SQLite LIMIT range".to_string())
+}
 
 /// Idempotency checker using content hashing with SQLite persistence
 ///
@@ -28,6 +36,7 @@ pub struct IdempotencyChecker {
 impl IdempotencyChecker {
     /// Create a new idempotency checker with SQLite persistence
     pub fn new_persistent<P: AsRef<Path>>(db_path: P, max_entries: usize) -> Result<Self, String> {
+        let max_entries = normalize_max_entries(max_entries);
         let conn = Connection::open(db_path.as_ref())
             .map_err(|e| format!("Failed to open idempotency database: {}", e))?;
 
@@ -38,22 +47,25 @@ impl IdempotencyChecker {
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             )",
             [],
-        ).map_err(|e| format!("Failed to create idempotency table: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to create idempotency table: {}", e))?;
 
         // Create index for efficient eviction
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_created_at ON processed_hashes(created_at)",
             [],
-        ).map_err(|e| format!("Failed to create index: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to create index: {}", e))?;
 
         // Load existing hashes from SQLite (ordered by creation time)
         let mut processed = IndexSet::new();
         {
-            let mut stmt = conn.prepare(
-                "SELECT hash FROM processed_hashes ORDER BY created_at ASC LIMIT ?"
-            ).map_err(|e| format!("Failed to prepare query: {}", e))?;
+            let mut stmt = conn
+                .prepare("SELECT hash FROM processed_hashes ORDER BY created_at ASC LIMIT ?")
+                .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
-            let rows = stmt.query_map([max_entries as i64], |row| row.get::<_, String>(0))
+            let rows = stmt
+                .query_map([sqlite_limit(max_entries)?], |row| row.get::<_, String>(0))
                 .map_err(|e| format!("Failed to query hashes: {}", e))?;
 
             for row in rows {
@@ -65,7 +77,10 @@ impl IdempotencyChecker {
 
         let loaded_count = processed.len();
         if loaded_count > 0 {
-            info!(count = loaded_count, "Loaded existing idempotency hashes from SQLite");
+            info!(
+                count = loaded_count,
+                "Loaded existing idempotency hashes from SQLite"
+            );
         }
 
         Ok(Self {
@@ -80,7 +95,7 @@ impl IdempotencyChecker {
         warn!("Creating in-memory idempotency checker (state will be lost on restart)");
         Self {
             processed: RwLock::new(IndexSet::new()),
-            max_entries,
+            max_entries: normalize_max_entries(max_entries),
             db: None,
         }
     }
@@ -113,7 +128,10 @@ impl IdempotencyChecker {
                 // unbounded and "evicted" hashes reappear after restart.
                 if let Some(ref db) = self.db {
                     if let Ok(conn) = db.lock() {
-                        if let Err(e) = conn.execute("DELETE FROM processed_hashes WHERE hash = ?", [&evicted_hash]) {
+                        if let Err(e) = conn.execute(
+                            "DELETE FROM processed_hashes WHERE hash = ?",
+                            [&evicted_hash],
+                        ) {
                             warn!(
                                 error = %e,
                                 hash = %evicted_hash,
@@ -156,7 +174,10 @@ impl IdempotencyChecker {
                     // FIX BUG-H056: Log SQLite eviction errors instead of silently ignoring
                     if let Some(ref db) = self.db {
                         if let Ok(conn) = db.lock() {
-                            if let Err(e) = conn.execute("DELETE FROM processed_hashes WHERE hash = ?", [&evicted_hash]) {
+                            if let Err(e) = conn.execute(
+                                "DELETE FROM processed_hashes WHERE hash = ?",
+                                [&evicted_hash],
+                            ) {
                                 warn!(
                                     error = %e,
                                     hash = %evicted_hash,
@@ -206,7 +227,9 @@ impl IdempotencyChecker {
 
         // FIX BUG-H028: Also clear SQLite table
         if let Some(ref db) = self.db {
-            let conn = db.lock().map_err(|e| format!("Failed to lock database: {}", e))?;
+            let conn = db
+                .lock()
+                .map_err(|e| format!("Failed to lock database: {}", e))?;
             conn.execute("DELETE FROM processed_hashes", [])
                 .map_err(|e| format!("Failed to clear idempotency table: {}", e))?;
             info!("Cleared all idempotency hashes from SQLite");
@@ -263,5 +286,37 @@ mod tests {
 
         // Should have evicted some entries
         assert!(checker.len() <= 10);
+    }
+
+    #[test]
+    fn test_zero_max_entries_is_normalized() {
+        let checker = IdempotencyChecker::new(0);
+
+        checker.mark_processed(b"content1");
+        checker.mark_processed(b"content2");
+        let (is_dup, _) = checker.check_and_mark(b"content2");
+
+        assert!(is_dup);
+        assert_eq!(checker.len(), 1);
+        assert!(checker.is_duplicate(b"content2"));
+    }
+
+    #[test]
+    fn test_persistent_zero_max_entries_is_normalized() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("idempotency.sqlite");
+
+        {
+            let checker = IdempotencyChecker::new_persistent(&db_path, 0).unwrap();
+            checker.mark_processed(b"content1");
+            checker.mark_processed(b"content2");
+
+            assert_eq!(checker.len(), 1);
+            assert!(checker.is_duplicate(b"content2"));
+        }
+
+        let reloaded = IdempotencyChecker::new_persistent(&db_path, 0).unwrap();
+        assert_eq!(reloaded.len(), 1);
+        assert!(reloaded.is_duplicate(b"content2"));
     }
 }
