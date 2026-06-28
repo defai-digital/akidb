@@ -140,6 +140,10 @@ impl CoordinatorService {
         Ok(())
     }
 
+    fn search_result_metadata(metadata: Option<serde_json::Value>) -> String {
+        metadata.map(|value| value.to_string()).unwrap_or_default()
+    }
+
     fn accumulate_shard_insert_response(
         vector_ids: &[String],
         response: InsertBatchResponse,
@@ -274,7 +278,7 @@ impl Akidb for CoordinatorService {
             .map(|r| ProtoSearchResult {
                 id: r.id.as_str().to_string(),
                 score: r.score,
-                metadata: String::new(),
+                metadata: Self::search_result_metadata(r.metadata),
             })
             .collect();
 
@@ -920,6 +924,19 @@ mod tests {
         let status = result.expect_err("zero nprobe should be rejected");
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("nprobe"));
+    }
+
+    #[test]
+    fn test_search_result_metadata_serializes_json_value() {
+        let metadata =
+            CoordinatorService::search_result_metadata(Some(serde_json::json!({"tenant": "a"})));
+
+        assert_eq!(metadata, r#"{"tenant":"a"}"#);
+    }
+
+    #[test]
+    fn test_search_result_metadata_empty_when_missing() {
+        assert_eq!(CoordinatorService::search_result_metadata(None), "");
     }
 
     #[tokio::test]

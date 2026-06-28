@@ -4,7 +4,9 @@ use crate::merger::ResultMerger;
 use crate::router::{ShardInfo, ShardRouter};
 use akidb_common::{AkiDbError, Result, SearchResult, VectorId};
 use akidb_grpc::proto::akidb_client::AkidbClient;
-use akidb_grpc::proto::{DeleteRequest, DeleteStatus, SearchRequest, UpdateRequest};
+use akidb_grpc::proto::{
+    DeleteRequest, DeleteStatus, SearchRequest, SearchResult as ProtoSearchResult, UpdateRequest,
+};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -55,6 +57,17 @@ fn shard_search_request(
         filter: vec![],
         tag_filter: None,
     }
+}
+
+fn shard_search_result(result: ProtoSearchResult) -> SearchResult {
+    let mut out = SearchResult::new(VectorId::new(result.id), result.score);
+    if !result.metadata.is_empty() {
+        out.metadata = Some(
+            serde_json::from_str(&result.metadata)
+                .unwrap_or_else(|_| serde_json::Value::String(result.metadata)),
+        );
+    }
+    out
 }
 
 /// Failure state for a single address
@@ -334,7 +347,7 @@ impl FanoutExecutor {
                             .into_inner()
                             .results
                             .into_iter()
-                            .map(|r| SearchResult::new(VectorId::new(r.id), r.score))
+                            .map(shard_search_result)
                             .collect();
                         Ok((shard_id, results))
                     }
@@ -820,6 +833,36 @@ mod tests {
         assert_eq!(request.query, vec![0.1, 0.2]);
         assert_eq!(request.top_k, 5);
         assert_eq!(request.nprobe, Some(32));
+    }
+
+    #[test]
+    fn test_shard_search_result_preserves_json_metadata() {
+        let result = shard_search_result(ProtoSearchResult {
+            id: "doc1".to_string(),
+            score: 0.9,
+            metadata: r#"{"tenant":"a","year":2026}"#.to_string(),
+        });
+
+        assert_eq!(result.id.as_str(), "doc1");
+        assert_eq!(result.score, 0.9);
+        assert_eq!(
+            result.metadata,
+            Some(serde_json::json!({"tenant": "a", "year": 2026}))
+        );
+    }
+
+    #[test]
+    fn test_shard_search_result_keeps_non_json_metadata_as_string() {
+        let result = shard_search_result(ProtoSearchResult {
+            id: "doc1".to_string(),
+            score: 0.9,
+            metadata: "raw metadata".to_string(),
+        });
+
+        assert_eq!(
+            result.metadata,
+            Some(serde_json::Value::String("raw metadata".to_string()))
+        );
     }
 
     #[test]
