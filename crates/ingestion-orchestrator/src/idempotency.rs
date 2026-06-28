@@ -57,21 +57,32 @@ impl IdempotencyChecker {
         )
         .map_err(|e| format!("Failed to create index: {}", e))?;
 
-        // Load existing hashes from SQLite (ordered by creation time)
+        // Load the newest hashes from SQLite, then restore in-memory order
+        // from oldest to newest so runtime eviction still removes the oldest.
         let mut processed = IndexSet::new();
         {
             let mut stmt = conn
-                .prepare("SELECT hash FROM processed_hashes ORDER BY created_at ASC LIMIT ?")
+                .prepare(
+                    "SELECT hash FROM processed_hashes
+                     ORDER BY created_at DESC, rowid DESC
+                     LIMIT ?",
+                )
                 .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
             let rows = stmt
                 .query_map([sqlite_limit(max_entries)?], |row| row.get::<_, String>(0))
                 .map_err(|e| format!("Failed to query hashes: {}", e))?;
 
+            let mut loaded_hashes = Vec::new();
             for row in rows {
                 if let Ok(hash) = row {
-                    processed.insert(hash);
+                    loaded_hashes.push(hash);
                 }
+            }
+
+            loaded_hashes.reverse();
+            for hash in loaded_hashes {
+                processed.insert(hash);
             }
         } // stmt is dropped here, releasing the borrow on conn
 
@@ -318,5 +329,46 @@ mod tests {
         let reloaded = IdempotencyChecker::new_persistent(&db_path, 0).unwrap();
         assert_eq!(reloaded.len(), 1);
         assert!(reloaded.is_duplicate(b"content2"));
+    }
+
+    #[test]
+    fn test_persistent_load_keeps_newest_hashes_when_db_exceeds_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("idempotency.sqlite");
+
+        {
+            let _checker = IdempotencyChecker::new_persistent(&db_path, 10).unwrap();
+        }
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute("DELETE FROM processed_hashes", []).unwrap();
+
+        for (content, created_at) in [
+            (b"old".as_slice(), 1_i64),
+            (b"middle".as_slice(), 2_i64),
+            (b"new".as_slice(), 3_i64),
+        ] {
+            let hash = IdempotencyChecker::hash_content(content);
+            conn.execute(
+                "INSERT INTO processed_hashes (hash, created_at) VALUES (?, ?)",
+                rusqlite::params![hash, created_at],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let checker = IdempotencyChecker::new_persistent(&db_path, 2).unwrap();
+
+        assert_eq!(checker.len(), 2);
+        assert!(!checker.is_duplicate(b"old"));
+        assert!(checker.is_duplicate(b"middle"));
+        assert!(checker.is_duplicate(b"new"));
+
+        checker.mark_processed(b"newer");
+
+        assert_eq!(checker.len(), 2);
+        assert!(!checker.is_duplicate(b"middle"));
+        assert!(checker.is_duplicate(b"new"));
+        assert!(checker.is_duplicate(b"newer"));
     }
 }
