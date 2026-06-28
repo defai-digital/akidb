@@ -79,6 +79,11 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "who calls",
             "what depends",
             "what imports",
+            "who imports",
+            "which imports",
+            "what files import",
+            "which files import",
+            "which modules import",
             "show call",
             "show calls",
             "show caller",
@@ -262,6 +267,20 @@ mod tests {
     #[test]
     fn test_import_query_phrase_enables_graph() {
         let trace = plan_query(&PlannerInput::new("list imports for kv_cache.rs"));
+        assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
+        assert!(trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_who_imports_query_enables_graph() {
+        let trace = plan_query(&PlannerInput::new("who imports kv_cache.rs"));
+        assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
+        assert!(trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_which_files_import_query_enables_graph() {
+        let trace = plan_query(&PlannerInput::new("which files import draft_model.rs"));
         assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
         assert!(trace.graph_enabled);
     }
