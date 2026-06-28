@@ -114,7 +114,7 @@ impl<T: Send + 'static> DynamicBatcher<T> {
         // instead of the remaining queue items. This caused the adaptive sizing algorithm
         // to make decisions based on wrong queue state.
         let collected = batch.len();
-        let remaining = self.pending_items.fetch_sub(collected, Ordering::SeqCst).saturating_sub(collected);
+        let remaining = saturating_sub_atomic(&self.pending_items, collected);
         self.queue_depth.store(remaining, Ordering::SeqCst);
 
         debug!(
@@ -141,6 +141,17 @@ fn normalize_config(config: BatcherConfig) -> BatcherConfig {
         min_batch,
         max_batch,
         timeout_ms: config.timeout_ms,
+    }
+}
+
+fn saturating_sub_atomic(value: &AtomicUsize, amount: usize) -> usize {
+    let mut current = value.load(Ordering::SeqCst);
+    loop {
+        let next = current.saturating_sub(amount);
+        match value.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return next,
+            Err(actual) => current = actual,
+        }
     }
 }
 
@@ -224,5 +235,23 @@ mod tests {
 
         batcher.update_queue_depth(1000);
         assert_eq!(batcher.optimal_size(), 64);
+    }
+
+    #[tokio::test]
+    async fn test_collect_batch_without_pending_increment_does_not_underflow() {
+        let mut batcher: DynamicBatcher<String> = DynamicBatcher::new(BatcherConfig {
+            min_batch: 1,
+            max_batch: 1,
+            timeout_ms: 1,
+        });
+        let sender = batcher.sender();
+        sender.send("one".to_string()).await.unwrap();
+
+        let batch = batcher.collect_batch().await;
+        assert_eq!(batch, vec!["one".to_string()]);
+        assert_eq!(batcher.current_queue_depth(), 0);
+
+        batcher.increment_pending();
+        assert_eq!(batcher.current_queue_depth(), 1);
     }
 }
