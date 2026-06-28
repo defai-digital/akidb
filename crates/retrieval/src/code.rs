@@ -702,13 +702,19 @@ fn python_decorator_block_reaches(lines: &[&str], start: usize, end: usize) -> b
         if trimmed.is_empty() {
             return false;
         }
-        for ch in trimmed.chars() {
-            match ch {
+        let chars: Vec<char> = trimmed.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                '"' | '\'' => {
+                    i = skip_python_string(&chars, i);
+                }
                 '(' | '[' | '{' => depth += 1,
                 ')' | ']' | '}' => depth = (depth - 1).max(0),
                 '#' if depth == 0 => break,
                 _ => {}
             }
+            i += 1;
         }
     }
     depth == 0
@@ -1206,6 +1212,22 @@ def contract_lookup(customer):
         assert!(chunks[0].text.contains("@router.get("));
         assert!(chunks[0].text.contains("\"/contracts/{customer}\""));
         assert!(chunks[0].text.contains("@requires_acl"));
+    }
+
+    #[test]
+    fn test_python_multiline_decorator_ignores_parens_inside_strings() {
+        let src = "\
+@router.get(
+    path=\"/contracts/(legacy\",
+)
+def contract_lookup():
+    return None
+";
+        let chunks = chunk_code(src, Language::Python);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].name.as_deref(), Some("contract_lookup"));
+        assert!(chunks[0].text.contains("@router.get("));
+        assert!(chunks[0].text.contains("/contracts/(legacy"));
     }
 
     #[test]
