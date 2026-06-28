@@ -139,6 +139,38 @@ impl CoordinatorService {
         }
         Ok(())
     }
+
+    fn accumulate_shard_insert_response(
+        vector_ids: &[String],
+        response: InsertBatchResponse,
+        total_inserted: &mut u32,
+        all_failed_ids: &mut Vec<String>,
+    ) {
+        let input_ids: std::collections::HashSet<&str> =
+            vector_ids.iter().map(String::as_str).collect();
+        let mut failed_seen = std::collections::HashSet::with_capacity(response.failed_ids.len());
+        let failed_ids_valid = response
+            .failed_ids
+            .iter()
+            .all(|id| input_ids.contains(id.as_str()) && failed_seen.insert(id.as_str()));
+        let counts_valid =
+            response.inserted_count as usize + response.failed_ids.len() == vector_ids.len();
+
+        if !failed_ids_valid || !counts_valid {
+            warn!(
+                inserted_count = response.inserted_count,
+                failed_count = response.failed_ids.len(),
+                expected_count = vector_ids.len(),
+                failed_ids = ?response.failed_ids,
+                "Shard batch insert returned inconsistent accounting; marking shard batch failed"
+            );
+            all_failed_ids.extend(vector_ids.iter().cloned());
+            return;
+        }
+
+        *total_inserted += response.inserted_count;
+        all_failed_ids.extend(response.failed_ids);
+    }
 }
 
 #[tonic::async_trait]
@@ -448,15 +480,20 @@ impl Akidb for CoordinatorService {
         // FIX BUG-HUNT-504: Use connection pool instead of creating new connections
         let collection = req.collection.clone();
         let mut handles = Vec::new();
+        let mut handle_vector_ids = Vec::new();
 
         for (shard_id, vectors) in shard_batches {
             let addr = match shard_addrs.get(&shard_id) {
                 Some(a) => a.clone(),
-                None => continue,
+                None => {
+                    unrouted_ids.extend(vectors.iter().map(|v| v.id.clone()));
+                    continue;
+                }
             };
             let coll = collection.clone();
             // FIX BUG-HUNT-402: Capture vector IDs before moving vectors into the task
             let vector_ids: Vec<String> = vectors.iter().map(|v| v.id.clone()).collect();
+            handle_vector_ids.push(vector_ids.clone());
             // FIX BUG-HUNT-504: Clone the fanout Arc to use connection pool in spawned task
             let fanout = self.fanout.clone();
 
@@ -488,12 +525,16 @@ impl Akidb for CoordinatorService {
         let mut total_inserted = 0u32;
         let mut all_failed_ids = unrouted_ids;
 
-        for handle in handles {
+        for (idx, handle) in handles.into_iter().enumerate() {
             match handle.await {
-                Ok((Ok(response), _vector_ids)) => {
+                Ok((Ok(response), vector_ids)) => {
                     let inner = response.into_inner();
-                    total_inserted += inner.inserted_count;
-                    all_failed_ids.extend(inner.failed_ids);
+                    Self::accumulate_shard_insert_response(
+                        &vector_ids,
+                        inner,
+                        &mut total_inserted,
+                        &mut all_failed_ids,
+                    );
                 }
                 Ok((Err(e), vector_ids)) => {
                     // FIX BUG-HUNT-402: Track all vector IDs from failed shard as failed
@@ -506,9 +547,13 @@ impl Akidb for CoordinatorService {
                     all_failed_ids.extend(vector_ids);
                 }
                 Err(e) => {
-                    warn!("Task join error: {}", e);
-                    // Note: We can't recover vector_ids here since the task panicked
-                    // This is a rare edge case (task panic) where data loss is unavoidable
+                    let vector_ids = &handle_vector_ids[idx];
+                    warn!(
+                        "Task join error during batch insert: {} - marking {} vectors as failed",
+                        e,
+                        vector_ids.len()
+                    );
+                    all_failed_ids.extend(vector_ids.iter().cloned());
                 }
             }
         }
@@ -907,5 +952,68 @@ mod tests {
         assert!(!response.success);
         assert_eq!(response.inserted_count, 0);
         assert_eq!(response.failed_ids, vec!["doc1"]);
+    }
+
+    #[test]
+    fn test_accumulate_shard_insert_response_accepts_consistent_accounting() {
+        let vector_ids = vec!["a".to_string(), "b".to_string()];
+        let mut total_inserted = 0;
+        let mut failed_ids = Vec::new();
+
+        CoordinatorService::accumulate_shard_insert_response(
+            &vector_ids,
+            InsertBatchResponse {
+                success: false,
+                inserted_count: 1,
+                failed_ids: vec!["b".to_string()],
+            },
+            &mut total_inserted,
+            &mut failed_ids,
+        );
+
+        assert_eq!(total_inserted, 1);
+        assert_eq!(failed_ids, vec!["b"]);
+    }
+
+    #[test]
+    fn test_accumulate_shard_insert_response_rejects_unknown_failed_id() {
+        let vector_ids = vec!["a".to_string(), "b".to_string()];
+        let mut total_inserted = 0;
+        let mut failed_ids = Vec::new();
+
+        CoordinatorService::accumulate_shard_insert_response(
+            &vector_ids,
+            InsertBatchResponse {
+                success: false,
+                inserted_count: 1,
+                failed_ids: vec!["missing".to_string()],
+            },
+            &mut total_inserted,
+            &mut failed_ids,
+        );
+
+        assert_eq!(total_inserted, 0);
+        assert_eq!(failed_ids, vector_ids);
+    }
+
+    #[test]
+    fn test_accumulate_shard_insert_response_rejects_inconsistent_counts() {
+        let vector_ids = vec!["a".to_string(), "b".to_string()];
+        let mut total_inserted = 0;
+        let mut failed_ids = Vec::new();
+
+        CoordinatorService::accumulate_shard_insert_response(
+            &vector_ids,
+            InsertBatchResponse {
+                success: true,
+                inserted_count: 1,
+                failed_ids: vec![],
+            },
+            &mut total_inserted,
+            &mut failed_ids,
+        );
+
+        assert_eq!(total_inserted, 0);
+        assert_eq!(failed_ids, vector_ids);
     }
 }
