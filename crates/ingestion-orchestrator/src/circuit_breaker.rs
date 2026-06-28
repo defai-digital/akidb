@@ -45,6 +45,7 @@ pub struct CircuitBreaker {
 impl CircuitBreaker {
     /// Create a new circuit breaker with the given configuration
     pub fn new(config: CircuitBreakerConfig) -> Self {
+        let config = normalize_config(config);
         Self {
             state: AtomicU8::new(CircuitState::Closed as u8),
             failure_count: AtomicUsize::new(0),
@@ -259,6 +260,14 @@ impl CircuitBreaker {
     }
 }
 
+fn normalize_config(config: CircuitBreakerConfig) -> CircuitBreakerConfig {
+    CircuitBreakerConfig {
+        failure_threshold: config.failure_threshold.max(1),
+        half_open_max_calls: config.half_open_max_calls.max(1),
+        ..config
+    }
+}
+
 /// Circuit breaker statistics
 #[derive(Debug, Clone)]
 pub struct CircuitBreakerStats {
@@ -327,5 +336,20 @@ mod tests {
         cb.reset();
         assert_eq!(cb.state(), CircuitState::Closed);
         assert!(cb.allow_request());
+    }
+
+    #[test]
+    fn test_zero_thresholds_are_normalized() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 0,
+            reset_timeout_secs: 0,
+            half_open_max_calls: 0,
+        });
+
+        assert!(cb.allow_request());
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+        assert!(cb.allow_request(), "zero half-open max calls should normalize to one");
+        assert_eq!(cb.state(), CircuitState::HalfOpen);
     }
 }
