@@ -740,6 +740,68 @@ async fn test_batch_insert_upsert_empty_text_removes_stale_bm25_document() {
 }
 
 #[tokio::test]
+async fn test_batch_insert_rejects_invalid_vectors_without_indexing_text() {
+    let svc = setup_without_embedder();
+
+    let resp = svc
+        .insert_batch(Request::new(InsertBatchRequest {
+            collection: "test".into(),
+            vectors: vec![
+                Vector {
+                    id: "".into(),
+                    embedding: vec![1.0, 0.0, 0.0],
+                    metadata: b"{}".to_vec(),
+                    text: "needle invalid empty id".into(),
+                },
+                Vector {
+                    id: "nan-vector".into(),
+                    embedding: vec![f32::NAN, 0.0, 0.0],
+                    metadata: b"{}".to_vec(),
+                    text: "needle invalid nan".into(),
+                },
+                Vector {
+                    id: "valid-vector".into(),
+                    embedding: vec![1.0, 0.0, 0.0],
+                    metadata: b"{}".to_vec(),
+                    text: "needle valid document".into(),
+                },
+            ],
+        }))
+        .await
+        .expect("batch insert should return partial failure")
+        .into_inner();
+
+    assert!(!resp.success);
+    assert_eq!(resp.inserted_count, 1);
+    assert_eq!(resp.failed_ids, vec!["", "nan-vector"]);
+
+    let search = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 search after partial batch insert failed")
+        .into_inner();
+
+    let got: Vec<&str> = search.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["valid-vector"]);
+}
+
+#[tokio::test]
 async fn test_pack_returns_cited_context() {
     let svc = setup();
     seed_disagreeing(&svc).await;

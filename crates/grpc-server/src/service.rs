@@ -364,6 +364,22 @@ where
         }
     }
 
+    fn validate_vector_payload(id: &str, vector: &[f32]) -> Result<(), &'static str> {
+        if id.is_empty() {
+            return Err("Vector ID cannot be empty");
+        }
+        if id.len() > 1024 {
+            return Err("Vector ID exceeds maximum length of 1024");
+        }
+        if vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err("Vector contains NaN or Infinity values");
+        }
+        if vector.is_empty() {
+            return Err("Vector cannot be empty");
+        }
+        Ok(())
+    }
+
     fn current_timestamp_ms() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1013,21 +1029,8 @@ where
         let vector: Vec<f32> = req.vector;
 
         // Validate input
-        if req.id.is_empty() {
-            return Err(Status::invalid_argument("Vector ID cannot be empty"));
-        }
-        if req.id.len() > 1024 {
-            return Err(Status::invalid_argument(
-                "Vector ID exceeds maximum length of 1024",
-            ));
-        }
-        if vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
-            return Err(Status::invalid_argument(
-                "Vector contains NaN or Infinity values",
-            ));
-        }
-        if vector.is_empty() {
-            return Err(Status::invalid_argument("Vector cannot be empty"));
+        if let Err(message) = Self::validate_vector_payload(&req.id, &vector) {
+            return Err(Status::invalid_argument(message));
         }
 
         let old_metadata = self
@@ -1349,6 +1352,15 @@ where
         let mut failed_ids = Vec::new();
 
         for vector in req.vectors {
+            if let Err(message) = Self::validate_vector_payload(&vector.id, &vector.embedding) {
+                warn!(
+                    "Batch insert: ID {} failed validation: {}",
+                    vector.id, message
+                );
+                failed_ids.push(vector.id);
+                continue;
+            }
+
             let vector_id = VectorId::new(&vector.id);
             let old_metadata = match self.id_mapping.get_vector(&vector_id) {
                 Ok(entry) => entry.map(|entry| entry.metadata),
