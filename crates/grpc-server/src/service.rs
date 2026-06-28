@@ -33,6 +33,10 @@ const FILE_REFERENCE_SUFFIXES: &[&str] = &[
     ".sql", ".go", ".java", ".c", ".cc", ".cpp", ".h", ".hpp",
 ];
 
+fn is_ascii_digits(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
+}
+
 /// Trait for embedding providers (implemented by coordinator's AxEngineEmbedding)
 pub trait EmbeddingProvider: Send + Sync {
     /// Generate embedding for text
@@ -709,9 +713,23 @@ where
                 .split(':')
                 .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
         {
+            return Some(end);
+        }
+        if Self::is_github_line_fragment(rest) {
             Some(end)
         } else {
             None
+        }
+    }
+
+    fn is_github_line_fragment(rest: &str) -> bool {
+        let Some(line) = rest.strip_prefix("#L") else {
+            return false;
+        };
+        if let Some((start, end)) = line.split_once("-L") {
+            is_ascii_digits(start) && is_ascii_digits(end)
+        } else {
+            is_ascii_digits(line)
         }
     }
 

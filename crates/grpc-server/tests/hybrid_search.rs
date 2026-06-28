@@ -1691,7 +1691,7 @@ async fn test_auto_graph_query_expands_file_metadata_seed() {
     let resp = svc
         .text_search(Request::new(TextSearchRequest {
             collection: "test".into(),
-            text: "who owns src/mtp_scheduler.rs:42".into(),
+            text: "who owns src/mtp_scheduler.rs#L42".into(),
             top_k: 1,
             nprobe: None,
             hybrid: true,
