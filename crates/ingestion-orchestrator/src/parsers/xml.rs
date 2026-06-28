@@ -51,7 +51,14 @@ impl DocumentParser for XmlParser {
                 }
                 Ok(Event::Start(e)) => {
                     element_count += 1;
-                    element_stack.push(element_name(e.name().as_ref()));
+                    let name = element_name(e.name().as_ref());
+                    texts.extend(attribute_texts(&name, &e));
+                    element_stack.push(name);
+                }
+                Ok(Event::Empty(e)) => {
+                    element_count += 1;
+                    let name = element_name(e.name().as_ref());
+                    texts.extend(attribute_texts(&name, &e));
                 }
                 Ok(Event::End(_)) => {
                     element_stack.pop();
@@ -100,6 +107,24 @@ fn text_with_current_element(element_stack: &[String], text: &str) -> String {
     }
 }
 
+fn attribute_texts(element: &str, start: &quick_xml::events::BytesStart<'_>) -> Vec<String> {
+    start
+        .attributes()
+        .filter_map(|attr| attr.ok())
+        .filter_map(|attr| {
+            let key = element_name(attr.key.as_ref());
+            let value = String::from_utf8_lossy(attr.value.as_ref())
+                .trim()
+                .to_string();
+            if key.is_empty() || value.is_empty() {
+                None
+            } else {
+                Some(format!("{} {} {}", element, key, value))
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +171,20 @@ mod tests {
         assert!(result.text.contains("customer HGC"));
         assert!(result.text.contains("year 2025"));
         assert!(result.text.contains("contract_amount 1200"));
+    }
+
+    #[test]
+    fn test_parse_xml_preserves_attribute_value_pairs_for_retrieval() {
+        let parser = XmlParser::new();
+        let data = br#"
+            <contracts>
+                <contract customer="HGC" year="2025" contract_amount="1200" />
+            </contracts>
+        "#;
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("contract customer HGC"));
+        assert!(result.text.contains("contract year 2025"));
+        assert!(result.text.contains("contract contract_amount 1200"));
     }
 }
