@@ -25,10 +25,11 @@ pub fn recall_at_k(retrieved: &[VectorId], relevant: &HashSet<VectorId>, k: usiz
     if relevant.is_empty() {
         return 0.0;
     }
+    let mut seen = HashSet::new();
     let hits = retrieved
         .iter()
         .take(k)
-        .filter(|id| relevant.contains(id))
+        .filter(|id| seen.insert((*id).clone()) && relevant.contains(id))
         .count();
     hits as f64 / relevant.len() as f64
 }
@@ -36,8 +37,9 @@ pub fn recall_at_k(retrieved: &[VectorId], relevant: &HashSet<VectorId>, k: usiz
 /// Normalized discounted cumulative gain at `k` for binary relevance.
 pub fn ndcg_at_k(retrieved: &[VectorId], relevant: &HashSet<VectorId>, k: usize) -> f64 {
     let mut dcg = 0.0;
+    let mut seen = HashSet::new();
     for (i, id) in retrieved.iter().take(k).enumerate() {
-        if relevant.contains(id) {
+        if seen.insert(id.clone()) && relevant.contains(id) {
             dcg += 1.0 / (((i + 2) as f64).log2());
         }
     }
@@ -119,9 +121,24 @@ fn brute_force_dense(query: &[f32], docs: &[(VectorId, Vec<f32>)], k: usize) -> 
 /// - `distractors`: irrelevant filler documents shared across queries
 /// - `dims`: embedding dimension
 /// - `k`: cutoff for metrics
-pub fn run_controlled_eval(num_queries: usize, distractors: usize, dims: usize, k: usize) -> EvalSummary {
+pub fn run_controlled_eval(
+    num_queries: usize,
+    distractors: usize,
+    dims: usize,
+    k: usize,
+) -> EvalSummary {
     const SEM_PER_Q: usize = 5;
     const LEX_PER_Q: usize = 5;
+    if num_queries == 0 {
+        return EvalSummary {
+            queries: 0,
+            k,
+            dense: Metrics::default(),
+            lexical: Metrics::default(),
+            hybrid: Metrics::default(),
+        };
+    }
+
     let mut rng = Lcg(0x9E3779B97F4A7C15);
 
     let mut docs: Vec<(VectorId, Vec<f32>)> = Vec::new(); // (id, embedding) for dense
@@ -131,7 +148,10 @@ pub fn run_controlled_eval(num_queries: usize, distractors: usize, dims: usize, 
     for d in 0..distractors {
         let id = VectorId::new(format!("distractor-{d}"));
         docs.push((id.clone(), rng.vector(dims)));
-        bm25.insert(id, "generic filler content about various unrelated subjects");
+        bm25.insert(
+            id,
+            "generic filler content about various unrelated subjects",
+        );
     }
 
     // Per-query relevant docs + the query themselves.
@@ -155,14 +175,20 @@ pub fn run_controlled_eval(num_queries: usize, distractors: usize, dims: usize, 
                 *x += rng.next_unit() * 0.05;
             }
             docs.push((id.clone(), normalize(emb)));
-            bm25.insert(id.clone(), "semantically related passage without the keyword");
+            bm25.insert(
+                id.clone(),
+                "semantically related passage without the keyword",
+            );
             relevant.insert(id);
         }
         // Lexical relevant: far embedding, text containing the rare term.
         for l in 0..LEX_PER_Q {
             let id = VectorId::new(format!("q{q}-lex-{l}"));
             docs.push((id.clone(), rng.vector(dims)));
-            bm25.insert(id.clone(), &format!("a passage mentioning {term} explicitly"));
+            bm25.insert(
+                id.clone(),
+                &format!("a passage mentioning {term} explicitly"),
+            );
             relevant.insert(id);
         }
         queries.push(Q {
@@ -199,9 +225,18 @@ pub fn run_controlled_eval(num_queries: usize, distractors: usize, dims: usize, 
     EvalSummary {
         queries: queries.len(),
         k,
-        dense: Metrics { recall: d_rec / n, ndcg: d_ndcg / n },
-        lexical: Metrics { recall: l_rec / n, ndcg: l_ndcg / n },
-        hybrid: Metrics { recall: h_rec / n, ndcg: h_ndcg / n },
+        dense: Metrics {
+            recall: d_rec / n,
+            ndcg: d_ndcg / n,
+        },
+        lexical: Metrics {
+            recall: l_rec / n,
+            ndcg: l_ndcg / n,
+        },
+        hybrid: Metrics {
+            recall: h_rec / n,
+            ndcg: h_ndcg / n,
+        },
     }
 }
 
@@ -229,12 +264,27 @@ mod tests {
     }
 
     #[test]
+    fn test_recall_at_k_deduplicates_retrieved_ids() {
+        let retrieved = ids(&["a", "a", "a"]);
+        let relevant = relset(&["a"]);
+
+        assert_eq!(recall_at_k(&retrieved, &relevant, 3), 1.0);
+    }
+
+    #[test]
     fn test_ndcg_perfect_and_zero() {
         let relevant = relset(&["a", "b"]);
         // perfect ranking
         assert!((ndcg_at_k(&ids(&["a", "b", "x"]), &relevant, 3) - 1.0).abs() < 1e-9);
         // nothing relevant retrieved
         assert_eq!(ndcg_at_k(&ids(&["x", "y"]), &relevant, 2), 0.0);
+    }
+
+    #[test]
+    fn test_ndcg_at_k_deduplicates_retrieved_ids() {
+        let relevant = relset(&["a"]);
+
+        assert_eq!(ndcg_at_k(&ids(&["a", "a", "a"]), &relevant, 3), 1.0);
     }
 
     #[test]
@@ -250,7 +300,9 @@ mod tests {
     fn test_hybrid_beats_single_retrievers() {
         // The gate: on the controlled corpus, hybrid recovers both the semantic
         // and lexical halves, so it must outperform either retriever alone.
-        let s = run_controlled_eval(/*queries*/ 15, /*distractors*/ 300, /*dims*/ 32, /*k*/ 10);
+        let s = run_controlled_eval(
+            /*queries*/ 15, /*distractors*/ 300, /*dims*/ 32, /*k*/ 10,
+        );
         assert!(
             s.hybrid.recall > s.dense.recall + 0.15,
             "hybrid recall {:.3} should clearly beat dense {:.3}",
@@ -264,5 +316,20 @@ mod tests {
             s.lexical.recall
         );
         assert!(s.hybrid.ndcg >= s.dense.ndcg && s.hybrid.ndcg >= s.lexical.ndcg);
+    }
+
+    #[test]
+    fn test_controlled_eval_zero_queries_returns_zero_metrics() {
+        let s = run_controlled_eval(
+            /*queries*/ 0, /*distractors*/ 10, /*dims*/ 8, /*k*/ 5,
+        );
+
+        assert_eq!(s.queries, 0);
+        assert_eq!(s.dense.recall, 0.0);
+        assert_eq!(s.lexical.recall, 0.0);
+        assert_eq!(s.hybrid.recall, 0.0);
+        assert_eq!(s.dense.ndcg, 0.0);
+        assert_eq!(s.lexical.ndcg, 0.0);
+        assert_eq!(s.hybrid.ndcg, 0.0);
     }
 }

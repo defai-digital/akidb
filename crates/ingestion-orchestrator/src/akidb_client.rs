@@ -4,18 +4,14 @@
 
 use std::time::{Duration, Instant};
 use tonic::transport::{Channel, Endpoint};
-use tracing::{debug, info, error, warn};
+use tracing::{debug, error, info, warn};
 
-use akidb_grpc::proto::{
-    self,
-    akidb_client::AkidbClient as GrpcClient,
-    InsertBatchRequest, InsertBatchResponse,
-    SearchRequest as GrpcSearchRequest,
-    HealthRequest,
-    Vector as ProtoVector,
-};
 use crate::config::AkiDbConfig;
 use crate::Result;
+use akidb_grpc::proto::{
+    akidb_client::AkidbClient as GrpcClient, HealthRequest, InsertBatchRequest,
+    InsertBatchResponse, SearchRequest as GrpcSearchRequest, Vector as ProtoVector,
+};
 
 /// Vector to insert into AkiDB
 #[derive(Debug, Clone)]
@@ -75,8 +71,9 @@ impl AkiDbClient {
             .timeout(self.timeout)
             .connect_timeout(Duration::from_secs(10));
 
-        let channel = endpoint.connect().await
-            .map_err(|e| crate::IngestionError::Storage(format!("Failed to connect to AkiDB: {}", e)))?;
+        let channel = endpoint.connect().await.map_err(|e| {
+            crate::IngestionError::Storage(format!("Failed to connect to AkiDB: {}", e))
+        })?;
 
         let client = GrpcClient::new(channel.clone());
 
@@ -95,9 +92,11 @@ impl AkiDbClient {
     /// Insert a single vector
     pub async fn insert(&self, vector: VectorInsert) -> Result<InsertResult> {
         let results = self.insert_batch(vec![vector]).await?;
-        results.results.into_iter().next().ok_or_else(|| {
-            crate::IngestionError::Storage("No result returned".to_string())
-        })
+        results
+            .results
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::IngestionError::Storage("No result returned".to_string()))
     }
 
     /// Insert a batch of vectors
@@ -115,9 +114,10 @@ impl AkiDbClient {
             });
         }
 
-        let client = self.client.as_ref().ok_or_else(|| {
-            crate::IngestionError::Storage("Not connected to AkiDB".to_string())
-        })?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| crate::IngestionError::Storage("Not connected to AkiDB".to_string()))?;
 
         debug!(count = total, collection = %self.collection, "Inserting vectors into AkiDB");
 
@@ -155,58 +155,39 @@ impl AkiDbClient {
 
         let inner = response.into_inner();
         let latency_ms = start.elapsed().as_millis() as u64;
-
-        // Build results from response
-        let failed_set: std::collections::HashSet<_> = inner.failed_ids.iter().collect();
-        let results: Vec<InsertResult> = vectors
-            .iter()
-            .map(|v| {
-                let failed = failed_set.contains(&v.id);
-                InsertResult {
-                    id: v.id.clone(),
-                    success: !failed,
-                    error: if failed {
-                        Some("Insert failed".to_string())
-                    } else {
-                        None
-                    },
-                }
-            })
-            .collect();
-
-        let successful = inner.inserted_count as usize;
-        let failed = total - successful;
+        let batch_result = build_batch_insert_result(&vectors, inner, latency_ms)?;
 
         debug!(
-            total,
-            successful,
-            failed,
-            latency_ms,
+            total = batch_result.total,
+            successful = batch_result.successful,
+            failed = batch_result.failed,
+            latency_ms = batch_result.latency_ms,
             "Batch insert completed"
         );
 
-        if !inner.success && !inner.failed_ids.is_empty() {
+        let failed_ids: Vec<_> = batch_result
+            .results
+            .iter()
+            .filter(|result| !result.success)
+            .map(|result| result.id.clone())
+            .collect();
+        if !failed_ids.is_empty() {
             warn!(
-                failed_count = inner.failed_ids.len(),
-                failed_ids = ?inner.failed_ids,
+                failed_count = failed_ids.len(),
+                failed_ids = ?failed_ids,
                 "Some vectors failed to insert"
             );
         }
 
-        Ok(BatchInsertResult {
-            total,
-            successful,
-            failed,
-            results,
-            latency_ms,
-        })
+        Ok(batch_result)
     }
 
     /// Search for similar vectors (for testing/validation)
     pub async fn search(&self, query: Vec<f32>, k: usize) -> Result<Vec<SearchResult>> {
-        let client = self.client.as_ref().ok_or_else(|| {
-            crate::IngestionError::Storage("Not connected to AkiDB".to_string())
-        })?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| crate::IngestionError::Storage("Not connected to AkiDB".to_string()))?;
 
         debug!(k, dim = query.len(), collection = %self.collection, "Searching AkiDB");
 
@@ -250,9 +231,10 @@ impl AkiDbClient {
     pub async fn ping(&self) -> Result<Duration> {
         let start = Instant::now();
 
-        let client = self.client.as_ref().ok_or_else(|| {
-            crate::IngestionError::Storage("Not connected to AkiDB".to_string())
-        })?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| crate::IngestionError::Storage("Not connected to AkiDB".to_string()))?;
 
         // Use the health check RPC to measure latency
         let request = tonic::Request::new(HealthRequest {});
@@ -272,6 +254,71 @@ impl AkiDbClient {
     }
 }
 
+fn build_batch_insert_result(
+    vectors: &[VectorInsert],
+    response: InsertBatchResponse,
+    latency_ms: u64,
+) -> Result<BatchInsertResult> {
+    let total = vectors.len();
+    let successful = response.inserted_count as usize;
+    if successful > total {
+        return Err(crate::IngestionError::Storage(format!(
+            "Invalid insert response: inserted_count {} exceeds request total {}",
+            successful, total
+        )));
+    }
+
+    let input_ids: std::collections::HashSet<_> =
+        vectors.iter().map(|vector| vector.id.as_str()).collect();
+    let mut failed_set = std::collections::HashSet::new();
+    for id in &response.failed_ids {
+        if !input_ids.contains(id.as_str()) {
+            return Err(crate::IngestionError::Storage(format!(
+                "Invalid insert response: failed id '{}' was not in the request",
+                id
+            )));
+        }
+        if !failed_set.insert(id.as_str()) {
+            return Err(crate::IngestionError::Storage(format!(
+                "Invalid insert response: duplicate failed id '{}'",
+                id
+            )));
+        }
+    }
+
+    let failed = failed_set.len();
+    if successful + failed != total {
+        return Err(crate::IngestionError::Storage(format!(
+            "Invalid insert response: inserted_count {} + failed_count {} != request total {}",
+            successful, failed, total
+        )));
+    }
+
+    let results: Vec<InsertResult> = vectors
+        .iter()
+        .map(|v| {
+            let failed = failed_set.contains(v.id.as_str());
+            InsertResult {
+                id: v.id.clone(),
+                success: !failed,
+                error: if failed {
+                    Some("Insert failed".to_string())
+                } else {
+                    None
+                },
+            }
+        })
+        .collect();
+
+    Ok(BatchInsertResult {
+        total,
+        successful,
+        failed,
+        results,
+        latency_ms,
+    })
+}
+
 /// Search result
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -283,6 +330,16 @@ pub struct SearchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn vector(id: &str) -> VectorInsert {
+        VectorInsert {
+            id: id.to_string(),
+            embedding: vec![0.1, 0.2],
+            metadata: HashMap::new(),
+            text: "text".to_string(),
+        }
+    }
 
     #[test]
     fn test_vector_insert() {
@@ -308,5 +365,71 @@ mod tests {
         };
         assert_eq!(result.total, 10);
         assert_eq!(result.successful, 8);
+    }
+
+    #[test]
+    fn test_build_batch_insert_result_rejects_inserted_count_overflow() {
+        let vectors = vec![vector("a")];
+        let response = InsertBatchResponse {
+            success: true,
+            inserted_count: 2,
+            failed_ids: vec![],
+        };
+
+        let result = build_batch_insert_result(&vectors, response, 10);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("exceeds request total"))
+        );
+    }
+
+    #[test]
+    fn test_build_batch_insert_result_rejects_unknown_failed_id() {
+        let vectors = vec![vector("a")];
+        let response = InsertBatchResponse {
+            success: false,
+            inserted_count: 0,
+            failed_ids: vec!["missing".to_string()],
+        };
+
+        let result = build_batch_insert_result(&vectors, response, 10);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("was not in the request"))
+        );
+    }
+
+    #[test]
+    fn test_build_batch_insert_result_requires_consistent_counts() {
+        let vectors = vec![vector("a"), vector("b")];
+        let response = InsertBatchResponse {
+            success: true,
+            inserted_count: 1,
+            failed_ids: vec![],
+        };
+
+        let result = build_batch_insert_result(&vectors, response, 10);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("request total"))
+        );
+    }
+
+    #[test]
+    fn test_build_batch_insert_result_maps_failed_ids() {
+        let vectors = vec![vector("a"), vector("b")];
+        let response = InsertBatchResponse {
+            success: false,
+            inserted_count: 1,
+            failed_ids: vec!["b".to_string()],
+        };
+
+        let result = build_batch_insert_result(&vectors, response, 10).unwrap();
+
+        assert_eq!(result.total, 2);
+        assert_eq!(result.successful, 1);
+        assert_eq!(result.failed, 1);
+        assert!(result.results[0].success);
+        assert!(!result.results[1].success);
     }
 }
