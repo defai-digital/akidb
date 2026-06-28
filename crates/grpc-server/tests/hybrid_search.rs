@@ -26,7 +26,7 @@ use akidb_grpc::proto::{
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
 use akidb_sql::SqliteMetadataIndex;
 use akidb_storage::{IdMapping, RocksDbBackend};
-use tonic::Request;
+use tonic::{Code, Request};
 
 const DIMS: usize = 3;
 
@@ -140,6 +140,35 @@ async fn search(
 
 fn ids(results: &[(String, String)]) -> Vec<String> {
     results.iter().map(|(id, _)| id.clone()).collect()
+}
+
+#[tokio::test]
+async fn test_text_search_rejects_whitespace_only_query() {
+    let svc = setup_without_embedder();
+
+    let err = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: " \n\t ".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect_err("whitespace-only TextSearch should be rejected");
+
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert!(err.message().contains("Text cannot be empty"));
 }
 
 /// Three documents arranged so dense and lexical disagree:

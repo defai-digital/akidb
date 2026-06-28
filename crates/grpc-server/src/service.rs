@@ -1700,7 +1700,7 @@ where
         let start = Instant::now();
         let req = request.into_inner();
 
-        if req.text.is_empty() {
+        if req.text.trim().is_empty() {
             return Err(Status::invalid_argument("Text cannot be empty"));
         }
         if req.top_k == 0 {
