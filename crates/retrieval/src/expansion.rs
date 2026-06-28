@@ -79,7 +79,10 @@ where
             None => (m.id.to_string(), m.text.clone()),
         };
 
-        if seen.iter().any(|s| s == &resolved_id) {
+        if let Some(existing) = out.iter_mut().find(|p| p.id.as_str() == resolved_id) {
+            if m.score > existing.score {
+                existing.score = m.score;
+            }
             continue; // already represented (best-ranked occurrence wins)
         }
         seen.push(resolved_id.clone());
@@ -140,6 +143,25 @@ mod tests {
         assert_eq!(
             out[0].score, 0.9,
             "keeps the best-ranked occurrence's score"
+        );
+    }
+
+    #[test]
+    fn test_siblings_dedup_updates_parent_to_later_higher_score() {
+        let p = parents();
+        let matched = [
+            MatchedChunk::new(id("c1"), Some("P1".into()), "snippet a", 0.3),
+            MatchedChunk::new(id("c2"), Some("P1".into()), "snippet b", 0.9),
+        ];
+
+        let out = expand_to_parents(&matched, |pid| p.get(pid).cloned());
+
+        assert_eq!(out.len(), 1, "siblings collapse to one parent");
+        assert_eq!(out[0].id, id("P1"));
+        assert_eq!(out[0].text, "full parent one context");
+        assert_eq!(
+            out[0].score, 0.9,
+            "parent score must reflect the best matching child even when it appears later"
         );
     }
 
