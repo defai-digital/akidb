@@ -142,10 +142,24 @@ def build_placement(
 
 
 def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
-    nodes = normalize_nodes(read_json(args.nodes))
+    if args.input:
+        measurements = read_json(args.input)
+        require(isinstance(measurements, dict), "--input must be a JSON object")
+        require("nodes" in measurements, "--input missing nodes")
+        require("links" in measurements, "--input missing links")
+        require("failure_tests" in measurements, "--input missing failure_tests")
+        raw_nodes = measurements["nodes"]
+        raw_links = measurements["links"]
+        raw_failure_tests = measurements["failure_tests"]
+    else:
+        raw_nodes = read_json(args.nodes)
+        raw_links = read_json(args.links)
+        raw_failure_tests = read_json(args.failure_tests)
+
+    nodes = normalize_nodes(raw_nodes)
     node_ids = {str(node["id"]) for node in nodes}
-    links = normalize_links(read_json(args.links), node_ids)
-    failure_tests = normalize_failure_tests(read_json(args.failure_tests))
+    links = normalize_links(raw_links, node_ids)
+    failure_tests = normalize_failure_tests(raw_failure_tests)
     throughput_ratio = args.cell_qps / args.one_mac_qps
 
     return {
@@ -223,14 +237,22 @@ def write_template(path: Path) -> None:
         ],
         "links": [
             {
-                "from": "mac-1",
-                "to": "mac-2",
+                "from": source,
+                "to": target,
                 "transport": "thunderbolt",
                 "healthy": True,
                 "latency_p95_us": 120.0,
                 "bandwidth_gbps": 20.0,
                 "packet_loss_percent": 0.0,
             }
+            for source, target in [
+                ("mac-1", "mac-2"),
+                ("mac-1", "mac-3"),
+                ("mac-1", "mac-4"),
+                ("mac-2", "mac-3"),
+                ("mac-2", "mac-4"),
+                ("mac-3", "mac-4"),
+            ]
         ],
         "failure_tests": [
             {
@@ -264,6 +286,7 @@ def validate(output: Path, allow_heterogeneous: bool) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write-template", type=Path, help="Write input template JSON and exit")
+    parser.add_argument("--input", type=Path, help="Combined JSON input with nodes, links, and failure_tests")
     parser.add_argument("--output", type=Path, help="Output artifact path")
     parser.add_argument("--nodes", type=Path, help="JSON list of four node inventory objects")
     parser.add_argument("--links", type=Path, help="JSON list of six Thunderbolt link measurements")
@@ -290,14 +313,24 @@ def main() -> int:
             print(args.write_template)
             return 0
 
-        required_paths = {
-            "--output": args.output,
-            "--nodes": args.nodes,
-            "--links": args.links,
-            "--failure-tests": args.failure_tests,
-        }
+        required_paths = {"--output": args.output}
+        if args.input is None:
+            required_paths.update(
+                {
+                    "--nodes": args.nodes,
+                    "--links": args.links,
+                    "--failure-tests": args.failure_tests,
+                }
+            )
         for name, value in required_paths.items():
             require(value is not None, f"{name} is required unless --write-template is used")
+        if args.input is not None:
+            for name, value in {
+                "--nodes": args.nodes,
+                "--links": args.links,
+                "--failure-tests": args.failure_tests,
+            }.items():
+                require(value is None, f"{name} cannot be combined with --input")
         for name in ["one_mac_qps", "cell_qps", "cell_p95_ms", "cell_p99_ms"]:
             require(getattr(args, name) is not None, f"--{name.replace('_', '-')} is required")
         require(args.one_mac_qps > 0, "--one-mac-qps must be > 0")

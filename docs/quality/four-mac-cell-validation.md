@@ -22,16 +22,18 @@ link measurements, and failure-test results, build and validate the artifact:
 
 ```bash
 python3 scripts/build-four-mac-cell-artifact.py \
-  --nodes docs/reports/four-mac-nodes.json \
-  --links docs/reports/four-mac-links.json \
-  --failure-tests docs/reports/four-mac-failure-tests.json \
-  --one-mac-qps 1000 \
+  --input docs/reports/four-mac-input-template.json \
+  --one-mac-qps 586.434 \
   --cell-qps 2600 \
   --cell-p95-ms 45 \
   --cell-p99-ms 90 \
   --output docs/reports/four-mac-cell-YYYYMMDD.json \
   --validate
 ```
+
+The builder also supports split measured-input files with `--nodes`,
+`--links`, and `--failure-tests` when the collection workflow stores those
+measurements separately.
 
 The validator checks:
 
@@ -98,4 +100,6 @@ Example artifact shape:
 ```
 
 The example omits five of the six required Thunderbolt links for brevity; a real
-artifact must include every pair.
+artifact must include every pair. The generated input template includes all six
+node pairs so it can be used directly with `--input` after replacing the example
+measurements.

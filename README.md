@@ -255,10 +255,11 @@ Build an artifact from measured node, link, failure-test, and benchmark inputs:
 
 ```bash
 python3 scripts/build-four-mac-cell-artifact.py \
-  --nodes docs/reports/four-mac-nodes.json \
-  --links docs/reports/four-mac-links.json \
-  --failure-tests docs/reports/four-mac-failure-tests.json \
-  --one-mac-qps 1000 \
+  --write-template docs/reports/four-mac-input-template.json
+
+python3 scripts/build-four-mac-cell-artifact.py \
+  --input docs/reports/four-mac-input-template.json \
+  --one-mac-qps 586.434 \
   --cell-qps 2600 \
   --cell-p95-ms 45 \
   --cell-p99-ms 90 \
