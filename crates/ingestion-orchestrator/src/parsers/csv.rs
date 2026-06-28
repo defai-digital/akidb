@@ -64,7 +64,7 @@ impl DocumentParser for CsvParser {
             .collect();
         let col_count = non_empty_rows
             .iter()
-            .map(|cells| cells.len())
+            .map(|cells| cells.iter().filter(|cell| cell.is_some()).count())
             .max()
             .unwrap_or(0);
 
@@ -355,6 +355,17 @@ mod tests {
     fn test_parse_csv_ignores_empty_wide_rows_for_header_detection() {
         let parser = CsvParser::new();
         let data = b",,,\ncustomer\nHGC";
+
+        let result = parser.parse(data).unwrap();
+
+        assert_eq!(result.text, "customer\ncustomer HGC");
+        assert_eq!(result.metadata.extra.unwrap()["columns"], 1);
+    }
+
+    #[test]
+    fn test_parse_csv_ignores_trailing_empty_cells_for_header_detection() {
+        let parser = CsvParser::new();
+        let data = b"customer,,,\nHGC,,,";
 
         let result = parser.parse(data).unwrap();
 

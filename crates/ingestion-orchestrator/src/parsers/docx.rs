@@ -139,7 +139,7 @@ impl DocxParser {
             .collect();
         let table_cols = non_empty_rows
             .iter()
-            .map(|cells| cells.len())
+            .map(|cells| cells.iter().filter(|cell| cell.is_some()).count())
             .max()
             .unwrap_or(0);
 
@@ -517,6 +517,16 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_docx_table_ignores_trailing_empty_cells_for_header_detection() {
+        let parser = DocxParser::new();
+        let data = minimal_docx_with_trailing_empty_cells_single_column_table();
+
+        let result = parser.parse(&data).unwrap();
+
+        assert_eq!(result.text, "customer\ncustomer HGC");
+    }
+
+    #[test]
     fn test_parse_docx_table_preserves_name_header_value_pairs() {
         let parser = DocxParser::new();
         let data = minimal_docx_with_name_header_table();
@@ -691,6 +701,31 @@ mod tests {
       </w:tr>
       <w:tr>
         <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+        )
+    }
+
+    fn minimal_docx_with_trailing_empty_cells_single_column_table() -> Vec<u8> {
+        minimal_docx_with_document_xml(
+            r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>customer</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p/></w:tc>
+        <w:tc><w:p/></w:tc>
+        <w:tc><w:p/></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p/></w:tc>
+        <w:tc><w:p/></w:tc>
+        <w:tc><w:p/></w:tc>
       </w:tr>
     </w:tbl>
     <w:sectPr/>

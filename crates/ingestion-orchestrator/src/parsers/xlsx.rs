@@ -45,7 +45,7 @@ impl DocumentParser for XlsxParser {
                     .collect();
                 let sheet_cols = sheet_rows
                     .iter()
-                    .map(|cells| cells.len())
+                    .map(|cells| cells.iter().filter(|cell| cell.is_some()).count())
                     .max()
                     .unwrap_or(0);
                 total_cols = total_cols.max(sheet_cols);
@@ -341,6 +341,30 @@ mod tests {
     </row>
     <row r="3">
       <c r="A3" t="inlineStr"><is><t>HGC</t></is></c>
+    </row>"#,
+        );
+
+        let result = parser.parse(&data).unwrap();
+
+        assert_eq!(result.text, "customer\ncustomer HGC");
+        assert_eq!(result.metadata.extra.unwrap()["columns"], 1);
+    }
+
+    #[test]
+    fn test_parse_xlsx_ignores_trailing_empty_cells_for_header_detection() {
+        let parser = XlsxParser::new();
+        let data = minimal_xlsx_with_sheet_data(
+            r#"<row r="1">
+      <c r="A1" t="inlineStr"><is><t>customer</t></is></c>
+      <c r="B1"/>
+      <c r="C1"/>
+      <c r="D1"/>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>HGC</t></is></c>
+      <c r="B2"/>
+      <c r="C2"/>
+      <c r="D2"/>
     </row>"#,
         );
 
