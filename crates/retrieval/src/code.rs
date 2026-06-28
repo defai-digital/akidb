@@ -208,8 +208,9 @@ fn impl_name(t: &str) -> Option<String> {
 fn rust_block_end(lines: &[&str], start: usize) -> usize {
     let mut depth: i32 = 0;
     let mut opened = false;
+    let mut in_block_comment = false;
     for (offset, line) in lines[start..].iter().enumerate() {
-        let scan = rust_brace_scan(line);
+        let scan = rust_brace_scan_with_state(line, &mut in_block_comment);
         if scan.saw_open {
             opened = true;
         }
@@ -231,15 +232,29 @@ struct RustBraceScan {
     saw_open: bool,
 }
 
-fn rust_brace_scan(line: &str) -> RustBraceScan {
+fn rust_brace_scan_with_state(line: &str, in_block_comment: &mut bool) -> RustBraceScan {
     let chars: Vec<char> = line.chars().collect();
     let mut delta = 0;
     let mut saw_open = false;
     let mut i = 0;
 
     while i < chars.len() {
+        if *in_block_comment {
+            if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                *in_block_comment = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
         match chars[i] {
             '/' if chars.get(i + 1) == Some(&'/') => break,
+            '/' if chars.get(i + 1) == Some(&'*') => {
+                *in_block_comment = true;
+                i += 1;
+            }
             '"' => {
                 i = skip_rust_string(&chars, i);
             }
@@ -259,10 +274,6 @@ fn rust_brace_scan(line: &str) -> RustBraceScan {
     }
 
     RustBraceScan { delta, saw_open }
-}
-
-fn rust_brace_delta(line: &str) -> i32 {
-    rust_brace_scan(line).delta
 }
 
 fn skip_rust_string(chars: &[char], start: usize) -> usize {
@@ -316,6 +327,7 @@ fn chunk_rust(source: &str) -> Vec<CodeChunk> {
     let lines: Vec<&str> = source.lines().collect();
     let mut chunks = Vec::new();
     let mut depth: i32 = 0;
+    let mut in_block_comment = false;
     let mut i = 0;
     while i < lines.len() {
         let trimmed = lines[i].trim_start();
@@ -335,7 +347,7 @@ fn chunk_rust(source: &str) -> Vec<CodeChunk> {
                 continue;
             }
         }
-        depth += rust_brace_delta(lines[i]);
+        depth += rust_brace_scan_with_state(lines[i], &mut in_block_comment).delta;
         i += 1;
     }
     chunks
@@ -486,6 +498,27 @@ fn second() {
         assert_eq!(names, vec!["first", "second"]);
         assert_eq!(chunks[0].end_line, 3);
         assert_eq!(chunks[1].start_line, 5);
+    }
+
+    #[test]
+    fn test_rust_braces_inside_block_comments_do_not_break_scanning() {
+        let src = "\
+fn first() {
+    /*
+     * comment contains }
+     */
+    let value = 1;
+}
+
+fn second() {}";
+        let chunks = chunk_code(src, Language::Rust);
+        let names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| chunk.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["first", "second"]);
+        assert!(chunks[0].text.contains("let value = 1;"));
+        assert_eq!(chunks[1].start_line, 8);
     }
 
     #[test]
