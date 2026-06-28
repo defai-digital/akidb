@@ -9,6 +9,8 @@ use tracing::debug;
 
 use crate::config::BatcherConfig;
 
+const MAX_NORMALIZED_BATCH_SIZE: usize = 1_000_000;
+
 /// Dynamic batcher that adjusts batch size based on load
 pub struct DynamicBatcher<T> {
     config: BatcherConfig,
@@ -24,7 +26,8 @@ impl<T: Send + 'static> DynamicBatcher<T> {
     /// Create a new dynamic batcher
     pub fn new(config: BatcherConfig) -> Self {
         let config = normalize_config(config);
-        let (sender, receiver) = mpsc::channel(config.max_batch * 4);
+        let channel_capacity = config.max_batch.saturating_mul(4);
+        let (sender, receiver) = mpsc::channel(channel_capacity);
 
         Self {
             config,
@@ -134,8 +137,11 @@ impl<T: Send + 'static> DynamicBatcher<T> {
 }
 
 fn normalize_config(config: BatcherConfig) -> BatcherConfig {
-    let min_batch = config.min_batch.max(1);
-    let max_batch = config.max_batch.max(min_batch);
+    let min_batch = config.min_batch.max(1).min(MAX_NORMALIZED_BATCH_SIZE);
+    let max_batch = config
+        .max_batch
+        .max(min_batch)
+        .min(MAX_NORMALIZED_BATCH_SIZE);
 
     BatcherConfig {
         min_batch,
@@ -235,6 +241,19 @@ mod tests {
 
         batcher.update_queue_depth(1000);
         assert_eq!(batcher.optimal_size(), 64);
+    }
+
+    #[test]
+    fn test_extreme_batch_sizes_do_not_overflow_channel_capacity() {
+        let result = std::panic::catch_unwind(|| {
+            DynamicBatcher::<String>::new(BatcherConfig {
+                min_batch: usize::MAX,
+                max_batch: usize::MAX,
+                timeout_ms: 100,
+            })
+        });
+
+        assert!(result.is_ok(), "extreme batch sizes should be clamped");
     }
 
     #[tokio::test]
