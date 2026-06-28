@@ -99,7 +99,10 @@ pub fn mmr(items: &[MmrItem], lambda: f32, top_k: usize) -> Vec<ScoredId> {
         })
         .unwrap();
     let first = remaining.remove(first_idx);
-    out.push(ScoredId::new(first.id.clone(), finite_score(first.relevance)));
+    out.push(ScoredId::new(
+        first.id.clone(),
+        finite_score(first.relevance),
+    ));
     selected.push(first);
 
     while out.len() < top_k && !remaining.is_empty() {
@@ -112,8 +115,7 @@ pub fn mmr(items: &[MmrItem], lambda: f32, top_k: usize) -> Vec<ScoredId> {
                 .fold(f32::NEG_INFINITY, f32::max);
             let score = lambda * finite_score(cand.relevance) - (1.0 - lambda) * max_sim;
             let better = score > best_score
-                || (score == best_score
-                    && cand.id.as_str() < remaining[best_idx].id.as_str());
+                || (score == best_score && cand.id.as_str() < remaining[best_idx].id.as_str());
             if better {
                 best_score = score;
                 best_idx = i;
@@ -179,7 +181,7 @@ impl Reranker for LexicalOverlapReranker {
             t
         };
 
-        let mut scored: Vec<ScoredId> = items
+        let mut scored: Vec<(ScoredId, f32)> = items
             .into_iter()
             .map(|item| {
                 let score = if query_terms.is_empty() {
@@ -192,17 +194,18 @@ impl Reranker for LexicalOverlapReranker {
                         .count();
                     hits as f32 / query_terms.len() as f32
                 };
-                ScoredId::new(item.id, score)
+                (ScoredId::new(item.id, score), finite_score(item.score))
             })
             .collect();
 
         scored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
+            b.0.score
+                .partial_cmp(&a.0.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+                .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| a.0.id.as_str().cmp(b.0.id.as_str()))
         });
-        scored
+        scored.into_iter().map(|(hit, _)| hit).collect()
     }
 }
 
@@ -342,6 +345,19 @@ mod tests {
         assert!((out[0].score - 1.0).abs() < 1e-6); // both terms
         assert!((out[1].score - 0.5).abs() < 1e-6); // one of two
         assert_eq!(out[2].score, 0.0); // none
+    }
+
+    #[test]
+    fn test_lexical_overlap_ties_use_original_score() {
+        let items = vec![
+            RerankItem::new(id("z_high"), "token", 0.9),
+            RerankItem::new(id("a_low"), "token", 0.1),
+        ];
+
+        let out = LexicalOverlapReranker.rerank("token", items);
+
+        let order: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(order, vec!["z_high", "a_low"]);
     }
 
     #[test]
