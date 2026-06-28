@@ -33,20 +33,43 @@ impl DocumentParser for CsvParser {
 
         let mut texts = Vec::new();
         let mut row_count = 0;
-        let mut col_count = 0;
+        let col_count;
 
         // Get headers
-        if let Ok(headers) = reader.headers() {
-            col_count = headers.len();
-            texts.push(headers.iter().collect::<Vec<_>>().join(" "));
+        match reader.headers() {
+            Ok(headers) => {
+                col_count = headers.len();
+                texts.push(headers.iter().collect::<Vec<_>>().join(" "));
+            }
+            Err(_) if data.is_empty() => {
+                return Ok(ParsedDocument {
+                    text: String::new(),
+                    metadata: DocumentMetadata {
+                        word_count: Some(0),
+                        extra: Some(serde_json::json!({
+                            "rows": 0,
+                            "columns": 0,
+                        })),
+                        ..Default::default()
+                    },
+                    format: DocumentFormat::Csv,
+                });
+            }
+            Err(e) => {
+                return Err(crate::IngestionError::Parse(format!(
+                    "CSV header parse error: {}",
+                    e
+                )));
+            }
         }
 
         // Get rows
         for result in reader.records() {
-            if let Ok(record) = result {
-                texts.push(record.iter().collect::<Vec<_>>().join(" "));
-                row_count += 1;
-            }
+            let record = result.map_err(|e| {
+                crate::IngestionError::Parse(format!("CSV record parse error: {}", e))
+            })?;
+            texts.push(record.iter().collect::<Vec<_>>().join(" "));
+            row_count += 1;
         }
 
         let text = texts.join("\n");
@@ -90,5 +113,15 @@ mod tests {
         let data = b"name\tage\nAlice\t30";
         let result = parser.parse(data).unwrap();
         assert!(result.text.contains("Alice"));
+    }
+
+    #[test]
+    fn test_malformed_csv_returns_error() {
+        let parser = CsvParser::new();
+        let data = b"name,comment\nAlice,\xFF";
+
+        let result = parser.parse(data);
+
+        assert!(result.is_err());
     }
 }
