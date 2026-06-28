@@ -482,6 +482,43 @@ async fn test_bm25_tag_filter_applies_before_top_k_cutoff() {
 }
 
 #[tokio::test]
+async fn test_text_search_rejects_unknown_tag_operator() {
+    let svc = setup_without_embedder();
+
+    let err = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: Some(TagFilter {
+                filter_type: Some(FilterType::Condition(TagCondition {
+                    key: "team".into(),
+                    value: Some(TagValue {
+                        value: Some(TagVal::Text("b".into())),
+                    }),
+                    op: 999,
+                })),
+            }),
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect_err("unknown tag operator should be rejected");
+
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert!(err.message().contains("unknown tag operator"));
+}
+
+#[tokio::test]
 async fn test_bm25_tag_filter_matches_nested_metadata_path() {
     let svc = setup_without_embedder();
     insert(

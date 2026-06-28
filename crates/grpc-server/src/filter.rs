@@ -52,6 +52,9 @@ impl MetadataFilter {
 
         // An empty tag filter (no `filter_type`) is treated as "no tag filter".
         let tag = tag_filter.filter(|t| t.filter_type.is_some());
+        if let Some(tag) = &tag {
+            validate_tag_filter(tag)?;
+        }
 
         if legacy.is_none() && tag.is_none() {
             Ok(None)
@@ -78,6 +81,24 @@ impl MetadataFilter {
             }
         }
         true
+    }
+}
+
+fn validate_tag_filter(filter: &TagFilter) -> Result<(), String> {
+    match filter.filter_type.as_ref() {
+        Some(FilterType::And(and)) => and.filters.iter().try_for_each(validate_tag_filter),
+        Some(FilterType::Or(or)) => or.filters.iter().try_for_each(validate_tag_filter),
+        Some(FilterType::Not(not)) => not
+            .filter
+            .as_deref()
+            .map(validate_tag_filter)
+            .unwrap_or(Ok(())),
+        Some(FilterType::Condition(cond)) => {
+            TagOperator::try_from(cond.op)
+                .map(|_| ())
+                .map_err(|_| format!("unknown tag operator: {}", cond.op))
+        }
+        None => Ok(()),
     }
 }
 
@@ -563,6 +584,22 @@ mod tests {
         assert!(mf.matches(&json!({"lang":"rust","score":90.0})));
         assert!(!mf.matches(&json!({"lang":"rust","score":50.0})));
         assert!(!mf.matches(&json!({"lang":"go","score":90.0})));
+    }
+
+    #[test]
+    fn test_build_rejects_unknown_tag_operator() {
+        let tag = TagFilter {
+            filter_type: Some(FilterType::Condition(TagCondition {
+                key: "score".to_string(),
+                value: Some(TagValue {
+                    value: Some(TagVal::Number(70.0)),
+                }),
+                op: 999,
+            })),
+        };
+
+        let err = MetadataFilter::build(&[], Some(tag)).unwrap_err();
+        assert!(err.contains("unknown tag operator"));
     }
 
     #[test]
