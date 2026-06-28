@@ -68,3 +68,24 @@ def detect_format(filename: str) -> DocumentFormat:
     }
 
     return format_map.get(ext, DocumentFormat.UNKNOWN)
+
+
+def table_rows_to_retrieval_text(headers: list[str], rows: list[list[str]]) -> str:
+    """Render table content as header/value text for retrieval."""
+    parts: list[str] = []
+    header_text = " ".join(cell.strip() for cell in headers if cell.strip())
+    if header_text:
+        parts.append(header_text)
+
+    for row in rows:
+        row_parts: list[str] = []
+        for idx, value in enumerate(row):
+            value = value.strip()
+            if not value:
+                continue
+            header = headers[idx].strip() if idx < len(headers) else ""
+            row_parts.append(f"{header} {value}" if header else value)
+        if row_parts:
+            parts.append(" ".join(row_parts))
+
+    return "\n".join(parts)

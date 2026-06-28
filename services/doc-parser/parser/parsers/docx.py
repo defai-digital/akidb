@@ -8,7 +8,7 @@ from typing import Any
 import structlog
 
 from parser.models import DocumentFormat, ImageRef, ParsedDocument, TableData
-from parser.parsers.base import BaseParser
+from parser.parsers.base import BaseParser, table_rows_to_retrieval_text
 
 logger = structlog.get_logger()
 
@@ -102,24 +102,3 @@ class DocxParser(BaseParser):
             images=images,
             parse_time_ms=parse_time_ms,
         )
-
-
-def table_rows_to_retrieval_text(headers: list[str], rows: list[list[str]]) -> str:
-    """Render table content as header/value text for retrieval."""
-    parts: list[str] = []
-    header_text = " ".join(cell.strip() for cell in headers if cell.strip())
-    if header_text:
-        parts.append(header_text)
-
-    for row in rows:
-        row_parts: list[str] = []
-        for idx, value in enumerate(row):
-            value = value.strip()
-            if not value:
-                continue
-            header = headers[idx].strip() if idx < len(headers) else ""
-            row_parts.append(f"{header} {value}" if header else value)
-        if row_parts:
-            parts.append(" ".join(row_parts))
-
-    return "\n".join(parts)

@@ -1,5 +1,6 @@
 """PDF document parser using pdfplumber and pypdf."""
 
+import importlib
 import io
 import time
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 import structlog
 
 from parser.models import DocumentFormat, ImageRef, ParsedDocument, TableData
-from parser.parsers.base import BaseParser
+from parser.parsers.base import BaseParser, table_rows_to_retrieval_text
 
 logger = structlog.get_logger()
 
@@ -22,12 +23,11 @@ class PdfParser(BaseParser):
     def is_available(self) -> bool:
         """Check if pdfplumber is available."""
         try:
-            import pdfplumber
-            import pypdf
-
-            return True
+            importlib.import_module("pdfplumber")
+            importlib.import_module("pypdf")
         except ImportError:
             return False
+        return True
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         """Parse PDF content and extract text, tables, and metadata."""
@@ -77,6 +77,9 @@ class PdfParser(BaseParser):
                             tables.append(
                                 TableData(headers=headers, rows=rows, page=page_num + 1)
                             )
+                            table_text = table_rows_to_retrieval_text(headers, rows)
+                            if table_text:
+                                text_parts.append(table_text)
 
                     # Track images
                     for img_idx, img in enumerate(page.images):
