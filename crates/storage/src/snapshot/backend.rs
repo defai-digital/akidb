@@ -10,6 +10,96 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
+const SNAPSHOT_METADATA_FILE: &str = "metadata.json";
+
+fn validate_snapshot_id(snapshot_id: &str) -> Result<()> {
+    if snapshot_id.is_empty() {
+        return Err(AkiDbError::InvalidParameter(
+            "Snapshot id cannot be empty".to_string(),
+        ));
+    }
+
+    if snapshot_id == "." || snapshot_id == ".." {
+        return Err(AkiDbError::InvalidParameter(format!(
+            "Invalid snapshot id: {}",
+            snapshot_id
+        )));
+    }
+
+    if !snapshot_id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(AkiDbError::InvalidParameter(format!(
+            "Invalid snapshot id: {}",
+            snapshot_id
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_snapshot_file_path(relative_path: &str) -> Result<()> {
+    if relative_path.is_empty() {
+        return Err(AkiDbError::InvalidParameter(
+            "Snapshot file path cannot be empty".to_string(),
+        ));
+    }
+
+    if relative_path.contains('\0') {
+        return Err(AkiDbError::InvalidParameter(
+            "Path contains null byte".to_string(),
+        ));
+    }
+
+    let path = std::path::Path::new(relative_path);
+    if path.is_absolute() {
+        return Err(AkiDbError::InvalidParameter(format!(
+            "Absolute snapshot file path rejected: {}",
+            relative_path
+        )));
+    }
+
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                return Err(AkiDbError::InvalidParameter(format!(
+                    "Path traversal detected: {}",
+                    relative_path
+                )));
+            }
+            std::path::Component::Normal(name) => {
+                if name == SNAPSHOT_METADATA_FILE {
+                    return Err(AkiDbError::InvalidParameter(format!(
+                        "Reserved snapshot file path rejected: {}",
+                        relative_path
+                    )));
+                }
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(AkiDbError::InvalidParameter(format!(
+                    "Absolute snapshot file path rejected: {}",
+                    relative_path
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn snapshot_metadata_id_from_key(key: &str) -> Option<&str> {
+    let rest = key.strip_prefix("snapshots/")?;
+    let (snapshot_id, path) = rest.split_once('/')?;
+
+    if snapshot_id.is_empty() || path != SNAPSHOT_METADATA_FILE {
+        return None;
+    }
+
+    Some(snapshot_id)
+}
+
 /// Metadata about a snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotMetadata {
@@ -101,18 +191,13 @@ impl LocalSnapshotBackend {
     }
 
     fn metadata_path(&self, snapshot_id: &str) -> PathBuf {
-        self.snapshot_dir(snapshot_id).join("metadata.json")
+        self.snapshot_dir(snapshot_id).join(SNAPSHOT_METADATA_FILE)
     }
 
     /// FIX BUG-054: Validate that a file path stays within the snapshot directory
     /// This prevents path traversal attacks like "../../../etc/passwd"
     fn validate_path(&self, snapshot_dir: &std::path::Path, relative_path: &str) -> Result<PathBuf> {
-        // Reject paths with null bytes (common attack vector)
-        if relative_path.contains('\0') {
-            return Err(AkiDbError::InvalidParameter(
-                "Path contains null byte".to_string(),
-            ));
-        }
+        validate_snapshot_file_path(relative_path)?;
 
         // Normalize path components to catch traversal attempts
         let file_path = snapshot_dir.join(relative_path);
@@ -156,6 +241,11 @@ impl LocalSnapshotBackend {
 #[async_trait]
 impl SnapshotBackend for LocalSnapshotBackend {
     async fn save(&self, metadata: &SnapshotMetadata, files: Vec<SnapshotFile>) -> Result<String> {
+        validate_snapshot_id(&metadata.id)?;
+        for file in &files {
+            validate_snapshot_file_path(&file.path)?;
+        }
+
         let snapshot_dir = self.snapshot_dir(&metadata.id);
 
         // Create directory
@@ -190,6 +280,7 @@ impl SnapshotBackend for LocalSnapshotBackend {
     }
 
     async fn load(&self, snapshot_id: &str) -> Result<(SnapshotMetadata, Vec<SnapshotFile>)> {
+        validate_snapshot_id(snapshot_id)?;
         let snapshot_dir = self.snapshot_dir(snapshot_id);
 
         // Use async exists check to avoid blocking the runtime
@@ -228,7 +319,11 @@ impl SnapshotBackend for LocalSnapshotBackend {
                     stack.push(path);
                 } else if file_type.is_file() {
                     // Skip metadata.json
-                    if path.file_name().map(|n| n == "metadata.json").unwrap_or(false) {
+                    if path
+                        .file_name()
+                        .map(|n| n == SNAPSHOT_METADATA_FILE)
+                        .unwrap_or(false)
+                    {
                         continue;
                     }
 
@@ -284,7 +379,7 @@ impl SnapshotBackend for LocalSnapshotBackend {
                 continue;
             }
 
-            let metadata_path = path.join("metadata.json");
+            let metadata_path = path.join(SNAPSHOT_METADATA_FILE);
             // Use async exists check
             if !tokio::fs::try_exists(&metadata_path).await.unwrap_or(false) {
                 continue;
@@ -314,6 +409,7 @@ impl SnapshotBackend for LocalSnapshotBackend {
     }
 
     async fn delete(&self, snapshot_id: &str) -> Result<()> {
+        validate_snapshot_id(snapshot_id)?;
         let snapshot_dir = self.snapshot_dir(snapshot_id);
 
         // Use async exists check to avoid blocking the runtime
@@ -330,6 +426,7 @@ impl SnapshotBackend for LocalSnapshotBackend {
     }
 
     async fn exists(&self, snapshot_id: &str) -> Result<bool> {
+        validate_snapshot_id(snapshot_id)?;
         // Use async exists check to avoid blocking the runtime
         Ok(tokio::fs::try_exists(self.metadata_path(snapshot_id)).await.unwrap_or(false))
     }
@@ -575,12 +672,17 @@ impl S3SnapshotBackend {
 #[async_trait]
 impl SnapshotBackend for S3SnapshotBackend {
     async fn save(&self, metadata: &SnapshotMetadata, files: Vec<SnapshotFile>) -> Result<String> {
+        validate_snapshot_id(&metadata.id)?;
+        for file in &files {
+            validate_snapshot_file_path(&file.path)?;
+        }
+
         // Save metadata
         let metadata_json = serde_json::to_string_pretty(metadata).map_err(|e| {
             AkiDbError::Internal(format!("Failed to serialize metadata: {}", e))
         })?;
         self.put_object(
-            &self.object_key(&metadata.id, "metadata.json"),
+            &self.object_key(&metadata.id, SNAPSHOT_METADATA_FILE),
             metadata_json.as_bytes(),
         )
         .await?;
@@ -596,9 +698,10 @@ impl SnapshotBackend for S3SnapshotBackend {
     }
 
     async fn load(&self, snapshot_id: &str) -> Result<(SnapshotMetadata, Vec<SnapshotFile>)> {
+        validate_snapshot_id(snapshot_id)?;
         // Load metadata
         let metadata_bytes = self
-            .get_object(&self.object_key(snapshot_id, "metadata.json"))
+            .get_object(&self.object_key(snapshot_id, SNAPSHOT_METADATA_FILE))
             .await?;
         let metadata: SnapshotMetadata = serde_json::from_slice(&metadata_bytes)
             .map_err(|e| AkiDbError::Internal(format!("Failed to parse metadata: {}", e)))?;
@@ -610,25 +713,25 @@ impl SnapshotBackend for S3SnapshotBackend {
         // Load all files (except metadata.json)
         let mut files = Vec::new();
         for key in keys {
-            // Skip metadata.json
-            if key.ends_with("metadata.json") {
+            // Extract relative path from key
+            let Some(relative_path) = key.strip_prefix(&prefix) else {
+                warn!("Ignoring S3 snapshot object outside prefix {}: {}", prefix, key);
+                continue;
+            };
+
+            if relative_path.is_empty() {
                 continue;
             }
 
-            // Extract relative path from key
-            let relative_path = key
-                .strip_prefix(&prefix)
-                .unwrap_or(&key)
-                .to_string();
-
-            if relative_path.is_empty() {
+            // Skip only the root metadata object, not files such as notmetadata.json.
+            if relative_path == SNAPSHOT_METADATA_FILE {
                 continue;
             }
 
             match self.get_object(&key).await {
                 Ok(data) => {
                     files.push(SnapshotFile {
-                        path: relative_path,
+                        path: relative_path.to_string(),
                         data,
                     });
                 }
@@ -652,16 +755,9 @@ impl SnapshotBackend for S3SnapshotBackend {
         let mut seen_ids = std::collections::HashSet::new();
 
         for key in keys {
-            if !key.ends_with("metadata.json") {
+            let Some(snapshot_id) = snapshot_metadata_id_from_key(&key) else {
                 continue;
-            }
-
-            // Extract snapshot ID from key like "snapshots/{id}/metadata.json"
-            let parts: Vec<&str> = key.split('/').collect();
-            if parts.len() < 2 {
-                continue;
-            }
-            let snapshot_id = parts[1];
+            };
 
             // Skip if we've already processed this snapshot
             if seen_ids.contains(snapshot_id) {
@@ -697,6 +793,7 @@ impl SnapshotBackend for S3SnapshotBackend {
     }
 
     async fn delete(&self, snapshot_id: &str) -> Result<()> {
+        validate_snapshot_id(snapshot_id)?;
         // FIX BUG-048: Use tombstone approach for atomic deletion
         // 1. Create a deletion marker first (marks intent to delete)
         // 2. Delete all objects
@@ -751,8 +848,9 @@ impl SnapshotBackend for S3SnapshotBackend {
     }
 
     async fn exists(&self, snapshot_id: &str) -> Result<bool> {
+        validate_snapshot_id(snapshot_id)?;
         match self
-            .get_object(&self.object_key(snapshot_id, "metadata.json"))
+            .get_object(&self.object_key(snapshot_id, SNAPSHOT_METADATA_FILE))
             .await
         {
             Ok(_) => Ok(true),
@@ -836,6 +934,66 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[test]
+    fn test_snapshot_id_validation_rejects_path_segments() {
+        assert!(validate_snapshot_id("snap-2026.06.28_ok").is_ok());
+
+        for snapshot_id in ["", ".", "..", "../escape", "nested/snap", "nested\\snap", "snap:1"] {
+            assert!(
+                matches!(
+                    validate_snapshot_id(snapshot_id),
+                    Err(AkiDbError::InvalidParameter(_))
+                ),
+                "snapshot id should be rejected: {snapshot_id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_snapshot_file_path_validation_rejects_reserved_metadata() {
+        assert!(validate_snapshot_file_path("index.bin").is_ok());
+        assert!(validate_snapshot_file_path("data/vectors.bin").is_ok());
+
+        for path in [
+            "",
+            "metadata.json",
+            "data/metadata.json",
+            "../outside.bin",
+            "data/../outside.bin",
+            "/tmp/outside.bin",
+        ] {
+            assert!(
+                matches!(
+                    validate_snapshot_file_path(path),
+                    Err(AkiDbError::InvalidParameter(_))
+                ),
+                "snapshot file path should be rejected: {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_snapshot_metadata_key_parser_requires_exact_root_metadata_object() {
+        assert_eq!(
+            snapshot_metadata_id_from_key("snapshots/snap-1/metadata.json"),
+            Some("snap-1")
+        );
+
+        for key in [
+            "snapshots/snap-1/notmetadata.json",
+            "snapshots/snap-1/data/metadata.json",
+            "snapshots/snap-1/metadata.json.bak",
+            "snapshots//metadata.json",
+            "other/snap-1/metadata.json",
+        ] {
+            assert_eq!(
+                snapshot_metadata_id_from_key(key),
+                None,
+                "key should not be treated as snapshot metadata: {key:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_local_snapshot_save_load() {
         let temp_dir = TempDir::new().unwrap();
@@ -871,6 +1029,38 @@ mod tests {
         // Delete
         backend.delete(&snapshot_id).await.unwrap();
         assert!(!backend.exists(&snapshot_id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_local_snapshot_rejects_metadata_file_overwrite() {
+        let temp_dir = TempDir::new().unwrap();
+        let backend = LocalSnapshotBackend::new(temp_dir.path());
+
+        let metadata = SnapshotMetadata::new("test-collection");
+        let snapshot_dir = temp_dir.path().join(&metadata.id);
+        let files = vec![SnapshotFile {
+            path: "metadata.json".to_string(),
+            data: b"not snapshot metadata".to_vec(),
+        }];
+
+        let err = backend.save(&metadata, files).await.unwrap_err();
+        assert!(matches!(err, AkiDbError::InvalidParameter(_)));
+        assert!(
+            !snapshot_dir.exists(),
+            "invalid snapshot file should not leave a partial snapshot directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_local_snapshot_rejects_traversal_snapshot_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let backend = LocalSnapshotBackend::new(temp_dir.path());
+
+        let mut metadata = SnapshotMetadata::new("test-collection");
+        metadata.id = "../escape".to_string();
+
+        let err = backend.save(&metadata, vec![]).await.unwrap_err();
+        assert!(matches!(err, AkiDbError::InvalidParameter(_)));
     }
 
     #[tokio::test]
