@@ -83,7 +83,11 @@ async fn test_unknown_method_returns_error() {
 #[tokio::test]
 async fn test_notification_yields_no_response() {
     let svc = setup();
-    let resp = handle_request(&svc, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).await;
+    let resp = handle_request(
+        &svc,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+    )
+    .await;
     assert!(resp.is_none());
 }
 
@@ -122,7 +126,10 @@ async fn test_memory_write_then_read_roundtrip() {
     )
     .await;
     let other_text = other["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(!other_text.contains("m1"), "conversation scoping leaked: {other_text}");
+    assert!(
+        !other_text.contains("m1"),
+        "conversation scoping leaked: {other_text}"
+    );
 }
 
 #[tokio::test]
@@ -148,7 +155,27 @@ async fn test_search_and_pack_tools() {
     )
     .await;
     let packed = pack["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(packed.contains("needle in the haystack"), "pack content: {packed}");
+    assert!(
+        packed.contains("needle in the haystack"),
+        "pack content: {packed}"
+    );
+}
+
+#[tokio::test]
+async fn test_tool_integer_arguments_reject_overflow() {
+    let svc = setup();
+    let search = call(
+        &svc,
+        r#"{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"search","arguments":{"query":"needle","top_k":18446744073709551615}}}"#,
+    )
+    .await;
+
+    assert_eq!(search["result"]["isError"], true);
+    let text = search["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("top_k") && text.contains("u32"),
+        "expected top_k overflow error, got: {text}"
+    );
 }
 
 #[tokio::test]
@@ -166,10 +193,19 @@ async fn test_status_tool() {
 #[tokio::test]
 async fn test_status_tool_reports_graph_stats_when_configured() {
     let (svc, graph) = setup_with_graph();
-    graph.upsert_node(GraphNode::new("chunk:a", NodeKind::Chunk)).unwrap();
-    graph.upsert_node(GraphNode::new("chunk:b", NodeKind::Chunk)).unwrap();
     graph
-        .upsert_edge(GraphEdge::new("ab", "chunk:a", "chunk:b", EdgeKind::RelatedTo))
+        .upsert_node(GraphNode::new("chunk:a", NodeKind::Chunk))
+        .unwrap();
+    graph
+        .upsert_node(GraphNode::new("chunk:b", NodeKind::Chunk))
+        .unwrap();
+    graph
+        .upsert_edge(GraphEdge::new(
+            "ab",
+            "chunk:a",
+            "chunk:b",
+            EdgeKind::RelatedTo,
+        ))
         .unwrap();
 
     let v = call(

@@ -80,8 +80,7 @@ fn ok_response(id: Value, result: Value) -> String {
 }
 
 fn error_response(id: Value, code: i64, message: &str) -> String {
-    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-        .to_string()
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }).to_string()
 }
 
 fn initialize_result() -> Value {
@@ -158,7 +157,11 @@ fn tool_definitions() -> Value {
     ])
 }
 
-async fn call_tool<I, S>(service: &AkiDbService<I, S>, name: &str, args: &Value) -> Result<String, String>
+async fn call_tool<I, S>(
+    service: &AkiDbService<I, S>,
+    name: &str,
+    args: &Value,
+) -> Result<String, String>
 where
     I: VectorIndex + 'static,
     S: StorageBackend + 'static,
@@ -177,11 +180,23 @@ fn arg_str(args: &Value, key: &str) -> Option<String> {
     args.get(key).and_then(|v| v.as_str()).map(String::from)
 }
 
-fn arg_u32(args: &Value, key: &str, default: u32) -> u32 {
-    args.get(key).and_then(|v| v.as_u64()).map(|n| n as u32).unwrap_or(default)
+fn arg_u32(args: &Value, key: &str, default: u32) -> Result<u32, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(default);
+    };
+    let Some(n) = value.as_u64() else {
+        return Err(format!("'{key}' must be a non-negative integer"));
+    };
+    u32::try_from(n).map_err(|_| format!("'{key}' exceeds u32 range"))
 }
 
-fn text_search_request(text: String, top_k: u32, hybrid: bool, pack: bool, budget: Option<u32>) -> TextSearchRequest {
+fn text_search_request(
+    text: String,
+    top_k: u32,
+    hybrid: bool,
+    pack: bool,
+    budget: Option<u32>,
+) -> TextSearchRequest {
     TextSearchRequest {
         collection: COLLECTION.to_string(),
         text,
@@ -207,10 +222,12 @@ where
     S: StorageBackend + 'static,
 {
     let query = arg_str(args, "query").ok_or("missing 'query'")?;
-    let top_k = arg_u32(args, "top_k", 10);
+    let top_k = arg_u32(args, "top_k", 10)?;
     let hybrid = args.get("hybrid").and_then(|v| v.as_bool()).unwrap_or(true);
     let resp = service
-        .text_search(Request::new(text_search_request(query, top_k, hybrid, false, None)))
+        .text_search(Request::new(text_search_request(
+            query, top_k, hybrid, false, None,
+        )))
         .await
         .map_err(|e| e.message().to_string())?
         .into_inner();
@@ -228,17 +245,26 @@ where
     S: StorageBackend + 'static,
 {
     let query = arg_str(args, "query").ok_or("missing 'query'")?;
-    let top_k = arg_u32(args, "top_k", 10);
-    let budget = arg_u32(args, "token_budget", 1024);
+    let top_k = arg_u32(args, "top_k", 10)?;
+    let budget = arg_u32(args, "token_budget", 1024)?;
     let resp = service
-        .text_search(Request::new(text_search_request(query, top_k, true, true, Some(budget))))
+        .text_search(Request::new(text_search_request(
+            query,
+            top_k,
+            true,
+            true,
+            Some(budget),
+        )))
         .await
         .map_err(|e| e.message().to_string())?
         .into_inner();
     Ok(resp.context_pack)
 }
 
-async fn tool_memory_write<I, S>(service: &AkiDbService<I, S>, args: &Value) -> Result<String, String>
+async fn tool_memory_write<I, S>(
+    service: &AkiDbService<I, S>,
+    args: &Value,
+) -> Result<String, String>
 where
     I: VectorIndex + 'static,
     S: StorageBackend + 'static,
@@ -278,13 +304,16 @@ where
     Ok(format!("stored memory '{id}'"))
 }
 
-async fn tool_memory_read<I, S>(service: &AkiDbService<I, S>, args: &Value) -> Result<String, String>
+async fn tool_memory_read<I, S>(
+    service: &AkiDbService<I, S>,
+    args: &Value,
+) -> Result<String, String>
 where
     I: VectorIndex + 'static,
     S: StorageBackend + 'static,
 {
     let query = arg_str(args, "query").ok_or("missing 'query'")?;
-    let top_k = arg_u32(args, "top_k", 10);
+    let top_k = arg_u32(args, "top_k", 10)?;
     let vector = service.embed_text(&query)?;
 
     // Scope to a conversation when provided, via a typed tag filter.
