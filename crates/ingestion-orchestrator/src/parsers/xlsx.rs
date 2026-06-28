@@ -35,15 +35,20 @@ impl DocumentParser for XlsxParser {
 
         for sheet_name in sheet_names {
             if let Ok(range) = workbook.worksheet_range(&sheet_name) {
-                let (rows, cols) = range.get_size();
+                let (rows, _) = range.get_size();
                 total_rows += rows;
-                total_cols = total_cols.max(cols);
 
                 let sheet_rows: Vec<Vec<Option<String>>> = range
                     .rows()
                     .map(|row| row.iter().map(cell_to_string).collect::<Vec<_>>())
                     .filter(|cells| !row_is_empty(cells))
                     .collect();
+                let sheet_cols = sheet_rows
+                    .iter()
+                    .map(|cells| cells.len())
+                    .max()
+                    .unwrap_or(0);
+                total_cols = total_cols.max(sheet_cols);
 
                 let mut headers: Option<Vec<Option<String>>> = None;
                 for (idx, cells) in sheet_rows.iter().enumerate() {
@@ -52,7 +57,7 @@ impl DocumentParser for XlsxParser {
                         Some(headers) => row_text_with_headers(headers, &cells),
                         None => {
                             let row_text = row_text_from_cells(&cells);
-                            if is_likely_header_row(cells, cols, next_row) {
+                            if is_likely_header_row(cells, sheet_cols, next_row) {
                                 headers = Some(cells.clone());
                             }
                             row_text
@@ -319,6 +324,30 @@ mod tests {
         let result = parser.parse(&data).unwrap();
 
         assert!(result.text.contains("customer HGC"));
+    }
+
+    #[test]
+    fn test_parse_xlsx_ignores_empty_wide_rows_for_header_detection() {
+        let parser = XlsxParser::new();
+        let data = minimal_xlsx_with_sheet_data(
+            r#"<row r="1">
+      <c r="A1"/>
+      <c r="B1"/>
+      <c r="C1"/>
+      <c r="D1"/>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>customer</t></is></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="inlineStr"><is><t>HGC</t></is></c>
+    </row>"#,
+        );
+
+        let result = parser.parse(&data).unwrap();
+
+        assert_eq!(result.text, "customer\ncustomer HGC");
+        assert_eq!(result.metadata.extra.unwrap()["columns"], 1);
     }
 
     #[test]

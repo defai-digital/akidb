@@ -49,14 +49,12 @@ impl DocumentParser for CsvParser {
         let mut texts = Vec::new();
         let mut row_count = 0;
         let mut plain_row_count = 0;
-        let mut col_count = 0;
         let mut rows = Vec::new();
 
         for result in reader.records() {
             let record = result.map_err(|e| {
                 crate::IngestionError::Parse(format!("CSV record parse error: {}", e))
             })?;
-            col_count = col_count.max(record.len());
             rows.push(record.iter().map(cell_to_string).collect::<Vec<_>>());
         }
 
@@ -64,6 +62,11 @@ impl DocumentParser for CsvParser {
             .into_iter()
             .filter(|cells| !row_is_empty(cells))
             .collect();
+        let col_count = non_empty_rows
+            .iter()
+            .map(|cells| cells.len())
+            .max()
+            .unwrap_or(0);
 
         let mut headers: Option<Vec<Option<String>>> = None;
         for (idx, cells) in non_empty_rows.iter().enumerate() {
@@ -346,6 +349,17 @@ mod tests {
 
         assert!(result.text.contains("customer HGC"), "{}", result.text);
         assert!(result.text.contains("tier Premium"), "{}", result.text);
+    }
+
+    #[test]
+    fn test_parse_csv_ignores_empty_wide_rows_for_header_detection() {
+        let parser = CsvParser::new();
+        let data = b",,,\ncustomer\nHGC";
+
+        let result = parser.parse(data).unwrap();
+
+        assert_eq!(result.text, "customer\ncustomer HGC");
+        assert_eq!(result.metadata.extra.unwrap()["columns"], 1);
     }
 
     #[test]

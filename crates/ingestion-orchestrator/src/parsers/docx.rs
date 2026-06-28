@@ -132,12 +132,16 @@ impl DocxParser {
                 Self::extract_table_row_cells(row)
             })
             .collect();
-        let table_cols = table_rows.iter().map(Vec::len).max().unwrap_or(0);
 
         let non_empty_rows: Vec<Vec<Option<String>>> = table_rows
             .into_iter()
             .filter(|cells| !row_is_empty(cells))
             .collect();
+        let table_cols = non_empty_rows
+            .iter()
+            .map(|cells| cells.len())
+            .max()
+            .unwrap_or(0);
 
         for (idx, cells) in non_empty_rows.iter().enumerate() {
             let next_row = non_empty_rows.get(idx + 1).map(Vec::as_slice);
@@ -503,6 +507,16 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_docx_table_ignores_empty_wide_rows_for_header_detection() {
+        let parser = DocxParser::new();
+        let data = minimal_docx_with_empty_wide_row_single_column_table();
+
+        let result = parser.parse(&data).unwrap();
+
+        assert_eq!(result.text, "customer\ncustomer HGC");
+    }
+
+    #[test]
     fn test_parse_docx_table_preserves_name_header_value_pairs() {
         let parser = DocxParser::new();
         let data = minimal_docx_with_name_header_table();
@@ -652,6 +666,31 @@ mod tests {
       <w:tr>
         <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
         <w:tc><w:p><w:r><w:t>Premium</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+        )
+    }
+
+    fn minimal_docx_with_empty_wide_row_single_column_table() -> Vec<u8> {
+        minimal_docx_with_document_xml(
+            r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p/></w:tc>
+        <w:tc><w:p/></w:tc>
+        <w:tc><w:p/></w:tc>
+        <w:tc><w:p/></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>customer</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
       </w:tr>
     </w:tbl>
     <w:sectPr/>
