@@ -29,6 +29,7 @@ impl DocumentParser for XmlParser {
         let mut texts = Vec::new();
         let mut buf = Vec::new();
         let mut element_count = 0;
+        let mut element_stack: Vec<String> = Vec::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -36,7 +37,7 @@ impl DocumentParser for XmlParser {
                     if let Ok(text) = e.unescape() {
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
-                            texts.push(trimmed.to_string());
+                            texts.push(text_with_current_element(&element_stack, trimmed));
                         }
                     }
                 }
@@ -44,12 +45,16 @@ impl DocumentParser for XmlParser {
                     if let Ok(text) = std::str::from_utf8(&e) {
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
-                            texts.push(trimmed.to_string());
+                            texts.push(text_with_current_element(&element_stack, trimmed));
                         }
                     }
                 }
-                Ok(Event::Start(_)) => {
+                Ok(Event::Start(e)) => {
                     element_count += 1;
+                    element_stack.push(element_name(e.name().as_ref()));
+                }
+                Ok(Event::End(_)) => {
+                    element_stack.pop();
                 }
                 Ok(Event::Eof) => break,
                 Err(e) => {
@@ -84,6 +89,17 @@ impl DocumentParser for XmlParser {
     }
 }
 
+fn element_name(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw).into_owned()
+}
+
+fn text_with_current_element(element_stack: &[String], text: &str) -> String {
+    match element_stack.last() {
+        Some(element) if !element.is_empty() => format!("{} {}", element, text),
+        _ => text.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +129,22 @@ mod tests {
         "#;
         let result = parser.parse(data).unwrap();
         assert!(result.text.contains("Some CDATA content"));
+    }
+
+    #[test]
+    fn test_parse_xml_preserves_element_value_pairs_for_retrieval() {
+        let parser = XmlParser::new();
+        let data = br#"
+            <contract>
+                <customer>HGC</customer>
+                <year>2025</year>
+                <contract_amount>1200</contract_amount>
+            </contract>
+        "#;
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("customer HGC"));
+        assert!(result.text.contains("year 2025"));
+        assert!(result.text.contains("contract_amount 1200"));
     }
 }
