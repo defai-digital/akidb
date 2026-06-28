@@ -27,18 +27,33 @@ impl HtmlParser {
                     // Skip script, style, and other excluded elements
                     continue;
                 }
+                Self::push_semantic_attributes(el, text);
                 // Recursively process child elements
                 Self::extract_text_excluding_scripts(el, text, excluded_tags);
             } else if let Some(text_node) = child.value().as_text() {
                 let trimmed = text_node.trim();
                 if !trimmed.is_empty() {
-                    if !text.is_empty() {
-                        text.push(' ');
-                    }
-                    text.push_str(trimmed);
+                    Self::push_text_piece(text, trimmed);
                 }
             }
         }
+    }
+
+    fn push_semantic_attributes(element: ElementRef, text: &mut String) {
+        for attr in ["alt", "aria-label", "title"] {
+            if let Some(value) = element.value().attr(attr).map(str::trim) {
+                if !value.is_empty() {
+                    Self::push_text_piece(text, value);
+                }
+            }
+        }
+    }
+
+    fn push_text_piece(text: &mut String, piece: &str) {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(piece);
     }
 }
 
@@ -185,5 +200,24 @@ mod tests {
         // Style content should be excluded
         assert!(!result.text.contains("display"));
         assert!(!result.text.contains(".hidden"));
+    }
+
+    #[test]
+    fn test_parse_html_includes_semantic_attributes_for_retrieval() {
+        let parser = HtmlParser::new();
+        let data = br#"
+            <html>
+                <body>
+                    <img src="arch.png" alt="AkiDB query planner diagram">
+                    <button aria-label="Run ingestion sync"></button>
+                    <abbr title="Model Context Protocol">MCP</abbr>
+                </body>
+            </html>
+        "#;
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("AkiDB query planner diagram"));
+        assert!(result.text.contains("Run ingestion sync"));
+        assert!(result.text.contains("Model Context Protocol"));
     }
 }
