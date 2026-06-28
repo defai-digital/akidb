@@ -134,16 +134,18 @@ impl DocxParser {
             .collect();
         let table_cols = table_rows.iter().map(Vec::len).max().unwrap_or(0);
 
-        for cells in table_rows {
-            if row_is_empty(&cells) {
-                continue;
-            }
+        let non_empty_rows: Vec<Vec<Option<String>>> = table_rows
+            .into_iter()
+            .filter(|cells| !row_is_empty(cells))
+            .collect();
 
+        for (idx, cells) in non_empty_rows.iter().enumerate() {
+            let next_row = non_empty_rows.get(idx + 1).map(Vec::as_slice);
             let line = match headers.as_deref() {
                 Some(headers) => row_text_with_headers(headers, &cells),
                 None => {
                     let row_text = row_text_from_cells(&cells);
-                    if is_likely_header_row(&cells, table_cols) {
+                    if is_likely_header_row(cells, table_cols, next_row) {
                         headers = Some(cells.clone());
                     }
                     row_text
@@ -199,14 +201,35 @@ fn row_is_empty(cells: &[Option<String>]) -> bool {
     cells.iter().all(Option::is_none)
 }
 
-fn is_likely_header_row(cells: &[Option<String>], table_cols: usize) -> bool {
+fn is_likely_header_row(
+    cells: &[Option<String>],
+    table_cols: usize,
+    next_row: Option<&[Option<String>]>,
+) -> bool {
     let non_empty = cells.iter().filter(|cell| cell.is_some()).count();
     let has_multiple_columns = non_empty > 1 || (table_cols <= 1 && non_empty == 1);
-    has_multiple_columns
-        && cells
+    if !has_multiple_columns
+        || !cells
             .iter()
             .flatten()
             .all(|cell| is_likely_header_cell(cell))
+    {
+        return false;
+    }
+
+    if cells
+        .iter()
+        .flatten()
+        .any(|cell| has_strong_header_signal(cell))
+    {
+        return true;
+    }
+
+    next_row.is_some_and(|row| {
+        row.iter()
+            .flatten()
+            .any(|cell| !is_likely_header_cell(cell))
+    })
 }
 
 fn is_likely_header_cell(cell: &str) -> bool {
@@ -214,7 +237,75 @@ fn is_likely_header_cell(cell: &str) -> bool {
     !trimmed.is_empty()
         && trimmed.chars().any(char::is_alphabetic)
         && trimmed.parse::<f64>().is_err()
+        && !is_short_uppercase_acronym(trimmed)
 }
+
+fn has_strong_header_signal(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if trimmed.contains('_') || trimmed.contains('-') {
+        return true;
+    }
+    if COMMON_HEADER_LABELS.contains(&lower.as_str()) {
+        return true;
+    }
+    lower
+        .split_whitespace()
+        .all(|part| COMMON_HEADER_LABELS.contains(&part))
+}
+
+fn is_short_uppercase_acronym(value: &str) -> bool {
+    let letters: Vec<char> = value.chars().filter(|c| c.is_alphabetic()).collect();
+    !letters.is_empty()
+        && letters.len() <= 8
+        && letters.iter().all(|c| c.is_uppercase())
+        && !value.chars().any(|c| c.is_lowercase())
+}
+
+const COMMON_HEADER_LABELS: &[&str] = &[
+    "account",
+    "age",
+    "amount",
+    "author",
+    "category",
+    "class",
+    "code",
+    "company",
+    "comment",
+    "contract",
+    "created",
+    "customer",
+    "date",
+    "description",
+    "email",
+    "file",
+    "id",
+    "key",
+    "language",
+    "name",
+    "note",
+    "notes",
+    "owner",
+    "path",
+    "price",
+    "priority",
+    "repo",
+    "score",
+    "source",
+    "status",
+    "symbol",
+    "tag",
+    "tenant",
+    "tier",
+    "time",
+    "title",
+    "type",
+    "updated",
+    "url",
+    "user",
+    "value",
+    "year",
+];
 
 fn row_text_from_cells(cells: &[Option<String>]) -> String {
     cells
@@ -386,6 +477,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_docx_table_without_header_does_not_promote_all_text_data_row_to_headers() {
+        let parser = DocxParser::new();
+        let data = minimal_docx_with_all_text_no_header_table();
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("HGC Premium"), "{}", result.text);
+        assert!(result.text.contains("DEF Standard"), "{}", result.text);
+        assert!(!result.text.contains("HGC DEF"), "{}", result.text);
+        assert!(!result.text.contains("Premium Standard"), "{}", result.text);
+    }
+
+    #[test]
+    fn test_parse_docx_table_preserves_all_text_header_value_pairs() {
+        let parser = DocxParser::new();
+        let data = minimal_docx_with_all_text_header_table();
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("customer HGC"), "{}", result.text);
+        assert!(result.text.contains("tier Premium"), "{}", result.text);
+    }
+
+    #[test]
     fn test_parse_docx_table_ignores_title_row_when_selecting_headers() {
         let parser = DocxParser::new();
         let data = minimal_docx_with_title_row_contract_table();
@@ -471,6 +586,48 @@ mod tests {
         <w:tc><w:p><w:r><w:t>DEF</w:t></w:r></w:p></w:tc>
         <w:tc><w:p><w:r><w:t>2024</w:t></w:r></w:p></w:tc>
         <w:tc><w:p><w:r><w:t>900</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+        )
+    }
+
+    fn minimal_docx_with_all_text_no_header_table() -> Vec<u8> {
+        minimal_docx_with_document_xml(
+            r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Premium</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>DEF</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Standard</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+        )
+    }
+
+    fn minimal_docx_with_all_text_header_table() -> Vec<u8> {
+        minimal_docx_with_document_xml(
+            r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>customer</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>tier</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Premium</w:t></w:r></w:p></w:tc>
       </w:tr>
     </w:tbl>
     <w:sectPr/>

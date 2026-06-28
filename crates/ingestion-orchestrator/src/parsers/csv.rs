@@ -60,12 +60,14 @@ impl DocumentParser for CsvParser {
             rows.push(record.iter().map(cell_to_string).collect::<Vec<_>>());
         }
 
-        let mut headers: Option<Vec<Option<String>>> = None;
-        for cells in rows {
-            if row_is_empty(&cells) {
-                continue;
-            }
+        let non_empty_rows: Vec<Vec<Option<String>>> = rows
+            .into_iter()
+            .filter(|cells| !row_is_empty(cells))
+            .collect();
 
+        let mut headers: Option<Vec<Option<String>>> = None;
+        for (idx, cells) in non_empty_rows.iter().enumerate() {
+            let next_row = non_empty_rows.get(idx + 1).map(Vec::as_slice);
             let row_text = match headers.as_deref() {
                 Some(headers) => {
                     row_count += 1;
@@ -73,8 +75,8 @@ impl DocumentParser for CsvParser {
                 }
                 None => {
                     let row_text = row_text_from_cells(&cells);
-                    if is_likely_header_row(&cells, col_count) {
-                        headers = Some(cells);
+                    if is_likely_header_row(cells, col_count, next_row) {
+                        headers = Some(cells.clone());
                     } else {
                         plain_row_count += 1;
                     }
@@ -125,14 +127,35 @@ fn row_is_empty(cells: &[Option<String>]) -> bool {
     cells.iter().all(Option::is_none)
 }
 
-fn is_likely_header_row(cells: &[Option<String>], file_cols: usize) -> bool {
+fn is_likely_header_row(
+    cells: &[Option<String>],
+    file_cols: usize,
+    next_row: Option<&[Option<String>]>,
+) -> bool {
     let non_empty = cells.iter().filter(|cell| cell.is_some()).count();
     let has_multiple_columns = non_empty > 1 || (file_cols <= 1 && non_empty == 1);
-    has_multiple_columns
-        && cells
+    if !has_multiple_columns
+        || !cells
             .iter()
             .flatten()
             .all(|cell| is_likely_header_cell(cell))
+    {
+        return false;
+    }
+
+    if cells
+        .iter()
+        .flatten()
+        .any(|cell| has_strong_header_signal(cell))
+    {
+        return true;
+    }
+
+    next_row.is_some_and(|row| {
+        row.iter()
+            .flatten()
+            .any(|cell| !is_likely_header_cell(cell))
+    })
 }
 
 fn is_likely_header_cell(cell: &str) -> bool {
@@ -140,7 +163,75 @@ fn is_likely_header_cell(cell: &str) -> bool {
     !trimmed.is_empty()
         && trimmed.chars().any(char::is_alphabetic)
         && trimmed.parse::<f64>().is_err()
+        && !is_short_uppercase_acronym(trimmed)
 }
+
+fn has_strong_header_signal(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if trimmed.contains('_') || trimmed.contains('-') {
+        return true;
+    }
+    if COMMON_HEADER_LABELS.contains(&lower.as_str()) {
+        return true;
+    }
+    lower
+        .split_whitespace()
+        .all(|part| COMMON_HEADER_LABELS.contains(&part))
+}
+
+fn is_short_uppercase_acronym(value: &str) -> bool {
+    let letters: Vec<char> = value.chars().filter(|c| c.is_alphabetic()).collect();
+    !letters.is_empty()
+        && letters.len() <= 8
+        && letters.iter().all(|c| c.is_uppercase())
+        && !value.chars().any(|c| c.is_lowercase())
+}
+
+const COMMON_HEADER_LABELS: &[&str] = &[
+    "account",
+    "age",
+    "amount",
+    "author",
+    "category",
+    "class",
+    "code",
+    "company",
+    "comment",
+    "contract",
+    "created",
+    "customer",
+    "date",
+    "description",
+    "email",
+    "file",
+    "id",
+    "key",
+    "language",
+    "name",
+    "note",
+    "notes",
+    "owner",
+    "path",
+    "price",
+    "priority",
+    "repo",
+    "score",
+    "source",
+    "status",
+    "symbol",
+    "tag",
+    "tenant",
+    "tier",
+    "time",
+    "title",
+    "type",
+    "updated",
+    "url",
+    "user",
+    "value",
+    "year",
+];
 
 fn row_text_from_cells(cells: &[Option<String>]) -> String {
     cells
@@ -229,6 +320,30 @@ mod tests {
         assert!(!result.text.contains("HGC DEF"));
         assert!(!result.text.contains("2025 2024"));
         assert_eq!(result.metadata.extra.unwrap()["rows"], 2);
+    }
+
+    #[test]
+    fn test_parse_csv_without_header_does_not_promote_all_text_data_row_to_headers() {
+        let parser = CsvParser::new();
+        let data = b"HGC,Premium\nDEF,Standard";
+
+        let result = parser.parse(data).unwrap();
+
+        assert_eq!(result.text, "HGC Premium\nDEF Standard");
+        assert!(!result.text.contains("HGC DEF"), "{}", result.text);
+        assert!(!result.text.contains("Premium Standard"), "{}", result.text);
+        assert_eq!(result.metadata.extra.unwrap()["rows"], 2);
+    }
+
+    #[test]
+    fn test_parse_csv_preserves_all_text_header_value_pairs() {
+        let parser = CsvParser::new();
+        let data = b"customer,tier\nHGC,Premium";
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("customer HGC"), "{}", result.text);
+        assert!(result.text.contains("tier Premium"), "{}", result.text);
     }
 
     #[test]
