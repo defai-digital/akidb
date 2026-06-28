@@ -165,6 +165,8 @@ impl VectorIndex for HnswIndex {
             self.index
                 .add(existing_id as u64, vector)
                 .map_err(|e| AkiDbError::InvalidParameter(format!("HNSW upsert failed: {}", e)))?;
+            let mut reverse = self.reverse_mapping.write();
+            reverse.insert(existing_id, id.clone());
             return Ok(InternalId(existing_id));
         }
 
@@ -531,6 +533,28 @@ mod tests {
         let results = index.search(&v2, &SearchParams::new(2)).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].id.as_str(), "vec-1");
+    }
+
+    #[test]
+    fn test_hnsw_reinsert_after_rebuild_restores_reverse_mapping() {
+        let config = create_test_config();
+        let index = HnswIndex::new(config).unwrap();
+
+        let v1 = create_random_vector(128, 1.0);
+        let v2 = create_random_vector(128, 2.0);
+        let id = VectorId::new("vec-1");
+
+        let internal_id = index.insert(&id, &v1).unwrap();
+        index.delete(internal_id).unwrap();
+        index.trigger_rebuild().unwrap();
+
+        index.insert(&id, &v2).unwrap();
+
+        let results = index.search(&v2, &SearchParams::new(2)).unwrap();
+        assert!(
+            results.iter().any(|result| result.id.as_str() == "vec-1"),
+            "reinserted vector should be visible after rebuild"
+        );
     }
 
     #[test]
