@@ -144,6 +144,7 @@ impl SemanticChunker {
 }
 
 fn normalize_config(mut config: ChunkerConfig) -> ChunkerConfig {
+    config.target_tokens = config.target_tokens.max(1);
     if config.max_overlap < config.min_overlap {
         config.max_overlap = config.min_overlap;
     }
@@ -316,6 +317,27 @@ mod tests {
             text[chunks[1].start_offset..chunks[1].end_offset].trim(),
             chunks[1].text
         );
+    }
+
+    #[test]
+    fn test_zero_target_tokens_is_normalized() {
+        let chunker = SemanticChunker::new(ChunkerConfig {
+            target_tokens: 0,
+            min_overlap: 0,
+            max_overlap: 0,
+        });
+
+        let text = "Alpha one. Beta two.";
+        let chunks = chunker.chunk(text);
+
+        assert_eq!(chunker.config.target_tokens, 1);
+        assert!(!chunks.is_empty());
+        for chunk in chunks {
+            assert_eq!(
+                text[chunk.start_offset..chunk.end_offset].trim(),
+                chunk.text
+            );
+        }
     }
 
     #[test]
