@@ -50,18 +50,23 @@ fn extract_text_from_json(value: &serde_json::Value) -> String {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Array(arr) => {
-            arr.iter()
-                .map(extract_text_from_json)
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-        serde_json::Value::Object(obj) => {
-            obj.values()
-                .map(extract_text_from_json)
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .map(extract_text_from_json)
+            .collect::<Vec<_>>()
+            .join(" "),
+        serde_json::Value::Object(obj) => obj
+            .iter()
+            .map(|(key, value)| {
+                let value_text = extract_text_from_json(value);
+                if value_text.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{} {}", key, value_text)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
         serde_json::Value::Null => String::new(),
     }
 }
@@ -95,5 +100,18 @@ mod tests {
         assert!(result.text.contains("Bob"));
         assert!(result.text.contains("a"));
         assert!(result.text.contains("b"));
+    }
+
+    #[test]
+    fn test_parse_json_preserves_object_keys_for_retrieval() {
+        let parser = JsonParser::new();
+        let data = br#"{"api_name": "text_search", "contract_amount": 1200}"#;
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("api_name"));
+        assert!(result.text.contains("text_search"));
+        assert!(result.text.contains("contract_amount"));
+        assert!(result.text.contains("1200"));
     }
 }
