@@ -19,8 +19,9 @@ use akidb_graph::{
 };
 use akidb_grpc::proto::akidb_server::Akidb;
 use akidb_grpc::proto::{
-    tag_filter::FilterType, tag_value::Value as TagVal, DeleteRequest, InsertRequest, TagCondition,
-    TagFilter, TagOperator, TagValue, TextSearchRequest, UpdateRequest,
+    tag_filter::FilterType, tag_value::Value as TagVal, DeleteRequest, InsertBatchRequest,
+    InsertRequest, TagCondition, TagFilter, TagOperator, TagValue, TextSearchRequest,
+    UpdateRequest, Vector,
 };
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
 use akidb_sql::SqliteMetadataIndex;
@@ -477,6 +478,131 @@ async fn test_delete_removes_from_hybrid_results() {
         "deleted doc must be gone"
     );
     assert!(ids(&after).contains(&"keep".to_string()));
+}
+
+#[tokio::test]
+async fn test_insert_upsert_empty_text_removes_stale_bm25_document() {
+    let svc = setup_without_embedder();
+    insert(
+        &svc,
+        "doc",
+        vec![1.0, 0.0, 0.0],
+        "needle old source text",
+        b"",
+    )
+    .await;
+
+    let before = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 search failed")
+        .into_inner();
+    assert_eq!(before.results[0].id, "doc");
+
+    insert(&svc, "doc", vec![1.0, 0.0, 0.0], "", b"").await;
+
+    let after = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 search after upsert failed")
+        .into_inner();
+    assert!(
+        after.results.is_empty(),
+        "empty-text upsert should clear stale lexical text, got {:?}",
+        after
+            .results
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_batch_insert_upsert_empty_text_removes_stale_bm25_document() {
+    let svc = setup_without_embedder();
+    insert(
+        &svc,
+        "doc",
+        vec![1.0, 0.0, 0.0],
+        "needle old source text",
+        b"",
+    )
+    .await;
+
+    svc.insert_batch(Request::new(InsertBatchRequest {
+        collection: "test".into(),
+        vectors: vec![Vector {
+            id: "doc".into(),
+            embedding: vec![1.0, 0.0, 0.0],
+            metadata: vec![],
+            text: String::new(),
+        }],
+    }))
+    .await
+    .expect("batch upsert failed");
+
+    let after = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 search after batch upsert failed")
+        .into_inner();
+    assert!(
+        after.results.is_empty(),
+        "batch empty-text upsert should clear stale lexical text, got {:?}",
+        after
+            .results
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]

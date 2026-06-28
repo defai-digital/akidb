@@ -190,6 +190,25 @@ where
         count
     }
 
+    fn sync_source_text(&self, vector_id: &VectorId, text: &str) {
+        if text.is_empty() {
+            self.lexical.write().remove(vector_id);
+            self.documents.write().remove(vector_id);
+            if let Err(e) = self.id_mapping.delete_text(vector_id) {
+                warn!(vector_id = %vector_id, error = %e, "failed to delete persisted source text");
+            }
+            return;
+        }
+
+        self.lexical.write().insert(vector_id.clone(), text);
+        self.documents
+            .write()
+            .insert(vector_id.clone(), text.to_string());
+        if let Err(e) = self.id_mapping.store_text(vector_id, text) {
+            warn!(vector_id = %vector_id, error = %e, "failed to persist source text");
+        }
+    }
+
     /// Rebuild the optional SQL metadata mirror from durable vector payloads.
     /// Returns the number of records successfully mirrored.
     pub fn rebuild_sql_metadata_index(&self) -> usize {
@@ -920,19 +939,9 @@ where
             return Err(Self::to_status(e));
         }
 
-        // Populate the lexical (BM25) index and document store for hybrid
-        // retrieval and context packing when source text is provided.
-        if !req.text.is_empty() {
-            self.lexical.write().insert(vector_id.clone(), &req.text);
-            self.documents
-                .write()
-                .insert(vector_id.clone(), req.text.clone());
-            // Persist text so the lexical index / document store can be rebuilt
-            // after a restart. Best-effort: dense search is already durable.
-            if let Err(e) = self.id_mapping.store_text(&vector_id, &req.text) {
-                warn!(vector_id = %vector_id, error = %e, "failed to persist source text");
-            }
-        }
+        // Keep BM25, context packing, and persisted source text aligned with
+        // upsert semantics. Empty text clears any previous source text.
+        self.sync_source_text(&vector_id, &req.text);
         self.index_graph_chunk(&vector_id, &req.metadata);
         self.index_sql_metadata(&vector_id, internal_id.0, &req.metadata);
 
@@ -1226,16 +1235,7 @@ where
                     ) {
                         Ok(_) => {
                             inserted_count += 1;
-                            if !vector.text.is_empty() {
-                                self.lexical.write().insert(vector_id.clone(), &vector.text);
-                                self.documents
-                                    .write()
-                                    .insert(vector_id.clone(), vector.text.clone());
-                                if let Err(e) = self.id_mapping.store_text(&vector_id, &vector.text)
-                                {
-                                    warn!(vector_id = %vector_id, error = %e, "failed to persist source text");
-                                }
-                            }
+                            self.sync_source_text(&vector_id, &vector.text);
                             self.index_graph_chunk(&vector_id, &vector.metadata);
                             self.index_sql_metadata(&vector_id, internal_id.0, &vector.metadata);
                         }
