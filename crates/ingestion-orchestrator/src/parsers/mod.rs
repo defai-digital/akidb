@@ -73,7 +73,7 @@ impl DocumentFormat {
             "xml" => DocumentFormat::Xml,
             "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" => DocumentFormat::Xlsx,
             "pdf" => DocumentFormat::Pdf,
-            "docx" | "doc" => DocumentFormat::Docx,
+            "docx" | "doc" | "docm" | "dotx" | "dotm" => DocumentFormat::Docx,
             "txt" | "text" | "md" => DocumentFormat::Txt,
             _ => DocumentFormat::Unknown,
         }
@@ -95,6 +95,9 @@ impl DocumentFormat {
             "text/xml" | "application/xml" => DocumentFormat::Xml,
             "application/pdf" => DocumentFormat::Pdf,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            | "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
+            | "application/vnd.ms-word.document.macroenabled.12"
+            | "application/vnd.ms-word.template.macroenabled.12"
             | "application/msword" => DocumentFormat::Docx,
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             | "application/vnd.ms-excel"
@@ -253,6 +256,9 @@ mod tests {
         assert_eq!(DocumentFormat::from_extension("xlsb"), DocumentFormat::Xlsx);
         assert_eq!(DocumentFormat::from_extension("ods"), DocumentFormat::Xlsx);
         assert_eq!(DocumentFormat::from_extension("docx"), DocumentFormat::Docx);
+        assert_eq!(DocumentFormat::from_extension("docm"), DocumentFormat::Docx);
+        assert_eq!(DocumentFormat::from_extension("dotx"), DocumentFormat::Docx);
+        assert_eq!(DocumentFormat::from_extension("dotm"), DocumentFormat::Docx);
         assert_eq!(
             DocumentFormat::from_extension("foo"),
             DocumentFormat::Unknown
@@ -290,6 +296,24 @@ mod tests {
         assert_eq!(
             DocumentFormat::from_content_type("text/plain"),
             DocumentFormat::Txt
+        );
+    }
+
+    #[test]
+    fn test_format_detection_accepts_word_content_types() {
+        assert_eq!(
+            DocumentFormat::from_content_type(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
+            ),
+            DocumentFormat::Docx
+        );
+        assert_eq!(
+            DocumentFormat::from_content_type("application/vnd.ms-word.document.macroEnabled.12"),
+            DocumentFormat::Docx
+        );
+        assert_eq!(
+            DocumentFormat::from_content_type("application/vnd.ms-word.template.macroEnabled.12"),
+            DocumentFormat::Docx
         );
     }
 
