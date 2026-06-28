@@ -79,12 +79,36 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "who calls",
             "what depends",
             "what imports",
+            "show call",
+            "show calls",
+            "show caller",
+            "show callers",
+            "show callee",
+            "show callees",
             "show dependency",
             "show dependencies",
+            "show import",
+            "show imports",
+            "list call",
+            "list calls",
+            "list caller",
+            "list callers",
+            "list callee",
+            "list callees",
             "list dependency",
             "list dependencies",
+            "list import",
+            "list imports",
+            "find call",
+            "find calls",
+            "find caller",
+            "find callers",
+            "find callee",
+            "find callees",
             "find dependency",
             "find dependencies",
+            "find import",
+            "find imports",
             "who changed",
             "what changed",
             "who modified",
@@ -98,7 +122,17 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
         ],
     ) || contains_any(
         &lower,
-        &[" depends on", " depend on", " imported by", " called by"],
+        &[
+            " depends on",
+            " depend on",
+            " imported by",
+            " called by",
+            " callers of",
+            " caller of",
+            " callees of",
+            " callee of",
+            " calls to",
+        ],
     );
     let explanatory = starts_with_any(
         &lower,
@@ -212,6 +246,20 @@ mod tests {
     #[test]
     fn test_dependency_query_phrase_enables_graph() {
         let trace = plan_query(&PlannerInput::new("show dependencies for mtp_scheduler.rs"));
+        assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
+        assert!(trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_import_query_phrase_enables_graph() {
+        let trace = plan_query(&PlannerInput::new("list imports for kv_cache.rs"));
+        assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
+        assert!(trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_caller_query_phrase_enables_graph() {
+        let trace = plan_query(&PlannerInput::new("show callers of draft_model::decode"));
         assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
         assert!(trace.graph_enabled);
     }
