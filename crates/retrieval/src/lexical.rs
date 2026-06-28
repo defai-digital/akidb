@@ -344,6 +344,14 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenize_preserves_acronym_digit_identifier_parts() {
+        assert_eq!(
+            tokenize("HTTP2Server"),
+            vec!["http2server", "http", "2", "server"]
+        );
+    }
+
+    #[test]
     fn test_tokenize_preserves_snake_case_identifier_and_parts() {
         assert_eq!(
             tokenize("contract_amount"),
@@ -450,6 +458,19 @@ mod tests {
         index.insert(id("a_partial"), "generic model");
 
         let hits = index.search("gemma 2 model", 10);
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, id("z_exact"));
+        assert!(hits[0].score > hits[1].score);
+    }
+
+    #[test]
+    fn test_acronym_digit_identifier_matches_split_word_query() {
+        let mut index = Bm25Index::new();
+        index.insert(id("z_exact"), "HTTP2Server");
+        index.insert(id("a_partial"), "generic server");
+
+        let hits = index.search("http 2 server", 10);
 
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, id("z_exact"));

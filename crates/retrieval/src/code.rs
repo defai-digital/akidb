@@ -418,20 +418,7 @@ fn chunk_python(source: &str) -> Vec<CodeChunk> {
         };
 
         if let Some(kind) = kind {
-            // Block extends over following lines indented beyond column 0.
-            let mut end = i;
-            let mut j = i + 1;
-            while j < lines.len() {
-                if lines[j].trim().is_empty() {
-                    j += 1;
-                    continue;
-                }
-                if leading_indent(lines[j]) == 0 {
-                    break;
-                }
-                end = j;
-                j += 1;
-            }
+            let end = python_block_end(&lines, i);
             let name = python_name(trimmed, kind);
             let chunk_start = extend_start_with_decorations(&lines, i);
             chunks.push(CodeChunk {
@@ -447,6 +434,50 @@ fn chunk_python(source: &str) -> Vec<CodeChunk> {
         i += 1;
     }
     chunks
+}
+
+fn python_block_end(lines: &[&str], start: usize) -> usize {
+    let mut end = start;
+    let mut header_depth = 0i32;
+    let mut header_complete = python_header_complete(lines[start], &mut header_depth);
+    let mut j = start + 1;
+
+    while j < lines.len() {
+        let trimmed = lines[j].trim();
+        if trimmed.is_empty() {
+            j += 1;
+            continue;
+        }
+
+        if !header_complete {
+            end = j;
+            header_complete = python_header_complete(trimmed, &mut header_depth);
+            j += 1;
+            continue;
+        }
+
+        if leading_indent(lines[j]) == 0 {
+            break;
+        }
+
+        end = j;
+        j += 1;
+    }
+
+    end
+}
+
+fn python_header_complete(line: &str, depth: &mut i32) -> bool {
+    for ch in line.chars() {
+        match ch {
+            '(' | '[' | '{' => *depth += 1,
+            ')' | ']' | '}' => *depth = (*depth - 1).max(0),
+            ':' if *depth == 0 => return true,
+            '#' if *depth == 0 => break,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn python_name(trimmed: &str, kind: SymbolKind) -> Option<String> {
@@ -663,6 +694,28 @@ def decorated():
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].text.contains("@decorator"));
         assert_eq!(chunks[0].name.as_deref(), Some("decorated"));
+    }
+
+    #[test]
+    fn test_python_multiline_signature_keeps_body() {
+        let src = "\
+def build_context(
+    query,
+    passages,
+):
+    return query, passages
+
+def next_symbol():
+    return None
+";
+        let chunks = chunk_code(src, Language::Python);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].name.as_deref(), Some("build_context"));
+        assert!(chunks[0].text.contains("passages,"));
+        assert!(chunks[0].text.contains("return query, passages"));
+        assert_eq!(chunks[0].end_line, 5);
+        assert_eq!(chunks[1].name.as_deref(), Some("next_symbol"));
+        assert_eq!(chunks[1].start_line, 7);
     }
 
     #[test]
