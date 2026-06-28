@@ -72,7 +72,9 @@ impl DocumentParser for HtmlParser {
         let title = Selector::parse("title")
             .ok()
             .and_then(|sel| document.select(&sel).next())
-            .map(|el| el.text().collect::<String>());
+            .map(|el| el.text().collect::<String>())
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty());
 
         // Tags to exclude from text extraction
         let excluded_tags: HashSet<&str> = ["script", "style", "noscript", "template"]
@@ -98,11 +100,7 @@ impl DocumentParser for HtmlParser {
             );
         }
 
-        if let Some(title_text) = title
-            .as_deref()
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-        {
+        if let Some(title_text) = title.as_deref() {
             if text.is_empty() {
                 text.push_str(title_text);
             } else if !text.contains(title_text) {
@@ -165,6 +163,28 @@ mod tests {
 
         assert!(result.text.contains("AkiDB Contract Portal"));
         assert!(result.text.contains("Welcome."));
+    }
+
+    #[test]
+    fn test_parse_html_trims_title_metadata() {
+        let parser = HtmlParser::new();
+        let data = br#"
+            <html>
+                <head><title>
+                    AkiDB Contract Portal
+                </title></head>
+                <body>
+                    <p>Welcome.</p>
+                </body>
+            </html>
+        "#;
+        let result = parser.parse(data).unwrap();
+
+        assert_eq!(
+            result.metadata.title,
+            Some("AkiDB Contract Portal".to_string())
+        );
+        assert!(result.text.starts_with("AkiDB Contract Portal"));
     }
 
     #[test]
