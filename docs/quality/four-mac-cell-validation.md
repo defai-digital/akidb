@@ -26,12 +26,43 @@ python3 scripts/collect-four-mac-node.py \
   --output docs/reports/mac-1-node.json
 ```
 
-After replacing the template values with real node inventory, six Thunderbolt
-link measurements, and failure-test results, build and validate the artifact:
+Collect each measured Thunderbolt link and each failure-test result:
+
+```bash
+python3 scripts/collect-four-mac-link.py \
+  --from mac-1 \
+  --to mac-2 \
+  --latency-p95-us 120 \
+  --bandwidth-gbps 20 \
+  --packet-loss-percent 0 \
+  --output docs/reports/mac-1-mac-2-link.json
+
+python3 scripts/collect-four-mac-failure-test.py \
+  --kind node_loss \
+  --observed-status degraded \
+  --recovery-time-ms 500 \
+  --output docs/reports/node-loss-test.json
+```
+
+Assemble the measured inputs. The assembler accepts either individual JSON
+objects or list files, so the same command can be used after collecting one file
+per node/link/test or after aggregating them out of band:
+
+```bash
+python3 scripts/assemble-four-mac-input.py \
+  --node docs/reports/four-mac-nodes.json \
+  --link docs/reports/four-mac-links.json \
+  --failure-test docs/reports/four-mac-failure-tests.json \
+  --output docs/reports/four-mac-input.json
+```
+
+After replacing template/example values with real node inventory, all six
+Thunderbolt link measurements, and failure-test results, build and validate the
+artifact:
 
 ```bash
 python3 scripts/build-four-mac-cell-artifact.py \
-  --input docs/reports/four-mac-input-template.json \
+  --input docs/reports/four-mac-input.json \
   --one-mac-artifact docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json \
   --cell-qps 2600 \
   --cell-p95-ms 45 \
@@ -40,11 +71,10 @@ python3 scripts/build-four-mac-cell-artifact.py \
   --validate
 ```
 
-The builder also supports split measured-input files with `--nodes`,
-`--links`, and `--failure-tests` when the collection workflow stores those
-measurements separately. Use `--one-mac-qps` only when the reference benchmark
-artifact is unavailable; otherwise prefer `--one-mac-artifact` so the
-throughput ratio is derived from the checked-in baseline.
+The builder also supports split list files directly with `--nodes`, `--links`,
+and `--failure-tests`. Use `--one-mac-qps` only when the reference benchmark
+artifact is unavailable; otherwise prefer `--one-mac-artifact` so the throughput
+ratio is derived from the checked-in baseline.
 
 The validator checks:
 

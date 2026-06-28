@@ -259,11 +259,28 @@ python3 scripts/collect-four-mac-node.py \
   --role voter \
   --output docs/reports/mac-1-node.json
 
-python3 scripts/build-four-mac-cell-artifact.py \
-  --write-template docs/reports/four-mac-input-template.json
+python3 scripts/collect-four-mac-link.py \
+  --from mac-1 \
+  --to mac-2 \
+  --latency-p95-us 120 \
+  --bandwidth-gbps 20 \
+  --packet-loss-percent 0 \
+  --output docs/reports/mac-1-mac-2-link.json
+
+python3 scripts/collect-four-mac-failure-test.py \
+  --kind node_loss \
+  --observed-status degraded \
+  --recovery-time-ms 500 \
+  --output docs/reports/node-loss-test.json
+
+python3 scripts/assemble-four-mac-input.py \
+  --node docs/reports/four-mac-nodes.json \
+  --link docs/reports/four-mac-links.json \
+  --failure-test docs/reports/four-mac-failure-tests.json \
+  --output docs/reports/four-mac-input.json
 
 python3 scripts/build-four-mac-cell-artifact.py \
-  --input docs/reports/four-mac-input-template.json \
+  --input docs/reports/four-mac-input.json \
   --one-mac-artifact docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json \
   --cell-qps 2600 \
   --cell-p95-ms 45 \
