@@ -137,7 +137,13 @@ impl DocxParser {
                 for content in &cell.children {
                     match content {
                         TableCellContent::Paragraph(p) => {
-                            cell_text.push_str(&Self::extract_paragraph_text(&p.children));
+                            let paragraph_text = Self::extract_paragraph_text(&p.children);
+                            if !paragraph_text.trim().is_empty() {
+                                if !cell_text.is_empty() {
+                                    cell_text.push(' ');
+                                }
+                                cell_text.push_str(&paragraph_text);
+                            }
                         }
                         _ => {}
                     }
@@ -320,7 +326,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_parse_docx_table_cell_separates_paragraphs() {
+        let parser = DocxParser::new();
+        let data = minimal_docx_with_multiline_table_cell();
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(
+            result.text.contains("notes First Second"),
+            "{}",
+            result.text
+        );
+        assert!(!result.text.contains("FirstSecond"), "{}", result.text);
+    }
+
     fn minimal_docx_with_contract_table() -> Vec<u8> {
+        minimal_docx_with_document_xml(
+            r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>customer</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>year</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>contract_amount</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>2025</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>1200</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+        )
+    }
+
+    fn minimal_docx_with_multiline_table_cell() -> Vec<u8> {
+        minimal_docx_with_document_xml(
+            r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>notes</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:t>First</w:t></w:r></w:p>
+          <w:p><w:r><w:t>Second</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+        )
+    }
+
+    fn minimal_docx_with_document_xml(document_xml: &str) -> Vec<u8> {
         let mut cursor = Cursor::new(Vec::new());
         {
             let mut zip = ZipWriter::new(&mut cursor);
@@ -359,24 +425,7 @@ mod tests {
                 &mut zip,
                 options,
                 "word/document.xml",
-                r#"<?xml version="1.0" encoding="UTF-8"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:body>
-    <w:tbl>
-      <w:tr>
-        <w:tc><w:p><w:r><w:t>customer</w:t></w:r></w:p></w:tc>
-        <w:tc><w:p><w:r><w:t>year</w:t></w:r></w:p></w:tc>
-        <w:tc><w:p><w:r><w:t>contract_amount</w:t></w:r></w:p></w:tc>
-      </w:tr>
-      <w:tr>
-        <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
-        <w:tc><w:p><w:r><w:t>2025</w:t></w:r></w:p></w:tc>
-        <w:tc><w:p><w:r><w:t>1200</w:t></w:r></w:p></w:tc>
-      </w:tr>
-    </w:tbl>
-    <w:sectPr/>
-  </w:body>
-</w:document>"#,
+                &format!(r#"<?xml version="1.0" encoding="UTF-8"?>{document_xml}"#),
             );
             zip.finish().unwrap();
         }
