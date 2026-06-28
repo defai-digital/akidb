@@ -39,7 +39,7 @@ impl SemanticChunker {
 
     /// Chunk text into semantically meaningful pieces
     pub fn chunk(&self, text: &str) -> Vec<Chunk> {
-        if text.is_empty() {
+        if text.trim().is_empty() {
             return Vec::new();
         }
 
@@ -309,6 +309,13 @@ mod tests {
     fn test_empty_text() {
         let chunker = SemanticChunker::default_config();
         let chunks = chunker.chunk("");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_whitespace_only_text_returns_no_chunks() {
+        let chunker = SemanticChunker::default_config();
+        let chunks = chunker.chunk(" \n\t  ");
         assert!(chunks.is_empty());
     }
 
