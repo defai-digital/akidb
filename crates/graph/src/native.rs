@@ -165,6 +165,10 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
             )));
         }
 
+        if self.get_edge(&edge.id)?.is_some() {
+            self.delete_edge(&edge.id)?;
+        }
+
         let mut operations = vec![
             BatchOperation::Put {
                 key: keys::edge_key(&edge.id),
@@ -573,6 +577,63 @@ mod tests {
             .related_chunks(&GraphNodeId::from("entity:mtp"), 10)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn test_upsert_edge_replaces_stale_adjacency_and_chunk_link() {
+        let (_dir, graph) = index();
+        graph
+            .upsert_node(node("entity:mtp", NodeKind::Entity))
+            .unwrap();
+        graph
+            .upsert_node(node("chunk:old", NodeKind::Chunk))
+            .unwrap();
+        graph
+            .upsert_node(node("chunk:new", NodeKind::Chunk))
+            .unwrap();
+
+        graph
+            .upsert_edge(edge(
+                "edge:mtp-chunk",
+                "entity:mtp",
+                "chunk:old",
+                EdgeKind::Mentions,
+                0.4,
+            ))
+            .unwrap();
+        graph
+            .upsert_edge(edge(
+                "edge:mtp-chunk",
+                "entity:mtp",
+                "chunk:new",
+                EdgeKind::RelatedTo,
+                0.9,
+            ))
+            .unwrap();
+
+        let stale_kind_neighbors = graph
+            .neighbors(
+                NeighborRequest::new("entity:mtp")
+                    .with_direction(Direction::Out)
+                    .with_edge_kinds(vec![EdgeKind::Mentions]),
+            )
+            .unwrap();
+        assert!(
+            stale_kind_neighbors.is_empty(),
+            "old edge-kind adjacency must be removed on edge replacement"
+        );
+
+        let chunks = graph
+            .related_chunks(&GraphNodeId::from("entity:mtp"), 10)
+            .unwrap();
+        assert_eq!(
+            chunks,
+            vec![RelatedChunk {
+                vector_id: akidb_common::VectorId::new("new"),
+                via_node: GraphNodeId::from("chunk:new"),
+            }],
+            "old direct chunk link must be removed on edge replacement"
+        );
     }
 
     #[test]
