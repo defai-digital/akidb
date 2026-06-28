@@ -28,6 +28,11 @@ use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, instrument, warn};
 
+const FILE_REFERENCE_SUFFIXES: &[&str] = &[
+    ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".toml", ".yaml", ".yml", ".proto",
+    ".sql", ".go", ".java", ".c", ".cc", ".cpp", ".h", ".hpp",
+];
+
 /// Trait for embedding providers (implemented by coordinator's AxEngineEmbedding)
 pub trait EmbeddingProvider: Send + Sync {
     /// Generate embedding for text
@@ -628,7 +633,8 @@ where
                 continue;
             }
             if Self::looks_like_file_reference(&token) {
-                Self::push_graph_seed(&mut seeds, &mut seen, NodeKind::File, &token);
+                let file = Self::normalize_file_reference(&token);
+                Self::push_graph_seed(&mut seeds, &mut seen, NodeKind::File, &file);
             }
             if Self::looks_like_symbol_reference(&token) {
                 let symbol = token.trim_end_matches("()");
@@ -677,12 +683,36 @@ where
 
     fn looks_like_file_reference(token: &str) -> bool {
         token.contains('/')
-            || [
-                ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".toml", ".yaml",
-                ".yml", ".proto", ".sql", ".go", ".java", ".c", ".cc", ".cpp", ".h", ".hpp",
-            ]
-            .iter()
-            .any(|suffix| token.ends_with(suffix))
+            || FILE_REFERENCE_SUFFIXES
+                .iter()
+                .any(|suffix| Self::file_suffix_end(token, suffix).is_some())
+    }
+
+    fn normalize_file_reference(token: &str) -> String {
+        for suffix in FILE_REFERENCE_SUFFIXES {
+            if let Some(end) = Self::file_suffix_end(token, suffix) {
+                return token[..end].to_string();
+            }
+        }
+        token.to_string()
+    }
+
+    fn file_suffix_end(token: &str, suffix: &str) -> Option<usize> {
+        let start = token.rfind(suffix)?;
+        let end = start + suffix.len();
+        if end == token.len() {
+            return Some(end);
+        }
+        let rest = token.get(end..)?;
+        if rest.starts_with(':')
+            && rest[1..]
+                .split(':')
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        {
+            Some(end)
+        } else {
+            None
+        }
     }
 
     fn looks_like_symbol_reference(token: &str) -> bool {
