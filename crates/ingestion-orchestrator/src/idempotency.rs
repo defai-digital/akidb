@@ -217,6 +217,24 @@ impl IdempotencyChecker {
         (is_dup, hash)
     }
 
+    /// Remove a previously marked hash.
+    ///
+    /// This is used to roll back the in-flight idempotency mark when processing
+    /// fails after `check_and_mark`, allowing the same content to be retried.
+    pub fn unmark_hash(&self, hash: &str) -> Result<(), String> {
+        self.processed.write().unwrap().shift_remove(hash);
+
+        if let Some(ref db) = self.db {
+            let conn = db
+                .lock()
+                .map_err(|e| format!("Failed to lock database: {}", e))?;
+            conn.execute("DELETE FROM processed_hashes WHERE hash = ?", [hash])
+                .map_err(|e| format!("Failed to unmark hash from SQLite: {}", e))?;
+        }
+
+        Ok(())
+    }
+
     /// Get number of tracked hashes
     pub fn len(&self) -> usize {
         self.processed.read().unwrap().len()
@@ -288,6 +306,22 @@ mod tests {
     }
 
     #[test]
+    fn test_unmark_hash_allows_failed_content_to_retry() {
+        let checker = IdempotencyChecker::new(100);
+
+        let (is_dup, hash) = checker.check_and_mark(b"content");
+        assert!(!is_dup);
+        assert!(checker.is_duplicate(b"content"));
+
+        checker.unmark_hash(&hash).unwrap();
+
+        assert!(!checker.is_duplicate(b"content"));
+        let (is_dup_after_unmark, same_hash) = checker.check_and_mark(b"content");
+        assert!(!is_dup_after_unmark);
+        assert_eq!(same_hash, hash);
+    }
+
+    #[test]
     fn test_eviction() {
         let checker = IdempotencyChecker::new(10);
 
@@ -329,6 +363,28 @@ mod tests {
         let reloaded = IdempotencyChecker::new_persistent(&db_path, 0).unwrap();
         assert_eq!(reloaded.len(), 1);
         assert!(reloaded.is_duplicate(b"content2"));
+    }
+
+    #[test]
+    fn test_persistent_unmark_removes_hash_from_sqlite() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("idempotency.sqlite");
+        let hash = {
+            let checker = IdempotencyChecker::new_persistent(&db_path, 100).unwrap();
+            let (_, hash) = checker.check_and_mark(b"content");
+
+            checker.unmark_hash(&hash).unwrap();
+
+            assert!(!checker.is_duplicate(b"content"));
+            hash
+        };
+
+        let reloaded = IdempotencyChecker::new_persistent(&db_path, 100).unwrap();
+
+        assert!(!reloaded.is_duplicate(b"content"));
+        let (is_dup, reloaded_hash) = reloaded.check_and_mark(b"content");
+        assert!(!is_dup);
+        assert_eq!(reloaded_hash, hash);
     }
 
     #[test]

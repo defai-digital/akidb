@@ -232,6 +232,13 @@ impl IngestionPipeline {
             {
                 error!(?state_err, hash = %content_hash, "Failed to update state to Failed");
             }
+            if let Err(idempotency_err) = self.idempotency.unmark_hash(&content_hash) {
+                error!(
+                    error = %idempotency_err,
+                    hash = %content_hash,
+                    "Failed to roll back idempotency mark after processing failure"
+                );
+            }
             return Err(e);
         }
 
