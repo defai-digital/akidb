@@ -72,85 +72,101 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
     let has_identifier = q
         .split_whitespace()
         .any(|token| looks_like_identifier(token) || looks_like_path(token));
-    let relationship = starts_with_any(
-        &lower,
-        &[
-            "what calls",
-            "who calls",
-            "what depends",
-            "what imports",
-            "what uses",
-            "who imports",
-            "who uses",
-            "which imports",
-            "which uses",
-            "what files import",
-            "what files use",
-            "which files import",
-            "which files use",
-            "which modules import",
-            "which modules use",
-            "show call",
-            "show calls",
-            "show caller",
-            "show callers",
-            "show callee",
-            "show callees",
-            "show dependency",
-            "show dependencies",
-            "show import",
-            "show imports",
-            "show uses",
-            "list call",
-            "list calls",
-            "list caller",
-            "list callers",
-            "list callee",
-            "list callees",
-            "list dependency",
-            "list dependencies",
-            "list import",
-            "list imports",
-            "list uses",
-            "find call",
-            "find calls",
-            "find caller",
-            "find callers",
-            "find callee",
-            "find callees",
-            "find dependency",
-            "find dependencies",
-            "find import",
-            "find imports",
-            "find uses",
-            "who changed",
-            "what changed",
-            "who modified",
-            "what modified",
-            "who updated",
-            "what updated",
-            "who edited",
-            "what edited",
-            "dependency",
-            "dependencies",
-        ],
-    ) || contains_any(
-        &lower,
-        &[
-            " depends on",
-            " depend on",
-            " imported by",
-            " used by",
-            " called by",
-            " callers of",
-            " caller of",
-            " callees of",
-            " callee of",
-            " calls to",
-            " uses of",
-            " use of",
-        ],
-    );
+    let where_relationship = starts_with_any(&lower, &["where is", "where are"])
+        && contains_any(
+            &lower,
+            &[
+                " called",
+                " used",
+                " imported",
+                " referenced",
+                " defined",
+                " modified",
+                " changed",
+                " updated",
+            ],
+        );
+    let relationship = where_relationship
+        || starts_with_any(
+            &lower,
+            &[
+                "what calls",
+                "who calls",
+                "what depends",
+                "what imports",
+                "what uses",
+                "who imports",
+                "who uses",
+                "which imports",
+                "which uses",
+                "what files import",
+                "what files use",
+                "which files import",
+                "which files use",
+                "which modules import",
+                "which modules use",
+                "show call",
+                "show calls",
+                "show caller",
+                "show callers",
+                "show callee",
+                "show callees",
+                "show dependency",
+                "show dependencies",
+                "show import",
+                "show imports",
+                "show uses",
+                "list call",
+                "list calls",
+                "list caller",
+                "list callers",
+                "list callee",
+                "list callees",
+                "list dependency",
+                "list dependencies",
+                "list import",
+                "list imports",
+                "list uses",
+                "find call",
+                "find calls",
+                "find caller",
+                "find callers",
+                "find callee",
+                "find callees",
+                "find dependency",
+                "find dependencies",
+                "find import",
+                "find imports",
+                "find uses",
+                "who changed",
+                "what changed",
+                "who modified",
+                "what modified",
+                "who updated",
+                "what updated",
+                "who edited",
+                "what edited",
+                "dependency",
+                "dependencies",
+            ],
+        )
+        || contains_any(
+            &lower,
+            &[
+                " depends on",
+                " depend on",
+                " imported by",
+                " used by",
+                " called by",
+                " callers of",
+                " caller of",
+                " callees of",
+                " callee of",
+                " calls to",
+                " uses of",
+                " use of",
+            ],
+        );
     let explanatory = starts_with_any(
         &lower,
         &[
@@ -302,6 +318,26 @@ mod tests {
         let trace = plan_query(&PlannerInput::new("who uses kv_cache.rs"));
         assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
         assert!(trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_where_used_query_enables_graph() {
+        for query in [
+            "where is kv_cache.rs used",
+            "where are KVCache blocks referenced",
+            "where is draft_model::decode called",
+        ] {
+            let trace = plan_query(&PlannerInput::new(query));
+            assert_eq!(trace.mode, RetrievalMode::GraphHybrid, "{query}");
+            assert!(trace.graph_enabled, "{query}");
+        }
+    }
+
+    #[test]
+    fn test_where_question_without_relation_does_not_enable_graph() {
+        let trace = plan_query(&PlannerInput::new("where is the ingestion guide"));
+        assert_eq!(trace.mode, RetrievalMode::Hybrid);
+        assert!(!trace.graph_enabled);
     }
 
     #[test]
