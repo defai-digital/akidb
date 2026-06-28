@@ -27,7 +27,9 @@ pub struct SemanticChunker {
 impl SemanticChunker {
     /// Create a new semantic chunker with the given configuration
     pub fn new(config: ChunkerConfig) -> Self {
-        Self { config }
+        Self {
+            config: normalize_config(config),
+        }
     }
 
     /// Create with default configuration
@@ -139,6 +141,13 @@ impl SemanticChunker {
 
         chunks
     }
+}
+
+fn normalize_config(mut config: ChunkerConfig) -> ChunkerConfig {
+    if config.max_overlap < config.min_overlap {
+        config.max_overlap = config.min_overlap;
+    }
+    config
 }
 
 /// Count tokens using tiktoken cl100k_base tokenizer
@@ -283,6 +292,30 @@ mod tests {
                 chunk.index
             );
         }
+    }
+
+    #[test]
+    fn test_inverted_overlap_bounds_are_normalized() {
+        let chunker = SemanticChunker::new(ChunkerConfig {
+            target_tokens: 4,
+            min_overlap: 4,
+            max_overlap: 1,
+        });
+
+        let text = "Alpha one. Beta two. Gamma three.";
+        let chunks = chunker.chunk(text);
+
+        assert!(chunks.len() > 1);
+        assert_eq!(chunker.config.max_overlap, chunker.config.min_overlap);
+        assert!(
+            chunks[1].text.starts_with("Alpha one."),
+            "second chunk should retain overlap from the previous chunk: {:?}",
+            chunks
+        );
+        assert_eq!(
+            text[chunks[1].start_offset..chunks[1].end_offset].trim(),
+            chunks[1].text
+        );
     }
 
     #[test]
