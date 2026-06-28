@@ -127,6 +127,38 @@ impl CoordinatorService {
         Ok(())
     }
 
+    fn validate_request_collection(collection: &str) -> Result<(), Status> {
+        if collection.is_empty() {
+            return Err(Status::invalid_argument("collection cannot be empty"));
+        }
+        Ok(())
+    }
+
+    fn validate_vector_id(id: &str) -> Result<(), Status> {
+        if id.is_empty() {
+            return Err(Status::invalid_argument("Vector ID cannot be empty"));
+        }
+        if id.len() > 1024 {
+            return Err(Status::invalid_argument(
+                "Vector ID exceeds maximum length of 1024",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_vector_payload(id: &str, vector: &[f32]) -> Result<(), Status> {
+        Self::validate_vector_id(id)?;
+        if vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(Status::invalid_argument(
+                "Vector contains NaN or Infinity values",
+            ));
+        }
+        if vector.is_empty() {
+            return Err(Status::invalid_argument("Vector cannot be empty"));
+        }
+        Ok(())
+    }
+
     fn validate_query_vector(query: &[f32]) -> Result<(), Status> {
         if query.is_empty() {
             return Err(Status::invalid_argument("Query vector cannot be empty"));
@@ -197,6 +229,8 @@ impl Akidb for CoordinatorService {
     ) -> Result<Response<InsertResponse>, Status> {
         // Route insert to the appropriate shard based on vector ID
         let req = request.into_inner();
+        Self::validate_request_collection(&req.collection)?;
+        Self::validate_vector_payload(&req.id, &req.vector)?;
         let router = self.router.read().await;
 
         let shard = router
@@ -242,6 +276,7 @@ impl Akidb for CoordinatorService {
         let req = request.into_inner();
         let start = Instant::now();
 
+        Self::validate_request_collection(&req.collection)?;
         Self::validate_search_controls(req.top_k, req.nprobe)?;
         Self::validate_query_vector(&req.query)?;
 
@@ -316,6 +351,8 @@ impl Akidb for CoordinatorService {
         let req = request.into_inner();
         let start = Instant::now();
 
+        Self::validate_request_collection(&req.collection)?;
+        Self::validate_vector_id(&req.id)?;
         // Broadcast delete to all shards to ensure consistency
         let result = self
             .fanout
@@ -358,11 +395,13 @@ impl Akidb for CoordinatorService {
         let req = request.into_inner();
         let start = Instant::now();
         let id_clone = req.id.clone();
+        Self::validate_request_collection(&req.collection)?;
+        Self::validate_vector_payload(&req.id, &req.vector)?;
 
         // Broadcast update: delete from all shards, then insert to correct shard
         let result = self
             .fanout
-            .broadcast_update(&req.collection, &req.id, req.vector)
+            .broadcast_update(&req.collection, &req.id, req.vector, req.metadata)
             .await
             .map_err(|e| {
                 coordinator_metrics().record_request("update", "error");
@@ -465,7 +504,11 @@ impl Akidb for CoordinatorService {
         request: Request<InsertBatchRequest>,
     ) -> Result<Response<InsertBatchResponse>, Status> {
         let req = request.into_inner();
+        Self::validate_request_collection(&req.collection)?;
         Self::validate_unique_batch_ids(&req.vectors)?;
+        for vector in &req.vectors {
+            Self::validate_vector_payload(&vector.id, &vector.embedding)?;
+        }
         let router = self.router.read().await;
 
         // Partition vectors by shard using consistent hashing
@@ -590,6 +633,7 @@ impl Akidb for CoordinatorService {
     ) -> Result<Response<SearchBatchResponse>, Status> {
         let req = request.into_inner();
 
+        Self::validate_request_collection(&req.collection)?;
         Self::validate_search_controls(req.top_k, req.nprobe)?;
         for query in &req.queries {
             Self::validate_query_vector(&query.vector)?;
@@ -885,6 +929,49 @@ mod tests {
             metadata: vec![],
             text: String::new(),
         }
+    }
+
+    fn insert_request(id: &str, vector: Vec<f32>) -> InsertRequest {
+        InsertRequest {
+            collection: "test".to_string(),
+            id: id.to_string(),
+            vector,
+            metadata: vec![],
+            text: String::new(),
+        }
+    }
+
+    fn update_request(id: &str, vector: Vec<f32>) -> UpdateRequest {
+        UpdateRequest {
+            collection: "test".to_string(),
+            id: id.to_string(),
+            vector,
+            metadata: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_insert_rejects_empty_id_before_routing() {
+        let service = test_service();
+        let result = service
+            .insert(Request::new(insert_request("", vec![0.0; 4])))
+            .await;
+
+        let status = result.expect_err("empty vector ID should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("Vector ID cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_update_rejects_nan_vector_before_fanout() {
+        let service = test_service();
+        let result = service
+            .update(Request::new(update_request("doc1", vec![0.0, f32::NAN])))
+            .await;
+
+        let status = result.expect_err("NaN update vector should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("NaN"));
     }
 
     #[tokio::test]

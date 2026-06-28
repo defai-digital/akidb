@@ -62,6 +62,20 @@ fn shard_search_request(
     }
 }
 
+fn shard_update_request(
+    collection: String,
+    id: String,
+    vector: Vec<f32>,
+    metadata: Vec<u8>,
+) -> UpdateRequest {
+    UpdateRequest {
+        collection,
+        id,
+        vector,
+        metadata,
+    }
+}
+
 fn shard_search_result(result: ProtoSearchResult) -> SearchResult {
     let mut out = SearchResult::new(VectorId::new(result.id), result.score);
     if !result.metadata.is_empty() {
@@ -566,6 +580,7 @@ impl FanoutExecutor {
         collection: &str,
         id: &str,
         vector: Vec<f32>,
+        metadata: Vec<u8>,
     ) -> Result<BroadcastUpdateResult> {
         // First, route and insert to correct shard
         let vector_id = VectorId::new(id);
@@ -580,12 +595,8 @@ impl FanoutExecutor {
         let pool = self.get_pool(&shard_address).await?;
         let mut client = pool.get_client();
 
-        let request = UpdateRequest {
-            collection: collection.to_string(),
-            id: id.to_string(),
-            vector,
-            metadata: vec![],
-        };
+        let request =
+            shard_update_request(collection.to_string(), id.to_string(), vector, metadata);
 
         let result = tokio::time::timeout(self.timeout, client.update(request)).await;
 
@@ -867,6 +878,23 @@ mod tests {
 
         assert_eq!(request.filter, filter);
         assert_eq!(request.tag_filter, Some(tag_filter));
+    }
+
+    #[test]
+    fn test_shard_update_request_preserves_metadata() {
+        let metadata = br#"{"tenant":"defai"}"#.to_vec();
+
+        let request = shard_update_request(
+            "tenant-a".to_string(),
+            "doc1".to_string(),
+            vec![0.1, 0.2],
+            metadata.clone(),
+        );
+
+        assert_eq!(request.collection, "tenant-a");
+        assert_eq!(request.id, "doc1");
+        assert_eq!(request.vector, vec![0.1, 0.2]);
+        assert_eq!(request.metadata, metadata);
     }
 
     #[test]
