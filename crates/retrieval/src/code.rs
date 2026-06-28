@@ -353,9 +353,9 @@ fn impl_name(t: &str) -> Option<String> {
 fn rust_block_end(lines: &[&str], start: usize) -> usize {
     let mut depth: i32 = 0;
     let mut opened = false;
-    let mut in_block_comment = false;
+    let mut state = RustScanState::default();
     for (offset, line) in lines[start..].iter().enumerate() {
-        let scan = rust_brace_scan_with_state(line, &mut in_block_comment);
+        let scan = rust_brace_scan_with_state(line, &mut state);
         if scan.saw_open {
             opened = true;
         }
@@ -377,16 +377,32 @@ struct RustBraceScan {
     saw_open: bool,
 }
 
-fn rust_brace_scan_with_state(line: &str, in_block_comment: &mut bool) -> RustBraceScan {
+#[derive(Debug, Default, Clone, Copy)]
+struct RustScanState {
+    in_block_comment: bool,
+    raw_string_hashes: Option<usize>,
+}
+
+fn rust_brace_scan_with_state(line: &str, state: &mut RustScanState) -> RustBraceScan {
     let chars: Vec<char> = line.chars().collect();
     let mut delta = 0;
     let mut saw_open = false;
     let mut i = 0;
 
     while i < chars.len() {
-        if *in_block_comment {
+        if let Some(hashes) = state.raw_string_hashes {
+            if let Some(end) = rust_raw_string_closing_end(&chars, i, hashes) {
+                state.raw_string_hashes = None;
+                i = end + 1;
+            } else {
+                break;
+            }
+            continue;
+        }
+
+        if state.in_block_comment {
             if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
-                *in_block_comment = false;
+                state.in_block_comment = false;
                 i += 2;
             } else {
                 i += 1;
@@ -397,17 +413,27 @@ fn rust_brace_scan_with_state(line: &str, in_block_comment: &mut bool) -> RustBr
         match chars[i] {
             '/' if chars.get(i + 1) == Some(&'/') => break,
             '/' if chars.get(i + 1) == Some(&'*') => {
-                *in_block_comment = true;
+                state.in_block_comment = true;
                 i += 1;
             }
             'r' => {
-                if let Some(end) = rust_raw_string_end(&chars, i) {
-                    i = end;
+                if let Some((hashes, content_start)) = rust_raw_string_start(&chars, i) {
+                    if let Some(end) = rust_raw_string_closing_end(&chars, content_start, hashes) {
+                        i = end;
+                    } else {
+                        state.raw_string_hashes = Some(hashes);
+                        break;
+                    }
                 }
             }
             'b' if chars.get(i + 1) == Some(&'r') => {
-                if let Some(end) = rust_raw_string_end(&chars, i + 1) {
-                    i = end;
+                if let Some((hashes, content_start)) = rust_raw_string_start(&chars, i + 1) {
+                    if let Some(end) = rust_raw_string_closing_end(&chars, content_start, hashes) {
+                        i = end;
+                    } else {
+                        state.raw_string_hashes = Some(hashes);
+                        break;
+                    }
                 }
             }
             '"' => {
@@ -431,7 +457,11 @@ fn rust_brace_scan_with_state(line: &str, in_block_comment: &mut bool) -> RustBr
     RustBraceScan { delta, saw_open }
 }
 
-fn rust_raw_string_end(chars: &[char], start: usize) -> Option<usize> {
+fn rust_raw_string_start(chars: &[char], start: usize) -> Option<(usize, usize)> {
+    if chars.get(start) != Some(&'r') {
+        return None;
+    }
+
     let mut i = start + 1;
     let mut hashes = 0usize;
 
@@ -444,7 +474,11 @@ fn rust_raw_string_end(chars: &[char], start: usize) -> Option<usize> {
         return None;
     }
 
-    i += 1;
+    Some((hashes, i + 1))
+}
+
+fn rust_raw_string_closing_end(chars: &[char], start: usize, hashes: usize) -> Option<usize> {
+    let mut i = start;
     while i < chars.len() {
         if chars[i] == '"' {
             let mut matched = true;
@@ -460,8 +494,7 @@ fn rust_raw_string_end(chars: &[char], start: usize) -> Option<usize> {
         }
         i += 1;
     }
-
-    Some(chars.len().saturating_sub(1))
+    None
 }
 
 fn skip_rust_string(chars: &[char], start: usize) -> usize {
@@ -515,7 +548,7 @@ fn chunk_rust(source: &str) -> Vec<CodeChunk> {
     let lines: Vec<&str> = source.lines().collect();
     let mut chunks = Vec::new();
     let mut depth: i32 = 0;
-    let mut in_block_comment = false;
+    let mut state = RustScanState::default();
     let mut i = 0;
     while i < lines.len() {
         let trimmed = lines[i].trim_start();
@@ -535,7 +568,7 @@ fn chunk_rust(source: &str) -> Vec<CodeChunk> {
                 continue;
             }
         }
-        depth += rust_brace_scan_with_state(lines[i], &mut in_block_comment).delta;
+        depth += rust_brace_scan_with_state(lines[i], &mut state).delta;
         i += 1;
     }
     chunks
@@ -808,6 +841,28 @@ fn second() {}";
         assert_eq!(names, vec!["first", "second"]);
         assert_eq!(chunks[0].end_line, 3);
         assert_eq!(chunks[1].start_line, 5);
+    }
+
+    #[test]
+    fn test_rust_braces_inside_multiline_raw_strings_do_not_break_scanning() {
+        let src = "\
+fn first() {
+    let template = r#\"
+raw text with } brace
+\"#;
+}
+
+fn second() {}";
+        let chunks = chunk_code(src, Language::Rust);
+        let names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| chunk.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["first", "second"]);
+        assert!(chunks[0].text.contains("raw text with } brace"));
+        assert!(chunks[0].text.contains("\"#;"));
+        assert_eq!(chunks[0].end_line, 5);
+        assert_eq!(chunks[1].start_line, 7);
     }
 
     #[test]
