@@ -461,6 +461,9 @@ where
     ) -> Result<MetadataQuery, Status> {
         match value {
             serde_json::Value::Object(map) => {
+                if map.is_empty() {
+                    return Ok(query.with_exists(field.to_string()));
+                }
                 let mut query = query;
                 for (key, value) in map {
                     let nested_field = format!("{field}.{key}");
@@ -472,6 +475,28 @@ where
                 "SQL metadata filter field '{field}' must be a scalar value"
             ))),
             _ => Ok(query.with_eq(field.to_string(), value.clone())),
+        }
+    }
+
+    fn legacy_filter_contains_empty_object(filter: &[u8]) -> Result<bool, Status> {
+        if filter.is_empty() {
+            return Ok(false);
+        }
+
+        let value: serde_json::Value = serde_json::from_slice(filter)
+            .map_err(|e| Status::invalid_argument(format!("invalid SQL metadata filter: {e}")))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| Status::invalid_argument("SQL metadata filter must be a JSON object"))?;
+        Ok(object.values().any(Self::value_contains_empty_object))
+    }
+
+    fn value_contains_empty_object(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.is_empty() || map.values().any(Self::value_contains_empty_object)
+            }
+            _ => false,
         }
     }
 
@@ -491,7 +516,8 @@ where
             .as_ref()
             .and_then(|tag| tag.filter_type.as_ref())
             .is_some();
-        let post_filter = if has_tag_filter {
+        let needs_legacy_post_filter = Self::legacy_filter_contains_empty_object(&req.filter)?;
+        let post_filter = if has_tag_filter || needs_legacy_post_filter {
             MetadataFilter::build(&req.filter, req.tag_filter.clone())
                 .map_err(Status::invalid_argument)?
         } else {
