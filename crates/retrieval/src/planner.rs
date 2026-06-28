@@ -81,13 +81,26 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "what imports",
             "who changed",
             "what changed",
+            "who modified",
+            "what modified",
+            "who updated",
+            "what updated",
+            "who edited",
+            "what edited",
             "dependency",
             "dependencies",
         ],
     );
     let explanatory = starts_with_any(
         &lower,
-        &["explain", "how does", "how do", "why", "summarize", "describe"],
+        &[
+            "explain",
+            "how does",
+            "how do",
+            "why",
+            "summarize",
+            "describe",
+        ],
     );
     let quoted = q.contains('"') || q.contains('\'');
 
@@ -174,6 +187,13 @@ mod tests {
         assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
         assert!(trace.graph_enabled);
         assert_eq!(trace.graph_depth, 2);
+    }
+
+    #[test]
+    fn test_modified_query_enables_graph() {
+        let trace = plan_query(&PlannerInput::new("who modified mtp_scheduler.rs"));
+        assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
+        assert!(trace.graph_enabled);
     }
 
     #[test]
