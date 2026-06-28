@@ -104,6 +104,13 @@ impl MockIndex {
 
         dot / (norm_a * norm_b)
     }
+
+    fn ensure_tombstone_capacity_for(&self, required_capacity: u64) -> Result<()> {
+        if self.tombstones.capacity() < required_capacity {
+            self.tombstones.resize(required_capacity)?;
+        }
+        Ok(())
+    }
 }
 
 impl VectorIndex for MockIndex {
@@ -125,7 +132,10 @@ impl VectorIndex for MockIndex {
             // This ensures re-inserted vectors become visible in search results
             // FIX BUG-HUNT-203: Log warning instead of silently ignoring errors.
             // If tombstone clear fails, the vector remains invisible despite insert appearing successful.
-            if let Err(e) = self.tombstones.clear_deleted(InternalId(existing_internal_id)) {
+            if let Err(e) = self
+                .tombstones
+                .clear_deleted(InternalId(existing_internal_id))
+            {
                 warn!(
                     internal_id = existing_internal_id,
                     error = %e,
@@ -139,6 +149,7 @@ impl VectorIndex for MockIndex {
         // FIX BUG-HUNT-005: Use SeqCst instead of Relaxed for proper ordering on
         // weaker memory model architectures, including Apple Silicon ARM64.
         let internal_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.ensure_tombstone_capacity_for(internal_id as u64 + 1)?;
 
         id_mapping.insert(id.as_str().to_string(), internal_id);
         drop(id_mapping);
@@ -183,11 +194,9 @@ impl VectorIndex for MockIndex {
         }
 
         // Sort by score descending with tie-breaking by ID (ascending) for deterministic ordering
-        results.sort_by(|a, b| {
-            match b.1.partial_cmp(&a.1) {
-                Some(std::cmp::Ordering::Equal) | None => a.0.as_str().cmp(b.0.as_str()),
-                Some(ord) => ord,
-            }
+        results.sort_by(|a, b| match b.1.partial_cmp(&a.1) {
+            Some(std::cmp::Ordering::Equal) | None => a.0.as_str().cmp(b.0.as_str()),
+            Some(ord) => ord,
         });
 
         // Take top_k
@@ -314,6 +323,30 @@ mod tests {
     }
 
     #[test]
+    fn test_mock_delete_after_capacity_growth() {
+        let index = MockIndex::new(128, 1);
+
+        let v1 = create_random_vector(128);
+        let v2: Vec<f32> = create_random_vector(128)
+            .into_iter()
+            .map(|value| value * 0.5)
+            .collect();
+
+        index.insert(&VectorId::new("vec-1"), &v1).unwrap();
+        let grown_id = index.insert(&VectorId::new("vec-2"), &v2).unwrap();
+
+        index
+            .delete(grown_id)
+            .expect("delete should work after mock capacity growth");
+
+        let results = index.search(&v2, &SearchParams::new(10)).unwrap();
+        assert!(
+            results.iter().all(|result| result.id.as_str() != "vec-2"),
+            "deleted vector from grown capacity should not be searchable"
+        );
+    }
+
+    #[test]
     fn test_mock_dimension_mismatch() {
         let index = MockIndex::new(128, 1000);
 
@@ -329,7 +362,9 @@ mod tests {
 
         for i in 0..100 {
             let v = create_random_vector(128);
-            index.insert(&VectorId::new(format!("vec-{}", i)), &v).unwrap();
+            index
+                .insert(&VectorId::new(format!("vec-{}", i)), &v)
+                .unwrap();
         }
 
         let stats = index.stats();
