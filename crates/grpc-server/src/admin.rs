@@ -220,6 +220,10 @@ impl AdminService for AdminServiceImpl {
         let req = request.into_inner();
         let history = self.state.task_history.read();
         let limit = if req.limit == 0 { 50 } else { req.limit as usize };
+        let status_filter = match req.status_filter {
+            Some(status) => Some(task_status_to_state(status)?),
+            None => None,
+        };
 
         let filtered: Vec<TaskExecutionRecord> = history
             .iter()
@@ -240,9 +244,8 @@ impl AdminService for AdminServiceImpl {
                         return false;
                     }
                 }
-                if let Some(status) = req.status_filter {
-                    let expected_state = task_status_to_state(status);
-                    if e.state != expected_state {
+                if let Some(expected_state) = &status_filter {
+                    if &e.state != expected_state {
                         return false;
                     }
                 }
@@ -638,15 +641,18 @@ fn task_state_to_proto_status(state: &TaskState) -> TaskStatus {
     }
 }
 
-fn task_status_to_state(status: i32) -> TaskState {
+fn task_status_to_state(status: i32) -> Result<TaskState, Status> {
     match TaskStatus::try_from(status) {
-        Ok(TaskStatus::Pending) => TaskState::Pending,
-        Ok(TaskStatus::Running) => TaskState::Running,
-        Ok(TaskStatus::Completed) => TaskState::Completed,
-        Ok(TaskStatus::Failed) => TaskState::Failed,
-        Ok(TaskStatus::Cancelled) => TaskState::Cancelled,
-        Ok(TaskStatus::Disabled) => TaskState::Disabled,
-        _ => TaskState::Pending,
+        Ok(TaskStatus::Pending) => Ok(TaskState::Pending),
+        Ok(TaskStatus::Running) => Ok(TaskState::Running),
+        Ok(TaskStatus::Completed) => Ok(TaskState::Completed),
+        Ok(TaskStatus::Failed) => Ok(TaskState::Failed),
+        Ok(TaskStatus::Cancelled) => Ok(TaskState::Cancelled),
+        Ok(TaskStatus::Disabled) => Ok(TaskState::Disabled),
+        Ok(TaskStatus::Idle) => Err(Status::invalid_argument(
+            "status_filter cannot be TASK_STATUS_IDLE",
+        )),
+        Err(_) => Err(Status::invalid_argument("unknown status_filter")),
     }
 }
 
@@ -751,6 +757,26 @@ mod tests {
 
         let history = state.task_history.read();
         assert_eq!(history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_task_history_rejects_unknown_status_filter() {
+        let state = create_test_state();
+        let service = AdminServiceImpl::new(state);
+
+        let result = service
+            .get_task_history(Request::new(GetTaskHistoryRequest {
+                task_type: None,
+                task_id: None,
+                limit: 50,
+                since_timestamp_ms: None,
+                status_filter: Some(999),
+            }))
+            .await;
+
+        let status = result.expect_err("unknown status filter should be rejected");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("status_filter"));
     }
 
     #[test]
