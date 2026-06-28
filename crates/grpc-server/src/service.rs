@@ -1010,7 +1010,7 @@ where
             .map(|r| SearchResult {
                 id: r.id.to_string(),
                 score: r.score,
-                metadata: r.metadata.map(|m| m.to_string()).unwrap_or_default(),
+                metadata: self.load_metadata_string(&r.id),
             })
             .collect();
 
@@ -1320,7 +1320,7 @@ where
                 .map(|r| SearchResult {
                     id: r.id.to_string(),
                     score: r.score,
-                    metadata: r.metadata.map(|m| m.to_string()).unwrap_or_default(),
+                    metadata: self.load_metadata_string(&r.id),
                 })
                 .collect();
 
@@ -1646,5 +1646,87 @@ where
             degraded_mode: false,
             context_pack,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::Query;
+    use akidb_faiss::mock::MockIndex;
+    use akidb_storage::RocksDbBackend;
+    use tempfile::TempDir;
+
+    fn test_service() -> (AkiDbService<MockIndex, RocksDbBackend>, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let storage = Arc::new(RocksDbBackend::open(dir.path()).unwrap());
+        let id_mapping = Arc::new(IdMapping::new(storage, "test"));
+        let index = Arc::new(MockIndex::new(2, 16));
+        (AkiDbService::new(index, id_mapping, "test"), dir)
+    }
+
+    async fn insert_with_metadata(service: &AkiDbService<MockIndex, RocksDbBackend>) {
+        let metadata = br#"{"document_key":"reports/annual.pdf","title":"Annual Report"}"#.to_vec();
+
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: "doc1:0".to_string(),
+                vector: vec![1.0, 0.0],
+                metadata,
+                text: "annual report text".to_string(),
+            }))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dense_search_returns_durable_metadata() {
+        let (service, _dir) = test_service();
+        insert_with_metadata(&service).await;
+
+        let response = service
+            .search(Request::new(SearchRequest {
+                collection: "test".to_string(),
+                query: vec![1.0, 0.0],
+                top_k: 1,
+                nprobe: None,
+                filter: vec![],
+                tag_filter: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].id, "doc1:0");
+        assert!(response.results[0].metadata.contains("Annual Report"));
+        assert!(response.results[0].metadata.contains("reports/annual.pdf"));
+    }
+
+    #[tokio::test]
+    async fn test_batch_search_returns_durable_metadata() {
+        let (service, _dir) = test_service();
+        insert_with_metadata(&service).await;
+
+        let response = service
+            .search_batch(Request::new(SearchBatchRequest {
+                collection: "test".to_string(),
+                queries: vec![Query {
+                    vector: vec![1.0, 0.0],
+                }],
+                top_k: 1,
+                nprobe: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].results.len(), 1);
+        assert_eq!(response.results[0].results[0].id, "doc1:0");
+        assert!(response.results[0].results[0]
+            .metadata
+            .contains("Annual Report"));
     }
 }
