@@ -77,17 +77,17 @@ impl IngestionPipeline {
         let memory = Arc::new(MemoryCoordinator::new(config.memory.clone()));
 
         // Initialize state tracking with persistence
-        let idempotency = IdempotencyChecker::new_persistent(
-            "/var/lib/akidb/idempotency.db",
-            100_000,
-        )
-        .unwrap_or_else(|e| {
-            warn!(
-                ?e,
-                "Failed to create persistent idempotency checker, falling back to in-memory"
-            );
-            IdempotencyChecker::new(100_000)
-        });
+        let idempotency =
+            match IdempotencyChecker::new_persistent("/var/lib/akidb/idempotency.db", 100_000) {
+                Ok(checker) => checker,
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        "Failed to create persistent idempotency checker, falling back to in-memory"
+                    );
+                    IdempotencyChecker::new(100_000)
+                }
+            };
         let state = StateTracker::new("/var/lib/akidb/ingestion.db")
             .unwrap_or_else(|_| StateTracker::in_memory().unwrap());
 
@@ -339,7 +339,7 @@ impl IngestionPipeline {
 
         self.metrics
             .documents_processed
-            .with_label_values(&[format_label(format), parser_label(format)])
+            .with_label_values(&[format_label(format), parser_label_for_data(format, data)])
             .inc();
 
         Ok(())
@@ -428,11 +428,13 @@ fn format_label(format: DocumentFormat) -> &'static str {
     }
 }
 
-fn parser_label(format: DocumentFormat) -> &'static str {
-    if format.is_rust_native() {
+fn parser_label_for_data(format: DocumentFormat, data: &[u8]) -> &'static str {
+    if route_parser_with_data(format, data).is_some() {
         "rust"
-    } else {
+    } else if should_use_python_parser(format, data) {
         "python"
+    } else {
+        "unsupported"
     }
 }
 
@@ -478,5 +480,21 @@ mod tests {
             DocumentFormat::Json,
             br#"{"ok":true}"#
         ));
+    }
+
+    #[test]
+    fn test_parser_label_uses_python_for_non_simple_docx() {
+        assert_eq!(
+            parser_label_for_data(DocumentFormat::Docx, b"not a zip file"),
+            "python"
+        );
+    }
+
+    #[test]
+    fn test_parser_label_uses_rust_for_rust_native_json() {
+        assert_eq!(
+            parser_label_for_data(DocumentFormat::Json, br#"{"ok":true}"#),
+            "rust"
+        );
     }
 }
