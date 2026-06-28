@@ -158,17 +158,24 @@ fn contains_phrase_with_boundaries(text: &str, phrase: &str) -> bool {
         return true;
     }
 
-    text.match_indices(phrase).any(|(start, matched)| {
+    let text = text.to_lowercase();
+    let phrase = phrase.to_lowercase();
+
+    text.match_indices(&phrase).any(|(start, matched)| {
         let end = start + matched.len();
         let before_boundary = start == 0
             || text[..start]
                 .chars()
                 .next_back()
-                .is_some_and(char::is_whitespace);
+                .is_some_and(is_phrase_boundary);
         let after_boundary =
-            end == text.len() || text[end..].chars().next().is_some_and(char::is_whitespace);
+            end == text.len() || text[end..].chars().next().is_some_and(is_phrase_boundary);
         before_boundary && after_boundary
     })
+}
+
+fn is_phrase_boundary(c: char) -> bool {
+    !c.is_alphanumeric() && c != '_' && c != '-'
 }
 
 #[cfg(test)]
@@ -252,6 +259,39 @@ mod tests {
             "{}",
             result.text
         );
+    }
+
+    #[test]
+    fn test_parse_html_does_not_duplicate_title_before_punctuation() {
+        let parser = HtmlParser::new();
+        let data = br#"
+            <html>
+                <head><title>AkiDB</title></head>
+                <body>
+                    <h1>AkiDB.</h1>
+                    <p>Retrieval status.</p>
+                </body>
+            </html>
+        "#;
+
+        let result = parser.parse(data).unwrap();
+
+        assert_eq!(result.text.matches("AkiDB").count(), 1, "{}", result.text);
+        assert_eq!(result.text, "AkiDB. Retrieval status.");
+    }
+
+    #[test]
+    fn test_title_phrase_boundary_handles_punctuation_case_and_identifiers() {
+        assert!(contains_phrase_with_boundaries("akidb.", "AkiDB"));
+        assert!(contains_phrase_with_boundaries("(AkiDB)", "AkiDB"));
+        assert!(!contains_phrase_with_boundaries(
+            "contract_amount updated",
+            "Contract"
+        ));
+        assert!(!contains_phrase_with_boundaries(
+            "contract-amount updated",
+            "Contract"
+        ));
     }
 
     #[test]
