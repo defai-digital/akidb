@@ -319,6 +319,18 @@ where
         Ok(())
     }
 
+    fn validate_query_vector(query: &[f32]) -> Result<(), Status> {
+        if query.is_empty() {
+            return Err(Status::invalid_argument("Query vector cannot be empty"));
+        }
+        if query.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(Status::invalid_argument(
+                "Query vector contains NaN or Infinity values",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_request_collection(&self, collection: &str) -> Result<(), Status> {
         if collection.is_empty() {
             return Err(Status::invalid_argument("collection cannot be empty"));
@@ -1410,6 +1422,7 @@ where
 
         self.validate_request_collection(&req.collection)?;
         Self::validate_search_controls(req.top_k, req.nprobe)?;
+        Self::validate_query_vector(&req.query)?;
 
         let mut params =
             SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
@@ -1765,6 +1778,7 @@ where
         let mut results = Vec::with_capacity(req.queries.len());
 
         for query in req.queries {
+            Self::validate_query_vector(&query.vector)?;
             let search_start = Instant::now();
 
             let search_results = self
@@ -2313,6 +2327,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dense_search_rejects_nan_query() {
+        let (service, _dir) = test_service();
+        let result = service
+            .search(Request::new(SearchRequest {
+                collection: "test".to_string(),
+                query: vec![f32::NAN, 0.0],
+                top_k: 1,
+                nprobe: None,
+                filter: vec![],
+                tag_filter: None,
+            }))
+            .await;
+
+        let status = result.expect_err("NaN query should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("NaN"));
+    }
+
+    #[tokio::test]
     async fn test_batch_search_rejects_zero_nprobe_before_queries() {
         let (service, _dir) = test_service();
         let result = service
@@ -2327,6 +2360,23 @@ mod tests {
         let status = result.expect_err("zero nprobe should be rejected");
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("nprobe"));
+    }
+
+    #[tokio::test]
+    async fn test_batch_search_rejects_empty_query() {
+        let (service, _dir) = test_service();
+        let result = service
+            .search_batch(Request::new(SearchBatchRequest {
+                collection: "test".to_string(),
+                queries: vec![Query { vector: vec![] }],
+                top_k: 1,
+                nprobe: None,
+            }))
+            .await;
+
+        let status = result.expect_err("empty query should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("Query vector cannot be empty"));
     }
 
     fn assert_collection_mismatch(status: Status) {
