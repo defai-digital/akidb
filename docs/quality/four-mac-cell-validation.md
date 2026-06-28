@@ -64,9 +64,7 @@ artifact:
 python3 scripts/build-four-mac-cell-artifact.py \
   --input docs/reports/four-mac-input.json \
   --one-mac-artifact docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json \
-  --cell-qps 2600 \
-  --cell-p95-ms 45 \
-  --cell-p99-ms 90 \
+  --cell-artifact docs/reports/four-mac-benchmark-YYYYMMDD.json \
   --output docs/reports/four-mac-cell-YYYYMMDD.json \
   --validate
 ```
@@ -74,7 +72,10 @@ python3 scripts/build-four-mac-cell-artifact.py \
 The builder also supports split list files directly with `--nodes`, `--links`,
 and `--failure-tests`. Use `--one-mac-qps` only when the reference benchmark
 artifact is unavailable; otherwise prefer `--one-mac-artifact` so the throughput
-ratio is derived from the checked-in baseline.
+ratio is derived from the checked-in baseline. Use `--cell-qps`,
+`--cell-p95-ms`, and `--cell-p99-ms` only when the cell benchmark JSON artifact
+is unavailable; otherwise prefer `--cell-artifact` so QPS and latency come from
+the measured benchmark output.
 
 The validator checks:
 

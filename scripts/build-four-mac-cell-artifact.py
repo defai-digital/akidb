@@ -30,25 +30,48 @@ def read_json(path: Path) -> Any:
         raise BuildError(f"{path} is not valid JSON: {exc}") from exc
 
 
-def one_mac_qps_from_artifact(path: Path) -> tuple[float, dict[str, Any]]:
+def benchmark_summary_from_artifact(path: Path, flag_name: str) -> tuple[float, float, float, dict[str, Any]]:
     artifact = read_json(path)
-    require(isinstance(artifact, dict), "--one-mac-artifact must be a JSON object")
+    require(isinstance(artifact, dict), f"{flag_name} must be a JSON object")
     search = artifact.get("search")
-    require(isinstance(search, dict), "--one-mac-artifact missing search object")
+    require(isinstance(search, dict), f"{flag_name} missing search object")
     qps = search.get("throughput_queries_per_sec")
     require(
         isinstance(qps, (int, float)) and not isinstance(qps, bool) and float(qps) > 0,
-        "--one-mac-artifact search.throughput_queries_per_sec must be > 0",
+        f"{flag_name} search.throughput_queries_per_sec must be > 0",
+    )
+    latency = search.get("latency")
+    require(isinstance(latency, dict), f"{flag_name} missing search.latency object")
+    p95_us = latency.get("p95_us")
+    p99_us = latency.get("p99_us")
+    for name, value in {"p95_us": p95_us, "p99_us": p99_us}.items():
+        require(
+            isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) >= 0,
+            f"{flag_name} search.latency.{name} must be >= 0",
+        )
+    require(
+        float(p99_us) >= float(p95_us),
+        f"{flag_name} search.latency.p99_us must be >= p95_us",
     )
 
     dataset = artifact.get("dataset")
     software = artifact.get("software")
-    return float(qps), {
+    reference = {
         "artifact": str(path),
         "git_commit": software.get("git_commit") if isinstance(software, dict) else None,
         "dimension": dataset.get("dimension") if isinstance(dataset, dict) else None,
         "vectors": dataset.get("vectors") if isinstance(dataset, dict) else None,
     }
+    return float(qps), float(p95_us) / 1000.0, float(p99_us) / 1000.0, reference
+
+
+def one_mac_qps_from_artifact(path: Path) -> tuple[float, dict[str, Any]]:
+    qps, _p95_ms, _p99_ms, reference = benchmark_summary_from_artifact(path, "--one-mac-artifact")
+    return qps, reference
+
+
+def cell_benchmark_from_artifact(path: Path) -> tuple[float, float, float, dict[str, Any]]:
+    return benchmark_summary_from_artifact(path, "--cell-artifact")
 
 
 def require_objects(value: Any, name: str) -> list[dict[str, Any]]:
@@ -185,16 +208,26 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
     one_mac_reference: dict[str, Any] | None = None
     if args.one_mac_artifact:
         one_mac_qps, one_mac_reference = one_mac_qps_from_artifact(args.one_mac_artifact)
-    throughput_ratio = args.cell_qps / one_mac_qps
+    cell_qps = args.cell_qps
+    cell_p95_ms = args.cell_p95_ms
+    cell_p99_ms = args.cell_p99_ms
+    cell_reference: dict[str, Any] | None = None
+    if args.cell_artifact:
+        cell_qps, cell_p95_ms, cell_p99_ms, cell_reference = cell_benchmark_from_artifact(
+            args.cell_artifact
+        )
+    throughput_ratio = cell_qps / one_mac_qps
     benchmark = {
         "one_mac_qps": one_mac_qps,
-        "cell_qps": args.cell_qps,
+        "cell_qps": cell_qps,
         "throughput_ratio": throughput_ratio,
-        "cell_p95_ms": args.cell_p95_ms,
-        "cell_p99_ms": args.cell_p99_ms,
+        "cell_p95_ms": cell_p95_ms,
+        "cell_p99_ms": cell_p99_ms,
     }
     if one_mac_reference:
         benchmark["one_mac_reference"] = one_mac_reference
+    if cell_reference:
+        benchmark["cell_reference"] = cell_reference
 
     return {
         "schema_version": 1,
@@ -326,6 +359,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shards", type=int, default=4)
     parser.add_argument("--one-mac-qps", type=float)
     parser.add_argument("--one-mac-artifact", type=Path, help="Read one-Mac QPS from a benchmark artifact")
+    parser.add_argument("--cell-artifact", type=Path, help="Read cell QPS/P95/P99 from a benchmark artifact")
     parser.add_argument("--cell-qps", type=float)
     parser.add_argument("--cell-p95-ms", type=float)
     parser.add_argument("--cell-p99-ms", type=float)
@@ -364,13 +398,20 @@ def main() -> int:
             (args.one_mac_qps is None) != (args.one_mac_artifact is None),
             "provide exactly one of --one-mac-qps or --one-mac-artifact",
         )
-        for name in ["cell_qps", "cell_p95_ms", "cell_p99_ms"]:
-            require(getattr(args, name) is not None, f"--{name.replace('_', '-')} is required")
+        cell_metrics = [args.cell_qps, args.cell_p95_ms, args.cell_p99_ms]
+        has_cell_metrics = all(value is not None for value in cell_metrics)
+        has_partial_cell_metrics = any(value is not None for value in cell_metrics)
+        require(
+            (not has_partial_cell_metrics or has_cell_metrics)
+            and (has_cell_metrics != (args.cell_artifact is not None)),
+            "provide either --cell-artifact or all of --cell-qps/--cell-p95-ms/--cell-p99-ms",
+        )
         if args.one_mac_qps is not None:
             require(args.one_mac_qps > 0, "--one-mac-qps must be > 0")
-        require(args.cell_qps > 0, "--cell-qps must be > 0")
-        require(args.cell_p95_ms >= 0, "--cell-p95-ms must be >= 0")
-        require(args.cell_p99_ms >= args.cell_p95_ms, "--cell-p99-ms must be >= --cell-p95-ms")
+        if has_cell_metrics:
+            require(args.cell_qps > 0, "--cell-qps must be > 0")
+            require(args.cell_p95_ms >= 0, "--cell-p95-ms must be >= 0")
+            require(args.cell_p99_ms >= args.cell_p95_ms, "--cell-p99-ms must be >= --cell-p95-ms")
 
         artifact = build_artifact(args)
         args.output.parent.mkdir(parents=True, exist_ok=True)
