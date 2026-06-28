@@ -3,9 +3,11 @@
 //! Rust-native parser for simple DOCX files using docx-rs.
 //! Complex DOCX files (macros, ActiveX, OLE objects) are routed to Python.
 
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
-use docx_rs::{read_docx, DocumentChild, ParagraphChild, RunChild, TableChild, TableCellContent, TableRowChild};
+use docx_rs::{
+    read_docx, DocumentChild, ParagraphChild, RunChild, TableCellContent, TableChild, TableRowChild,
+};
 use zip::ZipArchive;
 
 use crate::parsers::{DocumentFormat, DocumentMetadata, DocumentParser, ParsedDocument};
@@ -121,38 +123,89 @@ impl DocxParser {
 
     /// Extract text from a table
     fn extract_table_text(rows: &[TableChild]) -> String {
-        let mut text = String::new();
+        let mut lines = Vec::new();
+        let mut headers: Option<Vec<Option<String>>> = None;
 
         for row_child in rows {
-            if let TableChild::TableRow(row) = row_child {
-                let mut row_texts = Vec::new();
+            let TableChild::TableRow(row) = row_child;
+            let mut cells = Vec::new();
 
-                for cell_child in &row.cells {
-                    if let TableRowChild::TableCell(cell) = cell_child {
-                        let mut cell_text = String::new();
+            for cell_child in &row.cells {
+                let TableRowChild::TableCell(cell) = cell_child;
+                let mut cell_text = String::new();
 
-                        for content in &cell.children {
-                            match content {
-                                TableCellContent::Paragraph(p) => {
-                                    cell_text.push_str(&Self::extract_paragraph_text(&p.children));
-                                }
-                                _ => {}
-                            }
+                for content in &cell.children {
+                    match content {
+                        TableCellContent::Paragraph(p) => {
+                            cell_text.push_str(&Self::extract_paragraph_text(&p.children));
                         }
-
-                        row_texts.push(cell_text.trim().to_string());
+                        _ => {}
                     }
                 }
 
-                if !row_texts.is_empty() {
-                    text.push_str(&row_texts.join("\t"));
-                    text.push('\n');
+                cells.push(normalize_cell_text(&cell_text));
+            }
+
+            if row_is_empty(&cells) {
+                continue;
+            }
+
+            let line = match headers.as_deref() {
+                Some(headers) => row_text_with_headers(headers, &cells),
+                None => {
+                    headers = Some(cells.clone());
+                    row_text_from_cells(&cells)
                 }
+            };
+            if !line.is_empty() {
+                lines.push(line);
             }
         }
 
-        text
+        lines.join("\n")
     }
+}
+
+fn normalize_cell_text(text: &str) -> Option<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn row_is_empty(cells: &[Option<String>]) -> bool {
+    cells.iter().all(Option::is_none)
+}
+
+fn row_text_from_cells(cells: &[Option<String>]) -> String {
+    cells
+        .iter()
+        .filter_map(|cell| cell.as_deref())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn row_text_with_headers(headers: &[Option<String>], cells: &[Option<String>]) -> String {
+    cells
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, cell)| {
+            let value = cell.as_deref()?;
+            let header = headers
+                .get(idx)
+                .and_then(|header| header.as_deref())
+                .unwrap_or_default()
+                .trim();
+            if header.is_empty() {
+                Some(value.to_string())
+            } else {
+                Some(format!("{} {}", header, value))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 impl Default for DocxParser {
@@ -173,9 +226,8 @@ impl DocumentParser for DocxParser {
         }
 
         // Parse the DOCX file
-        let docx = read_docx(data).map_err(|e| {
-            IngestionError::Parse(format!("Failed to parse DOCX: {}", e))
-        })?;
+        let docx = read_docx(data)
+            .map_err(|e| IngestionError::Parse(format!("Failed to parse DOCX: {}", e)))?;
 
         let mut text_parts = Vec::new();
 
@@ -222,6 +274,8 @@ impl DocumentParser for DocxParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Cursor, Write};
+    use zip::{write::SimpleFileOptions, ZipWriter};
 
     #[test]
     fn test_is_simple_invalid_zip() {
@@ -248,5 +302,94 @@ mod tests {
         let result = parser.parse(&data);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too large"));
+    }
+
+    #[test]
+    fn test_parse_docx_table_preserves_header_value_pairs_for_retrieval() {
+        let parser = DocxParser::new();
+        let data = minimal_docx_with_contract_table();
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("customer HGC"), "{}", result.text);
+        assert!(result.text.contains("year 2025"), "{}", result.text);
+        assert!(
+            result.text.contains("contract_amount 1200"),
+            "{}",
+            result.text
+        );
+    }
+
+    fn minimal_docx_with_contract_table() -> Vec<u8> {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+            add_file(
+                &mut zip,
+                options,
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#,
+            );
+            add_file(
+                &mut zip,
+                options,
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#,
+            );
+            add_file(
+                &mut zip,
+                options,
+                "word/_rels/document.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>"#,
+            );
+            add_file(
+                &mut zip,
+                options,
+                "word/document.xml",
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>customer</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>year</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>contract_amount</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>2025</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>1200</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+            );
+            zip.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    fn add_file(
+        zip: &mut ZipWriter<&mut Cursor<Vec<u8>>>,
+        options: SimpleFileOptions,
+        path: &str,
+        contents: &str,
+    ) {
+        zip.start_file(path, options).unwrap();
+        zip.write_all(contents.as_bytes()).unwrap();
     }
 }
