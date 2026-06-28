@@ -197,6 +197,23 @@ async fn test_tool_integer_arguments_reject_overflow() {
 }
 
 #[tokio::test]
+async fn test_tool_boolean_arguments_reject_wrong_type() {
+    let svc = setup();
+    let search = call(
+        &svc,
+        r#"{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"search","arguments":{"query":"needle","hybrid":"false"}}}"#,
+    )
+    .await;
+
+    assert_eq!(search["result"]["isError"], true);
+    let text = search["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("hybrid") && text.contains("boolean"),
+        "expected hybrid type error, got: {text}"
+    );
+}
+
+#[tokio::test]
 async fn test_status_tool() {
     let svc = setup();
     let v = call(

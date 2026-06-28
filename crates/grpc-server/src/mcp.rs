@@ -190,6 +190,15 @@ fn arg_u32(args: &Value, key: &str, default: u32) -> Result<u32, String> {
     u32::try_from(n).map_err(|_| format!("'{key}' exceeds u32 range"))
 }
 
+fn arg_bool(args: &Value, key: &str, default: bool) -> Result<bool, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(default);
+    };
+    value
+        .as_bool()
+        .ok_or_else(|| format!("'{key}' must be a boolean"))
+}
+
 fn text_search_request(
     text: String,
     top_k: u32,
@@ -223,7 +232,7 @@ where
 {
     let query = arg_str(args, "query").ok_or("missing 'query'")?;
     let top_k = arg_u32(args, "top_k", 10)?;
-    let hybrid = args.get("hybrid").and_then(|v| v.as_bool()).unwrap_or(true);
+    let hybrid = arg_bool(args, "hybrid", true)?;
     let resp = service
         .text_search(Request::new(text_search_request(
             query, top_k, hybrid, false, None,
