@@ -91,20 +91,85 @@ fn leading_indent(line: &str) -> usize {
 fn extend_start_with_decorations(lines: &[&str], start: usize) -> usize {
     let mut s = start;
     while s > 0 {
+        if let Some(attr_start) = rust_attribute_block_before(lines, s) {
+            s = attr_start;
+            continue;
+        }
+
         let prev = lines[s - 1].trim_start();
-        let is_decoration = prev.starts_with("#[")
-            || prev.starts_with("#!")
-            || prev.starts_with("///")
-            || prev.starts_with("//!")
-            || prev.starts_with("//")
-            || prev.starts_with('@'); // Python decorator
-        if is_decoration {
+        if is_rust_comment_decoration(prev) {
             s -= 1;
         } else {
             break;
         }
     }
     s
+}
+
+fn is_rust_comment_decoration(trimmed: &str) -> bool {
+    trimmed.starts_with("///") || trimmed.starts_with("//!") || trimmed.starts_with("//")
+}
+
+fn rust_attribute_block_before(lines: &[&str], end: usize) -> Option<usize> {
+    let prev = lines.get(end.checked_sub(1)?)?.trim_start();
+    if is_rust_attribute_start(prev) {
+        return Some(end - 1);
+    }
+
+    if !prev.starts_with(']') && !prev.starts_with(')') {
+        return None;
+    }
+
+    let mut i = end - 1;
+    while i > 0 {
+        i -= 1;
+        let trimmed = lines[i].trim_start();
+        if trimmed.is_empty()
+            || is_rust_comment_decoration(trimmed)
+            || rust_symbol_start(trimmed).is_some()
+        {
+            return None;
+        }
+        if is_rust_attribute_start(trimmed) {
+            return rust_attribute_block_reaches(lines, i, end).then_some(i);
+        }
+    }
+
+    None
+}
+
+fn is_rust_attribute_start(trimmed: &str) -> bool {
+    trimmed.starts_with("#[") || trimmed.starts_with("#![")
+}
+
+fn rust_attribute_block_reaches(lines: &[&str], start: usize, end: usize) -> bool {
+    let mut depth = 0i32;
+    let mut saw_attribute_start = false;
+
+    for line in &lines[start..end] {
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                '/' if chars.get(i + 1) == Some(&'/') => break,
+                '"' => i = skip_rust_string(&chars, i),
+                '\'' => {
+                    if let Some(end) = rust_char_literal_end(&chars, i) {
+                        i = end;
+                    }
+                }
+                '[' => {
+                    saw_attribute_start = true;
+                    depth += 1;
+                }
+                ']' => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    saw_attribute_start && depth == 0
 }
 
 fn rust_symbol_start(trimmed: &str) -> Option<SymbolKind> {
@@ -855,6 +920,42 @@ impl Foo {
         );
         assert_eq!(chunks[1].kind, SymbolKind::Impl);
         assert_eq!(chunks[1].name.as_deref(), Some("Foo"));
+    }
+
+    #[test]
+    fn test_rust_multiline_attribute_attached() {
+        let src = "\
+#[cfg_attr(
+    feature = \"serde\",
+    derive(Serialize, Deserialize),
+)]
+pub struct ContractRecord {
+    amount: u64,
+}
+
+pub fn next_symbol() {}";
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].kind, SymbolKind::Struct);
+        assert_eq!(chunks[0].name.as_deref(), Some("ContractRecord"));
+        assert!(chunks[0].text.contains("#[cfg_attr("));
+        assert!(chunks[0].text.contains("derive(Serialize, Deserialize)"));
+        assert_eq!(chunks[0].start_line, 1);
+        assert_eq!(chunks[1].name.as_deref(), Some("next_symbol"));
+        assert!(!chunks[1].text.contains("cfg_attr"));
+    }
+
+    #[test]
+    fn test_rust_attribute_does_not_leak_to_next_item() {
+        let src = "\
+#[derive(Debug)]
+pub struct First;
+pub struct Second;";
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].text.contains("#[derive(Debug)]"));
+        assert!(!chunks[1].text.contains("#[derive(Debug)]"));
+        assert_eq!(chunks[1].name.as_deref(), Some("Second"));
     }
 
     #[test]
