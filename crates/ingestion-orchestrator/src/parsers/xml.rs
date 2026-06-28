@@ -113,7 +113,10 @@ fn attribute_texts(element: &str, start: &quick_xml::events::BytesStart<'_>) -> 
         .filter_map(|attr| attr.ok())
         .filter_map(|attr| {
             let key = element_name(attr.key.as_ref());
-            let value = String::from_utf8_lossy(attr.value.as_ref())
+            let value = attr
+                .unescape_value()
+                .map(|value| value.into_owned())
+                .unwrap_or_else(|_| String::from_utf8_lossy(attr.value.as_ref()).into_owned())
                 .trim()
                 .to_string();
             if key.is_empty() || value.is_empty() {
@@ -186,5 +189,19 @@ mod tests {
         assert!(result.text.contains("contract customer HGC"));
         assert!(result.text.contains("contract year 2025"));
         assert!(result.text.contains("contract contract_amount 1200"));
+    }
+
+    #[test]
+    fn test_parse_xml_unescapes_attribute_values_for_retrieval() {
+        let parser = XmlParser::new();
+        let data = br#"
+            <contracts>
+                <contract customer="HGC &amp; Co" />
+            </contracts>
+        "#;
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("contract customer HGC & Co"));
+        assert!(!result.text.contains("HGC &amp; Co"));
     }
 }
