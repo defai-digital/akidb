@@ -215,9 +215,15 @@ impl VectorIndex for HnswIndex {
             });
         }
 
-        // Request extra candidates to account for tombstoned vectors
+        // Request extra candidates to account for tombstoned vectors. Filters
+        // are evaluated after usearch returns candidates, so filtered searches
+        // must scan the available result set before applying the final top_k.
         let tombstoned = self.tombstones.deleted_count() as usize;
-        let search_count = params.top_k + tombstoned + params.top_k / 2;
+        let search_count = if params.filter.is_some() {
+            self.index.size().max(params.top_k)
+        } else {
+            params.top_k + tombstoned + params.top_k / 2
+        };
 
         // Update ef_search if nprobe differs from default
         if params.nprobe as usize != self.ef_search {
@@ -416,6 +422,25 @@ mod tests {
         assert_eq!(results[0].id.as_str(), "vec-1");
         // Self-match should have score very close to 1.0
         assert!(results[0].score > 0.99);
+    }
+
+    #[test]
+    fn test_hnsw_filter_applies_before_top_k_cutoff() {
+        let config = create_test_config();
+        let index = HnswIndex::new(config).unwrap();
+
+        let blocked = create_random_vector(128, 1.0);
+        let allowed = create_random_vector(128, 1.1);
+        index.insert(&VectorId::new("blocked"), &blocked).unwrap();
+        index.insert(&VectorId::new("allowed"), &allowed).unwrap();
+
+        let params = SearchParams::new(1).with_filter(std::sync::Arc::new(|id: &VectorId| {
+            id.as_str() == "allowed"
+        }));
+        let results = index.search(&blocked, &params).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id.as_str(), "allowed");
     }
 
     #[test]
