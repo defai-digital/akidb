@@ -7,7 +7,7 @@
 use crate::{
     index::{IndexStats, SearchParams, VectorIndex},
     tombstone::TombstoneBitset,
-    AkiDbError, InternalId, Result, SearchResult, VectorId,
+    validate_finite_vector_values, AkiDbError, InternalId, Result, SearchResult, VectorId,
 };
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -170,6 +170,7 @@ impl VectorIndex for HnswIndex {
                 actual: vector.len(),
             });
         }
+        validate_finite_vector_values(vector, "Insert")?;
 
         // Check for existing vector (upsert)
         let mut id_map = self.id_mapping.write();
@@ -226,6 +227,7 @@ impl VectorIndex for HnswIndex {
                 actual: query.len(),
             });
         }
+        validate_finite_vector_values(query, "Search")?;
 
         // Request extra candidates to account for tombstoned vectors. Filters
         // are evaluated after usearch returns candidates, so filtered searches
@@ -459,6 +461,34 @@ mod tests {
         let wrong_dim = vec![1.0; 64];
         let result = index.insert(&VectorId::new("vec-1"), &wrong_dim);
         assert!(matches!(result, Err(AkiDbError::DimensionMismatch { .. })));
+    }
+
+    #[test]
+    fn test_hnsw_search_rejects_non_finite_query_values() {
+        let config = create_test_config();
+        let index = HnswIndex::new(config).unwrap();
+
+        let v1 = create_random_vector(128, 1.0);
+        index.insert(&VectorId::new("vec-1"), &v1).unwrap();
+
+        let mut query = v1;
+        query[0] = f32::INFINITY;
+        let result = index.search(&query, &SearchParams::new(1));
+
+        assert!(matches!(result, Err(AkiDbError::InvalidParameter(_))));
+    }
+
+    #[test]
+    fn test_hnsw_insert_rejects_non_finite_vector_values() {
+        let config = create_test_config();
+        let index = HnswIndex::new(config).unwrap();
+
+        let mut vector = create_random_vector(128, 1.0);
+        vector[0] = f32::NAN;
+        let result = index.insert(&VectorId::new("vec-1"), &vector);
+
+        assert!(matches!(result, Err(AkiDbError::InvalidParameter(_))));
+        assert_eq!(index.stats().total_vectors, 0);
     }
 
     #[test]

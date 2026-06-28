@@ -29,3 +29,12 @@ pub use mock::{MockIndex, MockIndexConfig};
 
 /// Re-export common types
 pub use akidb_common::{AkiDbError, InternalId, Result, SearchResult, Vector, VectorId};
+
+pub(crate) fn validate_finite_vector_values(vector: &[f32], operation: &str) -> Result<()> {
+    if vector.iter().any(|value| !value.is_finite()) {
+        return Err(AkiDbError::InvalidParameter(format!(
+            "{operation} vector contains NaN or Infinity values"
+        )));
+    }
+    Ok(())
+}

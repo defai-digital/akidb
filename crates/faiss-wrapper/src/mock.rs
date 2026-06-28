@@ -6,7 +6,7 @@
 use crate::{
     index::{IndexStats, SearchParams, VectorIndex},
     tombstone::TombstoneBitset,
-    AkiDbError, InternalId, Result, SearchResult, VectorId,
+    validate_finite_vector_values, AkiDbError, InternalId, Result, SearchResult, VectorId,
 };
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -121,6 +121,7 @@ impl VectorIndex for MockIndex {
                 actual: vector.len(),
             });
         }
+        validate_finite_vector_values(vector, "Insert")?;
 
         // Check if ID already exists
         let mut id_mapping = self.id_mapping.write();
@@ -174,6 +175,7 @@ impl VectorIndex for MockIndex {
                 actual: query.len(),
             });
         }
+        validate_finite_vector_values(query, "Search")?;
 
         let vectors = self.vectors.read();
         // FIX BUG-062: Removed unused id_mapping lock (was: let id_mapping = self.id_mapping.read();)
@@ -354,6 +356,29 @@ mod tests {
         let result = index.insert(&VectorId::new("vec-1"), &wrong_dim);
 
         assert!(matches!(result, Err(AkiDbError::DimensionMismatch { .. })));
+    }
+
+    #[test]
+    fn test_mock_search_rejects_non_finite_query_values() {
+        let index = MockIndex::new(2, 1000);
+        index.insert(&VectorId::new("vec-1"), &[1.0, 0.0]).unwrap();
+
+        let result = index.search(&[f32::NAN, 0.0], &SearchParams::new(1));
+
+        assert!(matches!(result, Err(AkiDbError::InvalidParameter(_))));
+    }
+
+    #[test]
+    fn test_mock_insert_rejects_non_finite_vector_values() {
+        let index = MockIndex::new(2, 1000);
+
+        let result = index.insert(&VectorId::new("vec-1"), &[1.0, f32::INFINITY]);
+
+        assert!(matches!(result, Err(AkiDbError::InvalidParameter(_))));
+        assert!(index
+            .search(&[1.0, 0.0], &SearchParams::new(10))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
