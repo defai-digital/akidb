@@ -835,6 +835,7 @@ where
             }
         }
 
+        self.delete_graph_chunk(vector_id);
         self.index_sql_metadata(vector_id, new_internal_id.0, metadata);
         self.index_graph_chunk(vector_id, metadata);
 

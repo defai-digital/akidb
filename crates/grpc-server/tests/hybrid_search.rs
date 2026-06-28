@@ -20,7 +20,7 @@ use akidb_graph::{
 use akidb_grpc::proto::akidb_server::Akidb;
 use akidb_grpc::proto::{
     tag_filter::FilterType, tag_value::Value as TagVal, DeleteRequest, InsertRequest, TagCondition,
-    TagFilter, TagOperator, TagValue, TextSearchRequest,
+    TagFilter, TagOperator, TagValue, TextSearchRequest, UpdateRequest,
 };
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
 use akidb_sql::SqliteMetadataIndex;
@@ -934,6 +934,52 @@ async fn test_insert_metadata_indexes_graph_related_ids_for_pack() {
     assert!(
         pack.contains("auto indexed graph context"),
         "related_ids metadata should create graph context edge, got: {pack}"
+    );
+}
+
+#[tokio::test]
+async fn test_update_removes_stale_graph_related_context() {
+    let (svc, _graph) = setup_with_graph();
+    insert(
+        &svc,
+        "related",
+        vec![0.0, 0.0, 1.0],
+        "stale graph context",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle anchor text",
+        br#"{"related_ids":["related"]}"#,
+    )
+    .await;
+
+    let before = pack_for(&svc, "needle", 1).await;
+    assert!(
+        before.contains("stale graph context"),
+        "precondition failed, got: {before}"
+    );
+
+    svc.update(Request::new(UpdateRequest {
+        collection: "test".into(),
+        id: "anchor".into(),
+        vector: vec![1.0, 0.0, 0.0],
+        metadata: b"{}".to_vec(),
+    }))
+    .await
+    .expect("update failed");
+
+    let after = pack_for(&svc, "needle", 1).await;
+    assert!(
+        after.contains("needle anchor text"),
+        "anchor context expected after update, got: {after}"
+    );
+    assert!(
+        !after.contains("stale graph context"),
+        "updated metadata should remove stale graph expansion, got: {after}"
     );
 }
 
