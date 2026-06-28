@@ -53,16 +53,22 @@ impl HtmlParser {
         let Some(style) = element.value().attr("style") else {
             return false;
         };
-        style
+        let mut display = None;
+        let mut visibility = None;
+        for (property, value) in style
             .split(';')
             .filter_map(|declaration| declaration.split_once(':'))
-            .any(|(property, value)| {
-                let property = property.trim();
-                let value = value.split('!').next().map(str::trim).unwrap_or_default();
-                (property.eq_ignore_ascii_case("display") && value.eq_ignore_ascii_case("none"))
-                    || (property.eq_ignore_ascii_case("visibility")
-                        && value.eq_ignore_ascii_case("hidden"))
-            })
+        {
+            let property = property.trim();
+            let value = value.split('!').next().map(str::trim).unwrap_or_default();
+            if property.eq_ignore_ascii_case("display") {
+                display = Some(value.eq_ignore_ascii_case("none"));
+            } else if property.eq_ignore_ascii_case("visibility") {
+                visibility = Some(value.eq_ignore_ascii_case("hidden"));
+            }
+        }
+
+        display.unwrap_or(false) || visibility.unwrap_or(false)
     }
 
     fn push_semantic_attributes(element: ElementRef, text: &mut String) {
@@ -374,5 +380,23 @@ mod tests {
         assert!(!result.text.contains("Inline visibility hidden token"));
         assert!(!result.text.contains("Important display none token"));
         assert!(!result.text.contains("Important visibility hidden token"));
+    }
+
+    #[test]
+    fn test_parse_html_respects_later_inline_style_overrides() {
+        let parser = HtmlParser::new();
+        let data = br#"
+            <html>
+                <body>
+                    <div style="display:none; display:block">Visible after display override</div>
+                    <div style="visibility:hidden; visibility:visible">Visible after visibility override</div>
+                </body>
+            </html>
+        "#;
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("Visible after display override"));
+        assert!(result.text.contains("Visible after visibility override"));
     }
 }
