@@ -178,6 +178,8 @@ where
         };
         let mut lexical = self.lexical.write();
         let mut documents = self.documents.write();
+        *lexical = Bm25Index::new();
+        documents.clear();
         let count = texts.len();
         for (id, text) in texts {
             lexical.insert(id.clone(), &text);

@@ -754,6 +754,79 @@ async fn test_lexical_index_persists_across_restart() {
 }
 
 #[tokio::test]
+async fn test_rebuild_lexical_index_removes_stale_in_memory_text() {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
+    let id_mapping = Arc::new(IdMapping::new(storage.clone(), "test"));
+    let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
+    let svc = AkiDbService::new(index, id_mapping.clone(), "test");
+
+    id_mapping
+        .store_text(&akidb_common::VectorId::new("stale"), "needle old text")
+        .unwrap();
+    assert_eq!(svc.rebuild_lexical_index(), 1);
+
+    let before = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 search failed")
+        .into_inner();
+    assert_eq!(before.results[0].id, "stale");
+
+    id_mapping
+        .delete_text(&akidb_common::VectorId::new("stale"))
+        .unwrap();
+    assert_eq!(svc.rebuild_lexical_index(), 0);
+
+    let after = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 search after rebuild failed")
+        .into_inner();
+    assert!(
+        after.results.is_empty(),
+        "rebuild should remove in-memory text missing from durable store, got {:?}",
+        after
+            .results
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn test_rerank_promotes_query_term_match() {
     let svc = setup();
     // doc_dense is closest by embedding but lacks the query term; doc_match is
