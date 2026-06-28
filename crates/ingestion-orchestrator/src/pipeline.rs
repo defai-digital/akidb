@@ -9,7 +9,7 @@ use tracing::{debug, error, info, warn};
 use crate::akidb_client::{AkiDbClient, VectorInsert};
 use crate::backpressure::BackpressureController;
 use crate::batcher::DynamicBatcher;
-use crate::chunker::SemanticChunker;
+use crate::chunker::{Chunk, SemanticChunker};
 use crate::circuit_breaker::{CircuitBreaker, CircuitState};
 use crate::config::IngestionConfig;
 use crate::embedding::EmbeddingClient;
@@ -18,7 +18,7 @@ use crate::memory::MemoryCoordinator;
 use crate::metrics::IngestionMetrics;
 use crate::nats::publisher::DlqEntry;
 use crate::nats::{DlqPublisher, NatsConsumer, UploadEvent};
-use crate::parsers::{route_parser_with_data, DocumentFormat, ParsedDocument};
+use crate::parsers::{route_parser_with_data, DocumentFormat, DocumentMetadata, ParsedDocument};
 use crate::python_client::PythonParserClient;
 use crate::state::{DocumentState, StateTracker};
 use crate::storage::StorageClient;
@@ -285,13 +285,14 @@ impl IngestionPipeline {
             .zip(embeddings.iter())
             .enumerate()
             .map(|(i, (chunk, embedding))| {
-                let mut metadata = std::collections::HashMap::new();
-                metadata.insert("document_key".to_string(), event.key.clone());
-                metadata.insert("bucket".to_string(), event.bucket.clone());
-                metadata.insert("chunk_index".to_string(), i.to_string());
-                metadata.insert("content_hash".to_string(), content_hash.to_string());
-                metadata.insert("start_offset".to_string(), chunk.start_offset.to_string());
-                metadata.insert("end_offset".to_string(), chunk.end_offset.to_string());
+                let metadata = build_vector_metadata(
+                    event,
+                    &parsed.metadata,
+                    parsed.format,
+                    content_hash,
+                    chunk,
+                    i,
+                );
 
                 VectorInsert {
                     id: format!("{}:{}", content_hash, i),
@@ -408,6 +409,49 @@ impl IngestionPipeline {
     }
 }
 
+fn build_vector_metadata(
+    event: &UploadEvent,
+    document_metadata: &DocumentMetadata,
+    document_format: DocumentFormat,
+    content_hash: &str,
+    chunk: &Chunk,
+    chunk_index: usize,
+) -> std::collections::HashMap<String, String> {
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("document_key".to_string(), event.key.clone());
+    metadata.insert("bucket".to_string(), event.bucket.clone());
+    metadata.insert("chunk_index".to_string(), chunk_index.to_string());
+    metadata.insert("content_hash".to_string(), content_hash.to_string());
+    metadata.insert("start_offset".to_string(), chunk.start_offset.to_string());
+    metadata.insert("end_offset".to_string(), chunk.end_offset.to_string());
+    metadata.insert(
+        "document_format".to_string(),
+        format_label(document_format).to_string(),
+    );
+
+    if let Some(title) = document_metadata.title.as_deref().filter(|s| !s.is_empty()) {
+        metadata.insert("title".to_string(), title.to_string());
+    }
+    if let Some(author) = document_metadata
+        .author
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
+        metadata.insert("author".to_string(), author.to_string());
+    }
+    if let Some(pages) = document_metadata.pages {
+        metadata.insert("pages".to_string(), pages.to_string());
+    }
+    if let Some(word_count) = document_metadata.word_count {
+        metadata.insert("word_count".to_string(), word_count.to_string());
+    }
+    if let Some(extra) = &document_metadata.extra {
+        metadata.insert("metadata_extra".to_string(), extra.to_string());
+    }
+
+    metadata
+}
+
 fn should_use_python_parser(format: DocumentFormat, data: &[u8]) -> bool {
     format.requires_python()
         || (matches!(format, DocumentFormat::Docx)
@@ -497,5 +541,92 @@ mod tests {
             parser_label_for_data(DocumentFormat::Json, br#"{"ok":true}"#),
             "rust"
         );
+    }
+
+    #[test]
+    fn test_build_vector_metadata_preserves_document_metadata() {
+        let event = UploadEvent {
+            bucket: "docs".to_string(),
+            key: "reports/annual.pdf".to_string(),
+            size: 1024,
+            content_type: Some("application/pdf".to_string()),
+            timestamp: "2026-06-28T08:00:00Z".to_string(),
+        };
+        let document_metadata = DocumentMetadata {
+            title: Some("Annual Report".to_string()),
+            author: Some("Finance".to_string()),
+            pages: Some(7),
+            word_count: Some(1200),
+            extra: Some(serde_json::json!({
+                "parser_format": "pdf",
+                "tables": [{"headers": ["customer", "amount"]}],
+            })),
+            ..Default::default()
+        };
+        let chunk = Chunk {
+            text: "HGC contract amount 1200".to_string(),
+            start_offset: 10,
+            end_offset: 34,
+            token_count: 6,
+            index: 0,
+        };
+
+        let metadata = build_vector_metadata(
+            &event,
+            &document_metadata,
+            DocumentFormat::Pdf,
+            "hash123",
+            &chunk,
+            0,
+        );
+
+        assert_eq!(metadata["document_key"], "reports/annual.pdf");
+        assert_eq!(metadata["bucket"], "docs");
+        assert_eq!(metadata["content_hash"], "hash123");
+        assert_eq!(metadata["document_format"], "pdf");
+        assert_eq!(metadata["title"], "Annual Report");
+        assert_eq!(metadata["author"], "Finance");
+        assert_eq!(metadata["pages"], "7");
+        assert_eq!(metadata["word_count"], "1200");
+        assert_eq!(metadata["start_offset"], "10");
+        assert_eq!(metadata["end_offset"], "34");
+        assert!(metadata["metadata_extra"].contains("\"parser_format\":\"pdf\""));
+        assert!(metadata["metadata_extra"].contains("\"customer\""));
+    }
+
+    #[test]
+    fn test_build_vector_metadata_skips_empty_optional_strings() {
+        let event = UploadEvent {
+            bucket: "docs".to_string(),
+            key: "notes.txt".to_string(),
+            size: 10,
+            content_type: Some("text/plain".to_string()),
+            timestamp: "2026-06-28T08:00:00Z".to_string(),
+        };
+        let document_metadata = DocumentMetadata {
+            title: Some(String::new()),
+            author: Some(String::new()),
+            ..Default::default()
+        };
+        let chunk = Chunk {
+            text: "notes".to_string(),
+            start_offset: 0,
+            end_offset: 5,
+            token_count: 1,
+            index: 0,
+        };
+
+        let metadata = build_vector_metadata(
+            &event,
+            &document_metadata,
+            DocumentFormat::Txt,
+            "hash123",
+            &chunk,
+            0,
+        );
+
+        assert!(!metadata.contains_key("title"));
+        assert!(!metadata.contains_key("author"));
+        assert!(!metadata.contains_key("metadata_extra"));
     }
 }
