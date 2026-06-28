@@ -1064,6 +1064,52 @@ async fn test_insert_metadata_indexes_graph_related_ids_for_pack() {
 }
 
 #[tokio::test]
+async fn test_insert_upsert_removes_stale_graph_related_context() {
+    let (svc, _graph) = setup_with_graph();
+    insert(
+        &svc,
+        "related",
+        vec![0.0, 0.0, 1.0],
+        "stale upsert graph context",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle anchor text",
+        br#"{"related_ids":["related"]}"#,
+    )
+    .await;
+
+    let before = pack_for(&svc, "needle", 1).await;
+    assert!(
+        before.contains("stale upsert graph context"),
+        "precondition failed, got: {before}"
+    );
+
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle anchor text",
+        b"{}",
+    )
+    .await;
+
+    let after = pack_for(&svc, "needle", 1).await;
+    assert!(
+        after.contains("needle anchor text"),
+        "anchor context expected after upsert, got: {after}"
+    );
+    assert!(
+        !after.contains("stale upsert graph context"),
+        "upserted metadata should remove stale graph expansion, got: {after}"
+    );
+}
+
+#[tokio::test]
 async fn test_update_removes_stale_graph_related_context() {
     let (svc, _graph) = setup_with_graph();
     insert(
@@ -1106,6 +1152,42 @@ async fn test_update_removes_stale_graph_related_context() {
     assert!(
         !after.contains("stale graph context"),
         "updated metadata should remove stale graph expansion, got: {after}"
+    );
+}
+
+#[tokio::test]
+async fn test_update_preserves_incoming_graph_related_context() {
+    let (svc, _graph) = setup_with_graph();
+    insert(
+        &svc,
+        "related",
+        vec![0.0, 0.0, 1.0],
+        "still related graph context",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle anchor text",
+        br#"{"related_ids":["related"]}"#,
+    )
+    .await;
+
+    svc.update(Request::new(UpdateRequest {
+        collection: "test".into(),
+        id: "related".into(),
+        vector: vec![0.0, 0.0, 1.0],
+        metadata: b"{}".to_vec(),
+    }))
+    .await
+    .expect("update failed");
+
+    let pack = pack_for(&svc, "needle", 1).await;
+    assert!(
+        pack.contains("still related graph context"),
+        "updating related chunk should preserve anchor-owned graph edge, got: {pack}"
     );
 }
 

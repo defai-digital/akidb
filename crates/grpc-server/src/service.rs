@@ -10,7 +10,9 @@ use crate::proto::{
 };
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
-use akidb_graph::{EdgeKind, GraphEdge, GraphIndex, GraphNode, GraphNodeId, GraphStats, NodeKind};
+use akidb_graph::{
+    EdgeKind, GraphEdge, GraphEdgeId, GraphIndex, GraphNode, GraphNodeId, GraphStats, NodeKind,
+};
 use akidb_retrieval::{
     expand_to_parents, mmr, pack, plan_query, Bm25Index, HybridFuser, LexicalOverlapReranker,
     MatchedChunk, MmrItem, PackerConfig, PlannerInput, RerankItem, Reranker, RetrievalMode,
@@ -782,6 +784,105 @@ where
         }
     }
 
+    fn delete_graph_edge_id(&self, edge_id: String) {
+        let Some(graph) = &self.graph_index else {
+            return;
+        };
+        if let Err(e) = graph.delete_edge(&GraphEdgeId::new(edge_id.clone())) {
+            warn!(edge_id, error = %e, "failed to delete stale graph edge");
+        }
+    }
+
+    fn delete_graph_edges_from_metadata(&self, vector_id: &VectorId, metadata: &[u8]) {
+        if self.graph_index.is_none() {
+            return;
+        }
+
+        let metadata = String::from_utf8_lossy(metadata);
+        let metadata_json = serde_json::from_str::<serde_json::Value>(&metadata).ok();
+        let chunk_node_id = Self::chunk_node_id(vector_id);
+
+        if let Some(parent_id) = Self::parent_id_from_metadata(&metadata) {
+            self.delete_graph_edge_id(format!(
+                "auto:parent_of:{}:{}",
+                parent_id,
+                vector_id.as_str()
+            ));
+            self.delete_graph_edge_id(format!(
+                "auto:child_of:{}:{}",
+                vector_id.as_str(),
+                parent_id
+            ));
+        }
+
+        for related_id in Self::related_ids_from_metadata(&metadata) {
+            self.delete_graph_edge_id(format!(
+                "auto:related_to:{}:{}",
+                vector_id.as_str(),
+                related_id
+            ));
+            self.delete_graph_edge_id(format!(
+                "auto:related_to:{}:{}",
+                related_id,
+                vector_id.as_str()
+            ));
+        }
+
+        let chunk_edge_fields = [
+            ("imports", EdgeKind::Imports),
+            ("calls", EdgeKind::Calls),
+            ("depends_on", EdgeKind::DependsOn),
+            ("tests", EdgeKind::Tests),
+            ("tested_by", EdgeKind::TestedBy),
+        ];
+        for (field, edge_kind) in chunk_edge_fields {
+            for target_id in Self::metadata_string_values(metadata_json.as_ref(), field) {
+                let target_node_id = Self::chunk_node_id(&VectorId::new(target_id));
+                self.delete_graph_edge_id(Self::graph_edge_id(
+                    edge_kind,
+                    &chunk_node_id,
+                    &target_node_id,
+                ));
+            }
+        }
+
+        for owner in Self::metadata_string_values(metadata_json.as_ref(), "owned_by") {
+            let owner_node_id = Self::graph_node_id(NodeKind::Person, &owner);
+            self.delete_graph_edge_id(Self::graph_edge_id(
+                EdgeKind::OwnedBy,
+                &chunk_node_id,
+                &owner_node_id,
+            ));
+        }
+
+        for commit in Self::metadata_string_values(metadata_json.as_ref(), "changed_by") {
+            let commit_node_id = Self::graph_node_id(NodeKind::Commit, &commit);
+            self.delete_graph_edge_id(Self::graph_edge_id(
+                EdgeKind::ChangedBy,
+                &chunk_node_id,
+                &commit_node_id,
+            ));
+        }
+
+        for file in Self::metadata_string_values(metadata_json.as_ref(), "file") {
+            let file_node_id = Self::graph_node_id(NodeKind::File, &file);
+            self.delete_graph_edge_id(Self::graph_edge_id(
+                EdgeKind::Contains,
+                &file_node_id,
+                &chunk_node_id,
+            ));
+        }
+
+        for symbol in Self::metadata_string_values(metadata_json.as_ref(), "symbol") {
+            let symbol_node_id = Self::graph_node_id(NodeKind::Function, &symbol);
+            self.delete_graph_edge_id(Self::graph_edge_id(
+                EdgeKind::Contains,
+                &symbol_node_id,
+                &chunk_node_id,
+            ));
+        }
+    }
+
     fn delete_graph_chunk(&self, vector_id: &VectorId) {
         let Some(graph) = &self.graph_index else {
             return;
@@ -808,6 +909,11 @@ where
             .id_mapping
             .get_internal_id(vector_id)
             .map_err(Self::to_status)?;
+        let old_metadata = self
+            .id_mapping
+            .get_vector(vector_id)
+            .map_err(Self::to_status)?
+            .map(|entry| entry.metadata);
         let status = if old_internal_id.is_some() {
             UpdateStatus::Updated
         } else {
@@ -854,7 +960,9 @@ where
             }
         }
 
-        self.delete_graph_chunk(vector_id);
+        if let Some(metadata) = old_metadata {
+            self.delete_graph_edges_from_metadata(vector_id, &metadata);
+        }
         self.index_sql_metadata(vector_id, new_internal_id.0, metadata);
         self.index_graph_chunk(vector_id, metadata);
 
@@ -913,6 +1021,12 @@ where
             return Err(Status::invalid_argument("Vector cannot be empty"));
         }
 
+        let old_metadata = self
+            .id_mapping
+            .get_vector(&vector_id)
+            .map_err(Self::to_status)?
+            .map(|entry| entry.metadata);
+
         // Insert into index
         let internal_id = self
             .index
@@ -942,6 +1056,9 @@ where
         // Keep BM25, context packing, and persisted source text aligned with
         // upsert semantics. Empty text clears any previous source text.
         self.sync_source_text(&vector_id, &req.text);
+        if let Some(metadata) = old_metadata {
+            self.delete_graph_edges_from_metadata(&vector_id, &metadata);
+        }
         self.index_graph_chunk(&vector_id, &req.metadata);
         self.index_sql_metadata(&vector_id, internal_id.0, &req.metadata);
 
@@ -1224,6 +1341,17 @@ where
 
         for vector in req.vectors {
             let vector_id = VectorId::new(&vector.id);
+            let old_metadata = match self.id_mapping.get_vector(&vector_id) {
+                Ok(entry) => entry.map(|entry| entry.metadata),
+                Err(e) => {
+                    warn!(
+                        "Batch insert: ID {} failed during existing metadata lookup: {}",
+                        vector.id, e
+                    );
+                    failed_ids.push(vector.id);
+                    continue;
+                }
+            };
 
             match self.index.insert(&vector_id, &vector.embedding) {
                 Ok(internal_id) => {
@@ -1236,6 +1364,9 @@ where
                         Ok(_) => {
                             inserted_count += 1;
                             self.sync_source_text(&vector_id, &vector.text);
+                            if let Some(metadata) = old_metadata {
+                                self.delete_graph_edges_from_metadata(&vector_id, &metadata);
+                            }
                             self.index_graph_chunk(&vector_id, &vector.metadata);
                             self.index_sql_metadata(&vector_id, internal_id.0, &vector.metadata);
                         }
