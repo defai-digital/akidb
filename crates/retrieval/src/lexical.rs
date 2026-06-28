@@ -75,7 +75,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
 }
 
 fn is_token_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '-'
+    c.is_alphanumeric() || matches!(c, '_' | '-' | '+' | '#')
 }
 
 fn contains_semantic_token_char(token: &str) -> bool {
@@ -83,7 +83,7 @@ fn contains_semantic_token_char(token: &str) -> bool {
 }
 
 fn identifier_subterms(raw: &str) -> Vec<String> {
-    raw.split(['_', '-'])
+    raw.split(['_', '-', '+', '#'])
         .filter(|part| !part.is_empty())
         .flat_map(split_camel_case)
         .collect()
@@ -370,6 +370,12 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenize_preserves_code_language_identifiers() {
+        assert_eq!(tokenize("C++"), vec!["c++", "c"]);
+        assert_eq!(tokenize("C#"), vec!["c#", "c"]);
+    }
+
+    #[test]
     fn test_tokenize_drops_hyphen_only_runs() {
         assert_eq!(tokenize("---"), Vec::<String>::new());
         assert_eq!(tokenize("alpha --- beta"), vec!["alpha", "beta"]);
@@ -476,6 +482,19 @@ mod tests {
 
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, id("z_exact"));
+        assert!(hits[0].score > hits[1].score);
+    }
+
+    #[test]
+    fn test_exact_cpp_identifier_ranks_above_plain_c() {
+        let mut index = Bm25Index::new();
+        index.insert(id("z_cpp"), "C++ parser bindings");
+        index.insert(id("a_c"), "C parser bindings");
+
+        let hits = index.search("C++", 10);
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, id("z_cpp"));
         assert!(hits[0].score > hits[1].score);
     }
 
