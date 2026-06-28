@@ -39,6 +39,10 @@ pub enum SymbolKind {
     Trait,
     Impl,
     Module,
+    Const,
+    Static,
+    TypeAlias,
+    Macro,
     Class,
     Other,
 }
@@ -117,6 +121,14 @@ fn rust_symbol_start(trimmed: &str) -> Option<SymbolKind> {
         SymbolKind::Impl
     } else if t.starts_with("mod ") {
         SymbolKind::Module
+    } else if t.starts_with("const ") {
+        SymbolKind::Const
+    } else if t.starts_with("static ") {
+        SymbolKind::Static
+    } else if t.starts_with("type ") {
+        SymbolKind::TypeAlias
+    } else if t.starts_with("macro_rules! ") || t.starts_with("macro ") {
+        SymbolKind::Macro
     } else {
         return None;
     };
@@ -132,6 +144,10 @@ fn rust_symbol_name(trimmed: &str, kind: SymbolKind) -> Option<String> {
         SymbolKind::Trait => "trait ",
         SymbolKind::Module => "mod ",
         SymbolKind::Impl => return impl_name(t),
+        SymbolKind::Const => "const ",
+        SymbolKind::Static => return static_name(t),
+        SymbolKind::TypeAlias => "type ",
+        SymbolKind::Macro => return macro_name(t),
         _ => return None,
     };
     let rest = t.strip_prefix(keyword)?;
@@ -157,7 +173,7 @@ fn strip_rust_item_prefixes(mut t: &str) -> &str {
             t = rest;
         } else if let Some(rest) = strip_rust_word_prefix(t, "default") {
             t = rest;
-        } else if let Some(rest) = strip_rust_word_prefix(t, "const") {
+        } else if let Some(rest) = strip_rust_const_fn_prefix(t) {
             t = rest;
         } else if let Some(rest) = strip_rust_extern_prefix(t) {
             t = rest;
@@ -189,6 +205,15 @@ fn strip_rust_word_prefix<'a>(t: &'a str, word: &str) -> Option<&'a str> {
     }
 }
 
+fn strip_rust_const_fn_prefix(t: &str) -> Option<&str> {
+    let rest = strip_rust_word_prefix(t, "const")?;
+    if rest.starts_with("fn ") {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
 fn strip_rust_extern_prefix(t: &str) -> Option<&str> {
     let rest = strip_rust_word_prefix(t, "extern")?;
     if let Some(abi) = rest.strip_prefix('"') {
@@ -196,6 +221,31 @@ fn strip_rust_extern_prefix(t: &str) -> Option<&str> {
         Some(abi[end + 1..].trim_start())
     } else {
         Some(rest)
+    }
+}
+
+fn static_name(t: &str) -> Option<String> {
+    let rest = t.strip_prefix("static ")?.trim_start();
+    let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+    rust_identifier_prefix(rest)
+}
+
+fn macro_name(t: &str) -> Option<String> {
+    let rest = t
+        .strip_prefix("macro_rules! ")
+        .or_else(|| t.strip_prefix("macro "))?;
+    rust_identifier_prefix(rest.trim_start())
+}
+
+fn rust_identifier_prefix(s: &str) -> Option<String> {
+    let name: String = s
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
     }
 }
 
@@ -674,6 +724,42 @@ pub(crate) const fn stable_id() -> u64 {
             .filter_map(|chunk| chunk.name.as_deref())
             .collect();
         assert_eq!(names, vec!["fetch_data", "reset_state", "stable_id"]);
+    }
+
+    #[test]
+    fn test_rust_extracts_top_level_constants_types_and_macros() {
+        let src = "\
+pub const DEFAULT_BATCH_SIZE: usize = 128;
+static mut LAST_ERROR: Option<String> = None;
+type SchedulerId = u64;
+
+macro_rules! trace_query {
+    ($query:expr) => {
+        println!(\"{}\", $query);
+    };
+}
+
+pub fn search() {}";
+        let chunks = chunk_code(src, Language::Rust);
+        let names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| chunk.name.as_deref())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "DEFAULT_BATCH_SIZE",
+                "LAST_ERROR",
+                "SchedulerId",
+                "trace_query",
+                "search"
+            ]
+        );
+        assert_eq!(chunks[0].kind, SymbolKind::Const);
+        assert_eq!(chunks[1].kind, SymbolKind::Static);
+        assert_eq!(chunks[2].kind, SymbolKind::TypeAlias);
+        assert_eq!(chunks[3].kind, SymbolKind::Macro);
+        assert!(chunks[3].text.contains("println!"));
     }
 
     #[test]
