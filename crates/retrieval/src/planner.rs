@@ -100,7 +100,6 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "show dependencies",
             "show import",
             "show imports",
-            "show use",
             "show uses",
             "list call",
             "list calls",
@@ -112,7 +111,6 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "list dependencies",
             "list import",
             "list imports",
-            "list use",
             "list uses",
             "find call",
             "find calls",
@@ -124,7 +122,6 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             "find dependencies",
             "find import",
             "find imports",
-            "find use",
             "find uses",
             "who changed",
             "what changed",
@@ -312,6 +309,19 @@ mod tests {
         let trace = plan_query(&PlannerInput::new("how to use kv_cache.rs"));
         assert_eq!(trace.mode, RetrievalMode::Hybrid);
         assert!(!trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_use_cases_query_does_not_false_positive_graph() {
+        for query in [
+            "show use cases for the ingestion API",
+            "list use cases for hybrid search",
+            "find use cases for GraphRAG",
+        ] {
+            let trace = plan_query(&PlannerInput::new(query));
+            assert_eq!(trace.mode, RetrievalMode::Hybrid, "{query}");
+            assert!(!trace.graph_enabled, "{query}");
+        }
     }
 
     #[test]
