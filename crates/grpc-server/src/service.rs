@@ -2148,6 +2148,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dense_search_applies_legacy_metadata_filter_before_top_k() {
+        let (service, _dir) = test_service();
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: "tenant-a".to_string(),
+                vector: vec![1.0, 0.0],
+                metadata: br#"{"tenant":"a"}"#.to_vec(),
+                text: "tenant a".to_string(),
+            }))
+            .await
+            .unwrap();
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: "tenant-b".to_string(),
+                vector: vec![0.0, 1.0],
+                metadata: br#"{"tenant":"b"}"#.to_vec(),
+                text: "tenant b".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let response = service
+            .search(Request::new(SearchRequest {
+                collection: "test".to_string(),
+                query: vec![0.0, 1.0],
+                top_k: 1,
+                nprobe: None,
+                filter: br#"{"tenant":"a"}"#.to_vec(),
+                tag_filter: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].id, "tenant-a");
+    }
+
+    #[tokio::test]
     async fn test_batch_search_returns_durable_metadata() {
         let (service, _dir) = test_service();
         insert_with_metadata(&service).await;

@@ -5,7 +5,8 @@ use crate::router::{ShardInfo, ShardRouter};
 use akidb_common::{AkiDbError, Result, SearchResult, VectorId};
 use akidb_grpc::proto::akidb_client::AkidbClient;
 use akidb_grpc::proto::{
-    DeleteRequest, DeleteStatus, SearchRequest, SearchResult as ProtoSearchResult, UpdateRequest,
+    DeleteRequest, DeleteStatus, SearchRequest, SearchResult as ProtoSearchResult, TagFilter,
+    UpdateRequest,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,14 +49,16 @@ fn shard_search_request(
     query: Vec<f32>,
     top_k: u32,
     nprobe: u32,
+    filter: Vec<u8>,
+    tag_filter: Option<TagFilter>,
 ) -> SearchRequest {
     SearchRequest {
         collection,
         query,
         top_k,
         nprobe: Some(nprobe),
-        filter: vec![],
-        tag_filter: None,
+        filter,
+        tag_filter,
     }
 }
 
@@ -289,6 +292,8 @@ impl FanoutExecutor {
         query: &[f32],
         top_k: usize,
         nprobe: u32,
+        filter: &[u8],
+        tag_filter: Option<TagFilter>,
     ) -> Result<FanoutResult> {
         let request_top_k = fanout_top_k(top_k)?;
         let router = self.router.read().await;
@@ -320,6 +325,7 @@ impl FanoutExecutor {
         // Launch parallel searches using pooled connections
         let collection = collection.to_string();
         let query_vec: Vec<f32> = query.to_vec();
+        let filter = filter.to_vec();
         // FIX BUG-071: Track shard IDs separately to identify failures even on panic
         let mut handles = Vec::with_capacity(shard_pools.len());
         let mut handle_shard_ids = Vec::with_capacity(shard_pools.len());
@@ -327,6 +333,8 @@ impl FanoutExecutor {
         for (shard, pool) in shard_pools {
             let collection = collection.clone();
             let query_clone = query_vec.clone();
+            let filter = filter.clone();
+            let tag_filter = tag_filter.clone();
             let timeout = self.timeout;
             let shard_id = shard.id.clone();
             handle_shard_ids.push(shard_id.clone()); // Track shard ID outside async block
@@ -335,7 +343,14 @@ impl FanoutExecutor {
                 // Get client from pool (no connection overhead!)
                 let mut client = pool.get_client();
 
-                let request = shard_search_request(collection, query_clone, request_top_k, nprobe);
+                let request = shard_search_request(
+                    collection,
+                    query_clone,
+                    request_top_k,
+                    nprobe,
+                    filter,
+                    tag_filter,
+                );
 
                 let search_result = tokio::time::timeout(timeout, client.search(request)).await;
 
@@ -827,12 +842,31 @@ mod tests {
 
     #[test]
     fn test_shard_search_request_uses_requested_collection() {
-        let request = shard_search_request("tenant-a".to_string(), vec![0.1, 0.2], 5, 32);
+        let request =
+            shard_search_request("tenant-a".to_string(), vec![0.1, 0.2], 5, 32, vec![], None);
 
         assert_eq!(request.collection, "tenant-a");
         assert_eq!(request.query, vec![0.1, 0.2]);
         assert_eq!(request.top_k, 5);
         assert_eq!(request.nprobe, Some(32));
+    }
+
+    #[test]
+    fn test_shard_search_request_preserves_metadata_filters() {
+        let filter = br#"{"tenant":"defai"}"#.to_vec();
+        let tag_filter = TagFilter { filter_type: None };
+
+        let request = shard_search_request(
+            "tenant-a".to_string(),
+            vec![0.1, 0.2],
+            5,
+            32,
+            filter.clone(),
+            Some(tag_filter.clone()),
+        );
+
+        assert_eq!(request.filter, filter);
+        assert_eq!(request.tag_filter, Some(tag_filter));
     }
 
     #[test]

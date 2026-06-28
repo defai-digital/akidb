@@ -246,6 +246,8 @@ impl Akidb for CoordinatorService {
                 &req.query,
                 req.top_k as usize,
                 req.nprobe.unwrap_or(32),
+                &req.filter,
+                req.tag_filter.clone(),
             )
             .await
             .map_err(|e| {

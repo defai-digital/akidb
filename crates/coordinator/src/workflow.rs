@@ -307,7 +307,14 @@ impl QueryWorkflow {
         // Execute fan-out search with timeout
         let search_result = tokio::time::timeout(
             remaining,
-            executor.search(&self.collection, &self.query, self.top_k, self.nprobe),
+            executor.search(
+                &self.collection,
+                &self.query,
+                self.top_k,
+                self.nprobe,
+                &[],
+                None,
+            ),
         )
         .await;
 
