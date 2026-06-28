@@ -113,6 +113,19 @@ impl CoordinatorService {
             local_id,
         }
     }
+
+    fn validate_search_controls(top_k: u32, nprobe: Option<u32>) -> Result<(), Status> {
+        if top_k == 0 {
+            return Err(Status::invalid_argument("top_k must be greater than 0"));
+        }
+        if top_k > 10000 {
+            return Err(Status::invalid_argument("top_k exceeds maximum of 10000"));
+        }
+        if nprobe == Some(0) {
+            return Err(Status::invalid_argument("nprobe must be greater than 0"));
+        }
+        Ok(())
+    }
 }
 
 #[tonic::async_trait]
@@ -167,6 +180,8 @@ impl Akidb for CoordinatorService {
     ) -> Result<Response<SearchResponse>, Status> {
         let req = request.into_inner();
         let start = Instant::now();
+
+        Self::validate_search_controls(req.top_k, req.nprobe)?;
 
         // Apply backpressure
         let _guard = self.backpressure.try_acquire().await.map_err(|e| {
@@ -489,6 +504,8 @@ impl Akidb for CoordinatorService {
     ) -> Result<Response<SearchBatchResponse>, Status> {
         let req = request.into_inner();
 
+        Self::validate_search_controls(req.top_k, req.nprobe)?;
+
         // FIX BUG-HUNT-503: Process queries in parallel instead of sequentially
         // Previously, each query waited for the previous one to complete, resulting in
         // batch latency = N * single_query_latency. Now we use parallel execution so
@@ -733,5 +750,99 @@ async fn run_metrics_server(
                 debug!("Metrics connection error: {:?}", err);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tonic::Code;
+
+    fn test_service() -> CoordinatorService {
+        CoordinatorService::new(
+            vec![],
+            Duration::from_millis(10),
+            1,
+            BackpressureConfig::default(),
+            "127.0.0.1:0".to_string(),
+        )
+    }
+
+    fn search_request(top_k: u32, nprobe: Option<u32>) -> SearchRequest {
+        SearchRequest {
+            collection: "test".to_string(),
+            query: vec![0.0; 4],
+            top_k,
+            nprobe,
+            filter: vec![],
+            tag_filter: None,
+        }
+    }
+
+    fn search_batch_request(top_k: u32, nprobe: Option<u32>) -> SearchBatchRequest {
+        SearchBatchRequest {
+            collection: "test".to_string(),
+            queries: vec![],
+            top_k,
+            nprobe,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_rejects_zero_top_k_before_fanout() {
+        let service = test_service();
+        let result = service.search(Request::new(search_request(0, None))).await;
+
+        let status = result.expect_err("zero top_k should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("top_k"));
+    }
+
+    #[tokio::test]
+    async fn test_search_rejects_top_k_above_limit_before_fanout() {
+        let service = test_service();
+        let result = service
+            .search(Request::new(search_request(10_001, None)))
+            .await;
+
+        let status = result.expect_err("oversized top_k should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("top_k"));
+    }
+
+    #[tokio::test]
+    async fn test_search_rejects_zero_nprobe_before_fanout() {
+        let service = test_service();
+        let result = service
+            .search(Request::new(search_request(1, Some(0))))
+            .await;
+
+        let status = result.expect_err("zero nprobe should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("nprobe"));
+    }
+
+    #[tokio::test]
+    async fn test_search_batch_rejects_zero_top_k_even_when_empty() {
+        let service = test_service();
+        let result = service
+            .search_batch(Request::new(search_batch_request(0, None)))
+            .await;
+
+        let status = result.expect_err("zero top_k should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("top_k"));
+    }
+
+    #[tokio::test]
+    async fn test_search_batch_rejects_zero_nprobe_even_when_empty() {
+        let service = test_service();
+        let result = service
+            .search_batch(Request::new(search_batch_request(1, Some(0))))
+            .await;
+
+        let status = result.expect_err("zero nprobe should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("nprobe"));
     }
 }
