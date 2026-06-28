@@ -485,28 +485,44 @@ where
                 "Structured SQL retrieval requires the optional SQL metadata adapter",
             ));
         };
-        if req.tag_filter.is_some() {
-            return Err(Status::unimplemented(
-                "Structured SQL retrieval currently supports the legacy JSON filter; tag_filter pushdown is pending",
-            ));
-        }
 
-        let query =
-            Self::sql_query_from_legacy_filter(&self.collection, &req.filter, req.top_k as usize)?;
+        let has_tag_filter = req
+            .tag_filter
+            .as_ref()
+            .and_then(|tag| tag.filter_type.as_ref())
+            .is_some();
+        let post_filter = if has_tag_filter {
+            MetadataFilter::build(&req.filter, req.tag_filter.clone())
+                .map_err(Status::invalid_argument)?
+        } else {
+            None
+        };
+        let sql_limit = if post_filter.is_some() {
+            usize::MAX
+        } else {
+            req.top_k as usize
+        };
+        let query = Self::sql_query_from_legacy_filter(&self.collection, &req.filter, sql_limit)?;
         let ids = sql_index
             .query_ids(&query)
             .map_err(|e| Status::internal(format!("SQL metadata retrieval failed: {e}")))?;
 
         let results: Vec<SearchResult> = ids
             .into_iter()
-            .map(|id| {
+            .filter_map(|id| {
                 let vector_id = VectorId::new(&id);
-                SearchResult {
+                if let Some(filter) = &post_filter {
+                    if !self.metadata_matches_filter(&vector_id, filter) {
+                        return None;
+                    }
+                }
+                Some(SearchResult {
                     id,
                     score: 1.0,
                     metadata: self.load_metadata_string(&vector_id),
-                }
+                })
             })
+            .take(req.top_k as usize)
             .collect();
         let latency_us = started_at.elapsed().as_micros() as u64;
 

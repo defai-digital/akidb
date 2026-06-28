@@ -562,6 +562,60 @@ async fn test_retrieval_mode_sql_applies_nested_legacy_metadata_filter() {
 }
 
 #[tokio::test]
+async fn test_retrieval_mode_sql_applies_tag_filter_before_top_k_cutoff() {
+    let svc = setup_with_sql();
+    insert(
+        &svc,
+        "b-match",
+        vec![1.0, 0.0, 0.0],
+        "",
+        br#"{"tenant_id":"defai","customer":"HGC"}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "a-nonmatch",
+        vec![0.0, 1.0, 0.0],
+        "",
+        br#"{"tenant_id":"other","customer":"HGC"}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "HGC contract amount".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: Some(TagFilter {
+                filter_type: Some(FilterType::Condition(TagCondition {
+                    key: "tenant_id".into(),
+                    value: Some(TagValue {
+                        value: Some(TagVal::Text("defai".into())),
+                    }),
+                    op: TagOperator::TagOpEq as i32,
+                })),
+            }),
+            retrieval_mode: "sql".into(),
+        }))
+        .await
+        .expect("sql tag_filter text_search should succeed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["b-match"]);
+}
+
+#[tokio::test]
 async fn test_rebuild_sql_metadata_index_removes_deleted_vectors() {
     let dir = tempfile::tempdir().unwrap().keep();
     let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
