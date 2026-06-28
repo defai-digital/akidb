@@ -16,11 +16,11 @@ use std::time::Duration;
 
 use rand::Rng;
 use tokio::sync::Mutex;
-use tokio::time::{interval, Instant, MissedTickBehavior};
+use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use akidb_common::types::{ChangeType, DeleteState, DocumentIdentifier, ObjectManifest, SyncResult};
+use akidb_common::types::{ChangeType, ObjectManifest, SyncResult};
 use crate::manifest::ManifestStore;
 use crate::{IngestionError, Result};
 
@@ -274,11 +274,22 @@ pub struct MinIOChange {
 /// MinIO change detector using streaming manifest comparison
 pub struct ChangeDetector {
     manifest: Arc<ManifestStore>,
+    deletion_threshold: u8,
 }
 
 impl ChangeDetector {
     pub fn new(manifest: Arc<ManifestStore>) -> Self {
-        Self { manifest }
+        Self {
+            manifest,
+            deletion_threshold: akidb_common::types::DELETION_THRESHOLD,
+        }
+    }
+
+    pub fn with_deletion_threshold(manifest: Arc<ManifestStore>, deletion_threshold: u8) -> Self {
+        Self {
+            manifest,
+            deletion_threshold,
+        }
     }
 
     /// Detect changes by comparing MinIO listing with manifest
@@ -336,7 +347,7 @@ impl ChangeDetector {
                 // Increment missing count
                 let count = self.manifest.increment_missing(key)?;
 
-                if count >= akidb_common::types::DELETION_THRESHOLD {
+                if count >= self.deletion_threshold {
                     changes.push(MinIOChange {
                         key: key.clone(),
                         etag: None,
@@ -367,6 +378,7 @@ pub struct MinIOObject {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use akidb_common::types::DocumentIdentifier;
     use tempfile::tempdir;
 
     fn create_test_manifest_store() -> Arc<ManifestStore> {
@@ -496,5 +508,21 @@ mod tests {
         // Missing count should have incremented
         let m = manifest.get("old_file.pdf").unwrap().unwrap();
         assert_eq!(m.missing_count, 1);
+    }
+
+    #[test]
+    fn test_change_detection_uses_configured_deletion_threshold() {
+        let manifest = create_test_manifest_store();
+
+        let doc = DocumentIdentifier::new(b"content", "old_file.pdf".to_string());
+        let m = ObjectManifest::new("old_file.pdf".to_string(), "etag".to_string(), doc);
+        manifest.upsert(&m).unwrap();
+
+        let detector = ChangeDetector::with_deletion_threshold(Arc::clone(&manifest), 1);
+        let changes = detector.detect_changes(vec![], 1).unwrap();
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].key, "old_file.pdf");
+        assert_eq!(changes[0].change_type, ChangeType::ConfirmedDelete);
     }
 }

@@ -16,7 +16,6 @@ use std::time::Instant;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use akidb_common::types::{DocumentIdentifier, VectorMetadata};
 use crate::manifest::ManifestStore;
 use crate::{IngestionError, Result};
 
@@ -194,13 +193,18 @@ impl Reindexer {
         };
 
         // Process documents in batches
+        let checkpoint_interval = if self.config.enable_checkpoint {
+            Some(self.config.batch_size).filter(|batch_size| *batch_size > 0)
+        } else {
+            None
+        };
         for (i, doc) in plan.documents.iter().enumerate() {
             match process_document(doc.clone(), plan.new_version).await {
                 Ok(vectors_inserted) => {
                     result.documents_processed += 1;
                     result.vectors_inserted += vectors_inserted;
 
-                    if self.config.enable_checkpoint && (i + 1) % self.config.batch_size == 0 {
+                    if checkpoint_interval.is_some_and(|batch_size| (i + 1) % batch_size == 0) {
                         debug!(
                             %run_id,
                             processed = result.documents_processed,
@@ -300,6 +304,13 @@ impl Reindexer {
 
         // Skip already processed documents
         let remaining: Vec<_> = if let Some(ref last_key) = checkpoint.last_processed_key {
+            if !plan.documents.iter().any(|d| &d.source_path == last_key) {
+                return Err(IngestionError::Scheduler(format!(
+                    "Cannot resume reindex: checkpoint key '{}' is not in the current plan",
+                    last_key
+                )));
+            }
+
             plan.documents
                 .into_iter()
                 .skip_while(|d| &d.source_path != last_key)
@@ -351,7 +362,7 @@ impl ReindexPlan {
 mod tests {
     use super::*;
     use crate::manifest::ManifestStore;
-    use akidb_common::types::ObjectManifest;
+    use akidb_common::types::{DocumentIdentifier, ObjectManifest};
     use tempfile::tempdir;
 
     fn create_test_store() -> Arc<ManifestStore> {
@@ -454,6 +465,53 @@ mod tests {
         assert!(!result.success);
         assert_eq!(result.documents_processed, 1);
         assert!(result.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_execute_reindex_zero_batch_size_does_not_panic() {
+        let store = create_test_store();
+        let reindexer = Reindexer::new(
+            Arc::clone(&store),
+            ReindexConfig {
+                batch_size: 0,
+                ..Default::default()
+            },
+        );
+
+        store.upsert(&create_categorized_manifest("doc1.pdf", "test-cat")).unwrap();
+        let plan = reindexer.plan_reindex_category("test-cat").unwrap();
+
+        let result = reindexer
+            .execute_reindex(&plan, |_doc, _version| async { Ok(1) })
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.documents_processed, 1);
+    }
+
+    #[tokio::test]
+    async fn test_resume_reindex_rejects_stale_checkpoint_key() {
+        let store = create_test_store();
+        let reindexer = Reindexer::new(Arc::clone(&store), ReindexConfig::default());
+
+        store.upsert(&create_categorized_manifest("doc1.pdf", "test-cat")).unwrap();
+
+        let checkpoint = ReindexCheckpoint {
+            category_uid: Some("test-cat".to_string()),
+            last_processed_key: Some("missing.pdf".to_string()),
+            old_version: 0,
+            new_version: 1,
+            ..Default::default()
+        };
+
+        let result = reindexer
+            .resume_reindex(&checkpoint, |_doc, _version| async { Ok(1) })
+            .await;
+
+        assert!(
+            matches!(result, Err(IngestionError::Scheduler(message)) if message.contains("checkpoint key"))
+        );
     }
 
     #[test]

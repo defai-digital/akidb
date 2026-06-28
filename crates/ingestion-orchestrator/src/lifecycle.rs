@@ -11,12 +11,11 @@
 
 use std::sync::Arc;
 
-use chrono::{Duration as ChronoDuration, Utc};
 use tracing::{debug, error, info, warn};
 
-use akidb_common::types::{DeleteState, ObjectManifest, DEFAULT_HARD_DELETE_DELAY_DAYS, DELETION_THRESHOLD};
+use akidb_common::types::{DeleteState, DEFAULT_HARD_DELETE_DELAY_DAYS, DELETION_THRESHOLD};
 use crate::manifest::ManifestStore;
-use crate::{IngestionError, Result};
+use crate::Result;
 
 /// Configuration for lifecycle management
 #[derive(Debug, Clone)]
@@ -100,6 +99,15 @@ impl LifecycleManager {
     /// Transitions from ConfirmedMissing to HardDeleteScheduled
     pub fn schedule_hard_delete(&self, object_key: &str) -> Result<bool> {
         if let Some(mut manifest) = self.manifest.get(object_key)? {
+            if !matches!(manifest.delete_state, DeleteState::ConfirmedMissing { .. }) {
+                warn!(
+                    key = %object_key,
+                    state = ?manifest.delete_state,
+                    "Document is not confirmed missing; hard delete not scheduled"
+                );
+                return Ok(false);
+            }
+
             let delay_days = self.config.hard_delete_delay_days;
             manifest.schedule_hard_delete(delay_days);
             self.manifest.upsert(&manifest)?;
@@ -232,7 +240,7 @@ pub struct LifecycleStats {
 mod tests {
     use super::*;
     use crate::manifest::ManifestStore;
-    use akidb_common::types::DocumentIdentifier;
+    use akidb_common::types::{DocumentIdentifier, ObjectManifest};
     use tempfile::tempdir;
 
     fn create_test_store() -> Arc<ManifestStore> {
@@ -360,5 +368,20 @@ mod tests {
         // Verify state
         let m = store.get("test/file.pdf").unwrap().unwrap();
         assert!(matches!(m.delete_state, DeleteState::HardDeleteScheduled { .. }));
+    }
+
+    #[test]
+    fn test_schedule_hard_delete_rejects_active_document() {
+        let store = create_test_store();
+        let manager = LifecycleManager::new(Arc::clone(&store), LifecycleConfig::default());
+
+        let manifest = create_test_manifest("test/file.pdf");
+        store.upsert(&manifest).unwrap();
+
+        let scheduled = manager.schedule_hard_delete("test/file.pdf").unwrap();
+        assert!(!scheduled);
+
+        let m = store.get("test/file.pdf").unwrap().unwrap();
+        assert_eq!(m.delete_state, DeleteState::Active);
     }
 }
