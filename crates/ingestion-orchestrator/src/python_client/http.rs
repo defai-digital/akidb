@@ -211,26 +211,7 @@ fn metadata_usize(metadata: &HashMap<String, serde_json::Value>, key: &str) -> O
 }
 
 fn document_format_from_response(response_format: &str, filename: &str) -> DocumentFormat {
-    let normalized_format = response_format
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    let response_format = match normalized_format.as_str() {
-        "application/json" | "text/json" => DocumentFormat::Json,
-        "text/csv" | "application/csv" => DocumentFormat::Csv,
-        "text/tab-separated-values" => DocumentFormat::Tsv,
-        "text/html" | "application/xhtml+xml" => DocumentFormat::Html,
-        "text/xml" | "application/xml" => DocumentFormat::Xml,
-        "application/pdf" => DocumentFormat::Pdf,
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        | "application/msword" => DocumentFormat::Docx,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        | "application/vnd.ms-excel" => DocumentFormat::Xlsx,
-        "text/plain" | "text/markdown" => DocumentFormat::Txt,
-        _ => DocumentFormat::from_extension(normalized_format.as_str()),
-    };
+    let response_format = DocumentFormat::from_content_type(response_format);
     if response_format != DocumentFormat::Unknown {
         return response_format;
     }

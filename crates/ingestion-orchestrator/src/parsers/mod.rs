@@ -79,6 +79,41 @@ impl DocumentFormat {
         }
     }
 
+    /// Detect format from an HTTP content type / MIME type.
+    pub fn from_content_type(content_type: &str) -> Self {
+        let media_type = content_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        match media_type.as_str() {
+            "application/json" | "text/json" => DocumentFormat::Json,
+            "text/csv" | "application/csv" => DocumentFormat::Csv,
+            "text/tab-separated-values" => DocumentFormat::Tsv,
+            "text/html" | "application/xhtml+xml" => DocumentFormat::Html,
+            "text/xml" | "application/xml" => DocumentFormat::Xml,
+            "application/pdf" => DocumentFormat::Pdf,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            | "application/msword" => DocumentFormat::Docx,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.ms-excel" => DocumentFormat::Xlsx,
+            "text/plain" | "text/markdown" => DocumentFormat::Txt,
+            _ => DocumentFormat::from_extension(media_type.as_str()),
+        }
+    }
+
+    /// Prefer filename/path detection and fall back to content type when needed.
+    pub fn from_name_or_content_type(name: &str, content_type: Option<&str>) -> Self {
+        let format = DocumentFormat::from_extension(name);
+        if format != DocumentFormat::Unknown {
+            return format;
+        }
+        content_type
+            .map(DocumentFormat::from_content_type)
+            .unwrap_or(DocumentFormat::Unknown)
+    }
+
     /// Check if format can be parsed in Rust
     ///
     /// Note: DOCX can be parsed in Rust for simple documents.
@@ -232,6 +267,36 @@ mod tests {
         assert_eq!(
             DocumentFormat::from_extension("/tmp/export.tsv#sheet"),
             DocumentFormat::Tsv
+        );
+    }
+
+    #[test]
+    fn test_format_detection_accepts_content_types() {
+        assert_eq!(
+            DocumentFormat::from_content_type("application/pdf; charset=binary"),
+            DocumentFormat::Pdf
+        );
+        assert_eq!(
+            DocumentFormat::from_content_type(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            DocumentFormat::Xlsx
+        );
+        assert_eq!(
+            DocumentFormat::from_content_type("text/plain"),
+            DocumentFormat::Txt
+        );
+    }
+
+    #[test]
+    fn test_format_detection_falls_back_to_content_type() {
+        assert_eq!(
+            DocumentFormat::from_name_or_content_type("upload", Some("application/pdf")),
+            DocumentFormat::Pdf
+        );
+        assert_eq!(
+            DocumentFormat::from_name_or_content_type("report.csv", Some("application/pdf")),
+            DocumentFormat::Csv
         );
     }
 

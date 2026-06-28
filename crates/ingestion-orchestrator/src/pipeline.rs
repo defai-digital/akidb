@@ -250,8 +250,7 @@ impl IngestionPipeline {
         start: Instant,
     ) -> Result<()> {
         // Detect format
-        let ext = event.key.rsplit('.').next().unwrap_or("");
-        let format = DocumentFormat::from_extension(ext);
+        let format = detect_upload_format(event);
 
         // Parse document
         self.state
@@ -464,6 +463,10 @@ fn should_use_python_parser(format: DocumentFormat, data: &[u8]) -> bool {
             && route_parser_with_data(format, data).is_none())
 }
 
+fn detect_upload_format(event: &UploadEvent) -> DocumentFormat {
+    DocumentFormat::from_name_or_content_type(&event.key, event.content_type.as_deref())
+}
+
 fn format_label(format: DocumentFormat) -> &'static str {
     match format {
         DocumentFormat::Json => "json",
@@ -547,6 +550,32 @@ mod tests {
             parser_label_for_data(DocumentFormat::Json, br#"{"ok":true}"#),
             "rust"
         );
+    }
+
+    #[test]
+    fn test_detect_upload_format_falls_back_to_content_type() {
+        let event = UploadEvent {
+            bucket: "docs".to_string(),
+            key: "opaque-upload".to_string(),
+            size: 1024,
+            content_type: Some("application/pdf; charset=binary".to_string()),
+            timestamp: "2026-06-28T08:00:00Z".to_string(),
+        };
+
+        assert_eq!(detect_upload_format(&event), DocumentFormat::Pdf);
+    }
+
+    #[test]
+    fn test_detect_upload_format_prefers_file_extension() {
+        let event = UploadEvent {
+            bucket: "docs".to_string(),
+            key: "report.csv".to_string(),
+            size: 1024,
+            content_type: Some("application/pdf".to_string()),
+            timestamp: "2026-06-28T08:00:00Z".to_string(),
+        };
+
+        assert_eq!(detect_upload_format(&event), DocumentFormat::Csv);
     }
 
     #[test]
