@@ -1669,6 +1669,108 @@ async fn test_graph_mode_returns_graph_expanded_results() {
 }
 
 #[tokio::test]
+async fn test_auto_graph_query_expands_file_metadata_seed() {
+    let (svc, _graph) = setup_with_graph();
+    insert(
+        &svc,
+        "zzz_dense",
+        vec![1.0, 0.0, 0.0],
+        "unrelated ownership prose",
+        b"{}",
+    )
+    .await;
+    insert(
+        &svc,
+        "owner_chunk",
+        vec![0.0, 1.0, 0.0],
+        "governance metadata context",
+        br#"{"file":"src/mtp_scheduler.rs","owned_by":"Akira"}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "who owns src/mtp_scheduler.rs".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: String::new(),
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+
+    assert_eq!(resp.results.len(), 1);
+    assert_eq!(resp.results[0].id, "owner_chunk");
+    assert!(
+        resp.results[0].metadata.contains("\"owned_by\":\"Akira\""),
+        "file graph seed should retrieve owner metadata, got {:?}",
+        resp.results
+    );
+}
+
+#[tokio::test]
+async fn test_auto_graph_query_expands_symbol_metadata_seed() {
+    let (svc, _graph) = setup_with_graph();
+    insert(
+        &svc,
+        "dense_noise",
+        vec![1.0, 0.0, 0.0],
+        "unrelated function prose",
+        b"{}",
+    )
+    .await;
+    insert(
+        &svc,
+        "symbol_chunk",
+        vec![0.0, 1.0, 0.0],
+        "decoder ownership context",
+        br#"{"symbol":"draft_model::decode","owned_by":"Akira"}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "owner of draft_model::decode()".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: String::new(),
+        }))
+        .await
+        .expect("text_search failed")
+        .into_inner();
+
+    assert_eq!(resp.results.len(), 1);
+    assert_eq!(resp.results[0].id, "symbol_chunk");
+    assert!(
+        resp.results[0].metadata.contains("\"owned_by\":\"Akira\""),
+        "symbol graph seed should retrieve owner metadata, got {:?}",
+        resp.results
+    );
+}
+
+#[tokio::test]
 async fn test_insert_metadata_indexes_graph_related_ids_for_pack() {
     let (svc, _graph) = setup_with_graph();
     insert(

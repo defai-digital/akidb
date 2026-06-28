@@ -619,6 +619,75 @@ where
         GraphNodeId::new(format!("chunk:{}", vector_id.as_str()))
     }
 
+    fn graph_seed_nodes_from_query(query: &str) -> Vec<GraphNodeId> {
+        let mut seeds = Vec::new();
+        let mut seen = HashSet::new();
+        for raw in query.split_whitespace() {
+            let token = Self::clean_graph_query_token(raw);
+            if token.is_empty() {
+                continue;
+            }
+            if Self::looks_like_file_reference(&token) {
+                Self::push_graph_seed(&mut seeds, &mut seen, NodeKind::File, &token);
+            }
+            if Self::looks_like_symbol_reference(&token) {
+                let symbol = token.trim_end_matches("()");
+                Self::push_graph_seed(&mut seeds, &mut seen, NodeKind::Function, symbol);
+            }
+        }
+        seeds
+    }
+
+    fn push_graph_seed(
+        seeds: &mut Vec<GraphNodeId>,
+        seen: &mut HashSet<String>,
+        kind: NodeKind,
+        raw_id: &str,
+    ) {
+        let node_id = Self::graph_node_id(kind, raw_id);
+        if seen.insert(node_id.as_str().to_string()) {
+            seeds.push(node_id);
+        }
+    }
+
+    fn clean_graph_query_token(token: &str) -> String {
+        token
+            .trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '"' | '\''
+                        | '`'
+                        | ','
+                        | ';'
+                        | '?'
+                        | '!'
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | '<'
+                        | '>'
+                )
+            })
+            .to_string()
+    }
+
+    fn looks_like_file_reference(token: &str) -> bool {
+        token.contains('/')
+            || [
+                ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".toml", ".yaml",
+                ".yml", ".proto", ".sql", ".go", ".java", ".c", ".cc", ".cpp", ".h", ".hpp",
+            ]
+            .iter()
+            .any(|suffix| token.ends_with(suffix))
+    }
+
+    fn looks_like_symbol_reference(token: &str) -> bool {
+        token.contains("::") || token.ends_with("()")
+    }
+
     fn related_ids_from_metadata(metadata: &str) -> Vec<String> {
         if metadata.is_empty() {
             return Vec::new();
@@ -1711,8 +1780,35 @@ where
         if planner_trace.graph_enabled {
             if let Some(graph) = &self.graph_index {
                 let mut seen: HashSet<VectorId> = ranked.iter().map(|s| s.id.clone()).collect();
-                let seeds = ranked.clone();
                 let graph_limit = top_k.saturating_mul(2).max(1);
+                let graph_seed_score = ranked.first().map(|s| s.score + 0.0001).unwrap_or(1.0);
+
+                for seed_node in Self::graph_seed_nodes_from_query(&req.text) {
+                    match graph.related_chunks(&seed_node, graph_limit) {
+                        Ok(chunks) => {
+                            for chunk in chunks {
+                                let id = chunk.vector_id;
+                                if !seen.insert(id.clone()) {
+                                    if let Some(existing) = ranked.iter_mut().find(|s| s.id == id) {
+                                        existing.score = existing.score.max(graph_seed_score);
+                                    }
+                                    continue;
+                                }
+                                if let Some(metadata_filter) = &metadata_filter {
+                                    if !self.metadata_matches_filter(&id, metadata_filter) {
+                                        continue;
+                                    }
+                                }
+                                ranked.push(ScoredId::new(id, graph_seed_score));
+                            }
+                        }
+                        Err(e) => {
+                            warn!(seed = %seed_node, error = %e, "graph query seed expansion failed");
+                        }
+                    }
+                }
+
+                let seeds = ranked.clone();
                 for seed in seeds {
                     let seed_node = Self::chunk_node_id(&seed.id);
                     match graph.related_chunks(&seed_node, graph_limit) {

@@ -132,6 +132,14 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
                 "which files use",
                 "which modules import",
                 "which modules use",
+                "who owns",
+                "what owns",
+                "who maintains",
+                "what maintains",
+                "owner of",
+                "owners of",
+                "maintainer of",
+                "maintainers of",
                 "show call",
                 "show calls",
                 "show caller",
@@ -192,6 +200,13 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
                 " calls to",
                 " uses of",
                 " use of",
+                " owned by",
+                " maintained by",
+                " owner of",
+                " owners of",
+                " maintainer of",
+                " maintainers of",
+                " responsible for",
             ],
         );
     let explanatory = starts_with_any(
@@ -413,6 +428,20 @@ mod tests {
         let trace = plan_query(&PlannerInput::new("show callers of draft_model::decode"));
         assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
         assert!(trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_owner_query_phrase_enables_graph() {
+        for query in [
+            "who owns src/mtp_scheduler.rs",
+            "owner of draft_model::decode",
+            "who maintains kv_cache.rs",
+            "which team is responsible for ax-engine",
+        ] {
+            let trace = plan_query(&PlannerInput::new(query));
+            assert_eq!(trace.mode, RetrievalMode::GraphHybrid, "{query}");
+            assert!(trace.graph_enabled, "{query}");
+        }
     }
 
     #[test]

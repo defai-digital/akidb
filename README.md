@@ -339,6 +339,7 @@ maintained as internal documents and are not part of this public repository.
 - [x] TextSearch metadata/tag filtering across hybrid and graph-expanded context
 - [x] Metadata-driven code graph edges for imports/calls/dependencies/owners/commits
 - [x] Planner-driven TextSearch vector/BM25/hybrid routing with explicit mode overrides
+- [x] Graph TextSearch expands file/symbol metadata seeds from relationship queries
 - [x] Graph-expanded chunks participate in TextSearch results when graph routing is enabled
 - [x] Server/MCP startup wires the native graph index by default
 - [x] Local graph inspect CLI for stats, neighbors, and related chunks
