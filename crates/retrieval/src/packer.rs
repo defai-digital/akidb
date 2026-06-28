@@ -75,7 +75,7 @@ impl Passage {
         Self {
             id,
             text: text.into(),
-            score,
+            score: if score.is_finite() { score } else { 0.0 },
             citation,
         }
     }
@@ -226,7 +226,12 @@ mod tests {
     use super::*;
 
     fn passage(id: &str, text: &str) -> Passage {
-        Passage::new(VectorId::new(id), text, 1.0, Citation::new(format!("{id}.txt")))
+        Passage::new(
+            VectorId::new(id),
+            text,
+            1.0,
+            Citation::new(format!("{id}.txt")),
+        )
     }
 
     #[test]
@@ -237,6 +242,27 @@ mod tests {
         assert!(pack.included.is_empty());
         assert!(pack.dropped.is_empty());
         assert_eq!(pack.used_tokens, 0);
+    }
+
+    #[test]
+    fn test_passage_new_sanitizes_non_finite_scores() {
+        let nan = Passage::new(VectorId::new("nan"), "text", f32::NAN, Citation::new("nan"));
+        let pos_inf = Passage::new(
+            VectorId::new("pos-inf"),
+            "text",
+            f32::INFINITY,
+            Citation::new("pos-inf"),
+        );
+        let neg_inf = Passage::new(
+            VectorId::new("neg-inf"),
+            "text",
+            f32::NEG_INFINITY,
+            Citation::new("neg-inf"),
+        );
+
+        assert_eq!(nan.score, 0.0);
+        assert_eq!(pos_inf.score, 0.0);
+        assert_eq!(neg_inf.score, 0.0);
     }
 
     #[test]
@@ -254,9 +280,9 @@ mod tests {
     fn test_budget_drops_overflowing_passages_preserving_order() {
         // Compact strategy, budget 4 words, separator "\n\n" (0 word-tokens).
         let passages = [
-            passage("a", "one two"),   // 2 tokens
+            passage("a", "one two"),             // 2 tokens
             passage("b", "three four five six"), // 4 tokens -> would exceed (2+4=6>4)
-            passage("c", "seven two"), // 2 tokens -> fits (2+2=4)
+            passage("c", "seven two"),           // 2 tokens -> fits (2+2=4)
         ];
         let cfg = PackerConfig::new(4).with_strategy(PackStrategy::Compact);
         let out = pack(&passages, &cfg);
@@ -281,7 +307,9 @@ mod tests {
             VectorId::new("doc"),
             "the answer",
             0.9,
-            Citation::new("guide.md").with_version("v3").with_span(10, 20),
+            Citation::new("guide.md")
+                .with_version("v3")
+                .with_span(10, 20),
         );
         let cfg = PackerConfig::new(100).with_strategy(PackStrategy::Citation);
         let out = pack(std::slice::from_ref(&p), &cfg);
@@ -306,7 +334,11 @@ mod tests {
 
     #[test]
     fn test_every_included_passage_has_a_citation() {
-        let passages = [passage("a", "one"), passage("b", "two"), passage("c", "three")];
+        let passages = [
+            passage("a", "one"),
+            passage("b", "two"),
+            passage("c", "three"),
+        ];
         let cfg = PackerConfig::new(100).with_strategy(PackStrategy::Compact);
         let out = pack(&passages, &cfg);
         assert_eq!(out.included.len(), out.citations.len());
