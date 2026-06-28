@@ -76,7 +76,7 @@ impl HtmlParser {
             } else if property.eq_ignore_ascii_case("visibility") {
                 update_style_visibility(
                     &mut visibility,
-                    value.eq_ignore_ascii_case("hidden"),
+                    value.eq_ignore_ascii_case("hidden") || value.eq_ignore_ascii_case("collapse"),
                     important,
                 );
             }
@@ -410,6 +410,30 @@ mod tests {
         assert!(!result.text.contains("Inline visibility hidden token"));
         assert!(!result.text.contains("Important display none token"));
         assert!(!result.text.contains("Important visibility hidden token"));
+    }
+
+    #[test]
+    fn test_parse_html_excludes_visibility_collapse_elements() {
+        let parser = HtmlParser::new();
+        let data = br#"
+            <html>
+                <body>
+                    <table>
+                        <tr style="visibility: collapse">
+                            <td>Collapsed contract amount 9999</td>
+                        </tr>
+                        <tr>
+                            <td>Visible contract amount 1200</td>
+                        </tr>
+                    </table>
+                </body>
+            </html>
+        "#;
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("Visible contract amount 1200"));
+        assert!(!result.text.contains("Collapsed contract amount 9999"));
     }
 
     #[test]
