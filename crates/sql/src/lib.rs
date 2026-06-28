@@ -307,9 +307,14 @@ impl MetadataSqlIndex for SqliteMetadataIndex {
             match predicate {
                 MetadataPredicate::Eq { field, value } => {
                     let path = json_path(field)?;
-                    clauses.push("json_extract(metadata_json, ?) = ?".to_string());
-                    params.push(SqlValue::Text(path));
-                    params.push(sql_value(value)?);
+                    if value.is_null() {
+                        clauses.push("json_type(metadata_json, ?) = 'null'".to_string());
+                        params.push(SqlValue::Text(path));
+                    } else {
+                        clauses.push("json_extract(metadata_json, ?) = ?".to_string());
+                        params.push(SqlValue::Text(path));
+                        params.push(sql_value(value)?);
+                    }
                 }
                 MetadataPredicate::Exists { field } => {
                     let path = json_path(field)?;
@@ -592,9 +597,13 @@ fn postgres_query_sql(query: &MetadataQuery) -> Result<(String, Vec<String>, i64
         match predicate {
             MetadataPredicate::Eq { field, value } => {
                 let path = postgres_json_path(field)?;
-                sql.push_str(&format!(" AND metadata_json #>> {path} = ${param_index}"));
-                values.push(postgres_scalar_value(value)?);
-                param_index += 1;
+                if value.is_null() {
+                    sql.push_str(&format!(" AND metadata_json #> {path} = 'null'::jsonb"));
+                } else {
+                    sql.push_str(&format!(" AND metadata_json #>> {path} = ${param_index}"));
+                    values.push(postgres_scalar_value(value)?);
+                    param_index += 1;
+                }
             }
             MetadataPredicate::Exists { field } => {
                 let path = postgres_json_path(field)?;
@@ -694,6 +703,40 @@ mod tests {
     }
 
     #[test]
+    fn test_null_equality_predicate_matches_json_null() {
+        let index = SqliteMetadataIndex::in_memory().unwrap();
+        index
+            .upsert_record(&SqlMetadataRecord::new(
+                "test",
+                "chunk-null",
+                1,
+                json!({"deleted_at": null}),
+                10,
+                20,
+            ))
+            .unwrap();
+        index
+            .upsert_record(&SqlMetadataRecord::new(
+                "test",
+                "chunk-missing",
+                2,
+                json!({"repo": "ax-engine"}),
+                10,
+                30,
+            ))
+            .unwrap();
+
+        let ids = index
+            .query_ids(
+                &MetadataQuery::new("test")
+                    .with_eq("deleted_at", json!(null))
+                    .with_limit(10),
+            )
+            .unwrap();
+        assert_eq!(ids, vec!["chunk-null"]);
+    }
+
+    #[test]
     fn test_rejects_unsafe_field_paths() {
         let index = SqliteMetadataIndex::in_memory().unwrap();
         let err = index
@@ -729,15 +772,23 @@ mod tests {
 
     #[cfg(feature = "postgres")]
     #[test]
-    fn test_postgres_rejects_null_and_unsafe_fields() {
-        let err = postgres_query_sql(
+    fn test_postgres_query_sql_matches_json_null() {
+        let (sql, values, limit) = postgres_query_sql(
             &MetadataQuery::new("test")
                 .with_eq("tenant_id", json!(null))
                 .with_limit(1),
         )
-        .unwrap_err();
-        assert!(matches!(err, SqlMetadataError::InvalidQuery(_)));
+        .unwrap();
 
+        assert_eq!(values, vec!["test"]);
+        assert_eq!(limit, 1);
+        assert!(sql.contains("metadata_json #> '{tenant_id}' = 'null'::jsonb"));
+        assert!(sql.contains("LIMIT $2"));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn test_postgres_rejects_unsafe_fields() {
         let err = postgres_query_sql(
             &MetadataQuery::new("test")
                 .with_exists("tenant_id;drop")
