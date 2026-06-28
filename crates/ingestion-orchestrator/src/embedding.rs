@@ -134,7 +134,8 @@ impl EmbeddingClient {
                 tokio::time::sleep(delay).await;
             }
 
-            let response = match self.client
+            let response = match self
+                .client
                 .post(format!("{}/v1/embeddings", self.base_url))
                 .json(&request)
                 .send()
@@ -182,14 +183,16 @@ impl EmbeddingClient {
     /// Embed a single text
     pub async fn embed_single(&self, text: &str) -> Result<Vec<f32>> {
         let embeddings = self.embed(vec![text.to_string()]).await?;
-        embeddings.into_iter().next().ok_or_else(|| {
-            crate::IngestionError::Embedding("No embedding returned".to_string())
-        })
+        embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::IngestionError::Embedding("No embedding returned".to_string()))
     }
 
     /// Check if the embedding service is healthy
     pub async fn health_check(&self) -> bool {
-        match self.client
+        match self
+            .client
             .get(format!("{}/health", self.base_url))
             .send()
             .await
@@ -225,12 +228,31 @@ fn parse_embedding_response(
         )));
     }
 
+    let expected_dimension = embeddings
+        .first()
+        .map(|data| data.embedding.len())
+        .unwrap_or(0);
+    if expected_dimension == 0 {
+        return Err(crate::IngestionError::Embedding(
+            "Embedding dimension must not be empty".to_string(),
+        ));
+    }
+
     for (expected_idx, data) in embeddings.iter().enumerate() {
         if data.index != expected_idx {
             return Err(crate::IngestionError::Embedding(format!(
                 "Embedding index mismatch: expected sequential index {}, got {}. \
                  Backend may have returned non-sequential or duplicate indices.",
                 expected_idx, data.index
+            )));
+        }
+
+        if data.embedding.len() != expected_dimension {
+            return Err(crate::IngestionError::Embedding(format!(
+                "Embedding dimension mismatch at item {}: expected {}, got {}",
+                data.index,
+                expected_dimension,
+                data.embedding.len()
             )));
         }
 
@@ -299,6 +321,48 @@ mod tests {
 
         assert!(
             matches!(result, Err(crate::IngestionError::Embedding(message)) if message.contains("Embedding index mismatch"))
+        );
+    }
+
+    #[test]
+    fn test_parse_embedding_response_rejects_empty_embedding() {
+        let response = EmbeddingResponse {
+            data: vec![EmbeddingData {
+                embedding: Vec::new(),
+                index: 0,
+            }],
+            model: "test".to_string(),
+            usage: None,
+        };
+
+        let result = parse_embedding_response(response, 1);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Embedding(message)) if message.contains("must not be empty"))
+        );
+    }
+
+    #[test]
+    fn test_parse_embedding_response_rejects_mixed_dimensions() {
+        let response = EmbeddingResponse {
+            data: vec![
+                EmbeddingData {
+                    embedding: vec![1.0, 0.0],
+                    index: 0,
+                },
+                EmbeddingData {
+                    embedding: vec![0.0, 1.0, 0.5],
+                    index: 1,
+                },
+            ],
+            model: "test".to_string(),
+            usage: None,
+        };
+
+        let result = parse_embedding_response(response, 2);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Embedding(message)) if message.contains("dimension mismatch"))
         );
     }
 
