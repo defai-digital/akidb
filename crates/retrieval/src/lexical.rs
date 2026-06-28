@@ -53,9 +53,9 @@ fn finite_f32(score: f64) -> f32 {
 ///
 /// Splitting on any non-identifier character keeps identifiers like
 /// `tokenRefresh` as exact tokens while breaking `foo.bar(baz)` into
-/// `foo`, `bar`, `baz`. Snake_case, kebab-case, and camelCase identifiers keep
-/// their exact token and also emit split subterms so plain-word queries can still
-/// recall them.
+/// `foo`, `bar`, `baz`. Snake_case, kebab-case, Rust paths, and camelCase
+/// identifiers keep their exact token and also emit split subterms so plain-word
+/// queries can still recall them.
 pub fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for raw in text
@@ -75,7 +75,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
 }
 
 fn is_token_char(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '_' | '-' | '+' | '#')
+    c.is_alphanumeric() || matches!(c, '_' | '-' | '+' | '#' | ':')
 }
 
 fn contains_semantic_token_char(token: &str) -> bool {
@@ -83,7 +83,7 @@ fn contains_semantic_token_char(token: &str) -> bool {
 }
 
 fn identifier_subterms(raw: &str) -> Vec<String> {
-    raw.split(['_', '-', '+', '#'])
+    raw.split(['_', '-', '+', '#', ':'])
         .filter(|part| !part.is_empty())
         .flat_map(split_camel_case)
         .collect()
@@ -370,6 +370,14 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenize_preserves_rust_path_identifier_and_parts() {
+        assert_eq!(
+            tokenize("draft_model::decode"),
+            vec!["draft_model::decode", "draft", "model", "decode"]
+        );
+    }
+
+    #[test]
     fn test_tokenize_preserves_code_language_identifiers() {
         assert_eq!(tokenize("C++"), vec!["c++", "c"]);
         assert_eq!(tokenize("C#"), vec!["c#", "c"]);
@@ -496,6 +504,19 @@ mod tests {
         index.insert(id("a_words"), "ax code");
 
         let hits = index.search("ax-code", 10);
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, id("z_exact"));
+        assert!(hits[0].score > hits[1].score);
+    }
+
+    #[test]
+    fn test_exact_rust_path_identifier_ranks_above_split_words() {
+        let mut index = Bm25Index::new();
+        index.insert(id("z_exact"), "draft_model::decode");
+        index.insert(id("a_words"), "draft model decode");
+
+        let hits = index.search("draft_model::decode", 10);
 
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, id("z_exact"));
