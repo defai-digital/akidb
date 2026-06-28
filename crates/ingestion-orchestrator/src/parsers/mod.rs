@@ -99,6 +99,8 @@ impl DocumentFormat {
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             | "application/vnd.ms-excel" => DocumentFormat::Xlsx,
             "text/plain" | "text/markdown" => DocumentFormat::Txt,
+            _ if media_type.ends_with("+json") => DocumentFormat::Json,
+            _ if media_type.ends_with("+xml") => DocumentFormat::Xml,
             _ => DocumentFormat::from_extension(media_type.as_str()),
         }
     }
@@ -285,6 +287,22 @@ mod tests {
         assert_eq!(
             DocumentFormat::from_content_type("text/plain"),
             DocumentFormat::Txt
+        );
+    }
+
+    #[test]
+    fn test_format_detection_accepts_structured_syntax_content_types() {
+        assert_eq!(
+            DocumentFormat::from_content_type("application/problem+json"),
+            DocumentFormat::Json
+        );
+        assert_eq!(
+            DocumentFormat::from_content_type("application/ld+json; charset=utf-8"),
+            DocumentFormat::Json
+        );
+        assert_eq!(
+            DocumentFormat::from_content_type("application/rss+xml"),
+            DocumentFormat::Xml
         );
     }
 
