@@ -221,9 +221,13 @@ pub fn route_parser_with_data(
 /// Simple text file parser
 struct TxtParser;
 
+fn strip_utf8_bom(data: &[u8]) -> &[u8] {
+    data.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(data)
+}
+
 impl DocumentParser for TxtParser {
     fn parse(&self, data: &[u8]) -> Result<ParsedDocument> {
-        let text = String::from_utf8_lossy(data).to_string();
+        let text = String::from_utf8_lossy(strip_utf8_bom(data)).to_string();
         let word_count = text.split_whitespace().count();
 
         Ok(ParsedDocument {
@@ -425,5 +429,14 @@ mod tests {
                 .and_then(|columns| columns.as_u64()),
             Some(2)
         );
+    }
+
+    #[test]
+    fn test_txt_parser_strips_utf8_bom() {
+        let parser = route_parser(DocumentFormat::Txt).unwrap();
+        let parsed = parser.parse(b"\xEF\xBB\xBFcustomer HGC").unwrap();
+
+        assert_eq!(parsed.text, "customer HGC");
+        assert!(!parsed.text.contains('\u{feff}'));
     }
 }
