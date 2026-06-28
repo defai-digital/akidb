@@ -48,6 +48,7 @@ impl DocumentParser for CsvParser {
 
         let mut texts = Vec::new();
         let mut row_count = 0;
+        let mut plain_row_count = 0;
         let mut col_count = 0;
         let mut rows = Vec::new();
 
@@ -74,6 +75,8 @@ impl DocumentParser for CsvParser {
                     let row_text = row_text_from_cells(&cells);
                     if is_likely_header_row(&cells, col_count) {
                         headers = Some(cells);
+                    } else {
+                        plain_row_count += 1;
                     }
                     row_text
                 }
@@ -81,6 +84,10 @@ impl DocumentParser for CsvParser {
             if !row_text.is_empty() {
                 texts.push(row_text);
             }
+        }
+
+        if headers.is_none() {
+            row_count = plain_row_count;
         }
 
         let text = texts.join("\n");
@@ -120,7 +127,19 @@ fn row_is_empty(cells: &[Option<String>]) -> bool {
 
 fn is_likely_header_row(cells: &[Option<String>], file_cols: usize) -> bool {
     let non_empty = cells.iter().filter(|cell| cell.is_some()).count();
-    non_empty > 1 || file_cols <= 1
+    let has_multiple_columns = non_empty > 1 || (file_cols <= 1 && non_empty == 1);
+    has_multiple_columns
+        && cells
+            .iter()
+            .flatten()
+            .all(|cell| is_likely_header_cell(cell))
+}
+
+fn is_likely_header_cell(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    !trimmed.is_empty()
+        && trimmed.chars().any(char::is_alphabetic)
+        && trimmed.parse::<f64>().is_err()
 }
 
 fn row_text_from_cells(cells: &[Option<String>]) -> String {
@@ -197,6 +216,19 @@ mod tests {
         assert!(result.text.contains("year 2025"));
         assert!(result.text.contains("contract_amount 1200"));
         assert!(!result.text.contains("Contract Export HGC"));
+    }
+
+    #[test]
+    fn test_parse_csv_without_header_does_not_promote_first_data_row_to_headers() {
+        let parser = CsvParser::new();
+        let data = b"HGC,2025,1200\nDEF,2024,900";
+
+        let result = parser.parse(data).unwrap();
+
+        assert_eq!(result.text, "HGC 2025 1200\nDEF 2024 900");
+        assert!(!result.text.contains("HGC DEF"));
+        assert!(!result.text.contains("2025 2024"));
+        assert_eq!(result.metadata.extra.unwrap()["rows"], 2);
     }
 
     #[test]
