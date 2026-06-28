@@ -251,6 +251,12 @@ machine-readable artifact:
 python3 scripts/validate-four-mac-cell.py docs/reports/four-mac-cell-YYYYMMDD.json
 ```
 
+Smoke-test the evidence pipeline without claiming hardware readiness:
+
+```bash
+./scripts/smoke-four-mac-validation.sh
+```
+
 Build an artifact from measured node, link, failure-test, and benchmark inputs:
 
 ```bash

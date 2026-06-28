@@ -10,6 +10,14 @@ Validate an artifact:
 python3 scripts/validate-four-mac-cell.py docs/reports/four-mac-cell-YYYYMMDD.json
 ```
 
+Smoke-test the evidence pipeline after changing validators or builders:
+
+```bash
+./scripts/smoke-four-mac-validation.sh
+```
+
+The smoke test uses synthetic inputs and does not prove hardware readiness.
+
 Create a measured-input template:
 
 ```bash
