@@ -457,9 +457,24 @@ impl AdminService for AdminServiceImpl {
             }));
         }
 
+        let events = req
+            .events
+            .into_iter()
+            .map(WebhookEvent::try_from)
+            .collect::<Result<Vec<_>, _>>();
+        let events = match events {
+            Ok(events) => events,
+            Err(_) => {
+                return Ok(Response::new(ConfigureWebhookResponse {
+                    success: false,
+                    message: "Unknown webhook event".to_string(),
+                }));
+            }
+        };
+
         let config = WebhookConfig {
             url: req.url,
-            events: req.events.into_iter().map(|e| e.try_into().unwrap_or(WebhookEvent::WebhookTaskFailed)).collect(),
+            events,
             secret: req.secret,
             enabled: req.enabled,
             last_delivery: None,
@@ -756,5 +771,26 @@ mod tests {
         let stored = state.webhook_config.read();
         assert!(stored.is_some());
         assert_eq!(stored.as_ref().unwrap().url, "https://example.com/webhook");
+    }
+
+    #[tokio::test]
+    async fn test_configure_webhook_rejects_unknown_event() {
+        let state = create_test_state();
+        let service = AdminServiceImpl::new(state.clone());
+
+        let response = service
+            .configure_webhook(Request::new(ConfigureWebhookRequest {
+                url: "https://example.com/webhook".to_string(),
+                events: vec![999],
+                secret: None,
+                enabled: true,
+            }))
+            .await
+            .expect("configure_webhook should return a response")
+            .into_inner();
+
+        assert!(!response.success);
+        assert!(response.message.contains("event"));
+        assert!(state.webhook_config.read().is_none());
     }
 }
