@@ -129,7 +129,7 @@ fn is_likely_header_cell(cell: &str) -> bool {
     !trimmed.is_empty()
         && trimmed.chars().any(char::is_alphabetic)
         && trimmed.parse::<f64>().is_err()
-        && !is_short_uppercase_acronym(trimmed)
+        && (!is_short_uppercase_acronym(trimmed) || has_strong_header_signal(trimmed))
 }
 
 fn has_strong_header_signal(cell: &str) -> bool {
@@ -383,6 +383,26 @@ mod tests {
 
         assert!(result.text.contains("customer HGC"), "{}", result.text);
         assert!(result.text.contains("tier Premium"), "{}", result.text);
+    }
+
+    #[test]
+    fn test_parse_xlsx_preserves_uppercase_common_header_value_pairs() {
+        let parser = XlsxParser::new();
+        let data = minimal_xlsx_with_sheet_data(
+            r#"<row r="1">
+      <c r="A1" t="inlineStr"><is><t>ID</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Name</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2"><v>123</v></c>
+      <c r="B2" t="inlineStr"><is><t>Alice</t></is></c>
+    </row>"#,
+        );
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("ID 123"), "{}", result.text);
+        assert!(result.text.contains("Name Alice"), "{}", result.text);
     }
 
     fn contract_sheet_rows() -> &'static str {

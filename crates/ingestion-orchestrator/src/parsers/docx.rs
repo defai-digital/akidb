@@ -237,7 +237,7 @@ fn is_likely_header_cell(cell: &str) -> bool {
     !trimmed.is_empty()
         && trimmed.chars().any(char::is_alphabetic)
         && trimmed.parse::<f64>().is_err()
-        && !is_short_uppercase_acronym(trimmed)
+        && (!is_short_uppercase_acronym(trimmed) || has_strong_header_signal(trimmed))
 }
 
 fn has_strong_header_signal(cell: &str) -> bool {
@@ -501,6 +501,17 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_docx_table_preserves_uppercase_common_header_value_pairs() {
+        let parser = DocxParser::new();
+        let data = minimal_docx_with_uppercase_common_header_table();
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("ID 123"), "{}", result.text);
+        assert!(result.text.contains("Name Alice"), "{}", result.text);
+    }
+
+    #[test]
     fn test_parse_docx_table_ignores_title_row_when_selecting_headers() {
         let parser = DocxParser::new();
         let data = minimal_docx_with_title_row_contract_table();
@@ -628,6 +639,27 @@ mod tests {
       <w:tr>
         <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
         <w:tc><w:p><w:r><w:t>Premium</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+        )
+    }
+
+    fn minimal_docx_with_uppercase_common_header_table() -> Vec<u8> {
+        minimal_docx_with_document_xml(
+            r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>ID</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>123</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Alice</w:t></w:r></w:p></w:tc>
       </w:tr>
     </w:tbl>
     <w:sectPr/>

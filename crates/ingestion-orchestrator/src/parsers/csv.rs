@@ -163,7 +163,7 @@ fn is_likely_header_cell(cell: &str) -> bool {
     !trimmed.is_empty()
         && trimmed.chars().any(char::is_alphabetic)
         && trimmed.parse::<f64>().is_err()
-        && !is_short_uppercase_acronym(trimmed)
+        && (!is_short_uppercase_acronym(trimmed) || has_strong_header_signal(trimmed))
 }
 
 fn has_strong_header_signal(cell: &str) -> bool {
@@ -344,6 +344,18 @@ mod tests {
 
         assert!(result.text.contains("customer HGC"), "{}", result.text);
         assert!(result.text.contains("tier Premium"), "{}", result.text);
+    }
+
+    #[test]
+    fn test_parse_csv_preserves_uppercase_common_header_value_pairs() {
+        let parser = CsvParser::new();
+        let data = b"ID,Name\n123,Alice";
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("ID 123"), "{}", result.text);
+        assert!(result.text.contains("Name Alice"), "{}", result.text);
+        assert_eq!(result.metadata.extra.unwrap()["rows"], 1);
     }
 
     #[test]
