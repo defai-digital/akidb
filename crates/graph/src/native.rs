@@ -362,13 +362,12 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
             return Ok(Vec::new());
         }
 
-        let direct = self.direct_related_chunks(entity_id, limit)?;
-        if !direct.is_empty() {
-            return Ok(direct);
+        let mut chunks = self.direct_related_chunks(entity_id, limit)?;
+        let mut seen: HashSet<_> = chunks.iter().map(|chunk| chunk.vector_id.clone()).collect();
+        if chunks.len() >= limit {
+            return Ok(chunks);
         }
 
-        let mut chunks = Vec::new();
-        let mut seen = HashSet::new();
         let one_hop = self.neighbors(
             NeighborRequest::new(entity_id.clone())
                 .with_direction(Direction::Both)
@@ -388,6 +387,7 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
             }
         }
         chunks.sort_by(|a, b| a.vector_id.as_str().cmp(b.vector_id.as_str()));
+        chunks.truncate(limit);
         Ok(chunks)
     }
 
@@ -668,6 +668,48 @@ mod tests {
             }],
             "entity nodes should resolve chunks connected by incoming metadata edges"
         );
+    }
+
+    #[test]
+    fn test_related_chunks_combines_direct_and_incoming_chunk_edges() {
+        let (_dir, graph) = index();
+        graph
+            .upsert_node(node("entity:mtp", NodeKind::Entity))
+            .unwrap();
+        graph
+            .upsert_node(node("chunk:direct", NodeKind::Chunk))
+            .unwrap();
+        graph
+            .upsert_node(node("chunk:incoming", NodeKind::Chunk))
+            .unwrap();
+        graph
+            .upsert_edge(edge(
+                "direct",
+                "entity:mtp",
+                "chunk:direct",
+                EdgeKind::Mentions,
+                1.0,
+            ))
+            .unwrap();
+        graph
+            .upsert_edge(edge(
+                "incoming",
+                "chunk:incoming",
+                "entity:mtp",
+                EdgeKind::OwnedBy,
+                1.0,
+            ))
+            .unwrap();
+
+        let chunks = graph
+            .related_chunks(&GraphNodeId::from("entity:mtp"), 10)
+            .unwrap();
+        let vector_ids: Vec<&str> = chunks
+            .iter()
+            .map(|chunk| chunk.vector_id.as_str())
+            .collect();
+
+        assert_eq!(vector_ids, vec!["direct", "incoming"]);
     }
 
     #[test]
