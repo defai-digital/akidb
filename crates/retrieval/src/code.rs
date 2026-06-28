@@ -416,7 +416,7 @@ fn rust_block_end(lines: &[&str], start: usize) -> usize {
             return start + offset;
         }
         // One-liner item (no body): terminated by ';' before any '{'.
-        if !opened && line.contains(';') {
+        if !opened && scan.saw_semicolon {
             return start + offset;
         }
     }
@@ -427,6 +427,7 @@ fn rust_block_end(lines: &[&str], start: usize) -> usize {
 struct RustBraceScan {
     delta: i32,
     saw_open: bool,
+    saw_semicolon: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -440,6 +441,7 @@ fn rust_brace_scan_with_state(line: &str, state: &mut RustScanState) -> RustBrac
     let chars: Vec<char> = line.chars().collect();
     let mut delta = 0;
     let mut saw_open = false;
+    let mut saw_semicolon = false;
     let mut i = 0;
 
     while i < chars.len() {
@@ -520,12 +522,17 @@ fn rust_brace_scan_with_state(line: &str, state: &mut RustScanState) -> RustBrac
                 delta += 1;
             }
             '}' => delta -= 1,
+            ';' => saw_semicolon = true,
             _ => {}
         }
         i += 1;
     }
 
-    RustBraceScan { delta, saw_open }
+    RustBraceScan {
+        delta,
+        saw_open,
+        saw_semicolon,
+    }
 }
 
 fn rust_raw_string_start(chars: &[char], start: usize) -> Option<(usize, usize)> {
@@ -1164,6 +1171,27 @@ pub fn search() {}";
         assert_eq!(chunks[2].kind, SymbolKind::TypeAlias);
         assert_eq!(chunks[3].kind, SymbolKind::Macro);
         assert!(chunks[3].text.contains("println!"));
+    }
+
+    #[test]
+    fn test_rust_semicolon_inside_multiline_const_string_does_not_end_chunk() {
+        let src = "\
+pub const QUERY: &str = \"
+select *;
+from contracts
+\";
+
+pub fn search() {}";
+        let chunks = chunk_code(src, Language::Rust);
+        let names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| chunk.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["QUERY", "search"]);
+        assert_eq!(chunks[0].kind, SymbolKind::Const);
+        assert!(chunks[0].text.contains("from contracts"));
+        assert_eq!(chunks[0].end_line, 4);
+        assert_eq!(chunks[1].start_line, 6);
     }
 
     #[test]
