@@ -125,33 +125,16 @@ impl DocxParser {
     fn extract_table_text(rows: &[TableChild]) -> String {
         let mut lines = Vec::new();
         let mut headers: Option<Vec<Option<String>>> = None;
+        let table_rows: Vec<Vec<Option<String>>> = rows
+            .iter()
+            .map(|row_child| {
+                let TableChild::TableRow(row) = row_child;
+                Self::extract_table_row_cells(row)
+            })
+            .collect();
+        let table_cols = table_rows.iter().map(Vec::len).max().unwrap_or(0);
 
-        for row_child in rows {
-            let TableChild::TableRow(row) = row_child;
-            let mut cells = Vec::new();
-
-            for cell_child in &row.cells {
-                let TableRowChild::TableCell(cell) = cell_child;
-                let mut cell_text = String::new();
-
-                for content in &cell.children {
-                    match content {
-                        TableCellContent::Paragraph(p) => {
-                            let paragraph_text = Self::extract_paragraph_text(&p.children);
-                            if !paragraph_text.trim().is_empty() {
-                                if !cell_text.is_empty() {
-                                    cell_text.push(' ');
-                                }
-                                cell_text.push_str(&paragraph_text);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                cells.push(normalize_cell_text(&cell_text));
-            }
-
+        for cells in table_rows {
             if row_is_empty(&cells) {
                 continue;
             }
@@ -159,8 +142,11 @@ impl DocxParser {
             let line = match headers.as_deref() {
                 Some(headers) => row_text_with_headers(headers, &cells),
                 None => {
-                    headers = Some(cells.clone());
-                    row_text_from_cells(&cells)
+                    let row_text = row_text_from_cells(&cells);
+                    if is_likely_header_row(&cells, table_cols) {
+                        headers = Some(cells.clone());
+                    }
+                    row_text
                 }
             };
             if !line.is_empty() {
@@ -169,6 +155,34 @@ impl DocxParser {
         }
 
         lines.join("\n")
+    }
+
+    fn extract_table_row_cells(row: &docx_rs::TableRow) -> Vec<Option<String>> {
+        let mut cells = Vec::new();
+
+        for cell_child in &row.cells {
+            let TableRowChild::TableCell(cell) = cell_child;
+            let mut cell_text = String::new();
+
+            for content in &cell.children {
+                match content {
+                    TableCellContent::Paragraph(p) => {
+                        let paragraph_text = Self::extract_paragraph_text(&p.children);
+                        if !paragraph_text.trim().is_empty() {
+                            if !cell_text.is_empty() {
+                                cell_text.push(' ');
+                            }
+                            cell_text.push_str(&paragraph_text);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            cells.push(normalize_cell_text(&cell_text));
+        }
+
+        cells
     }
 }
 
@@ -183,6 +197,23 @@ fn normalize_cell_text(text: &str) -> Option<String> {
 
 fn row_is_empty(cells: &[Option<String>]) -> bool {
     cells.iter().all(Option::is_none)
+}
+
+fn is_likely_header_row(cells: &[Option<String>], table_cols: usize) -> bool {
+    let non_empty = cells.iter().filter(|cell| cell.is_some()).count();
+    let has_multiple_columns = non_empty > 1 || (table_cols <= 1 && non_empty == 1);
+    has_multiple_columns
+        && cells
+            .iter()
+            .flatten()
+            .all(|cell| is_likely_header_cell(cell))
+}
+
+fn is_likely_header_cell(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    !trimmed.is_empty()
+        && trimmed.chars().any(char::is_alphabetic)
+        && trimmed.parse::<f64>().is_err()
 }
 
 fn row_text_from_cells(cells: &[Option<String>]) -> String {
@@ -341,6 +372,41 @@ mod tests {
         assert!(!result.text.contains("FirstSecond"), "{}", result.text);
     }
 
+    #[test]
+    fn test_parse_docx_table_without_header_does_not_promote_first_data_row_to_headers() {
+        let parser = DocxParser::new();
+        let data = minimal_docx_with_no_header_table();
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("HGC 2025 1200"), "{}", result.text);
+        assert!(result.text.contains("DEF 2024 900"), "{}", result.text);
+        assert!(!result.text.contains("HGC DEF"), "{}", result.text);
+        assert!(!result.text.contains("2025 2024"), "{}", result.text);
+    }
+
+    #[test]
+    fn test_parse_docx_table_ignores_title_row_when_selecting_headers() {
+        let parser = DocxParser::new();
+        let data = minimal_docx_with_title_row_contract_table();
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("Contract Export"), "{}", result.text);
+        assert!(result.text.contains("customer HGC"), "{}", result.text);
+        assert!(result.text.contains("year 2025"), "{}", result.text);
+        assert!(
+            result.text.contains("contract_amount 1200"),
+            "{}",
+            result.text
+        );
+        assert!(
+            !result.text.contains("Contract Export HGC"),
+            "{}",
+            result.text
+        );
+    }
+
     fn minimal_docx_with_contract_table() -> Vec<u8> {
         minimal_docx_with_document_xml(
             r#"
@@ -356,6 +422,55 @@ mod tests {
         <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
         <w:tc><w:p><w:r><w:t>2025</w:t></w:r></w:p></w:tc>
         <w:tc><w:p><w:r><w:t>1200</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+        )
+    }
+
+    fn minimal_docx_with_title_row_contract_table() -> Vec<u8> {
+        minimal_docx_with_document_xml(
+            r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Contract Export</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>customer</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>year</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>contract_amount</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>2025</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>1200</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#,
+        )
+    }
+
+    fn minimal_docx_with_no_header_table() -> Vec<u8> {
+        minimal_docx_with_document_xml(
+            r#"
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>HGC</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>2025</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>1200</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>DEF</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>2024</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>900</w:t></w:r></w:p></w:tc>
       </w:tr>
     </w:tbl>
     <w:sectPr/>
