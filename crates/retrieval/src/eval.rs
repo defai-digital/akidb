@@ -141,7 +141,7 @@ pub fn run_controlled_eval(
 ) -> EvalSummary {
     const SEM_PER_Q: usize = 5;
     const LEX_PER_Q: usize = 5;
-    if num_queries == 0 {
+    if num_queries == 0 || dims == 0 {
         return EvalSummary {
             queries: 0,
             k,
@@ -334,6 +334,21 @@ mod tests {
     fn test_controlled_eval_zero_queries_returns_zero_metrics() {
         let s = run_controlled_eval(
             /*queries*/ 0, /*distractors*/ 10, /*dims*/ 8, /*k*/ 5,
+        );
+
+        assert_eq!(s.queries, 0);
+        assert_eq!(s.dense.recall, 0.0);
+        assert_eq!(s.lexical.recall, 0.0);
+        assert_eq!(s.hybrid.recall, 0.0);
+        assert_eq!(s.dense.ndcg, 0.0);
+        assert_eq!(s.lexical.ndcg, 0.0);
+        assert_eq!(s.hybrid.ndcg, 0.0);
+    }
+
+    #[test]
+    fn test_controlled_eval_zero_dimensions_returns_zero_metrics() {
+        let s = run_controlled_eval(
+            /*queries*/ 5, /*distractors*/ 10, /*dims*/ 0, /*k*/ 5,
         );
 
         assert_eq!(s.queries, 0);
