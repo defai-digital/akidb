@@ -91,22 +91,23 @@ impl SemanticChunker {
                     chunk_index += 1;
                 }
 
-                // Start new chunk with overlap
-                let overlap_text = get_overlap(
+                // Start new chunk with overlap. Keep the overlap as an exact
+                // substring of the original text so citation offsets remain valid.
+                let overlap = get_overlap_span(
                     &current_chunk,
                     self.config.min_overlap,
                     self.config.max_overlap,
                 );
-                current_chunk = overlap_text.clone();
 
-                // FIX: Calculate overlap start offset properly
-                // The overlap comes from the end of the previous chunk
-                if !overlap_text.is_empty() {
-                    // Find where overlap text starts in original text (search backwards from current_end)
-                    let overlap_start = current_end.saturating_sub(overlap_text.len());
-                    current_start = overlap_start;
-                } else {
-                    current_start = sentence_offset;
+                match overlap {
+                    Some((overlap_start, overlap_text)) => {
+                        current_start += overlap_start;
+                        current_chunk = overlap_text;
+                    }
+                    None => {
+                        current_chunk.clear();
+                        current_start = sentence_offset;
+                    }
                 }
             }
 
@@ -115,7 +116,12 @@ impl SemanticChunker {
                 current_start = sentence_offset;
             }
 
-            current_chunk.push_str(sentence);
+            let append_start = if current_chunk.is_empty() {
+                sentence_offset
+            } else {
+                current_end
+            };
+            current_chunk.push_str(&text[append_start..sentence_end]);
             current_end = sentence_end; // FIX: Track actual end offset
         }
 
@@ -149,30 +155,50 @@ fn estimate_tokens_fast(text: &str) -> usize {
     (text.len() + 3) / 4
 }
 
-/// Get overlap text from the end of current chunk
-fn get_overlap(text: &str, min_tokens: usize, max_tokens: usize) -> String {
+/// Get overlap text from the end of current chunk.
+///
+/// Returns the byte offset within `text` and the exact substring to preserve
+/// original spacing for source-span citations.
+fn get_overlap_span(text: &str, min_tokens: usize, max_tokens: usize) -> Option<(usize, String)> {
     let sentences: Vec<&str> = text.unicode_sentences().collect();
     if sentences.is_empty() {
-        return String::new();
+        return None;
     }
 
-    let mut overlap = String::new();
+    let mut sentence_spans = Vec::with_capacity(sentences.len());
+    let mut search_start = 0;
+    for sentence in sentences {
+        let sentence_start = match text[search_start..].find(sentence) {
+            Some(offset) => search_start + offset,
+            None => search_start,
+        };
+        let sentence_end = sentence_start + sentence.len();
+        sentence_spans.push((sentence_start, sentence_end, sentence));
+        search_start = sentence_end;
+    }
+
     let mut overlap_tokens = 0;
+    let mut overlap_start = None;
+    let mut overlap_end = None;
 
     // Take sentences from the end until we have enough overlap
-    for sentence in sentences.iter().rev() {
+    for (sentence_start, sentence_end, sentence) in sentence_spans.iter().rev() {
         let sentence_tokens = count_tokens(sentence);
         if overlap_tokens + sentence_tokens > max_tokens {
             break;
         }
-        overlap = format!("{} {}", sentence, overlap);
+        overlap_start = Some(*sentence_start);
+        overlap_end.get_or_insert(*sentence_end);
         overlap_tokens += sentence_tokens;
         if overlap_tokens >= min_tokens {
             break;
         }
     }
 
-    overlap.trim().to_string()
+    match (overlap_start, overlap_end) {
+        (Some(start), Some(end)) => Some((start, text[start..end].to_string())),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +258,28 @@ mod tests {
                 text[chunk.start_offset..chunk.end_offset].trim(),
                 chunk.text,
                 "chunk {} offsets should round-trip to original text",
+                chunk.index
+            );
+        }
+    }
+
+    #[test]
+    fn test_offsets_round_trip_with_overlap() {
+        let chunker = SemanticChunker::new(ChunkerConfig {
+            target_tokens: 8,
+            min_overlap: 1,
+            max_overlap: 8,
+        });
+
+        let text = "Alpha one. Beta two. Gamma three. Delta four.";
+        let chunks = chunker.chunk(text);
+
+        assert!(chunks.len() > 1);
+        for chunk in chunks {
+            assert_eq!(
+                text[chunk.start_offset..chunk.end_offset].trim(),
+                chunk.text,
+                "chunk {} offsets should round-trip when overlap is enabled",
                 chunk.index
             );
         }
