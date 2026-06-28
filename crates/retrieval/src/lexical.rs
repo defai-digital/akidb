@@ -60,7 +60,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for raw in text
         .split(|c: char| !is_token_char(c))
-        .filter(|t| !t.is_empty())
+        .filter(|t| contains_semantic_token_char(t))
     {
         let token = raw.to_lowercase();
         tokens.push(token.clone());
@@ -76,6 +76,10 @@ pub fn tokenize(text: &str) -> Vec<String> {
 
 fn is_token_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '-'
+}
+
+fn contains_semantic_token_char(token: &str) -> bool {
+    token.chars().any(|c| c.is_alphanumeric() || c == '_')
 }
 
 fn identifier_subterms(raw: &str) -> Vec<String> {
@@ -366,6 +370,12 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenize_drops_hyphen_only_runs() {
+        assert_eq!(tokenize("---"), Vec::<String>::new());
+        assert_eq!(tokenize("alpha --- beta"), vec!["alpha", "beta"]);
+    }
+
+    #[test]
     fn test_empty_index_returns_no_results() {
         let index = Bm25Index::new();
         assert!(index.is_empty());
@@ -417,6 +427,16 @@ mod tests {
         assert_eq!(index.len(), 0);
         assert!(!index.contains(&id("doc")));
         assert!(index.search("alpha", 10).is_empty());
+    }
+
+    #[test]
+    fn test_hyphen_only_document_is_not_indexed() {
+        let mut index = Bm25Index::new();
+
+        index.insert(id("separator"), "--- ---");
+
+        assert!(index.is_empty());
+        assert!(index.search("---", 10).is_empty());
     }
 
     #[test]
