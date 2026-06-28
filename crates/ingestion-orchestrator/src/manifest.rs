@@ -118,6 +118,17 @@ impl ManifestStore {
     ///
     /// BUG-002 FIX: Uses write lock for atomic read-modify-write
     pub fn increment_missing(&self, object_key: &str) -> Result<u8> {
+        self.increment_missing_with_threshold(object_key, akidb_common::types::DELETION_THRESHOLD)
+    }
+
+    /// Increment missing count using a caller-supplied confirmation threshold.
+    ///
+    /// BUG-002 FIX: Uses write lock for atomic read-modify-write
+    pub fn increment_missing_with_threshold(
+        &self,
+        object_key: &str,
+        deletion_threshold: u8,
+    ) -> Result<u8> {
         // Acquire write lock for atomic read-modify-write
         let _guard = self.write_lock.lock().map_err(|e| {
             IngestionError::Manifest(format!("Write lock poisoned: {}", e))
@@ -127,7 +138,7 @@ impl ManifestStore {
             IngestionError::Manifest(format!("Manifest not found: {}", object_key))
         })?;
 
-        let should_tombstone = manifest.increment_missing();
+        let should_tombstone = manifest.increment_missing_with_threshold(deletion_threshold);
         self.upsert_internal(&manifest)?;
 
         if should_tombstone {
@@ -330,6 +341,37 @@ mod tests {
         assert_eq!(count3, 3);
 
         // Should now be confirmed deleted
+        let manifest = store.get("test/file.pdf").unwrap().unwrap();
+        assert!(matches!(
+            manifest.delete_state,
+            DeleteState::ConfirmedMissing { .. }
+        ));
+    }
+
+    #[test]
+    fn test_increment_missing_uses_custom_threshold() {
+        let dir = tempdir().unwrap();
+        let store = ManifestStore::open(dir.path()).unwrap();
+
+        let manifest = create_test_manifest("test/file.pdf");
+        store.upsert(&manifest).unwrap();
+
+        for expected_count in 1..=4 {
+            let count = store
+                .increment_missing_with_threshold("test/file.pdf", 5)
+                .unwrap();
+            assert_eq!(count, expected_count);
+            let manifest = store.get("test/file.pdf").unwrap().unwrap();
+            assert!(matches!(
+                manifest.delete_state,
+                DeleteState::MarkedForDeletion { .. }
+            ));
+        }
+
+        let count = store
+            .increment_missing_with_threshold("test/file.pdf", 5)
+            .unwrap();
+        assert_eq!(count, 5);
         let manifest = store.get("test/file.pdf").unwrap().unwrap();
         assert!(matches!(
             manifest.delete_state,

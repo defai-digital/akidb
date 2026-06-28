@@ -66,7 +66,9 @@ impl LifecycleManager {
     /// Increments the missing count and transitions to ConfirmedMissing
     /// if the threshold is reached.
     pub fn handle_missing(&self, object_key: &str) -> Result<MissingResult> {
-        let new_count = self.manifest.increment_missing(object_key)?;
+        let new_count = self
+            .manifest
+            .increment_missing_with_threshold(object_key, self.config.deletion_threshold)?;
 
         if new_count >= self.config.deletion_threshold {
             // Transition to ConfirmedMissing
@@ -299,6 +301,38 @@ mod tests {
         );
 
         // Verify state
+        let m = store.get("test/file.pdf").unwrap().unwrap();
+        assert!(matches!(m.delete_state, DeleteState::ConfirmedMissing { .. }));
+    }
+
+    #[test]
+    fn test_handle_missing_respects_threshold_above_default() {
+        let store = create_test_store();
+        let config = LifecycleConfig {
+            deletion_threshold: 5,
+            ..Default::default()
+        };
+        let manager = LifecycleManager::new(Arc::clone(&store), config);
+
+        let manifest = create_test_manifest("test/file.pdf");
+        store.upsert(&manifest).unwrap();
+
+        for expected_count in 1..=4 {
+            assert_eq!(
+                manager.handle_missing("test/file.pdf").unwrap(),
+                MissingResult::Incremented(expected_count)
+            );
+            let m = store.get("test/file.pdf").unwrap().unwrap();
+            assert!(matches!(
+                m.delete_state,
+                DeleteState::MarkedForDeletion { .. }
+            ));
+        }
+
+        assert_eq!(
+            manager.handle_missing("test/file.pdf").unwrap(),
+            MissingResult::Confirmed
+        );
         let m = store.get("test/file.pdf").unwrap().unwrap();
         assert!(matches!(m.delete_state, DeleteState::ConfirmedMissing { .. }));
     }

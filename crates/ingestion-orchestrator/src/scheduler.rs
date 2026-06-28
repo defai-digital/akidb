@@ -20,7 +20,7 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use akidb_common::types::{ChangeType, ObjectManifest, SyncResult};
+use akidb_common::types::{ChangeType, DeleteState, ObjectManifest, SyncResult};
 use crate::manifest::ManifestStore;
 use crate::{IngestionError, Result};
 
@@ -343,9 +343,16 @@ impl ChangeDetector {
 
         // Find missing objects (in manifest but not in MinIO)
         for (key, manifest) in &manifest_map {
-            if !seen_keys.contains(key) && manifest.delete_state.is_active() {
+            if !seen_keys.contains(key)
+                && matches!(
+                    manifest.delete_state,
+                    DeleteState::Active | DeleteState::MarkedForDeletion { .. }
+                )
+            {
                 // Increment missing count
-                let count = self.manifest.increment_missing(key)?;
+                let count = self
+                    .manifest
+                    .increment_missing_with_threshold(key, self.deletion_threshold)?;
 
                 if count >= self.deletion_threshold {
                     changes.push(MinIOChange {
@@ -378,7 +385,7 @@ pub struct MinIOObject {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use akidb_common::types::DocumentIdentifier;
+    use akidb_common::types::{DeleteState, DocumentIdentifier};
     use tempfile::tempdir;
 
     fn create_test_manifest_store() -> Arc<ManifestStore> {
@@ -523,6 +530,34 @@ mod tests {
 
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].key, "old_file.pdf");
+        assert_eq!(changes[0].change_type, ChangeType::ConfirmedDelete);
+    }
+
+    #[test]
+    fn test_change_detection_does_not_confirm_before_configured_threshold() {
+        let manifest = create_test_manifest_store();
+
+        let doc = DocumentIdentifier::new(b"content", "old_file.pdf".to_string());
+        let m = ObjectManifest::new("old_file.pdf".to_string(), "etag".to_string(), doc);
+        manifest.upsert(&m).unwrap();
+
+        let detector = ChangeDetector::with_deletion_threshold(Arc::clone(&manifest), 5);
+
+        for _ in 0..4 {
+            let changes = detector.detect_changes(vec![], 1).unwrap();
+            assert_eq!(changes.len(), 1);
+            assert_eq!(changes[0].change_type, ChangeType::Missing);
+        }
+
+        let m = manifest.get("old_file.pdf").unwrap().unwrap();
+        assert_eq!(m.missing_count, 4);
+        assert!(matches!(
+            m.delete_state,
+            DeleteState::MarkedForDeletion { .. }
+        ));
+
+        let changes = detector.detect_changes(vec![], 1).unwrap();
+        assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].change_type, ChangeType::ConfirmedDelete);
     }
 }

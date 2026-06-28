@@ -188,15 +188,30 @@ impl ObjectManifest {
     ///
     /// BUG-011 FIX: Only increments count in Active or MarkedForDeletion states
     pub fn increment_missing(&mut self) -> bool {
+        self.increment_missing_with_threshold(DELETION_THRESHOLD)
+    }
+
+    /// Increment missing count using a caller-supplied confirmation threshold.
+    ///
+    /// A threshold of `0` is treated as `1`, so a missing document is confirmed
+    /// on the first miss rather than leaving the threshold comparison ambiguous.
+    pub fn increment_missing_with_threshold(&mut self, deletion_threshold: u8) -> bool {
+        let deletion_threshold = deletion_threshold.max(1);
+
         match &self.delete_state {
             DeleteState::Active => {
                 self.missing_count = self.missing_count.saturating_add(1);
-                self.delete_state = DeleteState::mark_for_deletion();
-                false
+                if self.missing_count >= deletion_threshold {
+                    self.delete_state = DeleteState::confirm_missing();
+                    true
+                } else {
+                    self.delete_state = DeleteState::mark_for_deletion();
+                    false
+                }
             }
             DeleteState::MarkedForDeletion { .. } => {
                 self.missing_count = self.missing_count.saturating_add(1);
-                if self.missing_count >= DELETION_THRESHOLD {
+                if self.missing_count >= deletion_threshold {
                     self.delete_state = DeleteState::confirm_missing();
                     true
                 } else {
@@ -347,6 +362,41 @@ mod tests {
         // Third miss - should transition to ConfirmedMissing
         assert!(manifest.increment_missing());
         assert_eq!(manifest.missing_count, 3);
+        assert!(matches!(
+            manifest.delete_state,
+            DeleteState::ConfirmedMissing { .. }
+        ));
+    }
+
+    #[test]
+    fn test_object_manifest_custom_missing_threshold() {
+        let doc_id = DocumentIdentifier::new(b"content", "path".to_string());
+        let mut manifest = ObjectManifest::new("key".to_string(), "etag".to_string(), doc_id);
+
+        for expected_count in 1..=4 {
+            assert!(!manifest.increment_missing_with_threshold(5));
+            assert_eq!(manifest.missing_count, expected_count);
+            assert!(matches!(
+                manifest.delete_state,
+                DeleteState::MarkedForDeletion { .. }
+            ));
+        }
+
+        assert!(manifest.increment_missing_with_threshold(5));
+        assert_eq!(manifest.missing_count, 5);
+        assert!(matches!(
+            manifest.delete_state,
+            DeleteState::ConfirmedMissing { .. }
+        ));
+    }
+
+    #[test]
+    fn test_object_manifest_threshold_one_confirms_immediately() {
+        let doc_id = DocumentIdentifier::new(b"content", "path".to_string());
+        let mut manifest = ObjectManifest::new("key".to_string(), "etag".to_string(), doc_id);
+
+        assert!(manifest.increment_missing_with_threshold(1));
+        assert_eq!(manifest.missing_count, 1);
         assert!(matches!(
             manifest.delete_state,
             DeleteState::ConfirmedMissing { .. }
