@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
-use crate::akidb_client::{AkiDbClient, VectorInsert};
+use crate::akidb_client::{AkiDbClient, BatchInsertResult, VectorInsert};
 use crate::backpressure::BackpressureController;
 use crate::batcher::DynamicBatcher;
 use crate::chunker::{Chunk, SemanticChunker};
@@ -318,6 +318,7 @@ impl IngestionPipeline {
                 "Some vectors failed to insert"
             );
         }
+        ensure_complete_insert(&result)?;
 
         self.metrics
             .vectors_inserted
@@ -455,6 +456,16 @@ fn build_vector_metadata(
     }
 
     metadata
+}
+
+fn ensure_complete_insert(result: &BatchInsertResult) -> Result<()> {
+    if result.failed > 0 {
+        return Err(crate::IngestionError::Storage(format!(
+            "Partial AkiDB insert: {} succeeded, {} failed out of {}",
+            result.successful, result.failed, result.total
+        )));
+    }
+    Ok(())
 }
 
 fn should_use_python_parser(format: DocumentFormat, data: &[u8]) -> bool {
@@ -663,5 +674,34 @@ mod tests {
         assert_eq!(metadata["title"], "Release Notes");
         assert!(!metadata.contains_key("author"));
         assert!(!metadata.contains_key("metadata_extra"));
+    }
+
+    #[test]
+    fn test_ensure_complete_insert_allows_full_success() {
+        let result = BatchInsertResult {
+            total: 2,
+            successful: 2,
+            failed: 0,
+            results: vec![],
+            latency_ms: 10,
+        };
+
+        assert!(ensure_complete_insert(&result).is_ok());
+    }
+
+    #[test]
+    fn test_ensure_complete_insert_rejects_partial_success() {
+        let result = BatchInsertResult {
+            total: 3,
+            successful: 2,
+            failed: 1,
+            results: vec![],
+            latency_ms: 10,
+        };
+
+        let err = ensure_complete_insert(&result).unwrap_err();
+        assert!(
+            matches!(err, crate::IngestionError::Storage(message) if message.contains("Partial AkiDB insert"))
+        );
     }
 }
