@@ -319,6 +319,23 @@ where
         Ok(())
     }
 
+    fn validate_positive_finite_option(name: &str, value: Option<f32>) -> Result<(), Status> {
+        if let Some(value) = value {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(Status::invalid_argument(format!(
+                    "{name} must be finite and greater than 0"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_text_search_options(req: &TextSearchRequest) -> Result<(), Status> {
+        Self::validate_positive_finite_option("dense_weight", req.dense_weight)?;
+        Self::validate_positive_finite_option("lexical_weight", req.lexical_weight)?;
+        Ok(())
+    }
+
     fn validate_query_vector(query: &[f32]) -> Result<(), Status> {
         if query.is_empty() {
             return Err(Status::invalid_argument("Query vector cannot be empty"));
@@ -1853,6 +1870,7 @@ where
         }
         self.validate_request_collection(&req.collection)?;
         Self::validate_search_controls(req.top_k, req.nprobe)?;
+        Self::validate_text_search_options(&req)?;
 
         let metadata_filter = match MetadataFilter::build(&req.filter, req.tag_filter.clone()) {
             Ok(Some(filter)) => Some(Arc::new(filter)),

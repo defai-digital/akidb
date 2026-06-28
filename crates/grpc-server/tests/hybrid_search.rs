@@ -259,6 +259,36 @@ async fn test_high_lexical_weight_promotes_lexical_match() {
 }
 
 #[tokio::test]
+async fn test_hybrid_rejects_zero_fusion_weights() {
+    let svc = setup();
+    seed_disagreeing(&svc).await;
+
+    let err = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 3,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: Some(0.0),
+            lexical_weight: Some(0.0),
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: String::new(),
+        }))
+        .await
+        .expect_err("zero fusion weights should be rejected");
+
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert!(err.message().contains("dense_weight"));
+}
+
+#[tokio::test]
 async fn test_retrieval_mode_vector_overrides_hybrid_flag() {
     let svc = setup();
     seed_disagreeing(&svc).await;
