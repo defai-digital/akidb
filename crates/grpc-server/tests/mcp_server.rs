@@ -133,6 +133,24 @@ async fn test_memory_write_then_read_roundtrip() {
 }
 
 #[tokio::test]
+async fn test_memory_write_rejects_unknown_kind() {
+    let svc = setup();
+
+    let response = call(
+        &svc,
+        r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"memory_write","arguments":{"id":"m-bad","kind":"bogus","text":"should not store"}}}"#,
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"], true);
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("kind") && text.contains("unknown"),
+        "expected unknown kind error, got: {text}"
+    );
+}
+
+#[tokio::test]
 async fn test_search_and_pack_tools() {
     let svc = setup();
     call(

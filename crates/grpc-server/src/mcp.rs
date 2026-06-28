@@ -271,9 +271,11 @@ where
 {
     let id = arg_str(args, "id").ok_or("missing 'id'")?;
     let text = arg_str(args, "text").ok_or("missing 'text'")?;
-    let kind = arg_str(args, "kind")
-        .and_then(|k| MemoryKind::parse(&k))
-        .unwrap_or(MemoryKind::Note);
+    let kind = match arg_str(args, "kind") {
+        Some(kind) => MemoryKind::parse(&kind)
+            .ok_or_else(|| format!("unknown memory kind: {kind}"))?,
+        None => MemoryKind::Note,
+    };
 
     let mut entry = MemoryEntry::new(id.clone(), kind, text.clone());
     if let Some(v) = arg_str(args, "conversation_id") {
