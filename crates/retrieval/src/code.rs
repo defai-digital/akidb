@@ -255,6 +255,16 @@ fn rust_brace_scan_with_state(line: &str, in_block_comment: &mut bool) -> RustBr
                 *in_block_comment = true;
                 i += 1;
             }
+            'r' => {
+                if let Some(end) = rust_raw_string_end(&chars, i) {
+                    i = end;
+                }
+            }
+            'b' if chars.get(i + 1) == Some(&'r') => {
+                if let Some(end) = rust_raw_string_end(&chars, i + 1) {
+                    i = end;
+                }
+            }
             '"' => {
                 i = skip_rust_string(&chars, i);
             }
@@ -274,6 +284,39 @@ fn rust_brace_scan_with_state(line: &str, in_block_comment: &mut bool) -> RustBr
     }
 
     RustBraceScan { delta, saw_open }
+}
+
+fn rust_raw_string_end(chars: &[char], start: usize) -> Option<usize> {
+    let mut i = start + 1;
+    let mut hashes = 0usize;
+
+    while chars.get(i) == Some(&'#') {
+        hashes += 1;
+        i += 1;
+    }
+
+    if chars.get(i) != Some(&'"') {
+        return None;
+    }
+
+    i += 1;
+    while i < chars.len() {
+        if chars[i] == '"' {
+            let mut matched = true;
+            for offset in 0..hashes {
+                if chars.get(i + 1 + offset) != Some(&'#') {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                return Some(i + hashes);
+            }
+        }
+        i += 1;
+    }
+
+    Some(chars.len().saturating_sub(1))
 }
 
 fn skip_rust_string(chars: &[char], start: usize) -> usize {
@@ -519,6 +562,24 @@ fn second() {}";
         assert_eq!(names, vec!["first", "second"]);
         assert!(chunks[0].text.contains("let value = 1;"));
         assert_eq!(chunks[1].start_line, 8);
+    }
+
+    #[test]
+    fn test_rust_braces_inside_raw_strings_do_not_break_scanning() {
+        let src = "\
+fn first() {
+    let template = r#\"inner \" then } still text\"#;
+}
+
+fn second() {}";
+        let chunks = chunk_code(src, Language::Rust);
+        let names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| chunk.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["first", "second"]);
+        assert_eq!(chunks[0].end_line, 3);
+        assert_eq!(chunks[1].start_line, 5);
     }
 
     #[test]
