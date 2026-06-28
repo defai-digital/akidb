@@ -233,19 +233,22 @@ impl KuzuGraphAdapter {
     }
 
     fn should_link_chunk(edge: &GraphEdge) -> bool {
-        edge.to.as_chunk_vector_id().is_some()
-            && matches!(
-                edge.kind,
-                EdgeKind::Calls
-                    | EdgeKind::Contains
-                    | EdgeKind::DependsOn
-                    | EdgeKind::Imports
-                    | EdgeKind::Mentions
-                    | EdgeKind::ParentOf
-                    | EdgeKind::RelatedTo
-                    | EdgeKind::TestedBy
-                    | EdgeKind::Tests
-            )
+        edge.to.as_chunk_vector_id().is_some() && Self::is_chunk_expansion_kind(edge.kind)
+    }
+
+    fn is_chunk_expansion_kind(kind: EdgeKind) -> bool {
+        matches!(
+            kind,
+            EdgeKind::Calls
+                | EdgeKind::Contains
+                | EdgeKind::DependsOn
+                | EdgeKind::Imports
+                | EdgeKind::Mentions
+                | EdgeKind::ParentOf
+                | EdgeKind::RelatedTo
+                | EdgeKind::TestedBy
+                | EdgeKind::Tests
+        )
     }
 
     fn query_count(&self, query: &str) -> GraphResult<u64> {
@@ -581,11 +584,11 @@ impl GraphIndex for KuzuGraphAdapter {
         let mut seen = HashSet::new();
         let one_hop = self.neighbors(
             NeighborRequest::new(entity_id.clone())
-                .with_direction(Direction::Out)
+                .with_direction(Direction::Both)
                 .with_limit(limit.saturating_mul(8)),
         )?;
         for neighbor in one_hop {
-            if !Self::should_link_chunk(&neighbor.edge) {
+            if !Self::is_chunk_expansion_kind(neighbor.edge.kind) {
                 continue;
             }
             if let Some(vector_id) = neighbor.node.id.as_chunk_vector_id() {
@@ -764,6 +767,36 @@ mod tests {
             .unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].vector_id.as_str(), "vec-1");
+    }
+
+    #[test]
+    fn test_kuzu_adapter_related_chunks_includes_incoming_chunk_edges() {
+        let adapter = KuzuGraphAdapter::in_memory().unwrap();
+        adapter
+            .upsert_node(GraphNode::new("entity:mtp", NodeKind::Entity))
+            .unwrap();
+        adapter
+            .upsert_node(GraphNode::new("chunk:incoming", NodeKind::Chunk))
+            .unwrap();
+        adapter
+            .upsert_edge(edge(
+                "incoming",
+                "chunk:incoming",
+                "entity:mtp",
+                EdgeKind::Mentions,
+                0.9,
+            ))
+            .unwrap();
+
+        let chunks = adapter
+            .related_chunks(&GraphNodeId::new("entity:mtp"), 10)
+            .unwrap();
+        let vector_ids: Vec<&str> = chunks
+            .iter()
+            .map(|chunk| chunk.vector_id.as_str())
+            .collect();
+
+        assert_eq!(vector_ids, vec!["incoming"]);
     }
 
     #[test]
