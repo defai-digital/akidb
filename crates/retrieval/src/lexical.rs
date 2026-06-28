@@ -23,6 +23,32 @@ pub const DEFAULT_K1: f32 = 1.2;
 /// Default BM25 length-normalization parameter.
 pub const DEFAULT_B: f32 = 0.75;
 
+fn normalize_k1(k1: f32) -> f32 {
+    if k1.is_finite() && k1 >= 0.0 {
+        k1
+    } else {
+        DEFAULT_K1
+    }
+}
+
+fn normalize_b(b: f32) -> f32 {
+    if b.is_finite() {
+        b.clamp(0.0, 1.0)
+    } else {
+        DEFAULT_B
+    }
+}
+
+fn finite_f32(score: f64) -> f32 {
+    if !score.is_finite() {
+        0.0
+    } else if score > f32::MAX as f64 {
+        f32::MAX
+    } else {
+        score as f32
+    }
+}
+
 /// Tokenize text into lowercase alphanumeric terms.
 ///
 /// Splitting on any non-alphanumeric character keeps identifiers like
@@ -72,8 +98,8 @@ impl Bm25Index {
     /// documents are penalized (`b=0` disables length normalization).
     pub fn with_params(k1: f32, b: f32) -> Self {
         Self {
-            k1,
-            b,
+            k1: normalize_k1(k1),
+            b: normalize_b(b),
             postings: HashMap::new(),
             doc_len: HashMap::new(),
             doc_terms: HashMap::new(),
@@ -198,13 +224,16 @@ impl Bm25Index {
                 let dl = self.doc_len[doc_id] as f64;
                 let denom = tf + k1 * (1.0 - b + b * dl / avgdl);
                 let contribution = idf * (tf * (k1 + 1.0)) / denom;
+                if !contribution.is_finite() {
+                    continue;
+                }
                 *scores.entry(doc_id.clone()).or_insert(0.0) += contribution;
             }
         }
 
         let mut results: Vec<ScoredId> = scores
             .into_iter()
-            .map(|(id, score)| ScoredId::new(id, score as f32))
+            .map(|(id, score)| ScoredId::new(id, finite_f32(score)))
             .collect();
 
         // Sort by score descending, then by id ascending for stable tie-breaking.
@@ -337,6 +366,31 @@ mod tests {
         let hits = index.search("content", 10);
         let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
         assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_invalid_bm25_params_are_normalized() {
+        let mut index = Bm25Index::with_params(f32::NAN, f32::INFINITY);
+        index.insert(id("a"), "alpha alpha");
+        index.insert(id("b"), "alpha beta");
+
+        let hits = index.search("alpha", 10);
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|hit| hit.score.is_finite()));
+
+        let mut clamped = Bm25Index::with_params(1.2, -10.0);
+        clamped.insert(id("a"), "needle short");
+        clamped.insert(id("b"), "needle long long long long");
+        let clamped_hits = clamped.search("needle", 10);
+        assert_eq!(clamped_hits.len(), 2);
+        assert!(clamped_hits.iter().all(|hit| hit.score.is_finite()));
+    }
+
+    #[test]
+    fn test_bm25_score_conversion_stays_finite() {
+        assert_eq!(finite_f32(f64::INFINITY), 0.0);
+        assert_eq!(finite_f32(f32::MAX as f64 * 2.0), f32::MAX);
+        assert_eq!(finite_f32(1.25), 1.25);
     }
 
     #[test]

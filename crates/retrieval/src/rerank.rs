@@ -12,8 +12,16 @@ use akidb_common::VectorId;
 use crate::lexical::tokenize;
 use crate::ScoredId;
 
+fn finite_score(score: f32) -> f32 {
+    if score.is_finite() {
+        score
+    } else {
+        0.0
+    }
+}
+
 /// Cosine similarity of two equal-length vectors. Returns `0.0` if lengths
-/// differ or either vector has zero magnitude.
+/// differ, either vector has zero magnitude, or any value is non-finite.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
@@ -22,6 +30,9 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let mut na = 0.0f32;
     let mut nb = 0.0f32;
     for (x, y) in a.iter().zip(b.iter()) {
+        if !x.is_finite() || !y.is_finite() {
+            return 0.0;
+        }
         dot += x * y;
         na += x * x;
         nb += y * y;
@@ -29,7 +40,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if na == 0.0 || nb == 0.0 {
         return 0.0;
     }
-    dot / (na.sqrt() * nb.sqrt())
+    finite_score(dot / (na.sqrt() * nb.sqrt()))
 }
 
 /// A candidate for MMR reselection: an id, its base relevance, and its embedding.
@@ -73,13 +84,18 @@ pub fn mmr(items: &[MmrItem], lambda: f32, top_k: usize) -> Vec<ScoredId> {
         .max_by(|&i, &j| {
             remaining[i]
                 .relevance
-                .partial_cmp(&remaining[j].relevance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .is_finite()
+                .cmp(&remaining[j].relevance.is_finite())
+                .then_with(|| {
+                    finite_score(remaining[i].relevance)
+                        .partial_cmp(&finite_score(remaining[j].relevance))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .then_with(|| remaining[j].id.as_str().cmp(remaining[i].id.as_str()))
         })
         .unwrap();
     let first = remaining.remove(first_idx);
-    out.push(ScoredId::new(first.id.clone(), first.relevance));
+    out.push(ScoredId::new(first.id.clone(), finite_score(first.relevance)));
     selected.push(first);
 
     while out.len() < top_k && !remaining.is_empty() {
@@ -90,7 +106,7 @@ pub fn mmr(items: &[MmrItem], lambda: f32, top_k: usize) -> Vec<ScoredId> {
                 .iter()
                 .map(|s| cosine_similarity(&cand.embedding, &s.embedding))
                 .fold(f32::NEG_INFINITY, f32::max);
-            let score = lambda * cand.relevance - (1.0 - lambda) * max_sim;
+            let score = lambda * finite_score(cand.relevance) - (1.0 - lambda) * max_sim;
             let better = score > best_score
                 || (score == best_score
                     && cand.id.as_str() < remaining[best_idx].id.as_str());
@@ -139,7 +155,7 @@ impl Reranker for IdentityReranker {
     fn rerank(&self, _query: &str, items: Vec<RerankItem>) -> Vec<ScoredId> {
         items
             .into_iter()
-            .map(|i| ScoredId::new(i.id, i.score))
+            .map(|i| ScoredId::new(i.id, finite_score(i.score)))
             .collect()
     }
 }
@@ -205,6 +221,12 @@ mod tests {
     }
 
     #[test]
+    fn test_cosine_similarity_rejects_non_finite_values() {
+        assert_eq!(cosine_similarity(&[f32::NAN, 1.0], &[1.0, 0.0]), 0.0);
+        assert_eq!(cosine_similarity(&[f32::INFINITY], &[f32::INFINITY]), 0.0);
+    }
+
+    #[test]
     fn test_mmr_empty_and_zero_topk() {
         assert!(mmr(&[], 0.5, 5).is_empty());
         let items = [MmrItem::new(id("a"), 1.0, vec![1.0, 0.0])];
@@ -221,6 +243,19 @@ mod tests {
         let out = mmr(&items, 1.0, 3);
         let order: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(order, vec!["high", "mid", "low"]);
+    }
+
+    #[test]
+    fn test_mmr_does_not_promote_non_finite_relevance() {
+        let items = [
+            MmrItem::new(id("bad"), f32::NAN, vec![1.0, 0.0]),
+            MmrItem::new(id("good"), 0.5, vec![0.0, 1.0]),
+        ];
+
+        let out = mmr(&items, 1.0, 2);
+
+        assert_eq!(out[0].id.as_str(), "good");
+        assert!(out.iter().all(|item| item.score.is_finite()));
     }
 
     #[test]
@@ -266,6 +301,14 @@ mod tests {
         let out = IdentityReranker.rerank("q", items);
         assert_eq!(out[0], ScoredId::new(id("a"), 0.9));
         assert_eq!(out[1], ScoredId::new(id("b"), 0.5));
+    }
+
+    #[test]
+    fn test_identity_reranker_sanitizes_non_finite_scores() {
+        let items = vec![RerankItem::new(id("bad"), "x", f32::NAN)];
+        let out = IdentityReranker.rerank("q", items);
+
+        assert_eq!(out[0], ScoredId::new(id("bad"), 0.0));
     }
 
     #[test]

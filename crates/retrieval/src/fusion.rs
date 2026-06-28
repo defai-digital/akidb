@@ -15,6 +15,32 @@ use crate::ScoredId;
 /// default across search engines.
 pub const DEFAULT_RRF_K: f32 = 60.0;
 
+fn normalize_rrf_k(k: f32) -> f32 {
+    if k.is_finite() && k > 0.0 {
+        k
+    } else {
+        DEFAULT_RRF_K
+    }
+}
+
+fn normalize_weight(weight: f32) -> Option<f64> {
+    if weight.is_finite() && weight > 0.0 {
+        Some(weight as f64)
+    } else {
+        None
+    }
+}
+
+fn finite_f32(score: f64) -> f32 {
+    if !score.is_finite() {
+        0.0
+    } else if score > f32::MAX as f64 {
+        f32::MAX
+    } else {
+        score as f32
+    }
+}
+
 /// One ranked input to fusion: a weight and a list of ids ordered best-first.
 ///
 /// The list carries only ids, not scores, because RRF deliberately ignores the
@@ -58,7 +84,9 @@ impl Rrf {
 
     /// RRF with an explicit rank constant.
     pub fn with_k(k: f32) -> Self {
-        Self { k }
+        Self {
+            k: normalize_rrf_k(k),
+        }
     }
 
     /// The configured rank constant.
@@ -80,10 +108,15 @@ impl Fusion for Rrf {
         let mut scores: std::collections::HashMap<VectorId, f64> = std::collections::HashMap::new();
 
         for list in lists {
-            let w = list.weight as f64;
+            let Some(w) = normalize_weight(list.weight) else {
+                continue;
+            };
             for (pos, id) in list.ids.iter().enumerate() {
                 let rank = (pos + 1) as f64; // 1-based
                 let contribution = w / (k + rank);
+                if !contribution.is_finite() {
+                    continue;
+                }
                 let entry = scores.entry(id.clone());
                 if let std::collections::hash_map::Entry::Vacant(_) = entry {
                     order.push(id.clone());
@@ -96,7 +129,7 @@ impl Fusion for Rrf {
             .into_iter()
             .map(|id| {
                 let score = scores[&id];
-                ScoredId::new(id, score as f32)
+                ScoredId::new(id, finite_f32(score))
             })
             .collect();
 
@@ -234,6 +267,52 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].id.as_str(), "a");
         assert_eq!(out[1].id.as_str(), "b");
+    }
+
+    #[test]
+    fn test_rrf_invalid_k_falls_back_to_default() {
+        assert_eq!(Rrf::with_k(f32::NAN).k(), DEFAULT_RRF_K);
+        assert_eq!(Rrf::with_k(f32::INFINITY).k(), DEFAULT_RRF_K);
+        assert_eq!(Rrf::with_k(0.0).k(), DEFAULT_RRF_K);
+        assert_eq!(Rrf::with_k(-1.0).k(), DEFAULT_RRF_K);
+        assert_eq!(Rrf::with_k(10.0).k(), 10.0);
+    }
+
+    #[test]
+    fn test_rrf_ignores_invalid_weights() {
+        let bad = ids(&["bad"]);
+        let good = ids(&["good"]);
+        let rrf = Rrf::new();
+        let out = rrf.fuse(
+            &[
+                RankedInput::new(f32::NAN, &bad),
+                RankedInput::new(f32::INFINITY, &bad),
+                RankedInput::new(-1.0, &bad),
+                RankedInput::new(0.0, &bad),
+                RankedInput::new(1.0, &good),
+            ],
+            10,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id.as_str(), "good");
+        assert!(out[0].score.is_finite());
+    }
+
+    #[test]
+    fn test_rrf_clamps_overflowing_scores() {
+        let top = ids(&["top"]);
+        let rrf = Rrf::with_k(f32::MIN_POSITIVE);
+        let out = rrf.fuse(
+            &[
+                RankedInput::new(f32::MAX, &top),
+                RankedInput::new(f32::MAX, &top),
+            ],
+            10,
+        );
+
+        assert_eq!(out[0].id.as_str(), "top");
+        assert_eq!(out[0].score, f32::MAX);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::Result;
 
@@ -169,34 +169,7 @@ impl EmbeddingClient {
             }
 
             let embed_response: EmbeddingResponse = response.json().await?;
-
-            // Sort by index and extract embeddings
-            let mut embeddings: Vec<_> = embed_response.data.into_iter().collect();
-            embeddings.sort_by_key(|d| d.index);
-
-            // FIX BUG-H048: Validate that response indices are sequential 0..n-1
-            // If backend returns non-sequential indices (e.g., [0, 2, 3] missing index 1),
-            // embeddings would be silently mapped to wrong texts causing data corruption.
-            let expected_count = request.input.len();
-            if embeddings.len() != expected_count {
-                return Err(crate::IngestionError::Embedding(format!(
-                    "Embedding count mismatch: expected {}, got {}",
-                    expected_count,
-                    embeddings.len()
-                )));
-            }
-
-            for (expected_idx, data) in embeddings.iter().enumerate() {
-                if data.index != expected_idx {
-                    return Err(crate::IngestionError::Embedding(format!(
-                        "Embedding index mismatch: expected sequential index {}, got {}. \
-                         Backend may have returned non-sequential or duplicate indices.",
-                        expected_idx, data.index
-                    )));
-                }
-            }
-
-            return Ok(embeddings.into_iter().map(|d| d.embedding).collect());
+            return parse_embedding_response(embed_response, request.input.len());
         }
 
         // All retries exhausted
@@ -232,6 +205,50 @@ impl EmbeddingClient {
     }
 }
 
+fn parse_embedding_response(
+    embed_response: EmbeddingResponse,
+    expected_count: usize,
+) -> Result<Vec<Vec<f32>>> {
+    // Sort by index and extract embeddings
+    let mut embeddings: Vec<_> = embed_response.data.into_iter().collect();
+    embeddings.sort_by_key(|d| d.index);
+
+    // FIX BUG-H048: Validate that response indices are sequential 0..n-1.
+    // If backend returns non-sequential indices (e.g., [0, 2, 3] missing index 1),
+    // embeddings would be silently mapped to wrong texts causing data corruption.
+    if embeddings.len() != expected_count {
+        return Err(crate::IngestionError::Embedding(format!(
+            "Embedding count mismatch: expected {}, got {}",
+            expected_count,
+            embeddings.len()
+        )));
+    }
+
+    for (expected_idx, data) in embeddings.iter().enumerate() {
+        if data.index != expected_idx {
+            return Err(crate::IngestionError::Embedding(format!(
+                "Embedding index mismatch: expected sequential index {}, got {}. \
+                 Backend may have returned non-sequential or duplicate indices.",
+                expected_idx, data.index
+            )));
+        }
+
+        if let Some((dimension, value)) = data
+            .embedding
+            .iter()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(crate::IngestionError::Embedding(format!(
+                "Embedding value at item {} dimension {} must be finite, got {}",
+                data.index, dimension, value
+            )));
+        }
+    }
+
+    Ok(embeddings.into_iter().map(|d| d.embedding).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +257,47 @@ mod tests {
     fn test_client_creation() {
         let client = EmbeddingClient::with_qwen3("http://localhost:8000");
         assert_eq!(client.model, "Qwen/Qwen3-Embedding-8B");
+    }
+
+    #[test]
+    fn test_parse_embedding_response_rejects_non_finite_values() {
+        let response = EmbeddingResponse {
+            data: vec![EmbeddingData {
+                embedding: vec![1.0, f32::INFINITY],
+                index: 0,
+            }],
+            model: "test".to_string(),
+            usage: None,
+        };
+
+        let result = parse_embedding_response(response, 1);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Embedding(message)) if message.contains("must be finite"))
+        );
+    }
+
+    #[test]
+    fn test_parse_embedding_response_rejects_duplicate_indices() {
+        let response = EmbeddingResponse {
+            data: vec![
+                EmbeddingData {
+                    embedding: vec![1.0, 0.0],
+                    index: 0,
+                },
+                EmbeddingData {
+                    embedding: vec![0.0, 1.0],
+                    index: 0,
+                },
+            ],
+            model: "test".to_string(),
+            usage: None,
+        };
+
+        let result = parse_embedding_response(response, 2);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Embedding(message)) if message.contains("Embedding index mismatch"))
+        );
     }
 }

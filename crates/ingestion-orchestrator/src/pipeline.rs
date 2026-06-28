@@ -257,6 +257,7 @@ impl IngestionPipeline {
         self.state.update_state(&content_hash, DocumentState::Embedding)?;
         let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
         let embeddings = self.embedding_client.embed(texts).await?;
+        ensure_embedding_alignment(chunks.len(), embeddings.len())?;
         self.metrics.embeddings_generated.inc_by(embeddings.len() as f64);
 
         // Insert into AkiDB
@@ -397,5 +398,34 @@ fn parser_label(format: DocumentFormat) -> &'static str {
         "rust"
     } else {
         "python"
+    }
+}
+
+fn ensure_embedding_alignment(chunk_count: usize, embedding_count: usize) -> Result<()> {
+    if chunk_count != embedding_count {
+        return Err(crate::IngestionError::Embedding(format!(
+            "Embedding count mismatch: {} chunks produced {} embeddings",
+            chunk_count, embedding_count
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ensure_embedding_alignment_rejects_partial_embedding_response() {
+        let result = ensure_embedding_alignment(3, 2);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Embedding(message)) if message.contains("3 chunks produced 2 embeddings"))
+        );
+    }
+
+    #[test]
+    fn test_ensure_embedding_alignment_allows_exact_match() {
+        assert!(ensure_embedding_alignment(2, 2).is_ok());
     }
 }
