@@ -9,6 +9,12 @@ use crate::Result;
 /// HTML document parser using scraper
 pub struct HtmlParser;
 
+#[derive(Debug, Clone, Copy)]
+struct StyleVisibility {
+    hidden: bool,
+    important: bool,
+}
+
 impl HtmlParser {
     pub fn new() -> Self {
         Self
@@ -60,15 +66,23 @@ impl HtmlParser {
             .filter_map(|declaration| declaration.split_once(':'))
         {
             let property = property.trim();
-            let value = value.split('!').next().map(str::trim).unwrap_or_default();
+            let (value, important) = parse_inline_style_value(value);
             if property.eq_ignore_ascii_case("display") {
-                display = Some(value.eq_ignore_ascii_case("none"));
+                update_style_visibility(
+                    &mut display,
+                    value.eq_ignore_ascii_case("none"),
+                    important,
+                );
             } else if property.eq_ignore_ascii_case("visibility") {
-                visibility = Some(value.eq_ignore_ascii_case("hidden"));
+                update_style_visibility(
+                    &mut visibility,
+                    value.eq_ignore_ascii_case("hidden"),
+                    important,
+                );
             }
         }
 
-        display.unwrap_or(false) || visibility.unwrap_or(false)
+        display.is_some_and(|state| state.hidden) || visibility.is_some_and(|state| state.hidden)
     }
 
     fn push_semantic_attributes(element: ElementRef, text: &mut String) {
@@ -92,6 +106,22 @@ impl HtmlParser {
 impl Default for HtmlParser {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn parse_inline_style_value(value: &str) -> (&str, bool) {
+    match value.split_once('!') {
+        Some((value, priority)) => (
+            value.trim(),
+            priority.trim().eq_ignore_ascii_case("important"),
+        ),
+        None => (value.trim(), false),
+    }
+}
+
+fn update_style_visibility(state: &mut Option<StyleVisibility>, hidden: bool, important: bool) {
+    if state.is_none_or(|current| important || !current.important) {
+        *state = Some(StyleVisibility { hidden, important });
     }
 }
 
@@ -398,5 +428,27 @@ mod tests {
 
         assert!(result.text.contains("Visible after display override"));
         assert!(result.text.contains("Visible after visibility override"));
+    }
+
+    #[test]
+    fn test_parse_html_respects_inline_style_important_priority() {
+        let parser = HtmlParser::new();
+        let data = br#"
+            <html>
+                <body>
+                    <div style="display:block !important; display:none">Visible important display token</div>
+                    <div style="visibility:visible !important; visibility:hidden">Visible important visibility token</div>
+                    <div style="display:none !important; display:block">Hidden important display token</div>
+                    <div style="visibility:hidden !important; visibility:visible">Hidden important visibility token</div>
+                </body>
+            </html>
+        "#;
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("Visible important display token"));
+        assert!(result.text.contains("Visible important visibility token"));
+        assert!(!result.text.contains("Hidden important display token"));
+        assert!(!result.text.contains("Hidden important visibility token"));
     }
 }
