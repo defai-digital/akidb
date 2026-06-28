@@ -139,6 +139,27 @@ impl HnswIndex {
             ef_search: config.ef_search,
         })
     }
+
+    fn ensure_capacity_for(&self, required_capacity: usize) {
+        if required_capacity <= self.index.capacity() {
+            if self.tombstones.capacity() < required_capacity as u64 {
+                if let Err(e) = self.tombstones.resize(required_capacity as u64) {
+                    warn!(error = %e, "Failed to grow HNSW tombstone capacity");
+                }
+            }
+            return;
+        }
+
+        let current_capacity = self.index.capacity();
+        let new_capacity = (current_capacity * 2).max(required_capacity + 1024);
+        if let Err(e) = self.index.reserve(new_capacity) {
+            warn!(error = %e, "Failed to grow HNSW index capacity");
+            return;
+        }
+        if let Err(e) = self.tombstones.resize(new_capacity as u64) {
+            warn!(error = %e, "Failed to grow HNSW tombstone capacity");
+        }
+    }
 }
 
 impl VectorIndex for HnswIndex {
@@ -172,22 +193,11 @@ impl VectorIndex for HnswIndex {
 
         // New vector
         let internal_id = self.next_id.fetch_add(1, Ordering::SeqCst);
-
-        // Grow the index if needed (double capacity when near limit)
-        let current_size = self.index.size();
-        let current_capacity = self.index.capacity();
-        if current_size >= current_capacity {
-            let new_capacity = (current_capacity * 2).max(current_capacity + 1024);
-            if let Err(e) = self.index.reserve(new_capacity) {
-                warn!(error = %e, "Failed to grow HNSW index capacity");
-            }
-        }
+        self.ensure_capacity_for(internal_id as usize + 1);
 
         self.index
             .add(internal_id as u64, vector)
-            .map_err(|e| {
-                AkiDbError::InvalidParameter(format!("HNSW insert failed: {}", e))
-            })?;
+            .map_err(|e| AkiDbError::InvalidParameter(format!("HNSW insert failed: {}", e)))?;
 
         id_map.insert(id.as_str().to_string(), internal_id);
         drop(id_map);
@@ -201,12 +211,12 @@ impl VectorIndex for HnswIndex {
     fn insert_batch(&self, vectors: &[(VectorId, Vec<f32>)]) -> Result<Vec<InternalId>> {
         // Pre-reserve capacity for the batch
         let needed = self.index.size() + vectors.len();
-        if needed > self.index.capacity() {
-            let new_capacity = (needed * 2).max(needed + 1024);
-            let _ = self.index.reserve(new_capacity);
-        }
+        self.ensure_capacity_for(needed);
 
-        vectors.iter().map(|(id, vec)| self.insert(id, vec)).collect()
+        vectors
+            .iter()
+            .map(|(id, vec)| self.insert(id, vec))
+            .collect()
     }
 
     fn search(&self, query: &[f32], params: &SearchParams) -> Result<Vec<SearchResult>> {
@@ -305,9 +315,7 @@ impl VectorIndex for HnswIndex {
         let found = self
             .index
             .get::<f32>(internal_id.0 as u64, &mut buffer)
-            .map_err(|e| {
-                AkiDbError::InvalidParameter(format!("HNSW get failed: {}", e))
-            })?;
+            .map_err(|e| AkiDbError::InvalidParameter(format!("HNSW get failed: {}", e)))?;
 
         if found > 0 {
             Ok(Some(buffer))
@@ -393,9 +401,7 @@ mod tests {
     }
 
     fn create_random_vector(dim: usize, seed: f32) -> Vec<f32> {
-        (0..dim)
-            .map(|i| ((i as f32 + seed) * 0.1).sin())
-            .collect()
+        (0..dim).map(|i| ((i as f32 + seed) * 0.1).sin()).collect()
     }
 
     #[test]
@@ -495,6 +501,34 @@ mod tests {
         let stats = index.stats();
         assert_eq!(stats.total_vectors, 50);
         assert_eq!(stats.active_vectors, 50);
+    }
+
+    #[test]
+    fn test_hnsw_delete_after_capacity_growth() {
+        let config = HnswConfig {
+            dimensions: 128,
+            capacity: 1,
+            m: 16,
+            ef_construction: 64,
+            ef_search: 32,
+        };
+        let index = HnswIndex::new(config).unwrap();
+
+        let v1 = create_random_vector(128, 1.0);
+        let v2 = create_random_vector(128, 2.0);
+
+        index.insert(&VectorId::new("vec-1"), &v1).unwrap();
+        let grown_id = index.insert(&VectorId::new("vec-2"), &v2).unwrap();
+
+        index
+            .delete(grown_id)
+            .expect("delete should work after automatic capacity growth");
+
+        let results = index.search(&v2, &SearchParams::new(10)).unwrap();
+        assert!(
+            results.iter().all(|result| result.id.as_str() != "vec-2"),
+            "deleted vector from grown capacity should not be searchable"
+        );
     }
 
     #[test]
