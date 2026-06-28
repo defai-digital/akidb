@@ -845,6 +845,50 @@ async fn test_retrieval_mode_sql_applies_tag_filter_before_top_k_cutoff() {
 }
 
 #[tokio::test]
+async fn test_retrieval_mode_sql_pack_builds_context() {
+    let svc = setup_with_sql();
+    insert(
+        &svc,
+        "contract-2025",
+        vec![1.0, 0.0, 0.0],
+        "HGC 2025 contract amount is 1200.",
+        br#"{"customer":"HGC","year":2025}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "HGC 2025 contract amount".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: true,
+            pack_token_budget: Some(128),
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"customer":"HGC","year":2025}"#.to_vec(),
+            tag_filter: None,
+            retrieval_mode: "sql".into(),
+        }))
+        .await
+        .expect("sql pack text_search should succeed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["contract-2025"]);
+    assert!(
+        resp.context_pack
+            .contains("HGC 2025 contract amount is 1200"),
+        "SQL retrieval with pack=true should build source context, got: {}",
+        resp.context_pack
+    );
+}
+
+#[tokio::test]
 async fn test_rebuild_sql_metadata_index_removes_deleted_vectors() {
     let dir = tempfile::tempdir().unwrap().keep();
     let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());

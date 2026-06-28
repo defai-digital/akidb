@@ -565,6 +565,70 @@ where
         }
     }
 
+    fn build_context_pack(
+        &self,
+        response_results: &[SearchResult],
+        metadata_filter: Option<&MetadataFilter>,
+        top_k: usize,
+        budget: usize,
+    ) -> String {
+        let docs = self.documents.read();
+        let mut seen = HashSet::new();
+        let mut matched: Vec<MatchedChunk> = response_results
+            .iter()
+            .map(|r| {
+                let parent_id = Self::parent_id_from_metadata(&r.metadata);
+                let id = VectorId::new(&r.id);
+                seen.insert(id.clone());
+                let text = docs.get(&id).cloned().unwrap_or_default();
+                MatchedChunk::new(id, parent_id, text, r.score)
+            })
+            .collect();
+
+        if let Some(graph) = &self.graph_index {
+            for result in response_results {
+                let seed = GraphNodeId::new(format!("chunk:{}", result.id));
+                match graph.related_chunks(&seed, top_k.saturating_mul(2).max(1)) {
+                    Ok(chunks) => {
+                        for chunk in chunks {
+                            let id = chunk.vector_id;
+                            if !seen.insert(id.clone()) {
+                                continue;
+                            }
+                            if let Some(metadata_filter) = metadata_filter {
+                                if !self.metadata_matches_filter(&id, metadata_filter) {
+                                    continue;
+                                }
+                            }
+                            let Some(text) = docs.get(&id).cloned() else {
+                                continue;
+                            };
+                            if text.is_empty() {
+                                continue;
+                            }
+                            let metadata = self.load_metadata_string(&id);
+                            let parent_id = Self::parent_id_from_metadata(&metadata);
+                            matched.push(MatchedChunk::new(
+                                id,
+                                parent_id,
+                                text,
+                                result.score * 0.85,
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        warn!(seed = %seed, error = %e, "graph context expansion failed");
+                    }
+                }
+            }
+        }
+
+        let mut passages =
+            expand_to_parents(&matched, |pid| docs.get(&VectorId::new(pid)).cloned());
+        passages.retain(|p| !p.text.is_empty());
+        pack(&passages, &PackerConfig::new(budget)).text
+    }
+
     fn sql_metadata_text_search(
         &self,
         req: &TextSearchRequest,
@@ -581,10 +645,16 @@ where
             .as_ref()
             .and_then(|tag| tag.filter_type.as_ref())
             .is_some();
-        let needs_legacy_post_filter = Self::legacy_filter_needs_post_filter(&req.filter)?;
-        let post_filter = if has_tag_filter || needs_legacy_post_filter {
+        let has_legacy_filter = !req.filter.is_empty();
+        let full_filter = if has_tag_filter || has_legacy_filter {
             MetadataFilter::build(&req.filter, req.tag_filter.clone())
                 .map_err(Status::invalid_argument)?
+        } else {
+            None
+        };
+        let needs_legacy_post_filter = Self::legacy_filter_needs_post_filter(&req.filter)?;
+        let post_filter = if has_tag_filter || needs_legacy_post_filter {
+            full_filter.as_ref()
         } else {
             None
         };
@@ -602,7 +672,7 @@ where
             .into_iter()
             .filter_map(|id| {
                 let vector_id = VectorId::new(&id);
-                if let Some(filter) = &post_filter {
+                if let Some(filter) = post_filter {
                     if !self.metadata_matches_filter(&vector_id, filter) {
                         return None;
                     }
@@ -615,6 +685,16 @@ where
             })
             .take(req.top_k as usize)
             .collect();
+        let context_pack = if req.pack {
+            self.build_context_pack(
+                &results,
+                full_filter.as_ref(),
+                req.top_k as usize,
+                req.pack_token_budget.unwrap_or(1024) as usize,
+            )
+        } else {
+            String::new()
+        };
         let latency_us = started_at.elapsed().as_micros() as u64;
 
         Ok(Response::new(SearchResponse {
@@ -625,7 +705,7 @@ where
             latency_us,
             within_slo: latency_us < self.slo_threshold_us,
             degraded_mode: false,
-            context_pack: String::new(),
+            context_pack,
         }))
     }
 
@@ -1974,62 +2054,12 @@ where
         // (CHUNK-003) via the `parent_id` metadata convention, deduped by parent,
         // then assembled within the token budget.
         let context_pack = if req.pack {
-            let budget = req.pack_token_budget.unwrap_or(1024) as usize;
-            let docs = self.documents.read();
-            let mut seen = HashSet::new();
-            let mut matched: Vec<MatchedChunk> = response_results
-                .iter()
-                .map(|r| {
-                    let parent_id = Self::parent_id_from_metadata(&r.metadata);
-                    let id = VectorId::new(&r.id);
-                    seen.insert(id.clone());
-                    let text = docs.get(&id).cloned().unwrap_or_default();
-                    MatchedChunk::new(id, parent_id, text, r.score)
-                })
-                .collect();
-
-            if let Some(graph) = &self.graph_index {
-                for result in &response_results {
-                    let seed = GraphNodeId::new(format!("chunk:{}", result.id));
-                    match graph.related_chunks(&seed, top_k.saturating_mul(2).max(1)) {
-                        Ok(chunks) => {
-                            for chunk in chunks {
-                                let id = chunk.vector_id;
-                                if !seen.insert(id.clone()) {
-                                    continue;
-                                }
-                                if let Some(metadata_filter) = &metadata_filter {
-                                    if !self.metadata_matches_filter(&id, metadata_filter) {
-                                        continue;
-                                    }
-                                }
-                                let Some(text) = docs.get(&id).cloned() else {
-                                    continue;
-                                };
-                                if text.is_empty() {
-                                    continue;
-                                }
-                                let metadata = self.load_metadata_string(&id);
-                                let parent_id = Self::parent_id_from_metadata(&metadata);
-                                matched.push(MatchedChunk::new(
-                                    id,
-                                    parent_id,
-                                    text,
-                                    result.score * 0.85,
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            warn!(seed = %seed, error = %e, "graph context expansion failed");
-                        }
-                    }
-                }
-            }
-
-            let mut passages =
-                expand_to_parents(&matched, |pid| docs.get(&VectorId::new(pid)).cloned());
-            passages.retain(|p| !p.text.is_empty());
-            pack(&passages, &PackerConfig::new(budget)).text
+            self.build_context_pack(
+                &response_results,
+                metadata_filter.as_deref(),
+                top_k,
+                req.pack_token_budget.unwrap_or(1024) as usize,
+            )
         } else {
             String::new()
         };
