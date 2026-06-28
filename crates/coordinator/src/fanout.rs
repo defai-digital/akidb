@@ -276,11 +276,13 @@ impl FanoutExecutor {
 
         // Get connection pools for all shards
         let mut shard_pools = Vec::with_capacity(shards.len());
+        let mut missing_shards = Vec::new();
         for shard in &shards {
             match self.get_pool(&shard.address).await {
                 Ok(pool) => shard_pools.push((shard.clone(), pool)),
                 Err(e) => {
                     warn!("Failed to get pool for {}: {}", shard.address, e);
+                    missing_shards.push(shard.id.clone());
                 }
             }
         }
@@ -333,7 +335,6 @@ impl FanoutExecutor {
         // Collect results
         let mut merger = ResultMerger::new(top_k);
         let mut responding_shards = Vec::new();
-        let mut missing_shards = Vec::new();
 
         // FIX BUG-071: Iterate with index to identify shard even on task panic
         for (idx, handle) in handles.into_iter().enumerate() {
@@ -734,7 +735,7 @@ impl FanoutResult {
 
     /// Check if this is a partial result
     pub fn is_partial(&self) -> bool {
-        !self.missing_shards.is_empty()
+        !self.missing_shards.is_empty() || self.responding_shards.len() < self.total_shards
     }
 }
 
@@ -797,5 +798,18 @@ mod tests {
     #[test]
     fn test_fanout_top_k_allows_u32_max() {
         assert_eq!(fanout_top_k(u32::MAX as usize).unwrap(), u32::MAX);
+    }
+
+    #[test]
+    fn test_fanout_result_is_partial_when_coverage_incomplete_without_missing_list() {
+        let result = FanoutResult {
+            results: vec![],
+            responding_shards: vec!["shard-a".to_string()],
+            missing_shards: vec![],
+            total_shards: 2,
+        };
+
+        assert_eq!(result.coverage(), 0.5);
+        assert!(result.is_partial());
     }
 }

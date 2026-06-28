@@ -103,7 +103,7 @@ impl QueryCoverage {
 
     /// Check if coverage is complete
     pub fn is_complete(&self) -> bool {
-        self.missing_shards.is_empty()
+        self.missing_shards.is_empty() && self.responding_shards == self.total_shards
     }
 
     /// Check if coverage meets minimum threshold
@@ -430,6 +430,18 @@ mod tests {
         assert!(coverage.meets_threshold(0.75));
         assert!(!coverage.meets_threshold(0.76));
         assert!(!coverage.meets_threshold(1.0));
+        assert!(!coverage.is_complete());
+    }
+
+    #[test]
+    fn test_query_coverage_is_incomplete_when_responding_count_is_short() {
+        let coverage = QueryCoverage {
+            responding_shards: 1,
+            total_shards: 2,
+            ratio: 0.5,
+            missing_shards: vec![],
+        };
+
         assert!(!coverage.is_complete());
     }
 
