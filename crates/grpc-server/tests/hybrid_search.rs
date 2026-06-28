@@ -189,6 +189,37 @@ async fn test_dense_only_vs_hybrid_reorders_results() {
 }
 
 #[tokio::test]
+async fn test_hybrid_top_k_above_pool_cap_does_not_panic() {
+    let svc = setup();
+    seed_disagreeing(&svc).await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 201,
+            nprobe: None,
+            hybrid: true,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: String::new(),
+        }))
+        .await
+        .expect("hybrid top_k above the default pool cap should not panic")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["doc_both", "doc_lexical", "doc_dense"]);
+}
+
+#[tokio::test]
 async fn test_high_lexical_weight_promotes_lexical_match() {
     let svc = setup();
     seed_disagreeing(&svc).await;

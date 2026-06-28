@@ -1543,7 +1543,7 @@ where
         let use_lexical = planner_trace.lexical_weight > 0.0;
         let needs_pool = (use_dense && use_lexical) || req.rerank || req.diversity;
         let search_k = if needs_pool {
-            top_k.saturating_mul(4).clamp(top_k, 200)
+            top_k.saturating_mul(4).clamp(top_k, top_k.max(200))
         } else {
             top_k
         };
