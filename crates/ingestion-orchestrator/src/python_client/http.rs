@@ -157,7 +157,8 @@ fn parsed_document_from_response(parse_response: ParseResponse, filename: &str) 
     // Extract metadata fields if present
     let title = metadata_string(&parse_response.metadata, "title");
     let author = metadata_string(&parse_response.metadata, "author");
-    let word_count = metadata_usize(&parse_response.metadata, "word_count");
+    let word_count = metadata_usize(&parse_response.metadata, "word_count")
+        .or_else(|| Some(parse_response.text.split_whitespace().count()));
     let pages = usize::try_from(parse_response.page_count).ok();
     let extra = Some(serde_json::json!({
         "parser_format": parse_response.format,
@@ -343,5 +344,22 @@ mod tests {
         assert_eq!(parsed.metadata.title.as_deref(), Some("Annual Report"));
         assert_eq!(parsed.metadata.author, None);
         assert_eq!(parsed.metadata.word_count, Some(42));
+    }
+
+    #[test]
+    fn test_parse_response_falls_back_to_text_word_count() {
+        let response = ParseResponse {
+            text: "alpha beta gamma".to_string(),
+            format: "pdf".to_string(),
+            page_count: 1,
+            metadata: HashMap::new(),
+            tables: vec![],
+            images: vec![],
+            parse_time_ms: 1.0,
+        };
+
+        let parsed = parsed_document_from_response(response, "upload.bin");
+
+        assert_eq!(parsed.metadata.word_count, Some(3));
     }
 }
