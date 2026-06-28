@@ -313,6 +313,12 @@ fn build_batch_insert_result(
             successful, failed, total
         )));
     }
+    if response.success != (failed == 0) {
+        return Err(crate::IngestionError::Storage(format!(
+            "Invalid insert response: success flag {} is inconsistent with failed_count {}",
+            response.success, failed
+        )));
+    }
 
     let results: Vec<InsertResult> = vectors
         .iter()
@@ -484,6 +490,38 @@ mod tests {
 
         assert!(
             matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("request total"))
+        );
+    }
+
+    #[test]
+    fn test_build_batch_insert_result_rejects_false_success_flag_without_failures() {
+        let vectors = vec![vector("a")];
+        let response = InsertBatchResponse {
+            success: false,
+            inserted_count: 1,
+            failed_ids: vec![],
+        };
+
+        let result = build_batch_insert_result(&vectors, response, 10);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("success flag"))
+        );
+    }
+
+    #[test]
+    fn test_build_batch_insert_result_rejects_true_success_flag_with_failures() {
+        let vectors = vec![vector("a"), vector("b")];
+        let response = InsertBatchResponse {
+            success: true,
+            inserted_count: 1,
+            failed_ids: vec!["b".to_string()],
+        };
+
+        let result = build_batch_insert_result(&vectors, response, 10);
+
+        assert!(
+            matches!(result, Err(crate::IngestionError::Storage(message)) if message.contains("success flag"))
         );
     }
 
