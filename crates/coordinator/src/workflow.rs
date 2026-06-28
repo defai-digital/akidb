@@ -189,6 +189,8 @@ impl QueryWorkflowResult {
 /// Manages the lifecycle of a search query with explicit state transitions,
 /// timeout budgeting, and coverage reporting.
 pub struct QueryWorkflow {
+    /// Collection to query
+    collection: String,
     /// Query vector
     query: Vec<f32>,
     /// Number of results to return
@@ -207,6 +209,7 @@ impl QueryWorkflow {
     /// Create a new query workflow
     pub fn new(query: Vec<f32>, top_k: usize, deadline: Duration) -> Self {
         Self {
+            collection: "default".to_string(),
             query,
             top_k,
             nprobe: 10, // default nprobe
@@ -214,6 +217,12 @@ impl QueryWorkflow {
             min_coverage: 0.0, // accept any coverage by default
             state: QueryState::Pending,
         }
+    }
+
+    /// Set the collection to query.
+    pub fn with_collection(mut self, collection: impl Into<String>) -> Self {
+        self.collection = collection.into();
+        self
     }
 
     /// Set the nprobe parameter for FAISS
@@ -298,7 +307,7 @@ impl QueryWorkflow {
         // Execute fan-out search with timeout
         let search_result = tokio::time::timeout(
             remaining,
-            executor.search(&self.query, self.top_k, self.nprobe),
+            executor.search(&self.collection, &self.query, self.top_k, self.nprobe),
         )
         .await;
 
@@ -467,9 +476,11 @@ mod tests {
     fn test_workflow_builder() {
         let query = vec![1.0f32; 128];
         let workflow = QueryWorkflow::new(query.clone(), 10, Duration::from_secs(5))
+            .with_collection("tenant-a")
             .with_nprobe(20)
             .with_min_coverage(0.8);
 
+        assert_eq!(workflow.collection, "tenant-a");
         assert_eq!(workflow.query, query);
         assert_eq!(workflow.top_k, 10);
         assert_eq!(workflow.nprobe, 20);

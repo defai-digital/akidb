@@ -41,6 +41,22 @@ fn fanout_top_k(top_k: usize) -> Result<u32> {
     })
 }
 
+fn shard_search_request(
+    collection: String,
+    query: Vec<f32>,
+    top_k: u32,
+    nprobe: u32,
+) -> SearchRequest {
+    SearchRequest {
+        collection,
+        query,
+        top_k,
+        nprobe: Some(nprobe),
+        filter: vec![],
+        tag_filter: None,
+    }
+}
+
 /// Failure state for a single address
 #[derive(Clone)]
 struct FailureState {
@@ -256,6 +272,7 @@ impl FanoutExecutor {
     /// information about any missing shards.
     pub async fn search(
         &self,
+        collection: &str,
         query: &[f32],
         top_k: usize,
         nprobe: u32,
@@ -288,12 +305,14 @@ impl FanoutExecutor {
         }
 
         // Launch parallel searches using pooled connections
+        let collection = collection.to_string();
         let query_vec: Vec<f32> = query.to_vec();
         // FIX BUG-071: Track shard IDs separately to identify failures even on panic
         let mut handles = Vec::with_capacity(shard_pools.len());
         let mut handle_shard_ids = Vec::with_capacity(shard_pools.len());
 
         for (shard, pool) in shard_pools {
+            let collection = collection.clone();
             let query_clone = query_vec.clone();
             let timeout = self.timeout;
             let shard_id = shard.id.clone();
@@ -303,14 +322,7 @@ impl FanoutExecutor {
                 // Get client from pool (no connection overhead!)
                 let mut client = pool.get_client();
 
-                let request = SearchRequest {
-                    collection: "default".to_string(),
-                    query: query_clone,
-                    top_k: request_top_k,
-                    nprobe: Some(nprobe),
-                    filter: vec![],
-                    tag_filter: None,
-                };
+                let request = shard_search_request(collection, query_clone, request_top_k, nprobe);
 
                 let search_result = tokio::time::timeout(timeout, client.search(request)).await;
 
@@ -798,6 +810,16 @@ mod tests {
     #[test]
     fn test_fanout_top_k_allows_u32_max() {
         assert_eq!(fanout_top_k(u32::MAX as usize).unwrap(), u32::MAX);
+    }
+
+    #[test]
+    fn test_shard_search_request_uses_requested_collection() {
+        let request = shard_search_request("tenant-a".to_string(), vec![0.1, 0.2], 5, 32);
+
+        assert_eq!(request.collection, "tenant-a");
+        assert_eq!(request.query, vec![0.1, 0.2]);
+        assert_eq!(request.top_k, 5);
+        assert_eq!(request.nprobe, Some(32));
     }
 
     #[test]

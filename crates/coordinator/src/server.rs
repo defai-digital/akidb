@@ -192,7 +192,12 @@ impl Akidb for CoordinatorService {
         // Fan-out search to all shards
         let result = self
             .fanout
-            .search(&req.query, req.top_k as usize, req.nprobe.unwrap_or(32))
+            .search(
+                &req.collection,
+                &req.query,
+                req.top_k as usize,
+                req.nprobe.unwrap_or(32),
+            )
             .await
             .map_err(|e| {
                 coordinator_metrics().record_request("search", "error");

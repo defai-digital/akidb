@@ -315,6 +315,19 @@ where
         Ok(())
     }
 
+    fn validate_request_collection(&self, collection: &str) -> Result<(), Status> {
+        if collection.is_empty() {
+            return Err(Status::invalid_argument("collection cannot be empty"));
+        }
+        if collection != self.collection {
+            return Err(Status::invalid_argument(format!(
+                "collection '{}' does not match shard collection '{}'",
+                collection, self.collection
+            )));
+        }
+        Ok(())
+    }
+
     /// Current index statistics (active/total/tombstoned vectors, dimensions).
     pub fn index_stats(&self) -> akidb_faiss::IndexStats {
         self.index.stats()
@@ -1223,6 +1236,7 @@ where
         let req = request.into_inner();
 
         debug!("Insert request for ID: {}", req.id);
+        self.validate_request_collection(&req.collection)?;
 
         let vector_id = VectorId::new(&req.id);
         let vector: Vec<f32> = req.vector;
@@ -1297,6 +1311,7 @@ where
 
         debug!("Search request, top_k: {}", req.top_k);
 
+        self.validate_request_collection(&req.collection)?;
         Self::validate_search_controls(req.top_k, req.nprobe)?;
 
         let mut params =
@@ -1374,6 +1389,7 @@ where
         let req = request.into_inner();
 
         debug!("Delete request for ID: {}", req.id);
+        self.validate_request_collection(&req.collection)?;
 
         let vector_id = VectorId::new(&req.id);
 
@@ -1432,6 +1448,7 @@ where
         let req = request.into_inner();
 
         debug!("Update request for ID: {}", req.id);
+        self.validate_request_collection(&req.collection)?;
 
         // Validate input
         if req.id.is_empty() {
@@ -1468,6 +1485,8 @@ where
     #[instrument(skip(self, request))]
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let req = request.into_inner();
+        self.validate_request_collection(&req.collection)?;
+
         let vector_id = VectorId::new(&req.id);
 
         // Get internal ID
@@ -1540,6 +1559,7 @@ where
         let req = request.into_inner();
 
         debug!("Insert batch request for {} vectors", req.vectors.len());
+        self.validate_request_collection(&req.collection)?;
 
         let mut inserted_count = 0u32;
         let mut failed_ids = Vec::new();
@@ -1639,6 +1659,7 @@ where
 
         debug!("Search batch request for {} queries", req.queries.len());
 
+        self.validate_request_collection(&req.collection)?;
         Self::validate_search_controls(req.top_k, req.nprobe)?;
 
         let params = SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
@@ -1704,6 +1725,7 @@ where
         if req.text.trim().is_empty() {
             return Err(Status::invalid_argument("Text cannot be empty"));
         }
+        self.validate_request_collection(&req.collection)?;
         Self::validate_search_controls(req.top_k, req.nprobe)?;
 
         let metadata_filter = match MetadataFilter::build(&req.filter, req.tag_filter.clone()) {
@@ -2209,6 +2231,120 @@ mod tests {
         let status = result.expect_err("zero nprobe should be rejected");
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("nprobe"));
+    }
+
+    fn assert_collection_mismatch(status: Status) {
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("collection"));
+    }
+
+    #[tokio::test]
+    async fn test_rpc_entrypoints_reject_wrong_collection() {
+        let (service, _dir) = test_service();
+
+        assert_collection_mismatch(
+            service
+                .insert(Request::new(InsertRequest {
+                    collection: "other".to_string(),
+                    id: "doc1".to_string(),
+                    vector: vec![1.0, 0.0],
+                    metadata: vec![],
+                    text: "needle".to_string(),
+                }))
+                .await
+                .expect_err("insert should reject wrong collection"),
+        );
+
+        assert_collection_mismatch(
+            service
+                .insert_batch(Request::new(InsertBatchRequest {
+                    collection: "other".to_string(),
+                    vectors: vec![],
+                }))
+                .await
+                .expect_err("insert_batch should reject wrong collection"),
+        );
+
+        assert_collection_mismatch(
+            service
+                .search(Request::new(SearchRequest {
+                    collection: "other".to_string(),
+                    query: vec![1.0, 0.0],
+                    top_k: 1,
+                    nprobe: None,
+                    filter: vec![],
+                    tag_filter: None,
+                }))
+                .await
+                .expect_err("search should reject wrong collection"),
+        );
+
+        assert_collection_mismatch(
+            service
+                .search_batch(Request::new(SearchBatchRequest {
+                    collection: "other".to_string(),
+                    queries: vec![],
+                    top_k: 1,
+                    nprobe: None,
+                }))
+                .await
+                .expect_err("search_batch should reject wrong collection"),
+        );
+
+        assert_collection_mismatch(
+            service
+                .text_search(Request::new(TextSearchRequest {
+                    collection: "other".to_string(),
+                    text: "needle".to_string(),
+                    top_k: 1,
+                    nprobe: None,
+                    hybrid: false,
+                    dense_weight: None,
+                    lexical_weight: None,
+                    pack: false,
+                    pack_token_budget: None,
+                    rerank: false,
+                    diversity: false,
+                    mmr_lambda: None,
+                    filter: vec![],
+                    tag_filter: None,
+                    retrieval_mode: "bm25".to_string(),
+                }))
+                .await
+                .expect_err("text_search should reject wrong collection"),
+        );
+
+        assert_collection_mismatch(
+            service
+                .delete(Request::new(DeleteRequest {
+                    collection: "other".to_string(),
+                    id: "doc1".to_string(),
+                }))
+                .await
+                .expect_err("delete should reject wrong collection"),
+        );
+
+        assert_collection_mismatch(
+            service
+                .update(Request::new(UpdateRequest {
+                    collection: "other".to_string(),
+                    id: "doc1".to_string(),
+                    vector: vec![1.0, 0.0],
+                    metadata: vec![],
+                }))
+                .await
+                .expect_err("update should reject wrong collection"),
+        );
+
+        assert_collection_mismatch(
+            service
+                .get(Request::new(GetRequest {
+                    collection: "other".to_string(),
+                    id: "doc1".to_string(),
+                }))
+                .await
+                .expect_err("get should reject wrong collection"),
+        );
     }
 
     #[tokio::test]
