@@ -47,7 +47,7 @@ impl DocumentParser for CsvParser {
 
         let mut texts = Vec::new();
         let mut row_count = 0;
-        let col_count;
+        let mut col_count;
 
         // Get headers
         let headers: Vec<String>;
@@ -87,6 +87,7 @@ impl DocumentParser for CsvParser {
             let record = result.map_err(|e| {
                 crate::IngestionError::Parse(format!("CSV record parse error: {}", e))
             })?;
+            col_count = col_count.max(record.len());
             let row_text = record
                 .iter()
                 .enumerate()
@@ -163,6 +164,18 @@ mod tests {
         assert!(result.text.contains("customer HGC"));
         assert!(result.text.contains("year 2025"));
         assert!(result.text.contains("contract_amount 1200"));
+    }
+
+    #[test]
+    fn test_parse_csv_tracks_widest_flexible_row() {
+        let parser = CsvParser::new();
+        let data = b"name,age\nAlice,30,extra";
+
+        let result = parser.parse(data).unwrap();
+        let extra = result.metadata.extra.unwrap();
+
+        assert_eq!(extra["columns"], 3);
+        assert!(result.text.contains("extra"));
     }
 
     #[test]
