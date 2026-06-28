@@ -147,6 +147,22 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # Artifact and validation pipeline smoke tests that do not require real
+  # four-Mac hardware.
+  validation-smoke:
+    name: Validation Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Four-Mac evidence pipeline smoke
+        run: ./scripts/smoke-four-mac-validation.sh
+
   # Python service tests
   python-test:
     name: Python Tests
