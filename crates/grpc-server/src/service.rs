@@ -2471,4 +2471,30 @@ mod tests {
 
         assert!(response.results.is_empty());
     }
+
+    #[tokio::test]
+    async fn test_delete_returns_already_deleted_on_second_delete() {
+        let (service, _dir) = test_service();
+        insert_text(&service, "doc1", vec![1.0, 0.0], "deleted_contract_keyword").await;
+
+        let first = service
+            .delete(Request::new(DeleteRequest {
+                collection: "test".to_string(),
+                id: "doc1".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(first.status, DeleteStatus::Deleted as i32);
+
+        let second = service
+            .delete(Request::new(DeleteRequest {
+                collection: "test".to_string(),
+                id: "doc1".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(second.status, DeleteStatus::AlreadyDeleted as i32);
+    }
 }

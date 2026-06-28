@@ -381,7 +381,7 @@ impl<S: StorageBackend> IdMapping<S> {
 
         if entry.deleted {
             // Already deleted
-            return Ok(Some(InternalId(entry.internal_id)));
+            return Ok(None);
         }
 
         let internal_id = entry.internal_id;
@@ -616,6 +616,18 @@ mod tests {
 
         // Should report as deleted
         assert!(mapping.is_deleted(&ext_id).unwrap());
+    }
+
+    #[test]
+    fn test_id_mapping_delete_returns_none_when_already_deleted() {
+        let storage = create_test_storage();
+        let mapping = IdMapping::new(storage, "test_collection");
+
+        let ext_id = VectorId::new("vec-1");
+        mapping.create(&ext_id, InternalId(42)).unwrap();
+
+        assert_eq!(mapping.mark_deleted(&ext_id).unwrap(), Some(InternalId(42)));
+        assert_eq!(mapping.mark_deleted(&ext_id).unwrap(), None);
     }
 
     #[test]
