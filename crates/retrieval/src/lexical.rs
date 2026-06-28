@@ -49,16 +49,34 @@ fn finite_f32(score: f64) -> f32 {
     }
 }
 
-/// Tokenize text into lowercase alphanumeric terms.
+/// Tokenize text into lowercase identifier-aware terms.
 ///
 /// Splitting on any non-alphanumeric character keeps identifiers like
 /// `tokenRefresh` as a single token while breaking `foo.bar(baz)` into
-/// `foo`, `bar`, `baz`. Unicode alphanumerics are preserved.
+/// `foo`, `bar`, `baz`. Snake_case identifiers keep their exact token and also
+/// emit split subterms so plain-word queries can still recall them.
 pub fn tokenize(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric())
+    let mut tokens = Vec::new();
+    for raw in text
+        .split(|c: char| !is_token_char(c))
         .filter(|t| !t.is_empty())
-        .map(|t| t.to_lowercase())
-        .collect()
+    {
+        let token = raw.to_lowercase();
+        tokens.push(token.clone());
+        if token.contains('_') {
+            tokens.extend(
+                token
+                    .split('_')
+                    .filter(|part| !part.is_empty())
+                    .map(|part| part.to_string()),
+            );
+        }
+    }
+    tokens
+}
+
+fn is_token_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 /// An in-memory BM25 inverted index keyed by external [`VectorId`].
@@ -270,6 +288,14 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenize_preserves_snake_case_identifier_and_parts() {
+        assert_eq!(
+            tokenize("contract_amount"),
+            vec!["contract_amount", "contract", "amount"]
+        );
+    }
+
+    #[test]
     fn test_empty_index_returns_no_results() {
         let index = Bm25Index::new();
         assert!(index.is_empty());
@@ -334,6 +360,19 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, id("doc_many"));
         assert_eq!(hits[1].id, id("doc_few"));
+        assert!(hits[0].score > hits[1].score);
+    }
+
+    #[test]
+    fn test_exact_snake_case_identifier_ranks_above_split_words() {
+        let mut index = Bm25Index::new();
+        index.insert(id("z_exact"), "contract_amount");
+        index.insert(id("a_words"), "contract amount");
+
+        let hits = index.search("contract_amount", 10);
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, id("z_exact"));
         assert!(hits[0].score > hits[1].score);
     }
 
