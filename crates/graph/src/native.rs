@@ -362,16 +362,12 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
             return Ok(Vec::new());
         }
 
-        let mut chunks = self.direct_related_chunks(entity_id, limit)?;
-        let mut seen: HashSet<_> = chunks.iter().map(|chunk| chunk.vector_id.clone()).collect();
-        if chunks.len() >= limit {
-            return Ok(chunks);
-        }
-
+        let mut chunks = Vec::new();
+        let mut seen = HashSet::new();
         let one_hop = self.neighbors(
             NeighborRequest::new(entity_id.clone())
                 .with_direction(Direction::Both)
-                .with_limit(limit.saturating_mul(4)),
+                .with_limit(limit.saturating_mul(8)),
         )?;
         for neighbor in one_hop {
             if let Some(vector_id) = neighbor.node.id.as_chunk_vector_id() {
@@ -386,7 +382,19 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
                 break;
             }
         }
-        chunks.sort_by(|a, b| a.vector_id.as_str().cmp(b.vector_id.as_str()));
+
+        if chunks.len() >= limit {
+            return Ok(chunks);
+        }
+
+        for chunk in self.direct_related_chunks(entity_id, limit)? {
+            if seen.insert(chunk.vector_id.clone()) {
+                chunks.push(chunk);
+            }
+            if chunks.len() >= limit {
+                break;
+            }
+        }
         chunks.truncate(limit);
         Ok(chunks)
     }
@@ -710,6 +718,88 @@ mod tests {
             .collect();
 
         assert_eq!(vector_ids, vec!["direct", "incoming"]);
+    }
+
+    #[test]
+    fn test_related_chunks_limit_prefers_higher_weight_chunk() {
+        let (_dir, graph) = index();
+        graph
+            .upsert_node(node("entity:mtp", NodeKind::Entity))
+            .unwrap();
+        graph.upsert_node(node("chunk:a-low", NodeKind::Chunk)).unwrap();
+        graph.upsert_node(node("chunk:z-high", NodeKind::Chunk)).unwrap();
+        graph
+            .upsert_edge(edge(
+                "low",
+                "entity:mtp",
+                "chunk:a-low",
+                EdgeKind::Mentions,
+                0.1,
+            ))
+            .unwrap();
+        graph
+            .upsert_edge(edge(
+                "high",
+                "entity:mtp",
+                "chunk:z-high",
+                EdgeKind::Mentions,
+                0.9,
+            ))
+            .unwrap();
+
+        let chunks = graph
+            .related_chunks(&GraphNodeId::from("entity:mtp"), 1)
+            .unwrap();
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].vector_id.as_str(), "z-high");
+    }
+
+    #[test]
+    fn test_related_chunks_deduplicates_one_hop_chunk_edges_before_limit() {
+        let (_dir, graph) = index();
+        graph
+            .upsert_node(node("entity:mtp", NodeKind::Entity))
+            .unwrap();
+        graph.upsert_node(node("chunk:dup", NodeKind::Chunk)).unwrap();
+        graph.upsert_node(node("chunk:other", NodeKind::Chunk)).unwrap();
+        graph
+            .upsert_edge(edge(
+                "dup-mentions",
+                "entity:mtp",
+                "chunk:dup",
+                EdgeKind::Mentions,
+                0.9,
+            ))
+            .unwrap();
+        graph
+            .upsert_edge(edge(
+                "dup-related",
+                "entity:mtp",
+                "chunk:dup",
+                EdgeKind::RelatedTo,
+                0.8,
+            ))
+            .unwrap();
+        graph
+            .upsert_edge(edge(
+                "other",
+                "entity:mtp",
+                "chunk:other",
+                EdgeKind::Mentions,
+                0.7,
+            ))
+            .unwrap();
+
+        let chunks = graph
+            .related_chunks(&GraphNodeId::from("entity:mtp"), 2)
+            .unwrap();
+        let vector_ids: Vec<&str> = chunks
+            .iter()
+            .map(|chunk| chunk.vector_id.as_str())
+            .collect();
+
+        assert_eq!(vector_ids, vec!["dup", "other"]);
     }
 
     #[test]
