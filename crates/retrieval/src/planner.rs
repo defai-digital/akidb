@@ -191,7 +191,16 @@ fn trace_for_mode(mode: RetrievalMode, reasons: Vec<String>) -> PlannerTrace {
 }
 
 fn starts_with_any(s: &str, prefixes: &[&str]) -> bool {
-    prefixes.iter().any(|prefix| s.starts_with(prefix))
+    prefixes.iter().any(|prefix| starts_with_phrase(s, prefix))
+}
+
+fn starts_with_phrase(s: &str, prefix: &str) -> bool {
+    let Some(rest) = s.strip_prefix(prefix) else {
+        return false;
+    };
+    rest.chars()
+        .next()
+        .is_none_or(|c| !c.is_alphanumeric() && c != '_')
 }
 
 fn contains_any(s: &str, needles: &[&str]) -> bool {
@@ -262,6 +271,13 @@ mod tests {
         let trace = plan_query(&PlannerInput::new("show callers of draft_model::decode"));
         assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
         assert!(trace.graph_enabled);
+    }
+
+    #[test]
+    fn test_code_word_prefix_does_not_false_positive_graph() {
+        let trace = plan_query(&PlannerInput::new("find callback handler"));
+        assert_eq!(trace.mode, RetrievalMode::Hybrid);
+        assert!(!trace.graph_enabled);
     }
 
     #[test]
