@@ -172,7 +172,9 @@ impl ResultMerger {
             // If min.score is NaN, the comparison `score >= min.score` returns false,
             // which would incorrectly reject valid results. NaN scores should always
             // be evictable since they're invalid results.
-            let should_insert = min.result.score.is_nan() || score >= min.result.score;
+            let should_insert = min.result.score.is_nan()
+                || score > min.result.score
+                || (score == min.result.score && id_str.as_str() < min.result.id.as_str());
             if should_insert {
                 let evicted = self.heap.pop().unwrap();
                 self.best_scores.remove(&evicted.result.id.to_string());
@@ -310,6 +312,20 @@ mod tests {
             "Expected 0.9, got {}",
             dup_result.score
         );
+    }
+
+    #[test]
+    fn test_merger_keeps_lexicographically_smallest_ids_on_score_tie() {
+        let mut merger = ResultMerger::new(2);
+
+        merger.add(make_result("a", 0.8));
+        merger.add(make_result("b", 0.8));
+        merger.add(make_result("c", 0.8));
+
+        let results = merger.finish();
+        let ids: Vec<&str> = results.iter().map(|result| result.id.as_str()).collect();
+
+        assert_eq!(ids, vec!["a", "b"]);
     }
 
     #[test]
