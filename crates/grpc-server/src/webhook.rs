@@ -9,8 +9,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 /// Maximum retry attempts for webhook delivery
@@ -288,13 +287,14 @@ impl WebhookSender {
         }
 
         // Queue for delivery
-        let mut pending = self.pending.write();
-        if pending.len() >= MAX_QUEUE_SIZE {
-            warn!("Webhook queue full, dropping oldest event");
-            pending.pop_front();
+        {
+            let mut pending = self.pending.write();
+            if pending.len() >= MAX_QUEUE_SIZE {
+                warn!("Webhook queue full, dropping oldest event");
+                pending.pop_front();
+            }
+            pending.push_back((payload.clone(), 0));
         }
-        pending.push_back((payload.clone(), 0));
-        drop(pending);
 
         // Attempt immediate delivery
         self.process_pending().await;
@@ -354,9 +354,10 @@ impl WebhookSender {
 
             // Handle retry if failed
             if !status.success && attempts < MAX_RETRIES {
-                let mut stats = self.stats.write();
-                stats.retries += 1;
-                drop(stats);
+                {
+                    let mut stats = self.stats.write();
+                    stats.retries += 1;
+                }
 
                 // Exponential backoff
                 let backoff_ms = RETRY_BACKOFF_BASE_MS * 2u64.pow(attempts);
