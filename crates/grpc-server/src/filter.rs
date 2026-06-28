@@ -111,7 +111,7 @@ pub fn tag_filter_matches(metadata: &Value, filter: &TagFilter) -> bool {
 
 fn condition_matches(metadata: &Value, cond: &TagCondition) -> bool {
     let op = TagOperator::try_from(cond.op).unwrap_or(TagOperator::TagOpEq);
-    let field = metadata.get(&cond.key);
+    let field = metadata_field(metadata, &cond.key);
 
     // EXISTS only checks presence of a non-null value.
     if op == TagOperator::TagOpExists {
@@ -145,6 +145,21 @@ fn condition_matches(metadata: &Value, cond: &TagCondition) -> bool {
         TagOperator::TagOpContains => value_contains(field, value),
         TagOperator::TagOpExists => true, // handled above
     }
+}
+
+fn metadata_field<'a>(metadata: &'a Value, key: &str) -> Option<&'a Value> {
+    if let Some(value) = metadata.get(key) {
+        return Some(value);
+    }
+
+    let mut current = metadata;
+    for part in key.split('.') {
+        if part.is_empty() {
+            return None;
+        }
+        current = current.get(part)?;
+    }
+    Some(current)
 }
 
 /// Equality between a metadata JSON value and a proto tag value.
@@ -276,6 +291,69 @@ mod tests {
         assert!(!tag_filter_matches(
             &meta,
             &cond("absent", TagOperator::TagOpExists, text(""))
+        ));
+    }
+
+    #[test]
+    fn test_tag_filter_matches_nested_dotted_paths() {
+        let meta = json!({
+            "contract": {
+                "customer": "HGC",
+                "year": 2025,
+                "tags": ["enterprise", "renewal"]
+            }
+        });
+
+        assert!(tag_filter_matches(
+            &meta,
+            &cond("contract.customer", TagOperator::TagOpEq, text("HGC"))
+        ));
+        assert!(tag_filter_matches(
+            &meta,
+            &cond(
+                "contract.year",
+                TagOperator::TagOpGte,
+                TagVal::Number(2025.0)
+            )
+        ));
+        assert!(tag_filter_matches(
+            &meta,
+            &cond("contract.tags", TagOperator::TagOpContains, text("renewal"))
+        ));
+        assert!(tag_filter_matches(
+            &meta,
+            &cond("contract.year", TagOperator::TagOpExists, text(""))
+        ));
+        assert!(!tag_filter_matches(
+            &meta,
+            &cond("contract.amount", TagOperator::TagOpExists, text(""))
+        ));
+    }
+
+    #[test]
+    fn test_tag_filter_prefers_literal_dotted_key_over_path() {
+        let meta = json!({
+            "contract.year": 2026,
+            "contract": {
+                "year": 2025
+            }
+        });
+
+        assert!(tag_filter_matches(
+            &meta,
+            &cond(
+                "contract.year",
+                TagOperator::TagOpEq,
+                TagVal::Number(2026.0)
+            )
+        ));
+        assert!(!tag_filter_matches(
+            &meta,
+            &cond(
+                "contract.year",
+                TagOperator::TagOpEq,
+                TagVal::Number(2025.0)
+            )
         ));
     }
 

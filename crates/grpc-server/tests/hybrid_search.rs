@@ -393,6 +393,60 @@ async fn test_bm25_tag_filter_applies_before_top_k_cutoff() {
 }
 
 #[tokio::test]
+async fn test_bm25_tag_filter_matches_nested_metadata_path() {
+    let svc = setup_without_embedder();
+    insert(
+        &svc,
+        "contract-2024-strong",
+        vec![1.0, 0.0, 0.0],
+        "needle needle needle",
+        br#"{"contract":{"customer":"HGC","year":2024}}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "contract-2025-match",
+        vec![0.0, 1.0, 0.0],
+        "needle",
+        br#"{"contract":{"customer":"HGC","year":2025}}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: Some(TagFilter {
+                filter_type: Some(FilterType::Condition(TagCondition {
+                    key: "contract.year".into(),
+                    value: Some(TagValue {
+                        value: Some(TagVal::Number(2025.0)),
+                    }),
+                    op: TagOperator::TagOpEq as i32,
+                })),
+            }),
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 nested tag filter search failed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["contract-2025-match"]);
+}
+
+#[tokio::test]
 async fn test_retrieval_mode_sql_uses_metadata_adapter_without_embedder() {
     let svc = setup_with_sql();
     insert(
