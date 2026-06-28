@@ -819,6 +819,14 @@ async fn test_rebuild_lexical_index_removes_stale_in_memory_text() {
     let svc = AkiDbService::new(index, id_mapping.clone(), "test");
 
     id_mapping
+        .upsert_with_vector(
+            &akidb_common::VectorId::new("stale"),
+            akidb_common::InternalId(1),
+            &[1.0, 0.0, 0.0],
+            b"{}",
+        )
+        .unwrap();
+    id_mapping
         .store_text(&akidb_common::VectorId::new("stale"), "needle old text")
         .unwrap();
     assert_eq!(svc.rebuild_lexical_index(), 1);
@@ -877,6 +885,61 @@ async fn test_rebuild_lexical_index_removes_stale_in_memory_text() {
         "rebuild should remove in-memory text missing from durable store, got {:?}",
         after
             .results
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_rebuild_lexical_index_skips_deleted_vectors_with_stale_text() {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let storage = Arc::new(RocksDbBackend::open(&dir).unwrap());
+    let id_mapping = Arc::new(IdMapping::new(storage, "test"));
+    let index = Arc::new(HnswIndex::new(HnswConfig::new(DIMS)).unwrap());
+    let svc = AkiDbService::new(index, id_mapping.clone(), "test");
+
+    let stale_id = akidb_common::VectorId::new("deleted-doc");
+    id_mapping
+        .upsert_with_vector(
+            &stale_id,
+            akidb_common::InternalId(1),
+            &[1.0, 0.0, 0.0],
+            b"{}",
+        )
+        .unwrap();
+    id_mapping
+        .store_text(&stale_id, "needle deleted source text")
+        .unwrap();
+    id_mapping.mark_deleted(&stale_id).unwrap();
+
+    assert_eq!(svc.rebuild_lexical_index(), 0);
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 10,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bm25".into(),
+        }))
+        .await
+        .expect("bm25 search after rebuild failed")
+        .into_inner();
+    assert!(
+        resp.results.is_empty(),
+        "rebuild should skip durable text for deleted vectors, got {:?}",
+        resp.results
             .iter()
             .map(|r| r.id.as_str())
             .collect::<Vec<_>>()

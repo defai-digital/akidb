@@ -180,10 +180,19 @@ where
         let mut documents = self.documents.write();
         *lexical = Bm25Index::new();
         documents.clear();
-        let count = texts.len();
+        let mut count = 0usize;
         for (id, text) in texts {
+            match self.id_mapping.get_internal_id(&id) {
+                Ok(Some(_)) => {}
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!(vector_id = %id, error = %e, "skipping source text during lexical rebuild");
+                    continue;
+                }
+            }
             lexical.insert(id.clone(), &text);
             documents.insert(id, text);
+            count += 1;
         }
         if count > 0 {
             info!(
