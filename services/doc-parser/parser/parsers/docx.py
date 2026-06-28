@@ -1,5 +1,6 @@
 """DOCX document parser using python-docx."""
 
+import importlib.util
 import io
 import time
 from typing import Any
@@ -21,17 +22,11 @@ class DocxParser(BaseParser):
 
     def is_available(self) -> bool:
         """Check if python-docx is available."""
-        try:
-            import docx
-
-            return True
-        except ImportError:
-            return False
+        return importlib.util.find_spec("docx") is not None
 
     def parse(self, content: bytes, filename: str) -> ParsedDocument:
         """Parse DOCX content and extract text, tables, and metadata."""
         from docx import Document
-        from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
         start_time = time.time()
         text_parts: list[str] = []
@@ -72,6 +67,9 @@ class DocxParser(BaseParser):
                     headers = rows_data[0] if rows_data else []
                     data_rows = rows_data[1:] if len(rows_data) > 1 else []
                     tables.append(TableData(headers=headers, rows=data_rows))
+                    table_text = table_rows_to_retrieval_text(headers, data_rows)
+                    if table_text:
+                        text_parts.append(table_text)
 
             # Count images
             image_count = 0
@@ -104,3 +102,24 @@ class DocxParser(BaseParser):
             images=images,
             parse_time_ms=parse_time_ms,
         )
+
+
+def table_rows_to_retrieval_text(headers: list[str], rows: list[list[str]]) -> str:
+    """Render table content as header/value text for retrieval."""
+    parts: list[str] = []
+    header_text = " ".join(cell.strip() for cell in headers if cell.strip())
+    if header_text:
+        parts.append(header_text)
+
+    for row in rows:
+        row_parts: list[str] = []
+        for idx, value in enumerate(row):
+            value = value.strip()
+            if not value:
+                continue
+            header = headers[idx].strip() if idx < len(headers) else ""
+            row_parts.append(f"{header} {value}" if header else value)
+        if row_parts:
+            parts.append(" ".join(row_parts))
+
+    return "\n".join(parts)
