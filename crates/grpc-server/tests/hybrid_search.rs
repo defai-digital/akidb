@@ -670,6 +670,52 @@ async fn test_retrieval_mode_sql_empty_object_filter_requires_object_value() {
 }
 
 #[tokio::test]
+async fn test_retrieval_mode_sql_array_filter_uses_post_filter_before_top_k_cutoff() {
+    let svc = setup_with_sql();
+    insert(
+        &svc,
+        "b-array-match",
+        vec![1.0, 0.0, 0.0],
+        "",
+        br#"{"tags":["rust","rag"],"repo":"ax-engine"}"#,
+    )
+    .await;
+    insert(
+        &svc,
+        "a-array-nonmatch",
+        vec![0.0, 1.0, 0.0],
+        "",
+        br#"{"tags":["rust"],"repo":"ax-engine"}"#,
+    )
+    .await;
+
+    let resp = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "tagged documents".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: br#"{"tags":["rust","rag"]}"#.to_vec(),
+            tag_filter: None,
+            retrieval_mode: "sql".into(),
+        }))
+        .await
+        .expect("sql array metadata filter should succeed")
+        .into_inner();
+
+    let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(got, vec!["b-array-match"]);
+}
+
+#[tokio::test]
 async fn test_retrieval_mode_sql_applies_tag_filter_before_top_k_cutoff() {
     let svc = setup_with_sql();
     insert(
