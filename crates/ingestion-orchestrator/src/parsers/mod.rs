@@ -65,7 +65,7 @@ pub enum DocumentFormat {
 impl DocumentFormat {
     /// Detect format from file extension
     pub fn from_extension(ext: &str) -> Self {
-        match ext.to_lowercase().as_str() {
+        match normalize_extension(ext).as_str() {
             "json" => DocumentFormat::Json,
             "csv" => DocumentFormat::Csv,
             "tsv" => DocumentFormat::Tsv,
@@ -104,6 +104,21 @@ impl DocumentFormat {
     pub fn requires_python(&self) -> bool {
         matches!(self, DocumentFormat::Pdf)
     }
+}
+
+fn normalize_extension(input: &str) -> String {
+    let without_query = input
+        .trim()
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(['/', '\\']);
+    let file_name = without_query
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(without_query);
+    let ext = file_name.rsplit_once('.').map_or(file_name, |(_, ext)| ext);
+    ext.trim_start_matches('.').to_ascii_lowercase()
 }
 
 /// Check if a DOCX file can be parsed in Rust
@@ -197,6 +212,22 @@ mod tests {
         assert_eq!(
             DocumentFormat::from_extension("foo"),
             DocumentFormat::Unknown
+        );
+    }
+
+    #[test]
+    fn test_format_detection_accepts_filenames_and_paths() {
+        assert_eq!(
+            DocumentFormat::from_extension("contracts/2025/HGC.CONTRACT.PDF"),
+            DocumentFormat::Pdf
+        );
+        assert_eq!(
+            DocumentFormat::from_extension("https://example.test/docs/report.docx?download=1"),
+            DocumentFormat::Docx
+        );
+        assert_eq!(
+            DocumentFormat::from_extension("/tmp/export.tsv#sheet"),
+            DocumentFormat::Tsv
         );
     }
 
