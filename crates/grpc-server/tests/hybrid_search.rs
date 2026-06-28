@@ -322,6 +322,36 @@ async fn test_retrieval_mode_bm25_does_not_require_embedding_provider() {
 }
 
 #[tokio::test]
+async fn test_invalid_retrieval_mode_error_lists_sql_modes() {
+    let svc = setup_without_embedder();
+
+    let err = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 2,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "bogus".into(),
+        }))
+        .await
+        .expect_err("invalid retrieval_mode should be rejected");
+
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert!(err.message().contains("sql"));
+    assert!(err.message().contains("structured_sql"));
+}
+
+#[tokio::test]
 async fn test_bm25_metadata_filter_applies_before_top_k_cutoff() {
     let svc = setup_without_embedder();
     insert(

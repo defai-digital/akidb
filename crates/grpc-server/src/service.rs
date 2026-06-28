@@ -754,7 +754,7 @@ where
                 Ok(Some(RetrievalMode::StructuredSql))
             }
             _ => Err(Status::invalid_argument(format!(
-                "invalid retrieval_mode '{}'; expected auto, vector, bm25, hybrid, graph, or graph_hybrid",
+                "invalid retrieval_mode '{}'; expected auto, vector, bm25, hybrid, graph, graph_hybrid, sql, structured_sql, or structured-sql",
                 req.retrieval_mode
             ))),
         }
