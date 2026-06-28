@@ -1628,6 +1628,37 @@ async fn test_diversity_demotes_near_duplicate() {
     assert_eq!(order[2], "a_dup");
 }
 
+#[tokio::test]
+async fn test_diversity_rejects_invalid_mmr_lambda() {
+    let svc = setup();
+
+    for lambda in [f32::NAN, 1.1] {
+        let err = svc
+            .text_search(Request::new(TextSearchRequest {
+                collection: "test".into(),
+                text: "needle".into(),
+                top_k: 3,
+                nprobe: None,
+                hybrid: true,
+                dense_weight: None,
+                lexical_weight: None,
+                pack: false,
+                pack_token_budget: None,
+                rerank: false,
+                diversity: true,
+                mmr_lambda: Some(lambda),
+                filter: vec![],
+                tag_filter: None,
+                retrieval_mode: String::new(),
+            }))
+            .await
+            .expect_err("invalid mmr_lambda should be rejected");
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("mmr_lambda"));
+    }
+}
+
 async fn pack_for(
     svc: &AkiDbService<HnswIndex, RocksDbBackend>,
     query: &str,

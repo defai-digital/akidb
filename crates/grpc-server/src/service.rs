@@ -333,6 +333,13 @@ where
     fn validate_text_search_options(req: &TextSearchRequest) -> Result<(), Status> {
         Self::validate_positive_finite_option("dense_weight", req.dense_weight)?;
         Self::validate_positive_finite_option("lexical_weight", req.lexical_weight)?;
+        if let Some(lambda) = req.mmr_lambda {
+            if !lambda.is_finite() || !(0.0..=1.0).contains(&lambda) {
+                return Err(Status::invalid_argument(
+                    "mmr_lambda must be finite and between 0 and 1",
+                ));
+            }
+        }
         Ok(())
     }
 
