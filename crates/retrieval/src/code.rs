@@ -209,11 +209,11 @@ fn rust_block_end(lines: &[&str], start: usize) -> usize {
     let mut depth: i32 = 0;
     let mut opened = false;
     for (offset, line) in lines[start..].iter().enumerate() {
-        let delta = rust_brace_delta(line);
-        if delta > 0 {
+        let scan = rust_brace_scan(line);
+        if scan.saw_open {
             opened = true;
         }
-        depth += delta;
+        depth += scan.delta;
         if opened && depth <= 0 {
             return start + offset;
         }
@@ -225,9 +225,16 @@ fn rust_block_end(lines: &[&str], start: usize) -> usize {
     lines.len() - 1
 }
 
-fn rust_brace_delta(line: &str) -> i32 {
+#[derive(Debug, Clone, Copy)]
+struct RustBraceScan {
+    delta: i32,
+    saw_open: bool,
+}
+
+fn rust_brace_scan(line: &str) -> RustBraceScan {
     let chars: Vec<char> = line.chars().collect();
     let mut delta = 0;
+    let mut saw_open = false;
     let mut i = 0;
 
     while i < chars.len() {
@@ -241,14 +248,21 @@ fn rust_brace_delta(line: &str) -> i32 {
                     i = end;
                 }
             }
-            '{' => delta += 1,
+            '{' => {
+                saw_open = true;
+                delta += 1;
+            }
             '}' => delta -= 1,
             _ => {}
         }
         i += 1;
     }
 
-    delta
+    RustBraceScan { delta, saw_open }
+}
+
+fn rust_brace_delta(line: &str) -> i32 {
+    rust_brace_scan(line).delta
 }
 
 fn skip_rust_string(chars: &[char], start: usize) -> usize {
@@ -472,6 +486,23 @@ fn second() {
         assert_eq!(names, vec!["first", "second"]);
         assert_eq!(chunks[0].end_line, 3);
         assert_eq!(chunks[1].start_line, 5);
+    }
+
+    #[test]
+    fn test_rust_one_line_functions_are_separate_chunks() {
+        let src = "\
+fn first() {}
+fn second() {}";
+        let chunks = chunk_code(src, Language::Rust);
+        let names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| chunk.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["first", "second"]);
+        assert_eq!(chunks[0].start_line, 1);
+        assert_eq!(chunks[0].end_line, 1);
+        assert_eq!(chunks[1].start_line, 2);
+        assert_eq!(chunks[1].end_line, 2);
     }
 
     #[test]
