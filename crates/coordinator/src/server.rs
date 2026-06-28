@@ -447,6 +447,8 @@ impl Akidb for CoordinatorService {
 
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let req = request.into_inner();
+        Self::validate_request_collection(&req.collection)?;
+        Self::validate_vector_id(&req.id)?;
 
         // Check if this vector was recently written (read-your-writes consistency)
         let shard_address = if let Some(write_entry) = self.consistency.get_recent_write(&req.id) {
@@ -950,12 +952,29 @@ mod tests {
         }
     }
 
+    fn get_request(id: &str) -> GetRequest {
+        GetRequest {
+            collection: "test".to_string(),
+            id: id.to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn test_insert_rejects_empty_id_before_routing() {
         let service = test_service();
         let result = service
             .insert(Request::new(insert_request("", vec![0.0; 4])))
             .await;
+
+        let status = result.expect_err("empty vector ID should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("Vector ID cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_get_rejects_empty_id_before_routing() {
+        let service = test_service();
+        let result = service.get(Request::new(get_request(""))).await;
 
         let status = result.expect_err("empty vector ID should be rejected");
         assert_eq!(status.code(), Code::InvalidArgument);

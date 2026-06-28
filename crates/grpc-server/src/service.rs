@@ -459,13 +459,18 @@ where
         }
     }
 
-    fn validate_vector_payload(id: &str, vector: &[f32]) -> Result<(), &'static str> {
+    fn validate_vector_id(id: &str) -> Result<(), &'static str> {
         if id.is_empty() {
             return Err("Vector ID cannot be empty");
         }
         if id.len() > 1024 {
             return Err("Vector ID exceeds maximum length of 1024");
         }
+        Ok(())
+    }
+
+    fn validate_vector_payload(id: &str, vector: &[f32]) -> Result<(), &'static str> {
+        Self::validate_vector_id(id)?;
         if vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
             return Err("Vector contains NaN or Infinity values");
         }
@@ -1378,13 +1383,13 @@ where
         debug!("Insert request for ID: {}", req.id);
         self.validate_request_collection(&req.collection)?;
 
-        let vector_id = VectorId::new(&req.id);
-        let vector: Vec<f32> = req.vector;
-
         // Validate input
-        if let Err(message) = Self::validate_vector_payload(&req.id, &vector) {
+        if let Err(message) = Self::validate_vector_payload(&req.id, &req.vector) {
             return Err(Status::invalid_argument(message));
         }
+
+        let vector_id = VectorId::new(&req.id);
+        let vector: Vec<f32> = req.vector;
 
         let old_metadata = self
             .id_mapping
@@ -1531,6 +1536,9 @@ where
 
         debug!("Delete request for ID: {}", req.id);
         self.validate_request_collection(&req.collection)?;
+        if let Err(message) = Self::validate_vector_id(&req.id) {
+            return Err(Status::invalid_argument(message));
+        }
 
         let vector_id = VectorId::new(&req.id);
 
@@ -1627,6 +1635,9 @@ where
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let req = request.into_inner();
         self.validate_request_collection(&req.collection)?;
+        if let Err(message) = Self::validate_vector_id(&req.id) {
+            return Err(Status::invalid_argument(message));
+        }
 
         let vector_id = VectorId::new(&req.id);
 
@@ -2422,6 +2433,54 @@ mod tests {
         let status = result.expect_err("empty query should be rejected");
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("Query vector cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_insert_rejects_empty_id() {
+        let (service, _dir) = test_service();
+        let result = service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: String::new(),
+                vector: vec![1.0, 0.0],
+                metadata: vec![],
+                text: String::new(),
+            }))
+            .await;
+
+        let status = result.expect_err("empty vector ID should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("Vector ID cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_get_rejects_empty_id() {
+        let (service, _dir) = test_service();
+        let result = service
+            .get(Request::new(GetRequest {
+                collection: "test".to_string(),
+                id: String::new(),
+            }))
+            .await;
+
+        let status = result.expect_err("empty vector ID should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("Vector ID cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_rejects_empty_id() {
+        let (service, _dir) = test_service();
+        let result = service
+            .delete(Request::new(DeleteRequest {
+                collection: "test".to_string(),
+                id: String::new(),
+            }))
+            .await;
+
+        let status = result.expect_err("empty vector ID should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("Vector ID cannot be empty"));
     }
 
     fn assert_collection_mismatch(status: Status) {
