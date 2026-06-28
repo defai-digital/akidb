@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -35,22 +36,25 @@ def benchmark_summary_from_artifact(path: Path, flag_name: str) -> tuple[float, 
     require(isinstance(artifact, dict), f"{flag_name} must be a JSON object")
     search = artifact.get("search")
     require(isinstance(search, dict), f"{flag_name} missing search object")
-    qps = search.get("throughput_queries_per_sec")
-    require(
-        isinstance(qps, (int, float)) and not isinstance(qps, bool) and float(qps) > 0,
-        f"{flag_name} search.throughput_queries_per_sec must be > 0",
+    qps = require_float_value(
+        search.get("throughput_queries_per_sec"),
+        f"{flag_name} search.throughput_queries_per_sec",
+        min_value=0.000001,
     )
     latency = search.get("latency")
     require(isinstance(latency, dict), f"{flag_name} missing search.latency object")
-    p95_us = latency.get("p95_us")
-    p99_us = latency.get("p99_us")
-    for name, value in {"p95_us": p95_us, "p99_us": p99_us}.items():
-        require(
-            isinstance(value, (int, float)) and not isinstance(value, bool) and float(value) >= 0,
-            f"{flag_name} search.latency.{name} must be >= 0",
-        )
+    p95_us = require_float_value(
+        latency.get("p95_us"),
+        f"{flag_name} search.latency.p95_us",
+        min_value=0.0,
+    )
+    p99_us = require_float_value(
+        latency.get("p99_us"),
+        f"{flag_name} search.latency.p99_us",
+        min_value=0.0,
+    )
     require(
-        float(p99_us) >= float(p95_us),
+        p99_us >= p95_us,
         f"{flag_name} search.latency.p99_us must be >= p95_us",
     )
 
@@ -66,7 +70,7 @@ def benchmark_summary_from_artifact(path: Path, flag_name: str) -> tuple[float, 
         "nprobe": search.get("nprobe"),
         "concurrency": search.get("concurrency"),
     }
-    return float(qps), float(p95_us) / 1000.0, float(p99_us) / 1000.0, reference
+    return qps, p95_us / 1000.0, p99_us / 1000.0, reference
 
 
 def one_mac_qps_from_artifact(path: Path) -> tuple[float, dict[str, Any]]:
@@ -87,6 +91,27 @@ def require_objects(value: Any, name: str) -> list[dict[str, Any]]:
     return out
 
 
+def require_bool(value: Any, path: str) -> bool:
+    require(isinstance(value, bool), f"{path} must be a boolean")
+    return value
+
+
+def require_int_value(value: Any, path: str, *, min_value: int | None = None) -> int:
+    require(isinstance(value, int) and not isinstance(value, bool), f"{path} must be an integer")
+    if min_value is not None:
+        require(value >= min_value, f"{path} must be >= {min_value}, got {value}")
+    return value
+
+
+def require_float_value(value: Any, path: str, *, min_value: float | None = None) -> float:
+    require(isinstance(value, (int, float)) and not isinstance(value, bool), f"{path} must be numeric")
+    out = float(value)
+    require(math.isfinite(out), f"{path} must be finite")
+    if min_value is not None:
+        require(out >= min_value, f"{path} must be >= {min_value}, got {out}")
+    return out
+
+
 def normalize_nodes(raw: Any) -> list[dict[str, Any]]:
     nodes = require_objects(raw, "nodes")
     require(len(nodes) == 4, f"nodes must contain exactly 4 items, got {len(nodes)}")
@@ -102,9 +127,13 @@ def normalize_nodes(raw: Any) -> list[dict[str, Any]]:
         node["host"] = str(node["host"])
         node["arch"] = str(node["arch"])
         node["mac_model"] = str(node["mac_model"])
-        node["memory_bytes"] = int(node["memory_bytes"])
+        node["memory_bytes"] = require_int_value(
+            node["memory_bytes"],
+            f"nodes[{idx}].memory_bytes",
+            min_value=1,
+        )
         node["role"] = str(node["role"])
-        node["healthy"] = bool(node["healthy"])
+        node["healthy"] = require_bool(node["healthy"], f"nodes[{idx}].healthy")
     return nodes
 
 
@@ -130,10 +159,22 @@ def normalize_links(raw: Any, node_ids: set[str]) -> list[dict[str, Any]]:
         link["from"] = source
         link["to"] = target
         link["transport"] = str(link["transport"])
-        link["healthy"] = bool(link["healthy"])
-        link["latency_p95_us"] = float(link["latency_p95_us"])
-        link["bandwidth_gbps"] = float(link["bandwidth_gbps"])
-        link["packet_loss_percent"] = float(link["packet_loss_percent"])
+        link["healthy"] = require_bool(link["healthy"], f"links[{idx}].healthy")
+        link["latency_p95_us"] = require_float_value(
+            link["latency_p95_us"],
+            f"links[{idx}].latency_p95_us",
+            min_value=0.0,
+        )
+        link["bandwidth_gbps"] = require_float_value(
+            link["bandwidth_gbps"],
+            f"links[{idx}].bandwidth_gbps",
+            min_value=0.0,
+        )
+        link["packet_loss_percent"] = require_float_value(
+            link["packet_loss_percent"],
+            f"links[{idx}].packet_loss_percent",
+            min_value=0.0,
+        )
     return links
 
 
@@ -144,9 +185,13 @@ def normalize_failure_tests(raw: Any) -> list[dict[str, Any]]:
         missing = required - set(test)
         require(not missing, f"failure_tests[{idx}] missing fields: {sorted(missing)}")
         test["kind"] = str(test["kind"])
-        test["passed"] = bool(test["passed"])
+        test["passed"] = require_bool(test["passed"], f"failure_tests[{idx}].passed")
         test["observed_status"] = str(test["observed_status"])
-        test["recovery_time_ms"] = float(test["recovery_time_ms"])
+        test["recovery_time_ms"] = require_float_value(
+            test["recovery_time_ms"],
+            f"failure_tests[{idx}].recovery_time_ms",
+            min_value=0.0,
+        )
     return tests
 
 

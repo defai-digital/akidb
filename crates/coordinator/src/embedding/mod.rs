@@ -420,6 +420,14 @@ impl<S: EmbeddingService> EmbeddingService for CachedEmbeddingService<S> {
         // Batch generate uncached embeddings
         if !uncached_texts.is_empty() {
             let new_embeddings = self.inner.embed_batch(&uncached_texts)?;
+            if new_embeddings.len() != uncached_texts.len() {
+                return Err(EmbeddingError::BackendError(format!(
+                    "{} returned {} embeddings for {} uncached texts",
+                    self.inner.name(),
+                    new_embeddings.len(),
+                    uncached_texts.len()
+                )));
+            }
 
             for (idx, embedding) in uncached_indices.into_iter().zip(new_embeddings) {
                 self.cache.put(texts[idx], embedding.clone());
@@ -427,7 +435,19 @@ impl<S: EmbeddingService> EmbeddingService for CachedEmbeddingService<S> {
             }
         }
 
-        Ok(results.into_iter().map(|e| e.unwrap()).collect())
+        results
+            .into_iter()
+            .enumerate()
+            .map(|(idx, embedding)| {
+                embedding.ok_or_else(|| {
+                    EmbeddingError::BackendError(format!(
+                        "{} did not produce embedding for batch item {}",
+                        self.inner.name(),
+                        idx
+                    ))
+                })
+            })
+            .collect()
     }
 
     fn is_ready(&self) -> bool {
@@ -734,6 +754,46 @@ mod tests {
         // Verify "hello" was from cache
         let stats = cached.cache_stats();
         assert!(stats.hits >= 1);
+    }
+
+    struct ShortBatchEmbeddingService;
+
+    impl EmbeddingService for ShortBatchEmbeddingService {
+        fn dimensions(&self) -> usize {
+            2
+        }
+
+        fn embed(&self, _text: &str) -> EmbeddingResult<Vec<f32>> {
+            Ok(vec![1.0, 0.0])
+        }
+
+        fn embed_batch(&self, _texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
+            Ok(vec![vec![1.0, 0.0]])
+        }
+
+        fn is_ready(&self) -> bool {
+            true
+        }
+
+        fn name(&self) -> &str {
+            "short-batch"
+        }
+
+        fn max_batch_size(&self) -> usize {
+            16
+        }
+    }
+
+    #[test]
+    fn test_cached_batch_rejects_short_backend_response() {
+        let cached =
+            CachedEmbeddingService::new(ShortBatchEmbeddingService, 100, Duration::from_secs(3600));
+
+        let result = cached.embed_batch(&["a", "b"]);
+
+        assert!(
+            matches!(result, Err(EmbeddingError::BackendError(message)) if message.contains("returned 1 embeddings for 2 uncached texts"))
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ def require_float(document: dict[str, Any], path: str, *, min_value: float | Non
     value = get_path(document, path)
     require(isinstance(value, (int, float)) and not isinstance(value, bool), f"{path} must be numeric")
     out = float(value)
+    require(math.isfinite(out), f"{path} must be finite")
     if min_value is not None:
         require(out >= min_value, f"{path} must be >= {min_value}, got {out}")
     return out
@@ -48,6 +50,12 @@ def require_float(document: dict[str, Any], path: str, *, min_value: float | Non
 def require_str(document: dict[str, Any], path: str) -> str:
     value = get_path(document, path)
     require(isinstance(value, str) and value, f"{path} must be a non-empty string")
+    return value
+
+
+def require_bool(document: dict[str, Any], path: str) -> bool:
+    value = get_path(document, path)
+    require(isinstance(value, bool), f"{path} must be a boolean")
     return value
 
 
@@ -119,10 +127,10 @@ def validate_artifact(report: dict[str, Any], args: argparse.Namespace) -> list[
     require_str(report, "software.git_commit")
     require_str(report, "software.rustc")
 
-    require(bool(get_path(report, "health_before.healthy")), "health_before.healthy must be true")
-    require(bool(get_path(report, "health_before.ready")), "health_before.ready must be true")
-    require(bool(get_path(report, "health_after_insert.healthy")), "health_after_insert.healthy must be true")
-    require(bool(get_path(report, "health_after_insert.ready")), "health_after_insert.ready must be true")
+    require(require_bool(report, "health_before.healthy"), "health_before.healthy must be true")
+    require(require_bool(report, "health_before.ready"), "health_before.ready must be true")
+    require(require_bool(report, "health_after_insert.healthy"), "health_after_insert.healthy must be true")
+    require(require_bool(report, "health_after_insert.ready"), "health_after_insert.ready must be true")
 
     vectors_requested = require_int(report, "insert.vectors_requested", min_value=1)
     vectors_inserted = require_int(report, "insert.vectors_inserted", min_value=0)

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,12 @@ def require_str(document: dict[str, Any], path: str) -> str:
     return value
 
 
+def require_bool(document: dict[str, Any], path: str) -> bool:
+    value = get_path(document, path)
+    require(isinstance(value, bool), f"{path} must be a boolean")
+    return value
+
+
 def require_int(document: dict[str, Any], path: str, *, min_value: int | None = None) -> int:
     value = get_path(document, path)
     require(isinstance(value, int) and not isinstance(value, bool), f"{path} must be an integer")
@@ -49,6 +56,7 @@ def require_float(document: dict[str, Any], path: str, *, min_value: float | Non
     value = get_path(document, path)
     require(isinstance(value, (int, float)) and not isinstance(value, bool), f"{path} must be numeric")
     out = float(value)
+    require(math.isfinite(out), f"{path} must be finite")
     if min_value is not None:
         require(out >= min_value, f"{path} must be >= {min_value}, got {out}")
     return out
@@ -80,7 +88,7 @@ def validate_nodes(report: dict[str, Any], *, allow_heterogeneous: bool) -> list
         require(arch in {"arm64", "aarch64"}, f"node {node_id} must be Apple Silicon arm64/aarch64, got {arch}")
         require_str(node, "mac_model")
         require_int(node, "memory_bytes", min_value=1)
-        require(bool(get_path(node, "healthy")), f"node {node_id} must be healthy")
+        require(require_bool(node, "healthy"), f"node {node_id} must be healthy")
         role = require_str(node, "role")
         require(role in {"voter", "learner"}, f"node {node_id} role must be voter or learner")
         nodes.append(node)
@@ -120,7 +128,7 @@ def validate_links(report: dict[str, Any], nodes: list[dict[str, Any]], args: ar
         seen_pairs.add(pair)
         transport = require_str(link, "transport").lower()
         require(transport == "thunderbolt", f"link {source}-{target} transport must be thunderbolt")
-        require(bool(get_path(link, "healthy")), f"link {source}-{target} must be healthy")
+        require(require_bool(link, "healthy"), f"link {source}-{target} must be healthy")
         latency_us = require_float(link, "latency_p95_us", min_value=0.0)
         bandwidth_gbps = require_float(link, "bandwidth_gbps", min_value=0.0)
         loss = require_float(link, "packet_loss_percent", min_value=0.0)
@@ -166,7 +174,7 @@ def validate_failure_tests(report: dict[str, Any]) -> None:
         require(isinstance(test, dict), f"failure_tests[{idx}] must be an object")
         kind = require_str(test, "kind")
         seen.add(kind)
-        require(bool(get_path(test, "passed")), f"failure test {kind} must pass")
+        require(require_bool(test, "passed"), f"failure test {kind} must pass")
         status = require_str(test, "observed_status")
         require(status in {"healthy", "degraded"}, f"failure test {kind} observed_status must be healthy or degraded")
         require_float(test, "recovery_time_ms", min_value=0.0)

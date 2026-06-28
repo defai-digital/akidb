@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,12 @@ def require_str(document: dict[str, Any], path: str) -> str:
     return value
 
 
+def require_bool(document: dict[str, Any], path: str) -> bool:
+    value = get_path(document, path)
+    require(isinstance(value, bool), f"{path} must be a boolean")
+    return value
+
+
 def require_int(document: dict[str, Any], path: str, *, min_value: int | None = None) -> int:
     value = get_path(document, path)
     require(isinstance(value, int) and not isinstance(value, bool), f"{path} must be an integer")
@@ -46,6 +53,7 @@ def require_float(document: dict[str, Any], path: str, *, min_value: float | Non
     value = get_path(document, path)
     require(isinstance(value, (int, float)) and not isinstance(value, bool), f"{path} must be numeric")
     out = float(value)
+    require(math.isfinite(out), f"{path} must be finite")
     if min_value is not None:
         require(out >= min_value, f"{path} must be >= {min_value}, got {out}")
     return out
@@ -101,7 +109,7 @@ def validate_workload(report: dict[str, Any]) -> None:
 
 def validate_backend(report: dict[str, Any], backend: str) -> dict[str, float]:
     prefix = f"backends.{backend}"
-    require(bool(get_path(report, f"{prefix}.available")), f"{backend} backend must be available")
+    require(require_bool(report, f"{prefix}.available"), f"{backend} backend must be available")
     require_str(report, f"{prefix}.implementation")
     require_float(report, f"{prefix}.ingest.wall_time_ms", min_value=0.000001)
     require_float(report, f"{prefix}.ingest.nodes_per_sec", min_value=0.000001)
