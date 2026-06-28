@@ -541,13 +541,7 @@ where
         }
         serde_json::from_str::<serde_json::Value>(metadata)
             .ok()
-            .and_then(|m| {
-                m.get("related_ids").and_then(|v| v.as_array()).map(|ids| {
-                    ids.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-            })
+            .map(|m| Self::metadata_string_values(Some(&m), "related_ids"))
             .unwrap_or_default()
     }
 

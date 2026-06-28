@@ -1257,6 +1257,33 @@ async fn test_insert_metadata_indexes_graph_related_ids_for_pack() {
 }
 
 #[tokio::test]
+async fn test_insert_metadata_indexes_single_graph_related_id_for_pack() {
+    let (svc, _graph) = setup_with_graph();
+    insert(
+        &svc,
+        "related",
+        vec![0.0, 0.0, 1.0],
+        "single related graph context",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle anchor text",
+        br#"{"related_ids":"related"}"#,
+    )
+    .await;
+
+    let pack = pack_for(&svc, "needle", 1).await;
+    assert!(
+        pack.contains("single related graph context"),
+        "related_ids string metadata should create graph context edge, got: {pack}"
+    );
+}
+
+#[tokio::test]
 async fn test_insert_upsert_removes_stale_graph_related_context() {
     let (svc, _graph) = setup_with_graph();
     insert(
