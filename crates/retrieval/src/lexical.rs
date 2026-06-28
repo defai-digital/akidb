@@ -51,10 +51,10 @@ fn finite_f32(score: f64) -> f32 {
 
 /// Tokenize text into lowercase identifier-aware terms.
 ///
-/// Splitting on any non-alphanumeric character keeps identifiers like
-/// `tokenRefresh` as a single token while breaking `foo.bar(baz)` into
-/// `foo`, `bar`, `baz`. Snake_case identifiers keep their exact token and also
-/// emit split subterms so plain-word queries can still recall them.
+/// Splitting on any non-identifier character keeps identifiers like
+/// `tokenRefresh` as exact tokens while breaking `foo.bar(baz)` into
+/// `foo`, `bar`, `baz`. Snake_case and camelCase identifiers keep their exact
+/// token and also emit split subterms so plain-word queries can still recall them.
 pub fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for raw in text
@@ -63,13 +63,11 @@ pub fn tokenize(text: &str) -> Vec<String> {
     {
         let token = raw.to_lowercase();
         tokens.push(token.clone());
-        if token.contains('_') {
-            tokens.extend(
-                token
-                    .split('_')
-                    .filter(|part| !part.is_empty())
-                    .map(|part| part.to_string()),
-            );
+        for part in identifier_subterms(raw) {
+            let part = part.to_lowercase();
+            if part != token && !part.is_empty() {
+                tokens.push(part);
+            }
         }
     }
     tokens
@@ -77,6 +75,46 @@ pub fn tokenize(text: &str) -> Vec<String> {
 
 fn is_token_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+fn identifier_subterms(raw: &str) -> Vec<String> {
+    raw.split('_')
+        .filter(|part| !part.is_empty())
+        .flat_map(split_camel_case)
+        .collect()
+}
+
+fn split_camel_case(segment: &str) -> Vec<String> {
+    if segment.is_empty() {
+        return Vec::new();
+    }
+
+    let chars: Vec<(usize, char)> = segment.char_indices().collect();
+    let mut parts = Vec::new();
+    let mut start = 0;
+
+    for i in 1..chars.len() {
+        let prev = chars[i - 1].1;
+        let cur = chars[i].1;
+        let next = chars.get(i + 1).map(|(_, c)| *c);
+
+        let boundary = cur.is_uppercase()
+            && (prev.is_lowercase()
+                || prev.is_numeric()
+                || (prev.is_uppercase() && next.is_some_and(|c| c.is_lowercase())));
+        if boundary {
+            let idx = chars[i].0;
+            if start < idx {
+                parts.push(segment[start..idx].to_string());
+            }
+            start = idx;
+        }
+    }
+
+    if start < segment.len() {
+        parts.push(segment[start..].to_string());
+    }
+    parts
 }
 
 /// An in-memory BM25 inverted index keyed by external [`VectorId`].
@@ -281,10 +319,18 @@ mod tests {
     fn test_tokenize_lowercases_and_splits_on_non_alphanumeric() {
         assert_eq!(tokenize("Hello, World!"), vec!["hello", "world"]);
         assert_eq!(tokenize("foo.bar(baz)"), vec!["foo", "bar", "baz"]);
-        // identifiers without separators stay whole
-        assert_eq!(tokenize("tokenRefresh"), vec!["tokenrefresh"]);
+        // identifiers without separators keep the exact lowercase token
+        assert!(tokenize("tokenRefresh").contains(&"tokenrefresh".to_string()));
         assert_eq!(tokenize("   "), Vec::<String>::new());
         assert_eq!(tokenize(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_tokenize_preserves_camel_case_identifier_and_parts() {
+        assert_eq!(
+            tokenize("tokenRefresh"),
+            vec!["tokenrefresh", "token", "refresh"]
+        );
     }
 
     #[test]
@@ -374,6 +420,17 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, id("z_exact"));
         assert!(hits[0].score > hits[1].score);
+    }
+
+    #[test]
+    fn test_camel_case_identifier_matches_split_word_query() {
+        let mut index = Bm25Index::new();
+        index.insert(id("doc"), "tokenRefresh");
+
+        let hits = index.search("token refresh", 10);
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, id("doc"));
     }
 
     #[test]
