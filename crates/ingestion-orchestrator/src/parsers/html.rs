@@ -23,7 +23,7 @@ impl HtmlParser {
         for child in element.children() {
             if let Some(el) = ElementRef::wrap(child) {
                 let tag_name = el.value().name();
-                if excluded_tags.contains(tag_name) {
+                if excluded_tags.contains(tag_name) || Self::is_hidden_element(el) {
                     // Skip script, style, and other excluded elements
                     continue;
                 }
@@ -37,6 +37,32 @@ impl HtmlParser {
                 }
             }
         }
+    }
+
+    fn is_hidden_element(element: ElementRef) -> bool {
+        if element.value().attr("hidden").is_some() {
+            return true;
+        }
+        if element
+            .value()
+            .attr("aria-hidden")
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
+        {
+            return true;
+        }
+        let Some(style) = element.value().attr("style") else {
+            return false;
+        };
+        style
+            .split(';')
+            .filter_map(|declaration| declaration.split_once(':'))
+            .any(|(property, value)| {
+                let property = property.trim();
+                let value = value.trim();
+                (property.eq_ignore_ascii_case("display") && value.eq_ignore_ascii_case("none"))
+                    || (property.eq_ignore_ascii_case("visibility")
+                        && value.eq_ignore_ascii_case("hidden"))
+            })
     }
 
     fn push_semantic_attributes(element: ElementRef, text: &mut String) {
@@ -239,5 +265,29 @@ mod tests {
         assert!(result.text.contains("AkiDB query planner diagram"));
         assert!(result.text.contains("Run ingestion sync"));
         assert!(result.text.contains("Model Context Protocol"));
+    }
+
+    #[test]
+    fn test_parse_html_excludes_hidden_elements() {
+        let parser = HtmlParser::new();
+        let data = br#"
+            <html>
+                <body>
+                    <p>Visible contract text</p>
+                    <div hidden>Hidden draft contract amount</div>
+                    <div aria-hidden="true">Screen-reader hidden token</div>
+                    <div style="display:none">Inline display none token</div>
+                    <div style="visibility: hidden">Inline visibility hidden token</div>
+                </body>
+            </html>
+        "#;
+
+        let result = parser.parse(data).unwrap();
+
+        assert!(result.text.contains("Visible contract text"));
+        assert!(!result.text.contains("Hidden draft contract amount"));
+        assert!(!result.text.contains("Screen-reader hidden token"));
+        assert!(!result.text.contains("Inline display none token"));
+        assert!(!result.text.contains("Inline visibility hidden token"));
     }
 }
