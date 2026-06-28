@@ -207,7 +207,11 @@ fn strip_rust_word_prefix<'a>(t: &'a str, word: &str) -> Option<&'a str> {
 
 fn strip_rust_const_fn_prefix(t: &str) -> Option<&str> {
     let rest = strip_rust_word_prefix(t, "const")?;
-    if rest.starts_with("fn ") {
+    if rest.starts_with("fn ")
+        || rest.starts_with("async ")
+        || rest.starts_with("unsafe ")
+        || rest.starts_with("extern ")
+    {
         Some(rest)
     } else {
         None
@@ -760,6 +764,25 @@ pub fn search() {}";
         assert_eq!(chunks[2].kind, SymbolKind::TypeAlias);
         assert_eq!(chunks[3].kind, SymbolKind::Macro);
         assert!(chunks[3].text.contains("println!"));
+    }
+
+    #[test]
+    fn test_rust_const_unsafe_extern_function_is_chunked() {
+        let src = "\
+pub const unsafe extern \"C\" fn stable_ffi() -> usize {
+    42
+}
+
+pub fn next_symbol() {}";
+        let chunks = chunk_code(src, Language::Rust);
+        let names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|chunk| chunk.name.as_deref())
+            .collect();
+
+        assert_eq!(names, vec!["stable_ffi", "next_symbol"]);
+        assert_eq!(chunks[0].kind, SymbolKind::Function);
+        assert!(chunks[0].text.contains("unsafe extern"));
     }
 
     #[test]
