@@ -315,6 +315,7 @@ it defines the evidence required to mark that validation complete.
 - [Platform Support](docs/platform/SUPPORT.md) - macOS Apple Silicon support matrix
 - [One-Mac Benchmark](docs/quality/one-mac-benchmark.md) - reproducible benchmark artifact workflow
 - [Four-Mac Cell Validation](docs/quality/four-mac-cell-validation.md) - Thunderbolt cell validation artifact gate
+- [Four-Mac Evidence Manifest](docs/quality/four-mac-evidence-manifest.md) - required files for the real hardware run
 - [Kuzu Decision Gate](docs/quality/kuzu-decision-gate.md) - native-vs-Kuzu graph adapter benchmark gate
 - [Vector Quality Gates](docs/quality/vector-quality.md) - recall and semantic retrieval QA
 

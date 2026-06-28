@@ -17,6 +17,8 @@ Smoke-test the evidence pipeline after changing validators or builders:
 ```
 
 The smoke test uses synthetic inputs and does not prove hardware readiness.
+For the real hardware run, follow the required evidence file manifest in
+`four-mac-evidence-manifest.md`.
 
 Create a measured-input template:
 
