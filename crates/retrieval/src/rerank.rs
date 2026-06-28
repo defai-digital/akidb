@@ -61,6 +61,33 @@ impl MmrItem {
     }
 }
 
+fn has_better_relevance(candidate: &MmrItem, current: &MmrItem) -> bool {
+    candidate
+        .relevance
+        .is_finite()
+        .cmp(&current.relevance.is_finite())
+        .then_with(|| {
+            finite_score(candidate.relevance)
+                .partial_cmp(&finite_score(current.relevance))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .is_gt()
+}
+
+fn deduplicate_mmr_items(items: &[MmrItem]) -> Vec<&MmrItem> {
+    let mut unique: Vec<&MmrItem> = Vec::new();
+    for item in items {
+        if let Some(existing) = unique.iter_mut().find(|existing| existing.id == item.id) {
+            if has_better_relevance(item, existing) {
+                *existing = item;
+            }
+        } else {
+            unique.push(item);
+        }
+    }
+    unique
+}
+
 /// Maximal Marginal Relevance reselection.
 ///
 /// `lambda` in `[0, 1]` trades relevance vs. diversity: `1.0` is pure relevance
@@ -79,7 +106,7 @@ pub fn mmr(items: &[MmrItem], lambda: f32, top_k: usize) -> Vec<ScoredId> {
         0.5
     };
 
-    let mut remaining: Vec<&MmrItem> = items.iter().collect();
+    let mut remaining = deduplicate_mmr_items(items);
     let mut selected: Vec<&MmrItem> = Vec::new();
     let mut out: Vec<ScoredId> = Vec::new();
 
@@ -297,6 +324,20 @@ mod tests {
             MmrItem::new(id("c"), 0.7, vec![1.0, 1.0]),
         ];
         assert_eq!(mmr(&items, 0.5, 2).len(), 2);
+    }
+
+    #[test]
+    fn test_mmr_deduplicates_ids() {
+        let items = [
+            MmrItem::new(id("dup"), 0.9, vec![1.0, 0.0]),
+            MmrItem::new(id("other"), 0.8, vec![0.0, 1.0]),
+            MmrItem::new(id("dup"), 0.7, vec![0.5, 0.5]),
+        ];
+
+        let out = mmr(&items, 1.0, 3);
+
+        let order: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(order, vec!["dup", "other"]);
     }
 
     #[test]
