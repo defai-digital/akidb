@@ -99,6 +99,18 @@ fn normalize(mut v: Vec<f32>) -> Vec<f32> {
     v
 }
 
+fn alphabetic_suffix(mut n: usize) -> String {
+    let mut chars = Vec::new();
+    loop {
+        chars.push((b'a' + (n % 26) as u8) as char);
+        n /= 26;
+        if n == 0 {
+            break;
+        }
+    }
+    chars.iter().rev().collect()
+}
+
 fn brute_force_dense(query: &[f32], docs: &[(VectorId, Vec<f32>)], k: usize) -> Vec<ScoredId> {
     let mut scored: Vec<ScoredId> = docs
         .iter()
@@ -163,7 +175,7 @@ pub fn run_controlled_eval(
     let mut queries: Vec<Q> = Vec::new();
     for q in 0..num_queries {
         let q_emb = rng.vector(dims);
-        let term = format!("qterm{q}");
+        let term = format!("qterm{}", alphabetic_suffix(q));
         let mut relevant = HashSet::new();
 
         // Semantic relevant: embedding near the query, text without the term.

@@ -98,10 +98,12 @@ fn split_camel_case(segment: &str) -> Vec<String> {
         let cur = chars[i].1;
         let next = chars.get(i + 1).map(|(_, c)| *c);
 
-        let boundary = cur.is_uppercase()
+        let boundary = (cur.is_uppercase()
             && (prev.is_lowercase()
                 || prev.is_numeric()
-                || (prev.is_uppercase() && next.is_some_and(|c| c.is_lowercase())));
+                || (prev.is_uppercase() && next.is_some_and(|c| c.is_lowercase()))))
+            || (cur.is_numeric() && !prev.is_numeric())
+            || (!cur.is_numeric() && prev.is_numeric());
         if boundary {
             let idx = chars[i].0;
             if start < idx {
@@ -334,6 +336,14 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenize_preserves_digit_boundary_identifier_parts() {
+        assert_eq!(
+            tokenize("Gemma2Model"),
+            vec!["gemma2model", "gemma", "2", "model"]
+        );
+    }
+
+    #[test]
     fn test_tokenize_preserves_snake_case_identifier_and_parts() {
         assert_eq!(
             tokenize("contract_amount"),
@@ -431,6 +441,19 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, id("doc"));
+    }
+
+    #[test]
+    fn test_digit_boundary_identifier_matches_split_word_query() {
+        let mut index = Bm25Index::new();
+        index.insert(id("z_exact"), "Gemma2Model");
+        index.insert(id("a_partial"), "generic model");
+
+        let hits = index.search("gemma 2 model", 10);
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, id("z_exact"));
+        assert!(hits[0].score > hits[1].score);
     }
 
     #[test]
