@@ -142,6 +142,9 @@ impl Bm25Index {
         }
 
         let tokens = tokenize(text);
+        if tokens.is_empty() {
+            return;
+        }
         let len = tokens.len() as u32;
 
         // Build the per-document term-frequency map.
@@ -296,6 +299,28 @@ mod tests {
 
         // A query term absent from every document yields no results.
         assert!(index.search("elephant", 10).is_empty());
+    }
+
+    #[test]
+    fn test_empty_document_is_not_indexed_and_upsert_removes_existing() {
+        let mut index = Bm25Index::new();
+
+        index.insert(id("empty"), "   !!!   ");
+        assert_eq!(index.len(), 0);
+        assert!(!index.contains(&id("empty")));
+        assert_eq!(index.avgdl(), 0.0);
+
+        index.insert(id("doc"), "alpha beta");
+        assert_eq!(index.len(), 1);
+        assert!(index
+            .search("alpha", 10)
+            .iter()
+            .any(|hit| hit.id == id("doc")));
+
+        index.insert(id("doc"), " \n\t ");
+        assert_eq!(index.len(), 0);
+        assert!(!index.contains(&id("doc")));
+        assert!(index.search("alpha", 10).is_empty());
     }
 
     #[test]
