@@ -259,8 +259,7 @@ fn document_format_from_response(response_format: &str, filename: &str) -> Docum
         return response_format;
     }
 
-    let ext = filename.rsplit('.').next().unwrap_or("");
-    DocumentFormat::from_extension(ext)
+    DocumentFormat::from_extension(filename)
 }
 
 #[cfg(test)]
@@ -327,6 +326,26 @@ mod tests {
         };
 
         let parsed = parsed_document_from_response(response, "report.docx");
+
+        assert_eq!(parsed.format, DocumentFormat::Docx);
+    }
+
+    #[test]
+    fn test_parse_response_filename_fallback_handles_paths_and_query_strings() {
+        let response = ParseResponse {
+            text: "body".to_string(),
+            format: "application/octet-stream".to_string(),
+            page_count: 1,
+            metadata: HashMap::new(),
+            tables: vec![],
+            images: vec![],
+            parse_time_ms: 1.0,
+        };
+
+        let parsed = parsed_document_from_response(
+            response,
+            "https://example.test/docs/report.docx?download=1",
+        );
 
         assert_eq!(parsed.format, DocumentFormat::Docx);
     }
