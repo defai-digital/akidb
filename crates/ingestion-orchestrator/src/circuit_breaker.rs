@@ -3,8 +3,8 @@
 //! Implements the circuit breaker pattern to prevent cascading failures
 //! when the Python parser service becomes unavailable or slow.
 
-use std::sync::atomic::{AtomicU8, AtomicUsize, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::time::Instant;
 use tracing::{info, warn};
 
 use crate::config::CircuitBreakerConfig;
@@ -103,21 +103,22 @@ impl CircuitBreaker {
                         return false;
                     }
                 }
-                CircuitState::HalfOpen => {
-                    // Atomically check and increment success count
-                    // Use fetch_add and check the result to avoid exceeding max_calls
-                    let previous = self.success_count.fetch_add(1, Ordering::SeqCst);
-
-                    if previous < self.config.half_open_max_calls {
-                        // We got a slot
-                        return true;
-                    } else {
-                        // We exceeded the limit - decrement and reject
-                        // This prevents spurious successes from exceeding the limit
-                        self.success_count.fetch_sub(1, Ordering::SeqCst);
+                CircuitState::HalfOpen => loop {
+                    let previous = self.success_count.load(Ordering::SeqCst);
+                    if previous >= self.config.half_open_max_calls {
                         return false;
                     }
-                }
+
+                    match self.success_count.compare_exchange(
+                        previous,
+                        previous + 1,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => return true,
+                        Err(_) => continue,
+                    }
+                },
             }
         }
     }
@@ -180,11 +181,15 @@ impl CircuitBreaker {
     ///
     /// FIX: Use compare_exchange for atomic state transitions
     pub fn record_failure(&self) {
-        let failures = self.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
-        self.last_failure_time.store(
-            self.start_time.elapsed().as_secs(),
-            Ordering::SeqCst,
-        );
+        let previous_failures = self
+            .failure_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.saturating_add(1))
+            })
+            .unwrap_or_else(|current| current);
+        let failures = previous_failures.saturating_add(1);
+        self.last_failure_time
+            .store(self.start_time.elapsed().as_secs(), Ordering::SeqCst);
 
         loop {
             let current_state = self.state.load(Ordering::SeqCst);
@@ -253,7 +258,8 @@ impl CircuitBreaker {
 
     /// Reset the circuit breaker to closed state
     pub fn reset(&self) {
-        self.state.store(CircuitState::Closed as u8, Ordering::SeqCst);
+        self.state
+            .store(CircuitState::Closed as u8, Ordering::SeqCst);
         self.failure_count.store(0, Ordering::SeqCst);
         self.success_count.store(0, Ordering::SeqCst);
         info!("Circuit breaker reset to closed");
@@ -349,7 +355,40 @@ mod tests {
         assert!(cb.allow_request());
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
-        assert!(cb.allow_request(), "zero half-open max calls should normalize to one");
+        assert!(
+            cb.allow_request(),
+            "zero half-open max calls should normalize to one"
+        );
         assert_eq!(cb.state(), CircuitState::HalfOpen);
+    }
+
+    #[test]
+    fn test_failure_count_saturates_without_wrapping() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: usize::MAX,
+            reset_timeout_secs: 1,
+            half_open_max_calls: 1,
+        });
+        cb.failure_count.store(usize::MAX, Ordering::SeqCst);
+
+        cb.record_failure();
+
+        assert_eq!(cb.failure_count.load(Ordering::SeqCst), usize::MAX);
+        assert_eq!(cb.state(), CircuitState::Open);
+    }
+
+    #[test]
+    fn test_half_open_success_count_does_not_wrap() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            reset_timeout_secs: 1,
+            half_open_max_calls: usize::MAX,
+        });
+        cb.state
+            .store(CircuitState::HalfOpen as u8, Ordering::SeqCst);
+        cb.success_count.store(usize::MAX, Ordering::SeqCst);
+
+        assert!(!cb.allow_request());
+        assert_eq!(cb.success_count.load(Ordering::SeqCst), usize::MAX);
     }
 }
