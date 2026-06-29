@@ -38,9 +38,7 @@ impl Default for BackpressureConfig {
 }
 
 fn sanitize_config(mut config: BackpressureConfig) -> BackpressureConfig {
-    config.max_concurrent = config
-        .max_concurrent
-        .clamp(1, Semaphore::MAX_PERMITS);
+    config.max_concurrent = config.max_concurrent.clamp(1, Semaphore::MAX_PERMITS);
     config
 }
 
@@ -61,8 +59,15 @@ impl std::fmt::Display for BackpressureError {
             Self::TooManyConcurrent { current, max } => {
                 write!(f, "Too many concurrent requests: {}/{}", current, max)
             }
-            Self::RateLimitExceeded { current_rps, max_rps } => {
-                write!(f, "Rate limit exceeded: {} RPS (max: {})", current_rps, max_rps)
+            Self::RateLimitExceeded {
+                current_rps,
+                max_rps,
+            } => {
+                write!(
+                    f,
+                    "Rate limit exceeded: {} RPS (max: {})",
+                    current_rps, max_rps
+                )
             }
             Self::QueueDepthExceeded { current, max } => {
                 write!(f, "Queue depth exceeded: {}/{}", current, max)
@@ -132,18 +137,29 @@ impl RateLimiter {
             return Ok(());
         }
 
-        // Try to increment within the window
-        let current = self.count.fetch_add(1, Ordering::AcqRel);
-        if current >= self.max_requests {
-            self.count.fetch_sub(1, Ordering::AcqRel);
-            let elapsed = now.duration_since(*window_start);
-            // Use milliseconds for better precision when elapsed is < 1 second
-            let elapsed_ms = elapsed.as_millis().max(1) as u64;
-            let current_rps = requests_per_second(current, elapsed_ms);
-            // FIX BUG-077: Use milliseconds for consistent precision when reporting max_rps
-            let window_ms = self.window.as_millis().max(1) as u64;
-            let max_rps = requests_per_second(self.max_requests, window_ms);
-            return Err((current_rps, max_rps));
+        // Atomically reserve a slot without wrapping at u64::MAX.
+        let mut current = self.count.load(Ordering::Acquire);
+        loop {
+            if current >= self.max_requests {
+                let elapsed = now.duration_since(*window_start);
+                // Use milliseconds for better precision when elapsed is < 1 second
+                let elapsed_ms = elapsed.as_millis().max(1) as u64;
+                let current_rps = requests_per_second(current, elapsed_ms);
+                // FIX BUG-077: Use milliseconds for consistent precision when reporting max_rps
+                let window_ms = self.window.as_millis().max(1) as u64;
+                let max_rps = requests_per_second(self.max_requests, window_ms);
+                return Err((current_rps, max_rps));
+            }
+
+            match self.count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
         }
 
         Ok(())
@@ -170,7 +186,10 @@ fn requests_per_window(max_rps: u64, window_ms: u64) -> u64 {
     if max_rps == 0 {
         0
     } else {
-        max_rps.saturating_mul(window_ms).saturating_div(1000).max(1)
+        max_rps
+            .saturating_mul(window_ms)
+            .saturating_div(1000)
+            .max(1)
     }
 }
 
@@ -222,25 +241,24 @@ impl BackpressureController {
     pub async fn try_acquire(&self) -> Result<RequestGuard<'_>, BackpressureError> {
         // Check rate limit first
         if let Err((current_rps, max_rps)) = self.rate_limiter.try_acquire() {
-            self.rejected.fetch_add(1, Ordering::Relaxed);
-            return Err(BackpressureError::RateLimitExceeded { current_rps, max_rps });
+            saturating_increment_u64(&self.rejected);
+            return Err(BackpressureError::RateLimitExceeded {
+                current_rps,
+                max_rps,
+            });
         }
 
-        // Check queue depth
-        // FIX BUG-063: Note on atomics - fetch_add returns the PREVIOUS value.
-        // We check if the previous depth was already at max, meaning our addition
-        // would exceed it. This is correct behavior. The queue_depth metric may
-        // momentarily show inflated values during the increment-check-rollback window,
-        // but this is acceptable for a monitoring metric. Using compare_exchange
-        // would be stricter but could cause livelock under extreme load.
-        let queue_depth = self.queue_depth.fetch_add(1, Ordering::AcqRel);
-        if self.config.max_queue_depth > 0 && queue_depth >= self.config.max_queue_depth {
-            self.queue_depth.fetch_sub(1, Ordering::AcqRel);
-            self.rejected.fetch_add(1, Ordering::Relaxed);
-            return Err(BackpressureError::QueueDepthExceeded {
-                current: queue_depth + 1, // FIX BUG-063: Report the actual depth after our add
-                max: self.config.max_queue_depth,
-            });
+        // Check queue depth and reserve a queue slot without a wrap-prone
+        // increment/rollback pair.
+        match reserve_queue_slot(&self.queue_depth, self.config.max_queue_depth) {
+            Ok(_) => {}
+            Err(queue_depth) => {
+                saturating_increment_u64(&self.rejected);
+                return Err(BackpressureError::QueueDepthExceeded {
+                    current: queue_depth.saturating_add(1),
+                    max: self.config.max_queue_depth,
+                });
+            }
         }
 
         // Try to acquire semaphore permit (non-blocking check for load shedding)
@@ -256,8 +274,8 @@ impl BackpressureController {
                     // Previously this fell through to blocking wait, which defeats
                     // the purpose of load shedding.
                     self.queue_depth.fetch_sub(1, Ordering::AcqRel);
-                    self.shed.fetch_add(1, Ordering::Relaxed);
-                    self.rejected.fetch_add(1, Ordering::Relaxed);
+                    saturating_increment_u64(&self.shed);
+                    saturating_increment_u64(&self.rejected);
                     return Err(BackpressureError::TooManyConcurrent {
                         current: self.in_flight.load(Ordering::Acquire),
                         max: self.config.max_concurrent,
@@ -268,7 +286,7 @@ impl BackpressureController {
             // Blocking wait
             let permit = self.semaphore.acquire().await.map_err(|_| {
                 self.queue_depth.fetch_sub(1, Ordering::AcqRel);
-                self.rejected.fetch_add(1, Ordering::Relaxed);
+                saturating_increment_u64(&self.rejected);
                 BackpressureError::TooManyConcurrent {
                     current: self.in_flight.load(Ordering::Acquire),
                     max: self.config.max_concurrent,
@@ -279,7 +297,7 @@ impl BackpressureController {
         };
 
         self.in_flight.fetch_add(1, Ordering::AcqRel);
-        self.accepted.fetch_add(1, Ordering::Relaxed);
+        saturating_increment_u64(&self.accepted);
 
         Ok(RequestGuard {
             controller: self,
@@ -311,8 +329,7 @@ impl BackpressureController {
         // or if queue is more than 50% full
         let concurrent_pressure_threshold = self.config.max_concurrent.saturating_mul(8) / 10;
         in_flight > concurrent_pressure_threshold
-            || (self.config.max_queue_depth > 0
-                && queue_depth > (self.config.max_queue_depth / 2))
+            || (self.config.max_queue_depth > 0 && queue_depth > (self.config.max_queue_depth / 2))
     }
 
     /// Get current load as a percentage (0-100+)
@@ -324,6 +341,32 @@ impl BackpressureController {
         }
         let percentage = in_flight.saturating_mul(100) / max;
         percentage.min(u32::MAX as u128) as u32
+    }
+}
+
+fn reserve_queue_slot(counter: &AtomicUsize, max_depth: usize) -> Result<usize, usize> {
+    let mut current = counter.load(Ordering::Acquire);
+    loop {
+        if max_depth > 0 && current >= max_depth {
+            return Err(current);
+        }
+
+        let next = current.saturating_add(1);
+        match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Ok(next),
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn saturating_increment_u64(counter: &AtomicU64) -> u64 {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_add(1);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => current = actual,
+        }
     }
 }
 
@@ -468,6 +511,7 @@ mod tests {
 
         assert_eq!(current_rps, u64::MAX);
         assert_eq!(max_rps, u64::MAX);
+        assert_eq!(limiter.count.load(Ordering::Acquire), u64::MAX);
     }
 
     #[test]
@@ -499,6 +543,57 @@ mod tests {
         assert_eq!(controller.stats().in_flight, 1);
         drop(guard);
         assert_eq!(controller.stats().in_flight, 0);
+    }
+
+    #[tokio::test]
+    async fn test_queue_depth_limit_does_not_wrap_at_usize_max() {
+        let controller = BackpressureController::with_config(BackpressureConfig {
+            max_concurrent: 1,
+            rate_limit_rps: 0,
+            max_queue_depth: 1,
+            enable_load_shedding: false,
+            ..Default::default()
+        });
+        controller.queue_depth.store(usize::MAX, Ordering::Release);
+
+        let err = match controller.try_acquire().await {
+            Ok(_) => panic!("saturated queue depth should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, BackpressureError::QueueDepthExceeded { .. }));
+        assert_eq!(controller.queue_depth.load(Ordering::Acquire), usize::MAX);
+        assert_eq!(controller.stats().total_rejected, 1);
+    }
+
+    #[tokio::test]
+    async fn test_backpressure_counters_saturate_without_wrapping() {
+        let controller = BackpressureController::with_config(BackpressureConfig {
+            max_concurrent: 1,
+            rate_limit_rps: 0,
+            max_queue_depth: 0,
+            enable_load_shedding: true,
+            ..Default::default()
+        });
+        controller.accepted.store(u64::MAX, Ordering::Release);
+        controller.rejected.store(u64::MAX, Ordering::Release);
+        controller.shed.store(u64::MAX, Ordering::Release);
+
+        let guard = controller
+            .try_acquire()
+            .await
+            .expect("first request should acquire the only permit");
+        let err = match controller.try_acquire().await {
+            Ok(_) => panic!("second request should be shed"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, BackpressureError::TooManyConcurrent { .. }));
+        let stats = controller.stats();
+        assert_eq!(stats.total_accepted, u64::MAX);
+        assert_eq!(stats.total_rejected, u64::MAX);
+        assert_eq!(stats.total_shed, u64::MAX);
+        drop(guard);
     }
 
     #[test]
