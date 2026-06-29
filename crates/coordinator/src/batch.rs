@@ -354,8 +354,8 @@ impl BatchProcessor {
 
     /// Record batch statistics
     fn record_batch<T>(&self, batch_size: usize, duration: Duration, results: &[Result<T, String>]) {
-        let successful = results.iter().filter(|r| r.is_ok()).count();
-        let failed = batch_size - successful;
+        let successful = results.iter().filter(|r| r.is_ok()).count().min(batch_size);
+        let failed = batch_size.saturating_sub(successful);
         let duration_us = duration.as_micros() as u64;
 
         let mut stats = self.stats.write();
@@ -655,5 +655,24 @@ mod tests {
 
         assert_eq!(processor.config.max_batch_size, 4);
         assert_eq!(processor.config.min_batch_size, 4);
+    }
+
+    #[tokio::test]
+    async fn test_extra_processor_results_do_not_underflow_stats() {
+        async fn extra_results_processor(_items: Vec<i32>) -> Vec<Result<i32, String>> {
+            vec![Ok(1), Ok(2), Ok(3)]
+        }
+
+        let processor = BatchProcessor::new(BatchConfig::default());
+        let result = processor
+            .process_batch(vec![1, 2], extra_results_processor)
+            .await;
+
+        assert_eq!(result.batch_size, 3);
+        let stats = processor.stats();
+        assert_eq!(stats.total_items, 2);
+        assert_eq!(stats.successful_items, 2);
+        assert_eq!(stats.failed_items, 0);
+        assert!(stats.success_rate() <= 1.0);
     }
 }
