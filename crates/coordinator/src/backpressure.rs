@@ -103,6 +103,7 @@ impl RateLimiter {
         // FIX BUG-077: Use milliseconds for precision with sub-second windows
         // Previous code used as_secs() which truncates sub-second durations,
         // causing incorrect max_requests for windows < 1 second
+        let window = window.max(Duration::from_millis(1));
         let window_ms = window.as_millis().max(1) as u64;
         let max_requests = requests_per_window(max_rps, window_ms);
         Self {
@@ -425,6 +426,19 @@ mod tests {
         assert!(
             limiter.try_acquire().is_err(),
             "nonzero RPS must not be rounded down to unlimited"
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_zero_window_is_sanitized() {
+        let limiter = RateLimiter::new(1, Duration::ZERO);
+
+        assert_eq!(limiter.window, Duration::from_millis(1));
+        assert_eq!(limiter.max_requests, 1);
+        assert!(limiter.try_acquire().is_ok());
+        assert!(
+            limiter.try_acquire().is_err(),
+            "zero rate window must not reset the limiter on every request"
         );
     }
 
