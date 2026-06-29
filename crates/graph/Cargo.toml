@@ -4,21 +4,13 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-build = "build.rs"
-
-[[bin]]
-name = "kuzu-graph-bench"
-path = "src/bin/kuzu_graph_bench.rs"
-required-features = ["kuzu"]
 
 [features]
 default = []
-kuzu = ["dep:kuzu_db"]
 
 [dependencies]
 akidb-common = { path = "../common" }
 akidb-storage = { path = "../storage" }
-kuzu_db = { package = "kuzu", version = "0.11.3", optional = true, default-features = false }
 libc = "0.2"
 serde.workspace = true
 serde_json.workspace = true

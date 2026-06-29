@@ -1,7 +1,5 @@
 """Tests for the upload gateway API."""
 
-import pytest
-
 from gateway.config import settings
 
 

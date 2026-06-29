@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
     storage.ensure_bucket()
 
     # Initialize NATS
-    publisher = await get_event_publisher()
+    await get_event_publisher()
 
     yield
 

@@ -34,7 +34,7 @@ pub use pipeline::IngestionPipeline;
 pub use manifest::ManifestStore;
 pub use scheduler::{ChangeDetector, IngestionScheduler, SchedulerConfig};
 pub use lifecycle::{LifecycleManager, LifecycleConfig};
-pub use reindex::{Reindexer, ReindexConfig, ReindexResult};
+pub use reindex::{Reindexer, ReindexConfig, ReindexResult, VersionTombstoner};
 
 /// Result type for ingestion operations
 pub type Result<T> = std::result::Result<T, IngestionError>;

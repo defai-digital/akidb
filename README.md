@@ -56,26 +56,9 @@ Query Planner
 
 The default hot path stays self-contained on Apple Silicon. SQLite can be
 enabled as an optional metadata SQL adapter for exact structured filters.
-PostgreSQL is available as an optional metadata adapter. External graph engines
-such as Kuzu or Apache AGE remain optional adapters, not default runtime
+PostgreSQL is available as an optional metadata adapter. Graph retrieval uses
+the native RocksDB-backed graph index; external graph engines are not runtime
 dependencies.
-
-The Kuzu adapter is compile-gated with `akidb-graph/kuzu`. It now links to the
-Rust Kuzu binding for evaluation, but the default build continues to use the
-native graph index. On macOS, test the adapter with the shared Homebrew Kuzu
-library:
-
-```bash
-KUZU_SHARED=1 \
-KUZU_LIBRARY_DIR=/opt/homebrew/lib \
-KUZU_INCLUDE_DIR=/opt/homebrew/include \
-cargo test -p akidb-graph --features kuzu
-```
-
-Kuzu should not be promoted into the core hot path without a native-vs-Kuzu
-benchmark and maintenance review. Homebrew currently marks Kuzu as deprecated
-because the upstream repository is archived, so AkiDB keeps Kuzu optional unless
-`scripts/validate-kuzu-decision.py` validates a deliberate adoption artifact.
 
 ## Quick Start
 
@@ -221,27 +204,6 @@ Mac15,9 with 128GB memory. The run indexed 1,000,000 768-dimensional vectors,
 served 5,000 `topK=10` queries at 586 QPS, and measured P95/P99 search latency
 of 2.16ms/2.43ms.
 
-### Kuzu Benchmark
-
-Run the native-vs-Kuzu graph benchmark and validate the generated decision
-artifact:
-
-```bash
-./scripts/benchmark-kuzu-decision.sh
-```
-
-For a small smoke run:
-
-```bash
-NODES=50 EDGES=150 QUERIES_PER_KIND=5 \
-OUTPUT=/tmp/akidb-kuzu-decision-smoke.json \
-./scripts/benchmark-kuzu-decision.sh
-```
-
-See `docs/quality/kuzu-decision-gate.md` for artifact requirements. A smoke
-artifact proves the toolchain works; a product decision still requires a
-representative dataset and review of Kuzu's maintenance status.
-
 ### Four-Mac Cell Validation
 
 Before any production claim for a four-Mac Thunderbolt cell, validate a
@@ -316,7 +278,6 @@ it defines the evidence required to mark that validation complete.
 - [One-Mac Benchmark](docs/quality/one-mac-benchmark.md) - reproducible benchmark artifact workflow
 - [Four-Mac Cell Validation](docs/quality/four-mac-cell-validation.md) - Thunderbolt cell validation artifact gate
 - [Four-Mac Evidence Manifest](docs/quality/four-mac-evidence-manifest.md) - required files for the real hardware run
-- [Kuzu Decision Gate](docs/quality/kuzu-decision-gate.md) - native-vs-Kuzu graph adapter benchmark gate
 - [Vector Quality Gates](docs/quality/vector-quality.md) - recall and semantic retrieval QA
 
 Product requirements, architecture decisions, and the technical specification are
@@ -346,14 +307,10 @@ maintained as internal documents and are not part of this public repository.
 - [x] Optional SQLite metadata SQL adapter design
 - [x] Planner-driven SQL metadata retrieval mode for scalar JSON filters
 - [x] Optional PostgreSQL metadata adapter behind `akidb-server/postgres`
-- [x] Optional Kuzu graph adapter binding behind `akidb-graph/kuzu`
-- [x] Kuzu native-vs-Kuzu decision artifact validator
-- [x] Kuzu native-vs-Kuzu benchmark artifact generator
 - [x] One-Mac benchmark artifact validator
 - [x] One-Mac reference benchmark runner
 - [x] Four-Mac cell validation artifact validator
 - [x] Four-Mac cell validation artifact builder
-- [x] Kuzu representative benchmark artifact
 - [x] One-Mac reference benchmark
 - [ ] Four-Mac Thunderbolt cell validation
 

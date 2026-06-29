@@ -18,9 +18,9 @@ from parser.models import (
     ParseRequest,
 )
 from parser.parsers.base import detect_format, get_parser
-from parser.parsers.pdf import PdfParser
 from parser.parsers.docx import DocxParser
 from parser.parsers.enl import EnlParser
+from parser.parsers.pdf import PdfParser
 
 logger = structlog.get_logger()
 

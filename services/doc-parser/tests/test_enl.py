@@ -12,7 +12,6 @@ from parser.models import DocumentFormat
 from parser.parsers.base import detect_format
 from parser.parsers.enl import EnlParser
 
-
 client = TestClient(app)
 
 
@@ -33,7 +32,8 @@ SAMPLE_ENL_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
             <issue>3</issue>
             <pages>123-145</pages>
             <doi>10.1234/jds.2025.001</doi>
-            <abstract>This paper presents a novel approach to machine learning for vector databases, focusing on efficient similarity search algorithms.</abstract>
+            <abstract>This paper presents a novel approach to machine learning for vector
+            databases, focusing on efficient similarity search algorithms.</abstract>
             <keywords>machine learning; vector database; similarity search</keywords>
         </record>
         <record>

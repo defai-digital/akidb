@@ -22,7 +22,10 @@ class ParseRequest(BaseModel):
 
     content_base64: str = Field(..., description="Base64-encoded document content")
     filename: str = Field(..., description="Original filename for format detection")
-    format: DocumentFormat | None = Field(None, description="Document format (auto-detected if not provided)")
+    format: DocumentFormat | None = Field(
+        None,
+        description="Document format (auto-detected if not provided)",
+    )
 
 
 class TableData(BaseModel):

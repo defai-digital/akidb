@@ -4,11 +4,11 @@ import io
 import re
 import time
 import zipfile
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from xml.etree.ElementTree import Element
 
-import defusedxml.ElementTree as ET
 import structlog
+from defusedxml import ElementTree
 
 from parser.models import DocumentFormat, ParsedDocument
 from parser.parsers.base import BaseParser
@@ -143,15 +143,15 @@ class EnlParser(BaseParser):
 
         try:
             # Try to parse as XML
-            root = ET.fromstring(content)
-        except ET.ParseError:
+            root = ElementTree.fromstring(content)
+        except ElementTree.ParseError:
             # Try decoding and cleaning up the content
             try:
                 text = content.decode("utf-8", errors="ignore")
                 # Remove any BOM or invalid characters
                 text = text.lstrip("\ufeff")
-                root = ET.fromstring(text)
-            except ET.ParseError:
+                root = ElementTree.fromstring(text)
+            except ElementTree.ParseError:
                 # Try to extract references using regex as fallback
                 return self._parse_text_fallback(content)
 
@@ -172,7 +172,7 @@ class EnlParser(BaseParser):
                 if found:
                     records = found
                     break
-            except (SyntaxError, ET.ParseError):
+            except (SyntaxError, ElementTree.ParseError):
                 continue
 
         # If no records found, try parsing the whole document as a single reference

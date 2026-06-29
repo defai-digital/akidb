@@ -1,11 +1,8 @@
 """NATS JetStream event publisher."""
 
-import json
-from typing import Any
-
 import nats
-from nats.js.api import StreamConfig
 import structlog
+from nats.js.api import StreamConfig
 
 from gateway.config import settings
 from gateway.models import UploadEvent
@@ -34,7 +31,7 @@ class EventPublisher:
                 await self.js.add_stream(
                     config=StreamConfig(
                         name=self.stream_name,
-                        subjects=[f"minio.uploads.>"],
+                        subjects=["minio.uploads.>"],
                         retention="workqueue",
                         max_msgs=1_000_000,
                         max_bytes=1024 * 1024 * 1024,  # 1GB

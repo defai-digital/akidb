@@ -2,13 +2,10 @@
 //!
 //! This crate owns AkiDB's bounded GraphRAG graph contract. The default
 //! implementation is a lightweight RocksDB-compatible adjacency index built on
-//! the existing storage abstraction. External graph engines can implement the
-//! same trait later without becoming part of the default hot path.
+//! the existing storage abstraction.
 
 pub mod error;
 mod keys;
-#[cfg(feature = "kuzu")]
-pub mod kuzu;
 pub mod model;
 pub mod native;
 pub mod query;

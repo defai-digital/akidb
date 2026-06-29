@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use crate::manifest::ManifestStore;
@@ -106,6 +106,11 @@ pub struct DocumentToReindex {
     pub current_version: u64,
 }
 
+/// Backend hook used to tombstone vectors after a new document version is indexed.
+pub trait VersionTombstoner: Send + Sync {
+    fn tombstone_version(&self, category_uid: &str, version: u64) -> Result<u64>;
+}
+
 /// Reindexer for version-based document reindexing
 ///
 /// This struct provides methods for reindexing documents with new embeddings
@@ -113,12 +118,23 @@ pub struct DocumentToReindex {
 pub struct Reindexer {
     manifest: Arc<ManifestStore>,
     config: ReindexConfig,
+    tombstoner: Option<Arc<dyn VersionTombstoner>>,
 }
 
 impl Reindexer {
     /// Create a new reindexer
     pub fn new(manifest: Arc<ManifestStore>, config: ReindexConfig) -> Self {
-        Self { manifest, config }
+        Self {
+            manifest,
+            config,
+            tombstoner: None,
+        }
+    }
+
+    /// Attach the backend hook used to tombstone old vector versions.
+    pub fn with_tombstoner(mut self, tombstoner: Arc<dyn VersionTombstoner>) -> Self {
+        self.tombstoner = Some(tombstoner);
+        self
     }
 
     /// Plan a reindex operation for a category
@@ -273,36 +289,22 @@ impl Reindexer {
     ///
     /// Called after new vectors are successfully indexed to remove old versions
     ///
-    /// # BUG-010 FIX: This is a TODO placeholder that needs vector storage integration
-    ///
-    /// The implementation should:
-    /// 1. Query all vectors with category_uid and version
-    /// 2. Set tombstone flag on each
-    /// 3. Update tag index to remove entries
-    /// 4. Return count of tombstoned vectors
-    ///
-    /// Currently returns 0 as vector storage integration is not complete.
-    /// Callers should be aware that old vectors are NOT actually tombstoned.
-    pub fn tombstone_old_version(
-        &self,
-        category_uid: &str,
-        version: u64,
-    ) -> Result<u64> {
-        // TODO(BUG-010): Implement actual tombstoning with vector storage
-        // This requires access to:
-        // - Vector storage backend (not currently available in Reindexer)
-        // - Tag index for removing entries
-        //
-        // For now, log a warning so callers are aware this is incomplete
-        warn!(
+    pub fn tombstone_old_version(&self, category_uid: &str, version: u64) -> Result<u64> {
+        let Some(tombstoner) = &self.tombstoner else {
+            return Err(IngestionError::Storage(
+                "Cannot tombstone old reindex version: no vector tombstoner configured"
+                    .to_string(),
+            ));
+        };
+
+        let tombstoned = tombstoner.tombstone_version(category_uid, version)?;
+        info!(
             category = %category_uid,
             version = version,
-            "tombstone_old_version is a TODO: old vectors NOT actually tombstoned"
+            tombstoned = tombstoned,
+            "Tombstoned old reindex vector version"
         );
-
-        // Return 0 to indicate no vectors were tombstoned
-        // Callers should handle this case appropriately
-        Ok(0)
+        Ok(tombstoned)
     }
 
     /// Get the current version for a category
@@ -395,7 +397,32 @@ mod tests {
     use super::*;
     use crate::manifest::ManifestStore;
     use akidb_common::types::{DocumentIdentifier, ObjectManifest};
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    struct MockTombstoner {
+        calls: Mutex<Vec<(String, u64)>>,
+        tombstoned: u64,
+    }
+
+    impl MockTombstoner {
+        fn new(tombstoned: u64) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                tombstoned,
+            }
+        }
+    }
+
+    impl VersionTombstoner for MockTombstoner {
+        fn tombstone_version(&self, category_uid: &str, version: u64) -> Result<u64> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((category_uid.to_string(), version));
+            Ok(self.tombstoned)
+        }
+    }
 
     fn create_test_store() -> Arc<ManifestStore> {
         let dir = tempdir().unwrap();
@@ -570,6 +597,35 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.documents_processed, 1);
+    }
+
+    #[test]
+    fn test_tombstone_old_version_requires_configured_tombstoner() {
+        let store = create_test_store();
+        let reindexer = Reindexer::new(Arc::clone(&store), ReindexConfig::default());
+
+        let result = reindexer.tombstone_old_version("test-cat", 1);
+
+        assert!(
+            matches!(result, Err(IngestionError::Storage(message)) if message.contains("no vector tombstoner"))
+        );
+    }
+
+    #[test]
+    fn test_tombstone_old_version_delegates_to_tombstoner() {
+        let store = create_test_store();
+        let tombstoner = Arc::new(MockTombstoner::new(7));
+        let reindexer =
+            Reindexer::new(Arc::clone(&store), ReindexConfig::default())
+                .with_tombstoner(tombstoner.clone());
+
+        let tombstoned = reindexer.tombstone_old_version("test-cat", 3).unwrap();
+
+        assert_eq!(tombstoned, 7);
+        assert_eq!(
+            *tombstoner.calls.lock().unwrap(),
+            vec![("test-cat".to_string(), 3)]
+        );
     }
 
     #[tokio::test]
