@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+pub const MIN_REFRESH_INTERVAL_MS: u64 = 1;
+
 /// TUI dashboard configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TuiConfig {
@@ -57,18 +59,25 @@ impl Default for TuiConfig {
 }
 
 impl TuiConfig {
+    pub fn normalize(&mut self) {
+        self.refresh_interval_ms = self.refresh_interval_ms.max(MIN_REFRESH_INTERVAL_MS);
+    }
+
     /// Load configuration from file (supports both TOML and JSON)
     pub fn load(path: Option<&PathBuf>) -> Result<Self> {
         if let Some(path) = path {
             let content = std::fs::read_to_string(path)?;
-            let config: TuiConfig = if path.extension().map_or(false, |ext| ext == "json") {
+            let mut config: TuiConfig = if path.extension().map_or(false, |ext| ext == "json") {
                 serde_json::from_str(&content)?
             } else {
                 toml::from_str(&content)?
             };
+            config.normalize();
             Ok(config)
         } else {
-            Ok(Self::default())
+            let mut config = Self::default();
+            config.normalize();
+            Ok(config)
         }
     }
 
@@ -256,5 +265,17 @@ mod tests {
         let config: TuiConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.refresh_interval_ms, 1000);
         assert_eq!(config.discovery_addresses.len(), 2);
+    }
+
+    #[test]
+    fn test_normalize_rejects_zero_refresh_interval() {
+        let mut config = TuiConfig {
+            refresh_interval_ms: 0,
+            ..TuiConfig::default()
+        };
+
+        config.normalize();
+
+        assert_eq!(config.refresh_interval_ms, MIN_REFRESH_INTERVAL_MS);
     }
 }

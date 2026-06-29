@@ -33,6 +33,7 @@ pub struct EventHandler {
 impl EventHandler {
     /// Create a new event handler with the given tick rate
     pub fn new(tick_rate: Duration) -> Self {
+        let tick_rate = sanitize_tick_rate(tick_rate);
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Spawn tick timer task
@@ -83,6 +84,10 @@ impl EventHandler {
     pub fn sender(&self) -> mpsc::UnboundedSender<Event> {
         self.tx.clone()
     }
+}
+
+fn sanitize_tick_rate(tick_rate: Duration) -> Duration {
+    tick_rate.max(Duration::from_millis(1))
 }
 
 /// Handle a key event and update app state
@@ -199,5 +204,13 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
         handle_key_event(&mut app, key);
         assert_eq!(app.selected_panel, Panel::Health);
+    }
+
+    #[test]
+    fn test_zero_tick_rate_is_sanitized() {
+        assert_eq!(
+            sanitize_tick_rate(Duration::ZERO),
+            Duration::from_millis(1)
+        );
     }
 }

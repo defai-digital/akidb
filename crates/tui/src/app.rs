@@ -29,7 +29,8 @@ pub struct App {
 
 impl App {
     /// Create a new application with the given configuration
-    pub fn new(config: TuiConfig) -> Self {
+    pub fn new(mut config: TuiConfig) -> Self {
+        config.normalize();
         Self {
             cluster_state: ClusterState::default(),
             metrics: MetricsState::default(),
@@ -97,6 +98,23 @@ impl App {
     /// Switch to previous panel
     pub fn previous_panel(&mut self) {
         self.next_panel(); // Only two panels, so same as next
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::MIN_REFRESH_INTERVAL_MS;
+
+    #[test]
+    fn test_app_normalizes_zero_refresh_interval() {
+        let app = App::new(TuiConfig {
+            refresh_interval_ms: 0,
+            ..TuiConfig::default()
+        });
+
+        assert_eq!(app.config.refresh_interval_ms, MIN_REFRESH_INTERVAL_MS);
+        assert_eq!(app.tick_rate, Duration::from_millis(MIN_REFRESH_INTERVAL_MS));
     }
 }
 
