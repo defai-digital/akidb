@@ -9,6 +9,10 @@ const IN_PREFIX: &str = "g:in:";
 const CHUNK_PREFIX: &str = "g:chunk:";
 const KIND_PREFIX: &str = "g:kind:";
 
+fn component(value: &str) -> String {
+    format!("{}:{}:", value.len(), value)
+}
+
 pub fn node_key(id: &GraphNodeId) -> Vec<u8> {
     format!("{NODE_PREFIX}{}", id.as_str()).into_bytes()
 }
@@ -27,8 +31,8 @@ pub fn edge_prefix() -> &'static [u8] {
 
 pub fn adjacency_key_out(from: &GraphNodeId, kind: EdgeKind, edge_id: &GraphEdgeId) -> Vec<u8> {
     format!(
-        "{OUT_PREFIX}{}:{}:{}",
-        from.as_str(),
+        "{OUT_PREFIX}{}{}:{}",
+        component(from.as_str()),
         kind.as_key(),
         edge_id.as_str()
     )
@@ -37,8 +41,8 @@ pub fn adjacency_key_out(from: &GraphNodeId, kind: EdgeKind, edge_id: &GraphEdge
 
 pub fn adjacency_key_in(to: &GraphNodeId, kind: EdgeKind, edge_id: &GraphEdgeId) -> Vec<u8> {
     format!(
-        "{IN_PREFIX}{}:{}:{}",
-        to.as_str(),
+        "{IN_PREFIX}{}{}:{}",
+        component(to.as_str()),
         kind.as_key(),
         edge_id.as_str()
     )
@@ -47,24 +51,33 @@ pub fn adjacency_key_in(to: &GraphNodeId, kind: EdgeKind, edge_id: &GraphEdgeId)
 
 pub fn adjacency_prefix_out(node: &GraphNodeId, kind: Option<EdgeKind>) -> Vec<u8> {
     match kind {
-        Some(kind) => format!("{OUT_PREFIX}{}:{}:", node.as_str(), kind.as_key()).into_bytes(),
-        None => format!("{OUT_PREFIX}{}:", node.as_str()).into_bytes(),
+        Some(kind) => {
+            format!("{OUT_PREFIX}{}{}:", component(node.as_str()), kind.as_key()).into_bytes()
+        }
+        None => format!("{OUT_PREFIX}{}", component(node.as_str())).into_bytes(),
     }
 }
 
 pub fn adjacency_prefix_in(node: &GraphNodeId, kind: Option<EdgeKind>) -> Vec<u8> {
     match kind {
-        Some(kind) => format!("{IN_PREFIX}{}:{}:", node.as_str(), kind.as_key()).into_bytes(),
-        None => format!("{IN_PREFIX}{}:", node.as_str()).into_bytes(),
+        Some(kind) => {
+            format!("{IN_PREFIX}{}{}:", component(node.as_str()), kind.as_key()).into_bytes()
+        }
+        None => format!("{IN_PREFIX}{}", component(node.as_str())).into_bytes(),
     }
 }
 
 pub fn chunk_key(entity: &GraphNodeId, chunk: &GraphNodeId) -> Vec<u8> {
-    format!("{CHUNK_PREFIX}{}:{}", entity.as_str(), chunk.as_str()).into_bytes()
+    format!(
+        "{CHUNK_PREFIX}{}{}",
+        component(entity.as_str()),
+        component(chunk.as_str())
+    )
+    .into_bytes()
 }
 
 pub fn chunk_prefix(entity: &GraphNodeId) -> Vec<u8> {
-    format!("{CHUNK_PREFIX}{}:", entity.as_str()).into_bytes()
+    format!("{CHUNK_PREFIX}{}", component(entity.as_str())).into_bytes()
 }
 
 pub fn chunk_all_prefix() -> &'static [u8] {

@@ -533,6 +533,41 @@ mod tests {
     }
 
     #[test]
+    fn test_neighbors_limit_not_consumed_by_prefixed_node_id() {
+        let (_dir, graph) = index();
+        graph.upsert_node(node("a", NodeKind::Entity)).unwrap();
+        graph.upsert_node(node("target", NodeKind::Entity)).unwrap();
+        graph.upsert_node(node("a:b", NodeKind::Entity)).unwrap();
+        for index in 0..8 {
+            let sibling = format!("sibling:{index}");
+            graph.upsert_node(node(&sibling, NodeKind::Entity)).unwrap();
+            graph
+                .upsert_edge(edge(
+                    &format!("sibling-edge:{index}"),
+                    "a:b",
+                    &sibling,
+                    EdgeKind::RelatedTo,
+                    1.0,
+                ))
+                .unwrap();
+        }
+        graph
+            .upsert_edge(edge("real", "a", "target", EdgeKind::RelatedTo, 0.5))
+            .unwrap();
+
+        let neighbors = graph
+            .neighbors(
+                NeighborRequest::new("a")
+                    .with_direction(Direction::Out)
+                    .with_limit(1),
+            )
+            .unwrap();
+
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(neighbors[0].node.id, GraphNodeId::from("target"));
+    }
+
+    #[test]
     fn test_two_hop_and_path_exists() {
         let (_dir, graph) = index();
         for id in ["a", "b", "c"] {
@@ -584,6 +619,34 @@ mod tests {
         assert!(graph.delete_edge(&GraphEdgeId::from("mention")).unwrap());
         assert!(graph
             .related_chunks(&GraphNodeId::from("entity:mtp"), 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_related_chunks_does_not_match_prefixed_entity_id() {
+        let (_dir, graph) = index();
+        graph
+            .upsert_node(node("entity:a", NodeKind::Entity))
+            .unwrap();
+        graph
+            .upsert_node(node("entity:a:b", NodeKind::Entity))
+            .unwrap();
+        graph
+            .upsert_node(node("chunk:sibling", NodeKind::Chunk))
+            .unwrap();
+        graph
+            .upsert_edge(edge(
+                "sibling-chunk",
+                "entity:a:b",
+                "chunk:sibling",
+                EdgeKind::Mentions,
+                1.0,
+            ))
+            .unwrap();
+
+        assert!(graph
+            .related_chunks(&GraphNodeId::from("entity:a"), 1)
             .unwrap()
             .is_empty());
     }
@@ -726,8 +789,12 @@ mod tests {
         graph
             .upsert_node(node("entity:mtp", NodeKind::Entity))
             .unwrap();
-        graph.upsert_node(node("chunk:a-low", NodeKind::Chunk)).unwrap();
-        graph.upsert_node(node("chunk:z-high", NodeKind::Chunk)).unwrap();
+        graph
+            .upsert_node(node("chunk:a-low", NodeKind::Chunk))
+            .unwrap();
+        graph
+            .upsert_node(node("chunk:z-high", NodeKind::Chunk))
+            .unwrap();
         graph
             .upsert_edge(edge(
                 "low",
@@ -761,8 +828,12 @@ mod tests {
         graph
             .upsert_node(node("entity:mtp", NodeKind::Entity))
             .unwrap();
-        graph.upsert_node(node("chunk:dup", NodeKind::Chunk)).unwrap();
-        graph.upsert_node(node("chunk:other", NodeKind::Chunk)).unwrap();
+        graph
+            .upsert_node(node("chunk:dup", NodeKind::Chunk))
+            .unwrap();
+        graph
+            .upsert_node(node("chunk:other", NodeKind::Chunk))
+            .unwrap();
         graph
             .upsert_edge(edge(
                 "dup-mentions",
