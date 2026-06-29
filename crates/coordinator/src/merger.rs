@@ -5,6 +5,8 @@ use akidb_invariants::debug_invariant;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
+const MAX_INITIAL_ALLOCATION: usize = 100_000;
+
 /// Wrapper for SearchResult that implements Ord for min-heap
 struct ScoredResult {
     result: SearchResult,
@@ -73,10 +75,14 @@ pub struct ResultMerger {
 impl ResultMerger {
     /// Create a new merger with given capacity (top_k)
     pub fn new(capacity: usize) -> Self {
+        let heap_capacity = capacity.saturating_add(1).min(MAX_INITIAL_ALLOCATION);
+        let score_capacity = capacity
+            .saturating_mul(2)
+            .min(MAX_INITIAL_ALLOCATION.saturating_mul(2));
         Self {
-            heap: BinaryHeap::with_capacity(capacity + 1),
+            heap: BinaryHeap::with_capacity(heap_capacity),
             capacity,
-            best_scores: HashMap::with_capacity(capacity * 2),
+            best_scores: HashMap::with_capacity(score_capacity),
         }
     }
 
@@ -118,7 +124,8 @@ impl ResultMerger {
             // beyond capacity. We use 1.5x capacity as a buffer (reduced from 2x per BUG-HUNT-003)
             // to prevent memory exhaustion with many shards (100 shards × 1000 results × 2x = 200K entries).
             // This bounds memory while avoiding O(n) operations on every add.
-            if self.heap.len() > (self.capacity * 3) / 2 {
+            let compaction_threshold = self.capacity.saturating_mul(3) / 2;
+            if self.heap.len() > compaction_threshold {
                 // Rebuild heap keeping only top capacity entries
                 let mut sorted: Vec<_> = self.heap.drain().collect();
                 // FIX BUG-HUNT-404: The Ord impl is reversed for min-heap usage, so .sort()
@@ -356,5 +363,12 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id.as_str(), "same-id");
         assert_eq!(results[0].score, 0.6);
+    }
+
+    #[test]
+    fn test_large_capacity_constructor_does_not_overflow() {
+        let result = std::panic::catch_unwind(|| ResultMerger::new(usize::MAX));
+
+        assert!(result.is_ok());
     }
 }
