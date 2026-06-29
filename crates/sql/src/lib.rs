@@ -234,6 +234,8 @@ impl MetadataSqlIndex for SqliteMetadataIndex {
         let file = metadata_string(&record.metadata, "file");
         let language = metadata_string(&record.metadata, "language");
         let updated_at = metadata_string(&record.metadata, "updated_at");
+        let created_at_ms = timestamp_ms_i64("created_at_ms", record.created_at_ms)?;
+        let updated_at_ms = timestamp_ms_i64("updated_at_ms", record.updated_at_ms)?;
 
         self.conn()?.execute(
             "
@@ -264,8 +266,8 @@ impl MetadataSqlIndex for SqliteMetadataIndex {
                 file,
                 language,
                 updated_at,
-                record.created_at_ms as i64,
-                record.updated_at_ms as i64,
+                created_at_ms,
+                updated_at_ms,
             ],
         )?;
         Ok(())
@@ -394,6 +396,8 @@ impl MetadataSqlIndex for PostgresMetadataIndex {
         let file = metadata_string(&record.metadata, "file");
         let language = metadata_string(&record.metadata, "language");
         let updated_at = metadata_string(&record.metadata, "updated_at");
+        let created_at_ms = timestamp_ms_i64("created_at_ms", record.created_at_ms)?;
+        let updated_at_ms = timestamp_ms_i64("updated_at_ms", record.updated_at_ms)?;
 
         self.client()?.execute(
             "
@@ -424,8 +428,8 @@ impl MetadataSqlIndex for PostgresMetadataIndex {
                 &file,
                 &language,
                 &updated_at,
-                &(record.created_at_ms as i64),
-                &(record.updated_at_ms as i64),
+                &created_at_ms,
+                &updated_at_ms,
             ],
         )?;
         Ok(())
@@ -570,6 +574,15 @@ fn sql_value(value: &Value) -> Result<SqlValue> {
     }
 }
 
+fn timestamp_ms_i64(field: &str, value: u64) -> Result<i64> {
+    if value > i64::MAX as u64 {
+        return Err(SqlMetadataError::InvalidQuery(format!(
+            "{field} value {value} exceeds SQL integer range"
+        )));
+    }
+    Ok(value as i64)
+}
+
 #[cfg(feature = "postgres")]
 fn postgres_scalar_value(value: &Value) -> Result<String> {
     match value {
@@ -700,6 +713,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ids, vec!["chunk-a"]);
+    }
+
+    #[test]
+    fn test_upsert_rejects_timestamp_outside_sql_integer_range() {
+        let index = SqliteMetadataIndex::in_memory().unwrap();
+        let err = index
+            .upsert_record(&SqlMetadataRecord::new(
+                "test",
+                "chunk-a",
+                1,
+                json!({"repo": "ax-engine"}),
+                i64::MAX as u64 + 1,
+                20,
+            ))
+            .unwrap_err();
+
+        assert!(matches!(err, SqlMetadataError::InvalidQuery(_)));
     }
 
     #[test]
