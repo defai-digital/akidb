@@ -148,11 +148,15 @@ impl Reindexer {
             .max()
             .unwrap_or(0);
 
+        let new_version = current_max_version.checked_add(1).ok_or_else(|| {
+            IngestionError::Manifest("Reindex version space exhausted".to_string())
+        })?;
+
         Ok(ReindexPlan {
             category_uid: category_uid.to_string(),
             documents,
             current_version: current_max_version,
-            new_version: current_max_version + 1,
+            new_version,
         })
     }
 
@@ -419,6 +423,23 @@ mod tests {
         assert_eq!(plan.category_uid, "category-a");
         assert_eq!(plan.documents.len(), 2);
         assert_eq!(plan.new_version, 1); // 0 + 1
+    }
+
+    #[test]
+    fn test_plan_reindex_rejects_version_exhaustion() {
+        let store = create_test_store();
+        let reindexer = Reindexer::new(Arc::clone(&store), ReindexConfig::default());
+
+        let mut manifest = create_categorized_manifest("doc1.pdf", "category-a");
+        manifest.version = u64::MAX;
+        store.upsert(&manifest).unwrap();
+
+        let result = reindexer.plan_reindex_category("category-a");
+
+        assert!(matches!(
+            result,
+            Err(IngestionError::Manifest(message)) if message.contains("exhausted")
+        ));
     }
 
     #[test]

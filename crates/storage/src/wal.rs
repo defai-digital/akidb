@@ -146,7 +146,7 @@ impl WriteAheadLog {
 
         Ok(Self {
             path,
-            current_lsn: AtomicU64::new(max_lsn + 1),
+            current_lsn: AtomicU64::new(max_lsn.saturating_add(1)),
             writer: Mutex::new(Some(writer)),
             sync_mode,
         })
@@ -206,8 +206,10 @@ impl WriteAheadLog {
     }
 
     /// Allocate next LSN
-    fn next_lsn(&self) -> u64 {
-        self.current_lsn.fetch_add(1, Ordering::SeqCst)
+    fn next_lsn(&self) -> Result<u64> {
+        self.current_lsn
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| current.checked_add(1))
+            .map_err(|_| AkiDbError::StorageError("WAL LSN space exhausted".to_string()))
     }
 
     /// Get current timestamp
@@ -249,8 +251,9 @@ impl WriteAheadLog {
             }
         }
 
+        let lsn = self.next_lsn()?;
         let entry = WalEntry::Insert {
-            lsn: self.next_lsn(),
+            lsn,
             external_id: external_id.to_string(),
             internal_id,
             vector: vector.to_vec(),
@@ -264,8 +267,9 @@ impl WriteAheadLog {
 
     /// Append a delete entry
     pub fn append_delete(&self, external_id: &str, internal_id: i64) -> Result<u64> {
+        let lsn = self.next_lsn()?;
         let entry = WalEntry::Delete {
-            lsn: self.next_lsn(),
+            lsn,
             external_id: external_id.to_string(),
             internal_id,
             timestamp: Self::timestamp(),
@@ -277,8 +281,9 @@ impl WriteAheadLog {
 
     /// Append a checkpoint marker
     pub fn append_checkpoint(&self) -> Result<u64> {
+        let lsn = self.next_lsn()?;
         let entry = WalEntry::Checkpoint {
-            lsn: self.next_lsn(),
+            lsn,
             timestamp: Self::timestamp(),
         };
 
@@ -759,5 +764,30 @@ mod tests {
             let lsn = wal.append_insert("vec-3", 2, &[5.0, 6.0], None).unwrap();
             assert_eq!(lsn, 3);
         }
+    }
+
+    #[test]
+    fn test_wal_rejects_lsn_exhaustion_after_recovery() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        {
+            let wal = WriteAheadLog::open(&wal_path, WalSyncMode::Sync).unwrap();
+            let entry = WalEntry::Checkpoint {
+                lsn: u64::MAX,
+                timestamp: 0,
+            };
+            wal.append_entry(&entry).unwrap();
+            wal.flush().unwrap();
+        }
+
+        let wal = WriteAheadLog::open(&wal_path, WalSyncMode::Sync).unwrap();
+
+        assert_eq!(wal.current_lsn(), u64::MAX);
+        assert!(matches!(
+            wal.append_checkpoint(),
+            Err(AkiDbError::StorageError(_))
+        ));
+        assert_eq!(wal.current_lsn(), u64::MAX);
     }
 }

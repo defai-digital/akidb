@@ -193,7 +193,9 @@ impl IngestionScheduler {
         // BUG-003 FIX: Get the NEXT epoch value without committing
         // We use current epoch + 1 for the sync, but only commit if sync succeeds
         let current_epoch = self.manifest.current_epoch()?;
-        let tentative_epoch = current_epoch + 1;
+        let tentative_epoch = current_epoch.checked_add(1).ok_or_else(|| {
+            IngestionError::Scheduler("Manifest epoch space exhausted".to_string())
+        })?;
         info!(%run_id, epoch = tentative_epoch, "Starting sync with tentative epoch");
 
         // Execute the actual sync with tentative epoch
@@ -418,6 +420,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(status.status, SyncState::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_rejects_epoch_exhaustion() {
+        let manifest = create_test_manifest_store();
+        manifest.set_epoch_for_test(u64::MAX).unwrap();
+        let scheduler = IngestionScheduler::new(SchedulerConfig::default(), manifest);
+
+        let result = scheduler
+            .trigger(|_manifest, _epoch| async { Ok(SyncResult::default()) })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(IngestionError::Scheduler(message)) if message.contains("exhausted")
+        ));
     }
 
     #[tokio::test]

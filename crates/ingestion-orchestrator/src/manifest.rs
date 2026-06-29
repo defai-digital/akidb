@@ -204,7 +204,9 @@ impl ManifestStore {
             IngestionError::Manifest(format!("Write lock poisoned: {}", e))
         })?;
 
-        let epoch = self.current_epoch()? + 1;
+        let epoch = self.current_epoch()?.checked_add(1).ok_or_else(|| {
+            IngestionError::Manifest("Manifest epoch space exhausted".to_string())
+        })?;
         self.backend
             .put(EPOCH_KEY, &epoch.to_le_bytes())
             .map_err(|e| IngestionError::Manifest(format!("Failed to update epoch: {}", e)))?;
@@ -215,6 +217,13 @@ impl ManifestStore {
         }
         debug!(epoch, "Epoch incremented");
         Ok(epoch)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_epoch_for_test(&self, epoch: u64) -> Result<()> {
+        self.backend
+            .put(EPOCH_KEY, &epoch.to_le_bytes())
+            .map_err(|e| IngestionError::Manifest(format!("Failed to set epoch: {}", e)))
     }
 
     /// Scan all manifest entries
@@ -351,6 +360,20 @@ mod tests {
 
         let epoch2 = store.increment_epoch().unwrap();
         assert_eq!(epoch2, 2);
+    }
+
+    #[test]
+    fn test_manifest_epoch_exhaustion_is_rejected() {
+        let dir = tempdir().unwrap();
+        let store = ManifestStore::open(dir.path()).unwrap();
+
+        store.set_epoch_for_test(u64::MAX).unwrap();
+
+        assert!(matches!(
+            store.increment_epoch(),
+            Err(IngestionError::Manifest(message)) if message.contains("exhausted")
+        ));
+        assert_eq!(store.current_epoch().unwrap(), u64::MAX);
     }
 
     #[test]
