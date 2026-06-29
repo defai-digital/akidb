@@ -4,7 +4,7 @@ use crate::{AkiDbError, Result};
 use rocksdb::{DB, Options, WriteBatch};
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::info;
 
 /// Storage backend trait
 pub trait StorageBackend: Send + Sync {

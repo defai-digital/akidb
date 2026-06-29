@@ -474,6 +474,14 @@ impl S3SnapshotBackend {
         format!("snapshots/{}/{}", snapshot_id, file_path)
     }
 
+    fn object_path(key: &str) -> String {
+        format!("/{}", encode_s3_object_key_path(key))
+    }
+
+    fn object_url(&self, key: &str) -> String {
+        format!("{}/{}{}", self.endpoint, self.bucket, Self::object_path(key))
+    }
+
     fn sign_request(&self, method: &str, path: &str, date: &str) -> String {
         use base64::Engine;
         use hmac::{Hmac, Mac};
@@ -493,10 +501,10 @@ impl S3SnapshotBackend {
 
     async fn put_object(&self, key: &str, data: &[u8]) -> Result<()> {
         let date = chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
-        let path = format!("/{}", key);
+        let path = Self::object_path(key);
         let signature = self.sign_request("PUT", &path, &date);
 
-        let url = format!("{}/{}/{}", self.endpoint, self.bucket, key);
+        let url = self.object_url(key);
 
         let response = self
             .client
@@ -526,10 +534,10 @@ impl S3SnapshotBackend {
 
     async fn get_object(&self, key: &str) -> Result<Vec<u8>> {
         let date = chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
-        let path = format!("/{}", key);
+        let path = Self::object_path(key);
         let signature = self.sign_request("GET", &path, &date);
 
-        let url = format!("{}/{}/{}", self.endpoint, self.bucket, key);
+        let url = self.object_url(key);
 
         let response = self
             .client
@@ -568,10 +576,10 @@ impl S3SnapshotBackend {
 
     async fn delete_object(&self, key: &str) -> Result<()> {
         let date = chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
-        let path = format!("/{}", key);
+        let path = Self::object_path(key);
         let signature = self.sign_request("DELETE", &path, &date);
 
-        let url = format!("{}/{}/{}", self.endpoint, self.bucket, key);
+        let url = self.object_url(key);
 
         let response = self
             .client
@@ -929,10 +937,39 @@ impl SnapshotManager {
     }
 }
 
+fn encode_s3_object_key_path(key: &str) -> String {
+    key.split('/')
+        .map(|segment| urlencoding::encode(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_s3_object_path_encodes_key_segments_without_encoding_slashes() {
+        assert_eq!(
+            S3SnapshotBackend::object_path("snapshots/snap 1/data/a?b#c&d+e.txt"),
+            "/snapshots/snap%201/data/a%3Fb%23c%26d%2Be.txt"
+        );
+        assert_eq!(
+            S3SnapshotBackend::object_path("snapshots/snap-1/nested/file.bin"),
+            "/snapshots/snap-1/nested/file.bin"
+        );
+    }
+
+    #[test]
+    fn test_s3_object_url_uses_encoded_path() {
+        let backend = S3SnapshotBackend::new("http://localhost:9000", "bucket", "ak", "sk");
+
+        assert_eq!(
+            backend.object_url("snapshots/snap 1/data/a?b#c.txt"),
+            "http://localhost:9000/bucket/snapshots/snap%201/data/a%3Fb%23c.txt"
+        );
+    }
 
     #[test]
     fn test_snapshot_id_validation_rejects_path_segments() {

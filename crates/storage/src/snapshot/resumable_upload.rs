@@ -112,16 +112,39 @@ impl ResumableUploader {
         (file_size / chunk_size) + u64::from(file_size % chunk_size != 0)
     }
 
+    fn object_path(object_key: &str) -> String {
+        format!("/{}", encode_s3_object_key_path(object_key))
+    }
+
+    fn object_url(&self, object_key: &str) -> String {
+        format!("{}/{}{}", self.endpoint, self.bucket, Self::object_path(object_key))
+    }
+
+    fn upload_part_path(object_key: &str, upload_id: &str, part_number: u32) -> String {
+        format!(
+            "{}?partNumber={}&uploadId={}",
+            Self::object_path(object_key),
+            part_number,
+            encode_s3_query_value(upload_id)
+        )
+    }
+
+    fn upload_id_path(object_key: &str, upload_id: &str) -> String {
+        format!(
+            "{}?uploadId={}",
+            Self::object_path(object_key),
+            encode_s3_query_value(upload_id)
+        )
+    }
+
     /// Initiate a multipart upload
     pub async fn initiate_upload(&self, object_key: &str) -> Result<String> {
-        let url = format!(
-            "{}/{}/{}?uploads",
-            self.endpoint, self.bucket, object_key
-        );
+        let path = format!("{}?uploads", Self::object_path(object_key));
+        let url = format!("{}?uploads", self.object_url(object_key));
         let date = chrono::Utc::now()
             .format("%a, %d %b %Y %H:%M:%S GMT")
             .to_string();
-        let signature = self.sign_request("POST", &format!("/{}?uploads", object_key), &date);
+        let signature = self.sign_request("POST", &path, &date);
 
         let response = self
             .client
@@ -162,17 +185,16 @@ impl ResumableUploader {
         part_number: u32,
         data: &[u8],
     ) -> Result<CompletedPart> {
+        let path = Self::upload_part_path(object_key, upload_id, part_number);
         let url = format!(
-            "{}/{}/{}?partNumber={}&uploadId={}",
-            self.endpoint, self.bucket, object_key, part_number, upload_id
+            "{}?partNumber={}&uploadId={}",
+            self.object_url(object_key),
+            part_number,
+            encode_s3_query_value(upload_id)
         );
         let date = chrono::Utc::now()
             .format("%a, %d %b %Y %H:%M:%S GMT")
             .to_string();
-        let path = format!(
-            "/{}?partNumber={}&uploadId={}",
-            object_key, part_number, upload_id
-        );
         let signature = self.sign_request("PUT", &path, &date);
 
         let mut last_error = None;
@@ -257,14 +279,15 @@ impl ResumableUploader {
         }
         xml.push_str("</CompleteMultipartUpload>");
 
+        let path = Self::upload_id_path(object_key, upload_id);
         let url = format!(
-            "{}/{}/{}?uploadId={}",
-            self.endpoint, self.bucket, object_key, upload_id
+            "{}?uploadId={}",
+            self.object_url(object_key),
+            encode_s3_query_value(upload_id)
         );
         let date = chrono::Utc::now()
             .format("%a, %d %b %Y %H:%M:%S GMT")
             .to_string();
-        let path = format!("/{}?uploadId={}", object_key, upload_id);
         let signature = self.sign_request("POST", &path, &date);
 
         let response = self
@@ -308,14 +331,15 @@ impl ResumableUploader {
 
     /// Abort a multipart upload
     pub async fn abort_upload(&self, object_key: &str, upload_id: &str) -> Result<()> {
+        let path = Self::upload_id_path(object_key, upload_id);
         let url = format!(
-            "{}/{}/{}?uploadId={}",
-            self.endpoint, self.bucket, object_key, upload_id
+            "{}?uploadId={}",
+            self.object_url(object_key),
+            encode_s3_query_value(upload_id)
         );
         let date = chrono::Utc::now()
             .format("%a, %d %b %Y %H:%M:%S GMT")
             .to_string();
-        let path = format!("/{}?uploadId={}", object_key, upload_id);
         let signature = self.sign_request("DELETE", &path, &date);
 
         let response = self
@@ -507,6 +531,17 @@ impl ResumableUploader {
     }
 }
 
+fn encode_s3_object_key_path(key: &str) -> String {
+    key.split('/')
+        .map(|segment| urlencoding::encode(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn encode_s3_query_value(value: &str) -> String {
+    urlencoding::encode(value).into_owned()
+}
+
 /// Upload executor that combines state machine and uploader
 pub struct SnapshotUploadExecutor<S: StorageBackend> {
     uploader: ResumableUploader,
@@ -627,6 +662,41 @@ mod tests {
 
         let expected = (u64::MAX / DEFAULT_CHUNK_SIZE as u64) + 1;
         assert_eq!(uploader.calculate_chunks(u64::MAX), expected);
+    }
+
+    #[test]
+    fn test_multipart_paths_encode_object_key_segments_and_upload_id() {
+        assert_eq!(
+            ResumableUploader::object_path("snapshots/snap 1/data/a?b#c&d+e.txt"),
+            "/snapshots/snap%201/data/a%3Fb%23c%26d%2Be.txt"
+        );
+        assert_eq!(
+            ResumableUploader::upload_part_path(
+                "snapshots/snap 1/data/a?b#c&d+e.txt",
+                "id+/= &",
+                7,
+            ),
+            "/snapshots/snap%201/data/a%3Fb%23c%26d%2Be.txt?partNumber=7&uploadId=id%2B%2F%3D%20%26"
+        );
+        assert_eq!(
+            ResumableUploader::upload_id_path("snapshots/snap-1/nested/file.bin", "id+/= &"),
+            "/snapshots/snap-1/nested/file.bin?uploadId=id%2B%2F%3D%20%26"
+        );
+    }
+
+    #[test]
+    fn test_multipart_object_url_uses_encoded_path() {
+        let uploader = ResumableUploader::new(
+            "http://localhost:9000",
+            "bucket",
+            "access",
+            "secret",
+        );
+
+        assert_eq!(
+            uploader.object_url("snapshots/snap 1/data/a?b#c.txt"),
+            "http://localhost:9000/bucket/snapshots/snap%201/data/a%3Fb%23c.txt"
+        );
     }
 
     #[test]

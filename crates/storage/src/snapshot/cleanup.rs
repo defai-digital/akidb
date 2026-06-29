@@ -302,7 +302,8 @@ async fn abort_multipart_upload(
     key: &str,
     upload_id: &str,
 ) -> Result<()> {
-    let url = format!("{}/{}/{}?uploadId={}", endpoint, bucket, key, upload_id);
+    let path = abort_multipart_upload_path(key, upload_id);
+    let url = format!("{}/{}{}", endpoint, bucket, path);
     let date = chrono::Utc::now()
         .format("%a, %d %b %Y %H:%M:%S GMT")
         .to_string();
@@ -311,7 +312,6 @@ async fn abort_multipart_upload(
     use hmac::{Hmac, Mac};
     use sha1::Sha1;
 
-    let path = format!("/{}?uploadId={}", key, upload_id);
     let string_to_sign = format!("DELETE\n\n\n{}\n/{}{}", date, bucket, path);
     let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes()).expect("HMAC init");
     mac.update(string_to_sign.as_bytes());
@@ -335,6 +335,25 @@ async fn abort_multipart_upload(
     }
 
     Ok(())
+}
+
+fn abort_multipart_upload_path(key: &str, upload_id: &str) -> String {
+    format!(
+        "/{}?uploadId={}",
+        encode_s3_object_key_path(key),
+        encode_s3_query_value(upload_id)
+    )
+}
+
+fn encode_s3_object_key_path(key: &str) -> String {
+    key.split('/')
+        .map(|segment| urlencoding::encode(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn encode_s3_query_value(value: &str) -> String {
+    urlencoding::encode(value).into_owned()
 }
 
 /// Extract a value from XML
@@ -432,6 +451,18 @@ mod tests {
         );
         assert_eq!(extract_xml_value(xml, "UploadId"), Some("id&1".to_string()));
         assert_eq!(extract_xml_value(xml, "Escaped"), Some("&lt;".to_string()));
+    }
+
+    #[test]
+    fn test_abort_multipart_upload_path_encodes_key_segments_and_upload_id() {
+        assert_eq!(
+            abort_multipart_upload_path("snapshots/snap 1/data/a?b#c&d+e.txt", "id+/= &"),
+            "/snapshots/snap%201/data/a%3Fb%23c%26d%2Be.txt?uploadId=id%2B%2F%3D%20%26"
+        );
+        assert_eq!(
+            abort_multipart_upload_path("snapshots/snap-1/nested/file.bin", "upload-1"),
+            "/snapshots/snap-1/nested/file.bin?uploadId=upload-1"
+        );
     }
 
     #[test]
