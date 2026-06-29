@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-benchmark"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-grpc",
  "clap",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-cli"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-coordinator",
  "akidb-graph",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-common"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-contracts"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-common",
  "bincode",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-coordinator"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-common",
  "akidb-grpc",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-faiss"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-common",
  "akidb-invariants",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-graph"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-common",
  "akidb-storage",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-grpc"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-common",
  "akidb-faiss",
@@ -228,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-ingestion"
-version = "0.2.0"
+version = "0.8.0"
 dependencies = [
  "akidb-common",
  "akidb-grpc",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-invariants"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "proptest",
  "tracing",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-retrieval"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-common",
  "akidb-faiss",
@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-server"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-common",
  "akidb-coordinator",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-sql"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "postgres",
  "rusqlite",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-storage"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-common",
  "akidb-contracts",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-tui"
-version = "0.6.1"
+version = "0.8.0"
 dependencies = [
  "akidb-common",
  "akidb-grpc",
