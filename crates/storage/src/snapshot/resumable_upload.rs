@@ -253,7 +253,8 @@ impl ResumableUploader {
                     error = ?last_error,
                     "Part upload failed, retrying"
                 );
-                tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+                tokio::time::sleep(std::time::Duration::from_secs(retry_backoff_secs(attempt)))
+                    .await;
             }
         }
 
@@ -433,7 +434,7 @@ impl ResumableUploader {
             AkiDbError::Internal(format!("Failed to open file: {}", e))
         })?;
 
-        let start_offset = (start_part - 1) as u64 * self.config.chunk_size as u64;
+        let start_offset = calculate_start_offset(start_part, self.config.chunk_size)?;
         if start_offset > 0 {
             file.seek(SeekFrom::Start(start_offset)).await.map_err(|e| {
                 AkiDbError::Internal(format!("Failed to seek: {}", e))
@@ -540,6 +541,21 @@ fn encode_s3_object_key_path(key: &str) -> String {
 
 fn encode_s3_query_value(value: &str) -> String {
     urlencoding::encode(value).into_owned()
+}
+
+fn retry_backoff_secs(attempt: u32) -> u64 {
+    1u64.checked_shl(attempt).unwrap_or(u64::MAX)
+}
+
+fn calculate_start_offset(start_part: u32, chunk_size: usize) -> Result<u64> {
+    let completed_parts = start_part.checked_sub(1).ok_or_else(|| {
+        AkiDbError::InvalidParameter("Multipart checkpoint next_part must be >= 1".to_string())
+    })?;
+    u64::from(completed_parts)
+        .checked_mul(chunk_size as u64)
+        .ok_or_else(|| {
+            AkiDbError::InvalidParameter("Multipart checkpoint start offset overflow".to_string())
+        })
 }
 
 /// Upload executor that combines state machine and uploader
@@ -662,6 +678,29 @@ mod tests {
 
         let expected = (u64::MAX / DEFAULT_CHUNK_SIZE as u64) + 1;
         assert_eq!(uploader.calculate_chunks(u64::MAX), expected);
+    }
+
+    #[test]
+    fn test_retry_backoff_saturates_for_large_attempts() {
+        assert_eq!(retry_backoff_secs(0), 1);
+        assert_eq!(retry_backoff_secs(3), 8);
+        assert_eq!(retry_backoff_secs(64), u64::MAX);
+    }
+
+    #[test]
+    fn test_start_offset_rejects_invalid_checkpoint_part() {
+        assert!(matches!(
+            calculate_start_offset(0, DEFAULT_CHUNK_SIZE),
+            Err(AkiDbError::InvalidParameter(_))
+        ));
+    }
+
+    #[test]
+    fn test_start_offset_rejects_overflow() {
+        assert!(matches!(
+            calculate_start_offset(u32::MAX, usize::MAX),
+            Err(AkiDbError::InvalidParameter(_))
+        ));
     }
 
     #[test]
