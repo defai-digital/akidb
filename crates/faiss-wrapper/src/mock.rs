@@ -4,6 +4,7 @@
 //! suitable for unit tests on machines without GPU.
 
 use crate::{
+    allocate_internal_id,
     index::{IndexStats, SearchParams, VectorIndex},
     tombstone::TombstoneBitset,
     validate_finite_vector_values, AkiDbError, InternalId, Result, SearchResult, VectorId,
@@ -149,7 +150,7 @@ impl VectorIndex for MockIndex {
         // New vector
         // FIX BUG-HUNT-005: Use SeqCst instead of Relaxed for proper ordering on
         // weaker memory model architectures, including Apple Silicon ARM64.
-        let internal_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let internal_id = allocate_internal_id(&self.next_id)?;
         self.ensure_tombstone_capacity_for(internal_id as u64 + 1)?;
 
         id_mapping.insert(id.as_str().to_string(), internal_id);
@@ -417,6 +418,17 @@ mod tests {
             .search(&[1.0, 0.0], &SearchParams::new(10))
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn test_mock_insert_rejects_exhausted_internal_ids() {
+        let index = MockIndex::new(2, 1000);
+        index.next_id.store(i64::MAX, Ordering::SeqCst);
+
+        let result = index.insert(&VectorId::new("vec-1"), &[1.0, 0.0]);
+
+        assert!(matches!(result, Err(AkiDbError::InvalidParameter(_))));
+        assert_eq!(index.next_id.load(Ordering::SeqCst), i64::MAX);
     }
 
     #[test]

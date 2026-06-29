@@ -5,6 +5,7 @@
 //! Mac Apple Silicon.
 
 use crate::{
+    allocate_internal_id,
     index::{IndexStats, SearchParams, VectorIndex},
     tombstone::TombstoneBitset,
     validate_finite_vector_values, AkiDbError, InternalId, Result, SearchResult, VectorId,
@@ -193,7 +194,7 @@ impl VectorIndex for HnswIndex {
         }
 
         // New vector
-        let internal_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let internal_id = allocate_internal_id(&self.next_id)?;
         self.ensure_capacity_for(internal_id as usize + 1);
 
         self.index
@@ -488,6 +489,20 @@ mod tests {
         let result = index.insert(&VectorId::new("vec-1"), &vector);
 
         assert!(matches!(result, Err(AkiDbError::InvalidParameter(_))));
+        assert_eq!(index.stats().total_vectors, 0);
+    }
+
+    #[test]
+    fn test_hnsw_insert_rejects_exhausted_internal_ids() {
+        let config = create_test_config();
+        let index = HnswIndex::new(config).unwrap();
+        index.next_id.store(i64::MAX, Ordering::SeqCst);
+
+        let vector = create_random_vector(128, 1.0);
+        let result = index.insert(&VectorId::new("vec-1"), &vector);
+
+        assert!(matches!(result, Err(AkiDbError::InvalidParameter(_))));
+        assert_eq!(index.next_id.load(Ordering::SeqCst), i64::MAX);
         assert_eq!(index.stats().total_vectors, 0);
     }
 

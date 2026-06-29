@@ -273,4 +273,19 @@ mod tests {
         batcher.increment_pending();
         assert_eq!(batcher.current_queue_depth(), 1);
     }
+
+    #[tokio::test]
+    async fn test_zero_timeout_still_collects_ready_item() {
+        let mut batcher: DynamicBatcher<String> = DynamicBatcher::new(BatcherConfig {
+            min_batch: 1,
+            max_batch: 1,
+            timeout_ms: 0,
+        });
+        let sender = batcher.sender();
+        sender.send("ready".to_string()).await.unwrap();
+
+        let batch = batcher.collect_batch().await;
+
+        assert_eq!(batch, vec!["ready".to_string()]);
+    }
 }

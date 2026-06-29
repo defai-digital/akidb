@@ -30,6 +30,16 @@ pub use mock::{MockIndex, MockIndexConfig};
 /// Re-export common types
 pub use akidb_common::{AkiDbError, InternalId, Result, SearchResult, Vector, VectorId};
 
+pub(crate) fn allocate_internal_id(next_id: &std::sync::atomic::AtomicI64) -> Result<i64> {
+    next_id
+        .fetch_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |current| current.checked_add(1).filter(|next| *next >= 0),
+        )
+        .map_err(|_| AkiDbError::InvalidParameter("internal vector id space exhausted".to_string()))
+}
+
 pub(crate) fn validate_finite_vector_values(vector: &[f32], operation: &str) -> Result<()> {
     if vector.iter().any(|value| !value.is_finite()) {
         return Err(AkiDbError::InvalidParameter(format!(
