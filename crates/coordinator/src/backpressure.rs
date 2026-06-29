@@ -139,10 +139,10 @@ impl RateLimiter {
             let elapsed = now.duration_since(*window_start);
             // Use milliseconds for better precision when elapsed is < 1 second
             let elapsed_ms = elapsed.as_millis().max(1) as u64;
-            let current_rps = (current * 1000) / elapsed_ms;
+            let current_rps = requests_per_second(current, elapsed_ms);
             // FIX BUG-077: Use milliseconds for consistent precision when reporting max_rps
             let window_ms = self.window.as_millis().max(1) as u64;
-            let max_rps = (self.max_requests * 1000) / window_ms;
+            let max_rps = requests_per_second(self.max_requests, window_ms);
             return Err((current_rps, max_rps));
         }
 
@@ -156,8 +156,14 @@ impl RateLimiter {
 
         // Use milliseconds for better precision when elapsed is < 1 second
         let elapsed_ms = elapsed.as_millis().max(1) as u64;
-        (count * 1000) / elapsed_ms
+        requests_per_second(count, elapsed_ms)
     }
+}
+
+fn requests_per_second(requests: u64, elapsed_ms: u64) -> u64 {
+    let elapsed_ms = elapsed_ms.max(1) as u128;
+    let rps = (requests as u128).saturating_mul(1000) / elapsed_ms;
+    rps.min(u64::MAX as u128) as u64
 }
 
 fn requests_per_window(max_rps: u64, window_ms: u64) -> u64 {
@@ -440,6 +446,28 @@ mod tests {
             limiter.try_acquire().is_err(),
             "zero rate window must not reset the limiter on every request"
         );
+    }
+
+    #[test]
+    fn test_rate_limiter_current_rate_does_not_overflow() {
+        let limiter = RateLimiter::new(0, Duration::from_millis(1));
+        limiter.count.store(u64::MAX, Ordering::Release);
+
+        assert_eq!(limiter.current_rate(), u64::MAX);
+    }
+
+    #[test]
+    fn test_rate_limiter_error_rates_do_not_overflow() {
+        let mut limiter = RateLimiter::new(u64::MAX, Duration::from_millis(1));
+        limiter.max_requests = u64::MAX;
+        limiter.count.store(u64::MAX, Ordering::Release);
+
+        let (current_rps, max_rps) = limiter
+            .try_acquire()
+            .expect_err("saturated counter should exceed the rate limit");
+
+        assert_eq!(current_rps, u64::MAX);
+        assert_eq!(max_rps, u64::MAX);
     }
 
     #[test]
