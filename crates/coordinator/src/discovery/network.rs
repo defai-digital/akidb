@@ -60,7 +60,7 @@ pub async fn create_swarm(config: &DiscoveryConfig) -> Result<Swarm<AkiDbBehavio
 
             // Configure gossipsub
             let gossipsub_config = gossipsub::ConfigBuilder::default()
-                .heartbeat_interval(Duration::from_millis(config.heartbeat_interval_ms))
+                .heartbeat_interval(config.heartbeat_interval())
                 .validation_mode(gossipsub::ValidationMode::Strict)
                 .mesh_n_low(2)
                 .mesh_n(4)

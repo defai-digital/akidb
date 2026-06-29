@@ -5,6 +5,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+pub const MIN_ANNOUNCE_INTERVAL_MS: u64 = 1;
+pub const MIN_HEARTBEAT_INTERVAL_MS: u64 = 1;
+pub const MIN_MISSED_HEARTBEATS: u32 = 1;
+
 /// Discovery configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
@@ -78,11 +82,35 @@ impl Default for DiscoveryConfig {
 }
 
 impl DiscoveryConfig {
+    pub fn normalize(&mut self) {
+        self.announce_interval_ms = self.announce_interval_ms.max(MIN_ANNOUNCE_INTERVAL_MS);
+        self.heartbeat_interval_ms = self.heartbeat_interval_ms.max(MIN_HEARTBEAT_INTERVAL_MS);
+        self.missed_heartbeats_threshold =
+            self.missed_heartbeats_threshold.max(MIN_MISSED_HEARTBEATS);
+    }
+
+    pub fn normalized(mut self) -> Self {
+        self.normalize();
+        self
+    }
+
+    pub fn announce_interval(&self) -> Duration {
+        Duration::from_millis(self.announce_interval_ms.max(MIN_ANNOUNCE_INTERVAL_MS))
+    }
+
+    pub fn heartbeat_interval(&self) -> Duration {
+        Duration::from_millis(self.heartbeat_interval_ms.max(MIN_HEARTBEAT_INTERVAL_MS))
+    }
+
     /// Maximum age before a peer is considered stale.
     pub fn stale_peer_max_age(&self) -> Duration {
         Duration::from_millis(
             self.heartbeat_interval_ms
-                .saturating_mul(self.missed_heartbeats_threshold as u64),
+                .max(MIN_HEARTBEAT_INTERVAL_MS)
+                .saturating_mul(
+                    self.missed_heartbeats_threshold
+                        .max(MIN_MISSED_HEARTBEATS) as u64,
+                ),
         )
     }
 }
@@ -167,5 +195,35 @@ mod tests {
 
         let result = std::panic::catch_unwind(|| config.stale_peer_max_age());
         assert!(result.is_ok(), "stale peer age calculation should saturate");
+    }
+
+    #[test]
+    fn test_zero_intervals_are_sanitized() {
+        let mut config = DiscoveryConfig {
+            announce_interval_ms: 0,
+            heartbeat_interval_ms: 0,
+            missed_heartbeats_threshold: 0,
+            ..DiscoveryConfig::default()
+        };
+
+        config.normalize();
+
+        assert_eq!(config.announce_interval_ms, MIN_ANNOUNCE_INTERVAL_MS);
+        assert_eq!(config.heartbeat_interval_ms, MIN_HEARTBEAT_INTERVAL_MS);
+        assert_eq!(config.missed_heartbeats_threshold, MIN_MISSED_HEARTBEATS);
+        assert_eq!(config.announce_interval(), Duration::from_millis(1));
+        assert_eq!(config.heartbeat_interval(), Duration::from_millis(1));
+        assert_eq!(config.stale_peer_max_age(), Duration::from_millis(1));
+    }
+
+    #[test]
+    fn test_stale_peer_max_age_never_returns_zero() {
+        let config = DiscoveryConfig {
+            heartbeat_interval_ms: 0,
+            missed_heartbeats_threshold: 0,
+            ..DiscoveryConfig::default()
+        };
+
+        assert_eq!(config.stale_peer_max_age(), Duration::from_millis(1));
     }
 }

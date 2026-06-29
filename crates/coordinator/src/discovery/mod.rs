@@ -71,6 +71,7 @@ impl DiscoveryService {
         config: DiscoveryConfig,
         grpc_address: String,
     ) -> Result<Self> {
+        let config = config.normalized();
         let mut swarm = network::create_swarm(&config).await?;
         let local_peer_id = swarm.local_peer_id().to_string();
 
@@ -118,9 +119,7 @@ impl DiscoveryService {
         self.swarm.listen_on(listen_addr)?;
 
         // Set up announce interval
-        let mut announce_interval = tokio::time::interval(Duration::from_millis(
-            self.config.announce_interval_ms,
-        ));
+        let mut announce_interval = tokio::time::interval(self.config.announce_interval());
 
         // Set up cleanup interval for stale peers
         let mut cleanup_interval = tokio::time::interval(Duration::from_secs(30));
