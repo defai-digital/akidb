@@ -37,6 +37,13 @@ impl Default for BackpressureConfig {
     }
 }
 
+fn sanitize_config(mut config: BackpressureConfig) -> BackpressureConfig {
+    config.max_concurrent = config
+        .max_concurrent
+        .clamp(1, Semaphore::MAX_PERMITS);
+    config
+}
+
 /// Error returned when request is rejected due to backpressure
 #[derive(Debug, Clone)]
 pub enum BackpressureError {
@@ -179,6 +186,7 @@ impl BackpressureController {
 
     /// Create a new backpressure controller with custom config
     pub fn with_config(config: BackpressureConfig) -> Self {
+        let config = sanitize_config(config);
         Self {
             semaphore: Semaphore::new(config.max_concurrent),
             in_flight: AtomicUsize::new(0),
@@ -285,7 +293,8 @@ impl BackpressureController {
 
         // Under pressure if using more than 80% of concurrent capacity
         // or if queue is more than 50% full
-        in_flight > (self.config.max_concurrent * 8 / 10)
+        let concurrent_pressure_threshold = self.config.max_concurrent.saturating_mul(8) / 10;
+        in_flight > concurrent_pressure_threshold
             || (self.config.max_queue_depth > 0
                 && queue_depth > (self.config.max_queue_depth / 2))
     }
@@ -395,6 +404,42 @@ mod tests {
         }
 
         assert_eq!(controller.load_percentage(), 50);
+    }
+
+    #[tokio::test]
+    async fn test_zero_max_concurrent_is_sanitized() {
+        let controller = BackpressureController::with_config(BackpressureConfig {
+            max_concurrent: 0,
+            rate_limit_rps: 0,
+            max_queue_depth: 0,
+            enable_load_shedding: false,
+            ..Default::default()
+        });
+
+        assert_eq!(controller.stats().max_concurrent, 1);
+
+        let guard = tokio::time::timeout(Duration::from_secs(1), controller.try_acquire())
+            .await
+            .expect("zero max_concurrent should not hang after normalization")
+            .expect("normalized controller should accept one request");
+
+        assert_eq!(controller.stats().in_flight, 1);
+        drop(guard);
+        assert_eq!(controller.stats().in_flight, 0);
+    }
+
+    #[test]
+    fn test_is_under_pressure_extreme_max_concurrent_does_not_overflow() {
+        let controller = BackpressureController::with_config(BackpressureConfig {
+            max_concurrent: usize::MAX,
+            rate_limit_rps: 0,
+            max_queue_depth: 0,
+            enable_load_shedding: false,
+            ..Default::default()
+        });
+
+        assert_eq!(controller.stats().max_concurrent, Semaphore::MAX_PERMITS);
+        assert!(!controller.is_under_pressure());
     }
 
     #[test]
