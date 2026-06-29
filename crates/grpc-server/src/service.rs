@@ -28,6 +28,8 @@ use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, instrument, warn};
 
+const MAX_PACK_TOKEN_BUDGET: u32 = 100_000;
+
 const FILE_REFERENCE_SUFFIXES: &[&str] = &[
     ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".toml", ".yaml", ".yml", ".proto",
     ".sql", ".go", ".java", ".c", ".cc", ".cpp", ".h", ".hpp",
@@ -333,6 +335,20 @@ where
     fn validate_text_search_options(req: &TextSearchRequest) -> Result<(), Status> {
         Self::validate_positive_finite_option("dense_weight", req.dense_weight)?;
         Self::validate_positive_finite_option("lexical_weight", req.lexical_weight)?;
+        if req.pack {
+            if req.pack_token_budget == Some(0) {
+                return Err(Status::invalid_argument(
+                    "pack_token_budget must be greater than 0 when pack is enabled",
+                ));
+            }
+            if let Some(budget) = req.pack_token_budget {
+                if budget > MAX_PACK_TOKEN_BUDGET {
+                    return Err(Status::invalid_argument(format!(
+                        "pack_token_budget exceeds maximum of {MAX_PACK_TOKEN_BUDGET}"
+                    )));
+                }
+            }
+        }
         if let Some(lambda) = req.mmr_lambda {
             if !lambda.is_finite() || !(0.0..=1.0).contains(&lambda) {
                 return Err(Status::invalid_argument(
@@ -2774,6 +2790,34 @@ mod tests {
         let status = result.expect_err("zero nprobe should be rejected");
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("nprobe"));
+    }
+
+    #[tokio::test]
+    async fn test_text_search_rejects_zero_pack_token_budget() {
+        let (service, _dir) = test_service();
+        let mut request = bm25_text_search_request("rare_contract_keyword", 10);
+        request.pack = true;
+        request.pack_token_budget = Some(0);
+
+        let result = service.text_search(Request::new(request)).await;
+
+        let status = result.expect_err("zero pack token budget should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("pack_token_budget"));
+    }
+
+    #[tokio::test]
+    async fn test_text_search_rejects_excessive_pack_token_budget() {
+        let (service, _dir) = test_service();
+        let mut request = bm25_text_search_request("rare_contract_keyword", 10);
+        request.pack = true;
+        request.pack_token_budget = Some(MAX_PACK_TOKEN_BUDGET + 1);
+
+        let result = service.text_search(Request::new(request)).await;
+
+        let status = result.expect_err("excessive pack token budget should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("pack_token_budget"));
     }
 
     #[tokio::test]
