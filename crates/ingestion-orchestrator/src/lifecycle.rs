@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use tracing::{debug, error, info, warn};
 
-use akidb_common::types::{DeleteState, DEFAULT_HARD_DELETE_DELAY_DAYS, DELETION_THRESHOLD};
 use crate::manifest::ManifestStore;
-use crate::Result;
+use crate::{IngestionError, Result};
+use akidb_common::types::{DeleteState, DEFAULT_HARD_DELETE_DELAY_DAYS, DELETION_THRESHOLD};
 
 /// Configuration for lifecycle management
 #[derive(Debug, Clone)]
@@ -49,16 +49,32 @@ pub struct LifecycleResult {
     pub failed_count: u64,
 }
 
+/// Backend hook used to remove document data outside the manifest store.
+pub trait DocumentHardDeleter: Send + Sync {
+    fn hard_delete_document(&self, object_key: &str) -> Result<()>;
+}
+
 /// Document lifecycle manager
 pub struct LifecycleManager {
     manifest: Arc<ManifestStore>,
     config: LifecycleConfig,
+    hard_deleter: Option<Arc<dyn DocumentHardDeleter>>,
 }
 
 impl LifecycleManager {
     /// Create a new lifecycle manager
     pub fn new(manifest: Arc<ManifestStore>, config: LifecycleConfig) -> Self {
-        Self { manifest, config }
+        Self {
+            manifest,
+            config,
+            hard_deleter: None,
+        }
+    }
+
+    /// Attach the backend hook used to remove vectors, metadata, and indexes.
+    pub fn with_hard_deleter(mut self, hard_deleter: Arc<dyn DocumentHardDeleter>) -> Self {
+        self.hard_deleter = Some(hard_deleter);
+        self
     }
 
     /// Handle a missing document
@@ -160,13 +176,13 @@ impl LifecycleManager {
 
     /// Hard delete a specific document
     fn hard_delete_document(&self, object_key: &str) -> Result<bool> {
-        // In a full implementation, this would:
-        // 1. Remove vectors from FAISS index
-        // 2. Remove metadata from RocksDB
-        // 3. Remove from tag index
-        // 4. Remove manifest entry
+        let Some(hard_deleter) = &self.hard_deleter else {
+            return Err(IngestionError::Storage(
+                "Cannot hard delete document: no hard delete backend configured".to_string(),
+            ));
+        };
 
-        // For now, we just remove the manifest entry
+        hard_deleter.hard_delete_document(object_key)?;
         self.manifest.delete(object_key)?;
 
         debug!(key = %object_key, "Document hard deleted");
@@ -179,7 +195,10 @@ impl LifecycleManager {
     pub fn recover_document(&self, object_key: &str, etag: &str, epoch: u64) -> Result<bool> {
         if let Some(mut manifest) = self.manifest.get(object_key)? {
             // Only recover if not hard deleted
-            if matches!(manifest.delete_state, DeleteState::HardDeleteScheduled { .. }) {
+            if matches!(
+                manifest.delete_state,
+                DeleteState::HardDeleteScheduled { .. }
+            ) {
                 warn!(
                     key = %object_key,
                     "Cannot recover document scheduled for hard delete"
@@ -243,7 +262,20 @@ mod tests {
     use super::*;
     use crate::manifest::ManifestStore;
     use akidb_common::types::{DocumentIdentifier, ObjectManifest};
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    #[derive(Default)]
+    struct MockHardDeleter {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl DocumentHardDeleter for MockHardDeleter {
+        fn hard_delete_document(&self, object_key: &str) -> Result<()> {
+            self.calls.lock().unwrap().push(object_key.to_string());
+            Ok(())
+        }
+    }
 
     fn create_test_store() -> Arc<ManifestStore> {
         let dir = tempdir().unwrap();
@@ -302,7 +334,10 @@ mod tests {
 
         // Verify state
         let m = store.get("test/file.pdf").unwrap().unwrap();
-        assert!(matches!(m.delete_state, DeleteState::ConfirmedMissing { .. }));
+        assert!(matches!(
+            m.delete_state,
+            DeleteState::ConfirmedMissing { .. }
+        ));
     }
 
     #[test]
@@ -334,7 +369,10 @@ mod tests {
             MissingResult::Confirmed
         );
         let m = store.get("test/file.pdf").unwrap().unwrap();
-        assert!(matches!(m.delete_state, DeleteState::ConfirmedMissing { .. }));
+        assert!(matches!(
+            m.delete_state,
+            DeleteState::ConfirmedMissing { .. }
+        ));
     }
 
     #[test]
@@ -349,7 +387,9 @@ mod tests {
         store.upsert(&manifest).unwrap();
 
         // Recover
-        let recovered = manager.recover_document("test/file.pdf", "new-etag", 5).unwrap();
+        let recovered = manager
+            .recover_document("test/file.pdf", "new-etag", 5)
+            .unwrap();
         assert!(recovered);
 
         // Verify recovery
@@ -401,7 +441,10 @@ mod tests {
 
         // Verify state
         let m = store.get("test/file.pdf").unwrap().unwrap();
-        assert!(matches!(m.delete_state, DeleteState::HardDeleteScheduled { .. }));
+        assert!(matches!(
+            m.delete_state,
+            DeleteState::HardDeleteScheduled { .. }
+        ));
     }
 
     #[test]
@@ -417,5 +460,51 @@ mod tests {
 
         let m = store.get("test/file.pdf").unwrap().unwrap();
         assert_eq!(m.delete_state, DeleteState::Active);
+    }
+
+    #[test]
+    fn test_process_hard_deletes_requires_configured_backend() {
+        let store = create_test_store();
+        let config = LifecycleConfig {
+            hard_delete_delay_days: 0,
+            ..Default::default()
+        };
+        let manager = LifecycleManager::new(Arc::clone(&store), config);
+
+        let mut manifest = create_test_manifest("test/file.pdf");
+        manifest.transition_to_confirmed();
+        store.upsert(&manifest).unwrap();
+        assert!(manager.schedule_hard_delete("test/file.pdf").unwrap());
+
+        let deleted = manager.process_hard_deletes().unwrap();
+
+        assert_eq!(deleted, 0);
+        assert!(store.get("test/file.pdf").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_process_hard_deletes_delegates_before_manifest_removal() {
+        let store = create_test_store();
+        let hard_deleter = Arc::new(MockHardDeleter::default());
+        let config = LifecycleConfig {
+            hard_delete_delay_days: 0,
+            ..Default::default()
+        };
+        let manager = LifecycleManager::new(Arc::clone(&store), config)
+            .with_hard_deleter(hard_deleter.clone());
+
+        let mut manifest = create_test_manifest("test/file.pdf");
+        manifest.transition_to_confirmed();
+        store.upsert(&manifest).unwrap();
+        assert!(manager.schedule_hard_delete("test/file.pdf").unwrap());
+
+        let deleted = manager.process_hard_deletes().unwrap();
+
+        assert_eq!(deleted, 1);
+        assert_eq!(
+            *hard_deleter.calls.lock().unwrap(),
+            vec!["test/file.pdf".to_string()]
+        );
+        assert!(store.get("test/file.pdf").unwrap().is_none());
     }
 }

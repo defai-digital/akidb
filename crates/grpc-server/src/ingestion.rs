@@ -6,18 +6,13 @@
 //! - Reindexing categories
 //! - Category management
 
-use std::sync::Arc;
-
 use tonic::{Request, Response, Status};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::proto::{
-    ingestion_service_server::IngestionService,
-    CategoryInfo, DeleteCategoryRequest, DeleteCategoryResponse,
-    GetSyncStatusRequest, ListCategoriesRequest, ListCategoriesResponse,
-    ReindexCategoryRequest, ReindexCategoryResponse,
-    SyncRunStatus, SyncStats, SyncStatusResponse,
-    TriggerSyncRequest, TriggerSyncResponse,
+    ingestion_service_server::IngestionService, DeleteCategoryRequest, DeleteCategoryResponse,
+    GetSyncStatusRequest, ListCategoriesRequest, ListCategoriesResponse, ReindexCategoryRequest,
+    ReindexCategoryResponse, SyncStatusResponse, TriggerSyncRequest, TriggerSyncResponse,
     UpdateTagsRequest, UpdateTagsResponse,
 };
 
@@ -33,6 +28,12 @@ impl IngestionServiceImpl {
     /// Create a new ingestion service
     pub fn new() -> Self {
         Self {}
+    }
+
+    fn unconfigured(operation: &str) -> Status {
+        Status::failed_precondition(format!(
+            "Ingestion {operation} is not configured on this server"
+        ))
     }
 }
 
@@ -51,34 +52,14 @@ impl IngestionService for IngestionServiceImpl {
         let req = request.into_inner();
         info!(force = req.force, "Trigger sync requested");
 
-        // In a full implementation, this would trigger the scheduler
-        // For now, return a placeholder response
-        Ok(Response::new(TriggerSyncResponse {
-            run_id: uuid::Uuid::now_v7().to_string(),
-            status: SyncRunStatus::SyncStarted.into(),
-            message: "Sync triggered successfully".to_string(),
-        }))
+        Err(Self::unconfigured("sync trigger"))
     }
 
     async fn get_sync_status(
         &self,
         _request: Request<GetSyncStatusRequest>,
     ) -> Result<Response<SyncStatusResponse>, Status> {
-        // In a full implementation, this would query the scheduler
-        Ok(Response::new(SyncStatusResponse {
-            last_run_id: String::new(),
-            last_run_status: "idle".to_string(),
-            last_run_timestamp_ms: 0,
-            next_run_timestamp_ms: 0,
-            is_running: false,
-            last_run_stats: Some(SyncStats {
-                new_count: 0,
-                updated_count: 0,
-                marked_count: 0,
-                confirmed_count: 0,
-                skipped_count: 0,
-            }),
-        }))
+        Err(Self::unconfigured("sync status"))
     }
 
     async fn update_tags(
@@ -104,18 +85,7 @@ impl IngestionService for IngestionServiceImpl {
             "Update tags requested"
         );
 
-        // In a full implementation, this would:
-        // 1. Convert proto TagValue to akidb_common::types::TagValue
-        // 2. Validate tags using Tags::validate()
-        // 3. Update metadata in RocksDB
-        // 4. Update tag index
-        // 5. Return count of updated vectors
-
-        Ok(Response::new(UpdateTagsResponse {
-            success: true,
-            error: String::new(),
-            vectors_updated: 0,
-        }))
+        Err(Self::unconfigured("tag update"))
     }
 
     async fn reindex_category(
@@ -134,22 +104,7 @@ impl IngestionService for IngestionServiceImpl {
             "Reindex category requested"
         );
 
-        // In a full implementation, this would:
-        // 1. Plan the reindex operation
-        // 2. If dry_run, return the plan without executing
-        // 3. Execute the reindex with progress tracking
-        // 4. Tombstone old versions
-
-        Ok(Response::new(ReindexCategoryResponse {
-            success: true,
-            run_id: uuid::Uuid::now_v7().to_string(),
-            documents: 0,
-            vectors_inserted: 0,
-            vectors_tombstoned: 0,
-            old_version: 0,
-            new_version: 1,
-            error: String::new(),
-        }))
+        Err(Self::unconfigured("category reindex"))
     }
 
     async fn delete_category(
@@ -168,15 +123,7 @@ impl IngestionService for IngestionServiceImpl {
             "Delete category requested"
         );
 
-        // In a full implementation, this would:
-        // 1. Query all vectors with the category
-        // 2. If hard_delete, permanently remove them
-        // 3. Otherwise, set tombstone flag
-
-        Ok(Response::new(DeleteCategoryResponse {
-            success: true,
-            vectors_affected: 0,
-        }))
+        Err(Self::unconfigured("category deletion"))
     }
 
     async fn list_categories(
@@ -190,31 +137,28 @@ impl IngestionService for IngestionServiceImpl {
 
         info!(limit = limit, offset = offset, "List categories requested");
 
-        // In a full implementation, this would:
-        // 1. Scan manifest for unique category_uids
-        // 2. Aggregate counts per category
-        // 3. Return paginated results
-
-        Ok(Response::new(ListCategoriesResponse {
-            categories: vec![],
-            total_count: 0,
-        }))
+        Err(Self::unconfigured("category listing"))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::{tag_value, TagValue};
+
+    fn assert_unconfigured(err: Status) {
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains("not configured"));
+    }
 
     #[tokio::test]
     async fn test_trigger_sync() {
         let service = IngestionServiceImpl::new();
 
         let request = Request::new(TriggerSyncRequest { force: false });
-        let response = service.trigger_sync(request).await.unwrap();
+        let err = service.trigger_sync(request).await.unwrap_err();
 
-        assert!(!response.get_ref().run_id.is_empty());
-        assert_eq!(response.get_ref().status, SyncRunStatus::SyncStarted as i32);
+        assert_unconfigured(err);
     }
 
     #[tokio::test]
@@ -222,9 +166,9 @@ mod tests {
         let service = IngestionServiceImpl::new();
 
         let request = Request::new(GetSyncStatusRequest {});
-        let response = service.get_sync_status(request).await.unwrap();
+        let err = service.get_sync_status(request).await.unwrap_err();
 
-        assert!(!response.get_ref().is_running);
+        assert_unconfigured(err);
     }
 
     #[tokio::test]
@@ -244,6 +188,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_tags_requires_configured_backend() {
+        let service = IngestionServiceImpl::new();
+        let mut tags = std::collections::HashMap::new();
+        tags.insert(
+            "status".to_string(),
+            TagValue {
+                value: Some(tag_value::Value::Text("active".to_string())),
+            },
+        );
+
+        let request = Request::new(UpdateTagsRequest {
+            collection: "test".to_string(),
+            document_id: "doc-1".to_string(),
+            tags,
+            merge: true,
+        });
+        let err = service.update_tags(request).await.unwrap_err();
+
+        assert_unconfigured(err);
+    }
+
+    #[tokio::test]
     async fn test_reindex_category_validation() {
         let service = IngestionServiceImpl::new();
 
@@ -255,6 +221,19 @@ mod tests {
         let result = service.reindex_category(request).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().message().contains("category_uid"));
+    }
+
+    #[tokio::test]
+    async fn test_reindex_category_requires_configured_backend() {
+        let service = IngestionServiceImpl::new();
+
+        let request = Request::new(ReindexCategoryRequest {
+            category_uid: "cat-1".to_string(),
+            dry_run: false,
+        });
+        let err = service.reindex_category(request).await.unwrap_err();
+
+        assert_unconfigured(err);
     }
 
     #[tokio::test]
@@ -271,6 +250,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_delete_category_requires_configured_backend() {
+        let service = IngestionServiceImpl::new();
+
+        let request = Request::new(DeleteCategoryRequest {
+            category_uid: "cat-1".to_string(),
+            hard_delete: false,
+        });
+        let err = service.delete_category(request).await.unwrap_err();
+
+        assert_unconfigured(err);
+    }
+
+    #[tokio::test]
     async fn test_list_categories() {
         let service = IngestionServiceImpl::new();
 
@@ -278,8 +270,8 @@ mod tests {
             limit: 10,
             offset: 0,
         });
-        let response = service.list_categories(request).await.unwrap();
+        let err = service.list_categories(request).await.unwrap_err();
 
-        assert_eq!(response.get_ref().categories.len(), 0);
+        assert_unconfigured(err);
     }
 }

@@ -14,8 +14,8 @@ use crate::proto::{
     GetResourceStatusRequest, GetResourceStatusResponse, GetTaskHistoryRequest,
     GetTaskHistoryResponse, GetWebhookConfigRequest, GetWebhookConfigResponse, RebuildStatus,
     ResourceRequirementsInfo, ResourceStatus, RunningTaskInfo, SnapshotStatus, TaskExecutionInfo,
-    TaskExecutionRecord, TaskScheduleInfo, TaskStatus, TriggerRebuildRequest, TriggerRebuildResponse,
-    TriggerSnapshotRequest, TriggerSnapshotResponse, WebhookEvent,
+    TaskExecutionRecord, TaskScheduleInfo, TaskStatus, TriggerRebuildRequest,
+    TriggerRebuildResponse, TriggerSnapshotRequest, TriggerSnapshotResponse, WebhookEvent,
 };
 use akidb_common::scheduler::{
     ResourceGovernor, ResourceRequirements, ResourceSummary, RunningTask, TaskExecution,
@@ -52,9 +52,15 @@ pub struct AdminState {
     /// Webhook configuration
     pub webhook_config: RwLock<Option<WebhookConfig>>,
     /// Snapshot trigger callback
-    pub snapshot_trigger: Option<Box<dyn Fn(bool, Option<String>) -> Result<String, String> + Send + Sync>>,
+    pub snapshot_trigger:
+        Option<Box<dyn Fn(bool, Option<String>) -> Result<String, String> + Send + Sync>>,
+    /// Snapshot state callback
+    pub snapshot_state: Option<Box<dyn Fn() -> i32 + Send + Sync>>,
     /// Rebuild trigger callback
-    pub rebuild_trigger: Option<Box<dyn Fn(bool, Option<String>, bool) -> Result<String, String> + Send + Sync>>,
+    pub rebuild_trigger:
+        Option<Box<dyn Fn(bool, Option<String>, bool) -> Result<String, String> + Send + Sync>>,
+    /// Rebuild state callback
+    pub rebuild_state: Option<Box<dyn Fn() -> i32 + Send + Sync>>,
     /// Task cancel callback
     pub task_canceller: Option<Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>>,
 }
@@ -82,7 +88,9 @@ impl AdminState {
             registered_tasks: RwLock::new(HashMap::new()),
             webhook_config: RwLock::new(None),
             snapshot_trigger: None,
+            snapshot_state: None,
             rebuild_trigger: None,
+            rebuild_state: None,
             task_canceller: None,
         }
     }
@@ -116,16 +124,20 @@ impl AdminState {
         }
     }
 
-    /// Get current snapshot state (placeholder - would integrate with actual snapshot state machine)
+    /// Get current snapshot state.
     pub fn get_snapshot_state(&self) -> i32 {
-        // In a real implementation, this would query the actual snapshot state machine
-        0 // SNAPSHOT_IDLE
+        self.snapshot_state
+            .as_ref()
+            .map(|state| state())
+            .unwrap_or(SnapshotStatus::SnapshotIdle as i32)
     }
 
-    /// Get current rebuild state (placeholder - would integrate with actual rebuild state machine)
+    /// Get current rebuild state.
     pub fn get_rebuild_state(&self) -> i32 {
-        // In a real implementation, this would query the actual rebuild state machine
-        0 // REBUILD_IDLE
+        self.rebuild_state
+            .as_ref()
+            .map(|state| state())
+            .unwrap_or(RebuildStatus::RebuildIdle as i32)
     }
 
     /// Send webhook notification
@@ -219,7 +231,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetTaskHistoryResponse>, Status> {
         let req = request.into_inner();
         let history = self.state.task_history.read();
-        let limit = if req.limit == 0 { 50 } else { req.limit as usize };
+        let limit = if req.limit == 0 {
+            50
+        } else {
+            req.limit as usize
+        };
         let status_filter = match req.status_filter {
             Some(status) => Some(task_status_to_state(status)?),
             None => None,
@@ -271,7 +287,7 @@ impl AdminService for AdminServiceImpl {
 
         // Check if snapshot is already in progress
         let current_state = self.state.get_snapshot_state();
-        if current_state != 0 && !req.force {
+        if snapshot_in_progress(current_state) && !req.force {
             return Ok(Response::new(TriggerSnapshotResponse {
                 accepted: false,
                 snapshot_id: String::new(),
@@ -321,7 +337,7 @@ impl AdminService for AdminServiceImpl {
 
         // Check if rebuild is already in progress
         let current_state = self.state.get_rebuild_state();
-        if current_state != 0 && !req.force {
+        if rebuild_in_progress(current_state) && !req.force {
             return Ok(Response::new(TriggerRebuildResponse {
                 accepted: false,
                 rebuild_id: String::new(),
@@ -537,7 +553,8 @@ fn registered_task_to_proto(task: &RegisteredTask) -> BackgroundTaskInfo {
         task_type: task.task_type.clone(),
         task_id: task.task_id.clone(),
         description: task.description.clone(),
-        status: task_state_to_status(&task.current_execution, &task.last_execution, task.enabled) as i32,
+        status: task_state_to_status(&task.current_execution, &task.last_execution, task.enabled)
+            as i32,
         schedule: Some(task_schedule_to_proto(&task.schedule)),
         current_execution: task.current_execution.as_ref().map(task_execution_to_info),
         last_execution: task.last_execution.as_ref().map(task_execution_to_info),
@@ -656,6 +673,24 @@ fn task_status_to_state(status: i32) -> Result<TaskState, Status> {
     }
 }
 
+fn snapshot_in_progress(status: i32) -> bool {
+    match SnapshotStatus::try_from(status) {
+        Ok(SnapshotStatus::SnapshotIdle)
+        | Ok(SnapshotStatus::SnapshotFailed)
+        | Ok(SnapshotStatus::SnapshotCompleted) => false,
+        Ok(_) | Err(_) => true,
+    }
+}
+
+fn rebuild_in_progress(status: i32) -> bool {
+    match RebuildStatus::try_from(status) {
+        Ok(RebuildStatus::RebuildIdle)
+        | Ok(RebuildStatus::RebuildFailed)
+        | Ok(RebuildStatus::RebuildCompleted) => false,
+        Ok(_) | Err(_) => true,
+    }
+}
+
 fn resource_requirements_to_proto(req: &ResourceRequirements) -> ResourceRequirementsInfo {
     ResourceRequirementsInfo {
         cpu_weight: req.cpu_weight,
@@ -665,7 +700,10 @@ fn resource_requirements_to_proto(req: &ResourceRequirements) -> ResourceRequire
     }
 }
 
-fn resource_summary_to_proto(summary: &ResourceSummary, governor: &ResourceGovernor) -> ResourceStatus {
+fn resource_summary_to_proto(
+    summary: &ResourceSummary,
+    governor: &ResourceGovernor,
+) -> ResourceStatus {
     let running = governor.running_tasks();
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -707,13 +745,17 @@ mod tests {
     use super::*;
     use akidb_common::scheduler::{ResourceGovernorConfig, SimpleMetricsSource};
 
-    fn create_test_state() -> Arc<AdminState> {
+    fn create_raw_test_state() -> AdminState {
         let metrics = Arc::new(SimpleMetricsSource::new());
         let governor = Arc::new(ResourceGovernor::new(
             ResourceGovernorConfig::default(),
             metrics,
         ));
-        Arc::new(AdminState::new(governor))
+        AdminState::new(governor)
+    }
+
+    fn create_test_state() -> Arc<AdminState> {
+        Arc::new(create_raw_test_state())
     }
 
     #[test]
@@ -818,5 +860,95 @@ mod tests {
         assert!(!response.success);
         assert!(response.message.contains("event"));
         assert!(state.webhook_config.read().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_trigger_snapshot_rejects_active_state_from_callback() {
+        let mut state = create_raw_test_state();
+        state.snapshot_state = Some(Box::new(|| SnapshotStatus::SnapshotUploading as i32));
+        state.snapshot_trigger = Some(Box::new(|_, _| Ok("snapshot-1".to_string())));
+        let service = AdminServiceImpl::new(Arc::new(state));
+
+        let response = service
+            .trigger_snapshot(Request::new(TriggerSnapshotRequest {
+                force: false,
+                shard_id: None,
+            }))
+            .await
+            .expect("trigger_snapshot should return a response")
+            .into_inner();
+
+        assert!(!response.accepted);
+        assert_eq!(
+            response.current_status,
+            SnapshotStatus::SnapshotUploading as i32
+        );
+        assert!(response.message.contains("already in progress"));
+    }
+
+    #[tokio::test]
+    async fn test_trigger_snapshot_allows_terminal_state_from_callback() {
+        let mut state = create_raw_test_state();
+        state.snapshot_state = Some(Box::new(|| SnapshotStatus::SnapshotCompleted as i32));
+        state.snapshot_trigger = Some(Box::new(|_, _| Ok("snapshot-1".to_string())));
+        let service = AdminServiceImpl::new(Arc::new(state));
+
+        let response = service
+            .trigger_snapshot(Request::new(TriggerSnapshotRequest {
+                force: false,
+                shard_id: None,
+            }))
+            .await
+            .expect("trigger_snapshot should return a response")
+            .into_inner();
+
+        assert!(response.accepted);
+        assert_eq!(response.snapshot_id, "snapshot-1");
+    }
+
+    #[tokio::test]
+    async fn test_trigger_rebuild_rejects_active_state_from_callback() {
+        let mut state = create_raw_test_state();
+        state.rebuild_state = Some(Box::new(|| RebuildStatus::RebuildBuilding as i32));
+        state.rebuild_trigger = Some(Box::new(|_, _, _| Ok("rebuild-1".to_string())));
+        let service = AdminServiceImpl::new(Arc::new(state));
+
+        let response = service
+            .trigger_rebuild(Request::new(TriggerRebuildRequest {
+                force: false,
+                shard_id: None,
+                compact_tombstones: false,
+            }))
+            .await
+            .expect("trigger_rebuild should return a response")
+            .into_inner();
+
+        assert!(!response.accepted);
+        assert_eq!(
+            response.current_status,
+            RebuildStatus::RebuildBuilding as i32
+        );
+        assert!(response.message.contains("already in progress"));
+    }
+
+    #[tokio::test]
+    async fn test_trigger_rebuild_allows_terminal_state_from_callback() {
+        let mut state = create_raw_test_state();
+        state.rebuild_state = Some(Box::new(|| RebuildStatus::RebuildFailed as i32));
+        state.rebuild_trigger = Some(Box::new(|_, _, _| Ok("rebuild-1".to_string())));
+        let service = AdminServiceImpl::new(Arc::new(state));
+
+        let response = service
+            .trigger_rebuild(Request::new(TriggerRebuildRequest {
+                force: false,
+                shard_id: None,
+                compact_tombstones: true,
+            }))
+            .await
+            .expect("trigger_rebuild should return a response")
+            .into_inner();
+
+        assert!(response.accepted);
+        assert_eq!(response.rebuild_id, "rebuild-1");
     }
 }

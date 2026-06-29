@@ -33,7 +33,7 @@ pub use config::IngestionConfig;
 pub use pipeline::IngestionPipeline;
 pub use manifest::ManifestStore;
 pub use scheduler::{ChangeDetector, IngestionScheduler, SchedulerConfig};
-pub use lifecycle::{LifecycleManager, LifecycleConfig};
+pub use lifecycle::{DocumentHardDeleter, LifecycleManager, LifecycleConfig};
 pub use reindex::{Reindexer, ReindexConfig, ReindexResult, VersionTombstoner};
 
 /// Result type for ingestion operations
