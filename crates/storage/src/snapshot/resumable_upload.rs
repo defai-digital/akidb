@@ -46,6 +46,15 @@ impl Default for ResumableUploadConfig {
     }
 }
 
+impl ResumableUploadConfig {
+    fn sanitized(mut self) -> Self {
+        self.chunk_size = self.chunk_size.max(MIN_CHUNK_SIZE);
+        self.max_chunk_retries = self.max_chunk_retries.max(1);
+        self.chunk_timeout_secs = self.chunk_timeout_secs.max(1);
+        self
+    }
+}
+
 /// Result of a completed multipart upload part
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletedPart {
@@ -90,7 +99,7 @@ impl ResumableUploader {
 
     /// Configure upload settings
     pub fn with_config(mut self, config: ResumableUploadConfig) -> Self {
-        self.config = config;
+        self.config = config.sanitized();
         self
     }
 
@@ -99,7 +108,8 @@ impl ResumableUploader {
         if file_size == 0 {
             return 1;
         }
-        (file_size + self.config.chunk_size as u64 - 1) / self.config.chunk_size as u64
+        let chunk_size = self.config.chunk_size as u64;
+        (file_size / chunk_size) + u64::from(file_size % chunk_size != 0)
     }
 
     /// Initiate a multipart upload
@@ -582,6 +592,41 @@ mod tests {
         assert_eq!(uploader.calculate_chunks(DEFAULT_CHUNK_SIZE as u64), 1);
         assert_eq!(uploader.calculate_chunks(DEFAULT_CHUNK_SIZE as u64 + 1), 2);
         assert_eq!(uploader.calculate_chunks(DEFAULT_CHUNK_SIZE as u64 * 10), 10);
+    }
+
+    #[test]
+    fn test_config_sanitizes_zero_values() {
+        let uploader = ResumableUploader::new(
+            "http://localhost:9000",
+            "test",
+            "access",
+            "secret",
+        )
+        .with_config(ResumableUploadConfig {
+            chunk_size: 0,
+            max_chunk_retries: 0,
+            chunk_timeout_secs: 0,
+            verify_checksums: false,
+        });
+
+        assert_eq!(uploader.config.chunk_size, MIN_CHUNK_SIZE);
+        assert_eq!(uploader.config.max_chunk_retries, 1);
+        assert_eq!(uploader.config.chunk_timeout_secs, 1);
+        assert!(!uploader.config.verify_checksums);
+        assert_eq!(uploader.calculate_chunks(MIN_CHUNK_SIZE as u64 + 1), 2);
+    }
+
+    #[test]
+    fn test_calculate_chunks_does_not_overflow_for_large_file_size() {
+        let uploader = ResumableUploader::new(
+            "http://localhost:9000",
+            "test",
+            "access",
+            "secret",
+        );
+
+        let expected = (u64::MAX / DEFAULT_CHUNK_SIZE as u64) + 1;
+        assert_eq!(uploader.calculate_chunks(u64::MAX), expected);
     }
 
     #[test]
