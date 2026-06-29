@@ -9,13 +9,15 @@ use std::sync::{Arc, Mutex};
 use akidb_storage::{RocksDbBackend, StorageBackend};
 use tracing::{debug, info, warn};
 
-use akidb_common::types::{DeleteState, DocumentIdentifier, ObjectManifest};
+use akidb_common::types::{DeleteState, ObjectManifest};
 use crate::{IngestionError, Result};
 
 /// Prefix for manifest entries in RocksDB
 const MANIFEST_PREFIX: &[u8] = b"manifest:";
 /// Key for epoch counter
-const EPOCH_KEY: &[u8] = b"manifest:_epoch";
+const EPOCH_KEY: &[u8] = b"manifest_meta:epoch";
+/// Legacy epoch key used before metadata was moved outside MANIFEST_PREFIX.
+const LEGACY_EPOCH_KEY: &[u8] = b"manifest:_epoch";
 
 /// Object manifest store for tracking MinIO objects
 pub struct ManifestStore {
@@ -171,17 +173,23 @@ impl ManifestStore {
     /// Get current epoch (sync cycle counter)
     pub fn current_epoch(&self) -> Result<u64> {
         match self.backend.get(EPOCH_KEY) {
-            Ok(Some(data)) => {
-                let epoch = u64::from_le_bytes(
-                    data.as_slice()
-                        .try_into()
-                        .map_err(|_| IngestionError::Manifest("Invalid epoch data".to_string()))?,
-                );
-                Ok(epoch)
-            }
-            Ok(None) => Ok(0),
+            Ok(Some(data)) => decode_epoch(&data),
+            Ok(None) => self.current_legacy_epoch(),
             Err(e) => Err(IngestionError::Manifest(format!(
                 "Failed to get epoch: {}",
+                e
+            ))),
+        }
+    }
+
+    fn current_legacy_epoch(&self) -> Result<u64> {
+        match self.backend.get(LEGACY_EPOCH_KEY) {
+            Ok(Some(data)) if is_epoch_bytes(&data) => decode_epoch(&data),
+            Ok(Some(data)) if is_manifest_for_key(&data, "_epoch") => Ok(0),
+            Ok(Some(_)) => Err(IngestionError::Manifest("Invalid epoch data".to_string())),
+            Ok(None) => Ok(0),
+            Err(e) => Err(IngestionError::Manifest(format!(
+                "Failed to get legacy epoch: {}",
                 e
             ))),
         }
@@ -200,6 +208,11 @@ impl ManifestStore {
         self.backend
             .put(EPOCH_KEY, &epoch.to_le_bytes())
             .map_err(|e| IngestionError::Manifest(format!("Failed to update epoch: {}", e)))?;
+        if matches!(self.backend.get(LEGACY_EPOCH_KEY), Ok(Some(data)) if is_epoch_bytes(&data)) {
+            self.backend.delete(LEGACY_EPOCH_KEY).map_err(|e| {
+                IngestionError::Manifest(format!("Failed to delete legacy epoch: {}", e))
+            })?;
+        }
         debug!(epoch, "Epoch incremented");
         Ok(epoch)
     }
@@ -212,8 +225,8 @@ impl ManifestStore {
 
         let mut manifests = Vec::new();
         for (key, value) in entries {
-            // Skip the epoch key
-            if key.as_slice() == EPOCH_KEY {
+            // Skip legacy metadata only when it is actually an encoded epoch.
+            if key.as_slice() == LEGACY_EPOCH_KEY && is_epoch_bytes(&value) {
                 continue;
             }
 
@@ -271,6 +284,23 @@ impl ManifestStore {
     }
 }
 
+fn decode_epoch(data: &[u8]) -> Result<u64> {
+    Ok(u64::from_le_bytes(
+        data.try_into()
+            .map_err(|_| IngestionError::Manifest("Invalid epoch data".to_string()))?,
+    ))
+}
+
+fn is_epoch_bytes(data: &[u8]) -> bool {
+    data.len() == std::mem::size_of::<u64>()
+}
+
+fn is_manifest_for_key(data: &[u8], key: &str) -> bool {
+    serde_json::from_slice::<ObjectManifest>(data)
+        .map(|manifest| manifest.key == key)
+        .unwrap_or(false)
+}
+
 /// Manifest store statistics
 #[derive(Debug, Clone, Default)]
 pub struct ManifestStats {
@@ -285,6 +315,7 @@ pub struct ManifestStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use akidb_common::types::DocumentIdentifier;
     use tempfile::tempdir;
 
     fn create_test_manifest(key: &str) -> ObjectManifest {
@@ -320,6 +351,41 @@ mod tests {
 
         let epoch2 = store.increment_epoch().unwrap();
         assert_eq!(epoch2, 2);
+    }
+
+    #[test]
+    fn test_manifest_object_named_epoch_does_not_collide_with_epoch_counter() {
+        let dir = tempdir().unwrap();
+        let store = ManifestStore::open(dir.path()).unwrap();
+
+        assert_eq!(store.increment_epoch().unwrap(), 1);
+
+        let manifest = create_test_manifest("_epoch");
+        store.upsert(&manifest).unwrap();
+
+        assert_eq!(store.current_epoch().unwrap(), 1);
+        assert_eq!(store.get("_epoch").unwrap().unwrap().key, "_epoch");
+
+        let all = store.list_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].key, "_epoch");
+
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total, 1);
+        assert_eq!(stats.epoch, 1);
+    }
+
+    #[test]
+    fn test_manifest_reads_and_migrates_legacy_epoch_key() {
+        let dir = tempdir().unwrap();
+        let backend = Arc::new(RocksDbBackend::open(dir.path()).unwrap());
+        backend.put(LEGACY_EPOCH_KEY, &7u64.to_le_bytes()).unwrap();
+        let store = ManifestStore::from_backend(Arc::clone(&backend));
+
+        assert_eq!(store.current_epoch().unwrap(), 7);
+        assert_eq!(store.increment_epoch().unwrap(), 8);
+        assert_eq!(store.current_epoch().unwrap(), 8);
+        assert!(backend.get(LEGACY_EPOCH_KEY).unwrap().is_none());
     }
 
     #[test]
