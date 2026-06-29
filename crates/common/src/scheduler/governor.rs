@@ -180,9 +180,14 @@ impl ResourceGovernor {
 
         // Check CPU
         let cpu_used = self.metrics.get_cpu_usage_percent();
-        let running_cpu: u32 = running.iter().map(|t| t.requirements.cpu_weight).sum();
-        let total_cpu = cpu_used + running_cpu + requirements.cpu_weight;
-        if total_cpu > self.config.max_background_cpu_percent + 50 {
+        let running_cpu = running.iter().fold(0u32, |total, task| {
+            total.saturating_add(task.requirements.cpu_weight)
+        });
+        let total_cpu = cpu_used
+            .saturating_add(running_cpu)
+            .saturating_add(requirements.cpu_weight);
+        let cpu_budget = self.config.max_background_cpu_percent.saturating_add(50);
+        if total_cpu > cpu_budget {
             // +50 for headroom
             debug!(
                 cpu_used,
@@ -195,8 +200,10 @@ impl ResourceGovernor {
 
         // Check memory
         let memory_used = self.metrics.get_memory_usage_mb();
-        let running_memory: u32 = running.iter().map(|t| t.requirements.memory_mb).sum();
-        let total_memory = running_memory + requirements.memory_mb;
+        let running_memory = running.iter().fold(0u32, |total, task| {
+            total.saturating_add(task.requirements.memory_mb)
+        });
+        let total_memory = running_memory.saturating_add(requirements.memory_mb);
         if total_memory > self.config.max_background_memory_mb {
             debug!(
                 memory_used,
@@ -350,6 +357,46 @@ mod tests {
         // High latency - should defer
         metrics.set_p95_latency(50);
         assert!(!governor.can_start(&ResourceRequirements::low()));
+    }
+
+    #[test]
+    fn test_governor_cpu_overflow_rejects_task() {
+        let metrics = Arc::new(SimpleMetricsSource::new());
+        metrics.set_cpu_usage(u32::MAX);
+
+        let governor = ResourceGovernor::new(ResourceGovernorConfig::default(), metrics);
+
+        assert!(
+            !governor.can_start(&ResourceRequirements::low()),
+            "saturated CPU usage must reject new tasks instead of overflowing"
+        );
+    }
+
+    #[test]
+    fn test_governor_memory_overflow_rejects_task() {
+        let metrics = Arc::new(SimpleMetricsSource::new());
+        let governor = ResourceGovernor::new(
+            ResourceGovernorConfig {
+                max_concurrent_tasks: 2,
+                ..Default::default()
+            },
+            metrics,
+        );
+
+        governor.register_task(RunningTask {
+            task_id: "large-task".to_string(),
+            task_type: "test".to_string(),
+            started_at: Instant::now(),
+            requirements: ResourceRequirements {
+                memory_mb: u32::MAX,
+                ..ResourceRequirements::low()
+            },
+        });
+
+        assert!(
+            !governor.can_start(&ResourceRequirements::low()),
+            "saturated running memory must reject new tasks instead of overflowing"
+        );
     }
 
     #[test]
