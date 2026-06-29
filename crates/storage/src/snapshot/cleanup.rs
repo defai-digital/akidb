@@ -345,10 +345,40 @@ fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
     if let Some(start) = xml.find(&start_tag) {
         let value_start = start + start_tag.len();
         if let Some(end) = xml[value_start..].find(&end_tag) {
-            return Some(xml[value_start..value_start + end].to_string());
+            return Some(decode_xml_entities(&xml[value_start..value_start + end]));
         }
     }
     None
+}
+
+/// Decode common XML entities without recursively decoding newly produced text.
+fn decode_xml_entities(value: &str) -> String {
+    let mut decoded = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while let Some(entity_start) = rest.find('&') {
+        decoded.push_str(&rest[..entity_start]);
+        rest = &rest[entity_start..];
+
+        let Some(entity_end) = rest.find(';') else {
+            decoded.push_str(rest);
+            return decoded;
+        };
+
+        let entity = &rest[..=entity_end];
+        match entity {
+            "&amp;" => decoded.push('&'),
+            "&lt;" => decoded.push('<'),
+            "&gt;" => decoded.push('>'),
+            "&quot;" => decoded.push('"'),
+            "&apos;" => decoded.push('\''),
+            _ => decoded.push_str(entity),
+        }
+        rest = &rest[entity_end + 1..];
+    }
+
+    decoded.push_str(rest);
+    decoded
 }
 
 /// Calculate total size of a directory recursively
@@ -390,6 +420,18 @@ mod tests {
         assert_eq!(extract_xml_value(xml, "UploadId"), Some("abc123".to_string()));
         assert_eq!(extract_xml_value(xml, "Key"), Some("test/file".to_string()));
         assert_eq!(extract_xml_value(xml, "Missing"), None);
+    }
+
+    #[test]
+    fn test_extract_xml_value_decodes_common_entities_once() {
+        let xml = "<Root><Key>snapshots/a&amp;b/&lt;file&gt;&quot;x&quot;&apos;y&apos;</Key><UploadId>id&amp;1</UploadId><Escaped>&amp;lt;</Escaped></Root>";
+
+        assert_eq!(
+            extract_xml_value(xml, "Key"),
+            Some("snapshots/a&b/<file>\"x\"'y'".to_string())
+        );
+        assert_eq!(extract_xml_value(xml, "UploadId"), Some("id&1".to_string()));
+        assert_eq!(extract_xml_value(xml, "Escaped"), Some("&lt;".to_string()));
     }
 
     #[test]
