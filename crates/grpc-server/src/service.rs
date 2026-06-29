@@ -446,7 +446,7 @@ where
                 if entry.metadata.is_empty() {
                     Some(serde_json::Value::Null)
                 } else {
-                    Some(serde_json::from_slice(&entry.metadata).unwrap_or(serde_json::Value::Null))
+                    serde_json::from_slice(&entry.metadata).ok()
                 }
             }
             _ => None,
@@ -464,6 +464,16 @@ where
         } else {
             serde_json::from_slice(metadata).unwrap_or(serde_json::Value::Null)
         }
+    }
+
+    fn validate_metadata_json(metadata: &[u8]) -> Result<(), String> {
+        if metadata.is_empty() {
+            return Ok(());
+        }
+
+        serde_json::from_slice::<serde_json::Value>(metadata)
+            .map(|_| ())
+            .map_err(|e| format!("Metadata must be valid JSON: {e}"))
     }
 
     fn validate_vector_id(id: &str) -> Result<(), &'static str> {
@@ -1394,6 +1404,9 @@ where
         if let Err(message) = Self::validate_vector_payload(&req.id, &req.vector) {
             return Err(Status::invalid_argument(message));
         }
+        if let Err(message) = Self::validate_metadata_json(&req.metadata) {
+            return Err(Status::invalid_argument(message));
+        }
 
         let vector_id = VectorId::new(&req.id);
         let vector: Vec<f32> = req.vector;
@@ -1484,8 +1497,10 @@ where
                             let meta = if entry.metadata.is_empty() {
                                 serde_json::Value::Null
                             } else {
-                                serde_json::from_slice(&entry.metadata)
-                                    .unwrap_or(serde_json::Value::Null)
+                                match serde_json::from_slice(&entry.metadata) {
+                                    Ok(meta) => meta,
+                                    Err(_) => return false,
+                                }
                             };
                             metadata_filter.matches(&meta)
                         }
@@ -1623,6 +1638,9 @@ where
         if req.vector.is_empty() {
             return Err(Status::invalid_argument("Vector cannot be empty"));
         }
+        if let Err(message) = Self::validate_metadata_json(&req.metadata) {
+            return Err(Status::invalid_argument(message));
+        }
 
         let vector_id = VectorId::new(&req.id);
 
@@ -1728,6 +1746,14 @@ where
             if let Err(message) = Self::validate_vector_payload(&vector.id, &vector.embedding) {
                 warn!(
                     "Batch insert: ID {} failed validation: {}",
+                    vector.id, message
+                );
+                failed_ids.push(vector.id);
+                continue;
+            }
+            if let Err(message) = Self::validate_metadata_json(&vector.metadata) {
+                warn!(
+                    "Batch insert: ID {} failed metadata validation: {}",
                     vector.id, message
                 );
                 failed_ids.push(vector.id);
@@ -2458,6 +2484,84 @@ mod tests {
         let status = result.expect_err("empty vector ID should be rejected");
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("Vector ID cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_insert_rejects_invalid_json_metadata() {
+        let (service, _dir) = test_service();
+        let result = service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: "bad-metadata".to_string(),
+                vector: vec![1.0, 0.0],
+                metadata: b"not-json".to_vec(),
+                text: String::new(),
+            }))
+            .await;
+
+        let status = result.expect_err("invalid JSON metadata should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("Metadata must be valid JSON"));
+        assert_eq!(service.index_stats().active_vectors, 0);
+    }
+
+    #[tokio::test]
+    async fn test_update_rejects_invalid_json_metadata() {
+        let (service, _dir) = test_service();
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: "doc1".to_string(),
+                vector: vec![1.0, 0.0],
+                metadata: br#"{"title":"Original"}"#.to_vec(),
+                text: String::new(),
+            }))
+            .await
+            .unwrap();
+
+        let result = service
+            .update(Request::new(UpdateRequest {
+                collection: "test".to_string(),
+                id: "doc1".to_string(),
+                vector: vec![0.0, 1.0],
+                metadata: b"not-json".to_vec(),
+            }))
+            .await;
+
+        let status = result.expect_err("invalid JSON metadata should be rejected");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("Metadata must be valid JSON"));
+    }
+
+    #[tokio::test]
+    async fn test_insert_batch_rejects_invalid_json_metadata() {
+        let (service, _dir) = test_service();
+        let result = service
+            .insert_batch(Request::new(InsertBatchRequest {
+                collection: "test".to_string(),
+                vectors: vec![
+                    Vector {
+                        id: "valid".to_string(),
+                        embedding: vec![1.0, 0.0],
+                        metadata: br#"{"ok":true}"#.to_vec(),
+                        text: String::new(),
+                    },
+                    Vector {
+                        id: "bad".to_string(),
+                        embedding: vec![0.0, 1.0],
+                        metadata: b"not-json".to_vec(),
+                        text: String::new(),
+                    },
+                ],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(!result.success);
+        assert_eq!(result.inserted_count, 1);
+        assert_eq!(result.failed_ids, vec!["bad".to_string()]);
+        assert_eq!(service.index_stats().active_vectors, 1);
     }
 
     #[tokio::test]
