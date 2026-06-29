@@ -301,12 +301,13 @@ impl BackpressureController {
 
     /// Get current load as a percentage (0-100+)
     pub fn load_percentage(&self) -> u32 {
-        let in_flight = self.in_flight.load(Ordering::Acquire) as u32;
-        let max = self.config.max_concurrent as u32;
+        let in_flight = self.in_flight.load(Ordering::Acquire) as u128;
+        let max = self.config.max_concurrent as u128;
         if max == 0 {
             return 0;
         }
-        (in_flight * 100) / max
+        let percentage = in_flight.saturating_mul(100) / max;
+        percentage.min(u32::MAX as u128) as u32
     }
 }
 
@@ -440,6 +441,23 @@ mod tests {
 
         assert_eq!(controller.stats().max_concurrent, Semaphore::MAX_PERMITS);
         assert!(!controller.is_under_pressure());
+    }
+
+    #[test]
+    fn test_load_percentage_extreme_max_concurrent_does_not_overflow() {
+        let controller = BackpressureController::with_config(BackpressureConfig {
+            max_concurrent: usize::MAX,
+            rate_limit_rps: 0,
+            max_queue_depth: 0,
+            enable_load_shedding: false,
+            ..Default::default()
+        });
+
+        controller
+            .in_flight
+            .store(Semaphore::MAX_PERMITS, Ordering::Release);
+
+        assert_eq!(controller.load_percentage(), 100);
     }
 
     #[test]
