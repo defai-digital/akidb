@@ -307,7 +307,10 @@ impl Reindexer {
 
         let max_version = manifests
             .into_iter()
-            .filter(|m| m.doc_id.category_uid.as_deref() == Some(category_uid))
+            .filter(|m| {
+                m.doc_id.category_uid.as_deref() == Some(category_uid)
+                    && m.delete_state.is_active()
+            })
             .map(|m| m.version)
             .max();
 
@@ -585,6 +588,25 @@ mod tests {
 
         // Version should be 0 (initial)
         assert_eq!(reindexer.get_category_version("test").unwrap(), Some(0));
+    }
+
+    #[test]
+    fn test_get_category_version_ignores_deleted_documents() {
+        let store = create_test_store();
+        let reindexer = Reindexer::new(Arc::clone(&store), ReindexConfig::default());
+
+        let mut deleted = create_categorized_manifest("deleted.pdf", "test");
+        deleted.version = 99;
+        deleted.transition_to_confirmed();
+        store.upsert(&deleted).unwrap();
+
+        assert_eq!(reindexer.get_category_version("test").unwrap(), None);
+
+        let mut active = create_categorized_manifest("active.pdf", "test");
+        active.version = 7;
+        store.upsert(&active).unwrap();
+
+        assert_eq!(reindexer.get_category_version("test").unwrap(), Some(7));
     }
 
     #[test]
