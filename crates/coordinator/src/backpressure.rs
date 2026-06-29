@@ -104,6 +104,7 @@ impl RateLimiter {
         // Previous code used as_secs() which truncates sub-second durations,
         // causing incorrect max_requests for windows < 1 second
         let window_ms = window.as_millis().max(1) as u64;
+        let max_requests = requests_per_window(max_rps, window_ms);
         Self {
             count: AtomicU64::new(0),
             window_start: parking_lot::Mutex::new(Instant::now()),
@@ -111,7 +112,7 @@ impl RateLimiter {
             // Calculate max requests for the window using millisecond precision
             // For a 1-second window at 1000 RPS, this is 1000 * 1000 / 1000 = 1000
             // For a 500ms window at 1000 RPS, this is 1000 * 500 / 1000 = 500
-            max_requests: max_rps.saturating_mul(window_ms) / 1000,
+            max_requests,
         }
     }
 
@@ -155,6 +156,14 @@ impl RateLimiter {
         // Use milliseconds for better precision when elapsed is < 1 second
         let elapsed_ms = elapsed.as_millis().max(1) as u64;
         (count * 1000) / elapsed_ms
+    }
+}
+
+fn requests_per_window(max_rps: u64, window_ms: u64) -> u64 {
+    if max_rps == 0 {
+        0
+    } else {
+        max_rps.saturating_mul(window_ms).saturating_div(1000).max(1)
     }
 }
 
@@ -405,6 +414,27 @@ mod tests {
         }
 
         assert_eq!(controller.load_percentage(), 50);
+    }
+
+    #[test]
+    fn test_rate_limiter_nonzero_rps_small_window_is_not_unlimited() {
+        let limiter = RateLimiter::new(1, Duration::from_millis(1));
+
+        assert_eq!(limiter.max_requests, 1);
+        assert!(limiter.try_acquire().is_ok());
+        assert!(
+            limiter.try_acquire().is_err(),
+            "nonzero RPS must not be rounded down to unlimited"
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_zero_rps_remains_unlimited() {
+        let limiter = RateLimiter::new(0, Duration::from_millis(1));
+
+        assert_eq!(limiter.max_requests, 0);
+        assert!(limiter.try_acquire().is_ok());
+        assert!(limiter.try_acquire().is_ok());
     }
 
     #[tokio::test]
