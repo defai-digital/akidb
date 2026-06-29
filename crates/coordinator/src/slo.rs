@@ -3,11 +3,10 @@
 //! This module provides latency estimation for queries based on current system state,
 //! allowing clients to make informed decisions about query timeouts and degraded modes.
 
+use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
-use parking_lot::RwLock;
-use tracing::{debug, warn};
+use std::time::Instant;
 
 /// SLO configuration
 #[derive(Debug, Clone)]
@@ -139,18 +138,18 @@ impl SloEstimator {
         }
 
         // Track totals
-        self.total_queries.fetch_add(1, Ordering::Relaxed);
+        saturating_increment_u64(&self.total_queries);
 
         // Track SLO breaches
         let latency_ms = latency_us / 1000;
         if latency_ms > self.config.target_p95_ms {
-            self.p95_breaches.fetch_add(1, Ordering::Relaxed);
+            saturating_increment_u64(&self.p95_breaches);
         }
     }
 
     /// Increment concurrent request count
     pub fn request_started(&self) {
-        let current = self.concurrent_requests.fetch_add(1, Ordering::Relaxed) + 1;
+        let current = saturating_increment_u64(&self.concurrent_requests);
 
         // Update max if needed
         let mut max = self.max_concurrent.load(Ordering::Relaxed);
@@ -281,12 +280,12 @@ impl SloEstimator {
         let adjusted_p95_ms = (p95_ms as f64 * load_multiplier) as u64;
 
         // Recommend degraded mode if SLO is at risk
-        let recommend_degraded_mode = p95_probability < (1.0 - self.config.breach_threshold)
-            || load_factor > 0.8;
+        let recommend_degraded_mode =
+            p95_probability < (1.0 - self.config.breach_threshold) || load_factor > 0.8;
 
         // Recommended timeout: P99 with load adjustment and safety margin
-        let recommended_timeout_ms = ((p99_ms as f64 * load_multiplier * 1.5) as u64)
-            .max(self.config.target_p99_ms);
+        let recommended_timeout_ms =
+            ((p99_ms as f64 * load_multiplier * 1.5) as u64).max(self.config.target_p99_ms);
 
         // Confidence based on sample count
         let confidence = (sample_count as f64 / self.config.sample_window_size as f64)
@@ -399,6 +398,17 @@ impl SloEstimator {
     /// Get configuration
     pub fn config(&self) -> &SloConfig {
         &self.config
+    }
+}
+
+fn saturating_increment_u64(counter: &AtomicU64) -> u64 {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_add(1);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => current = actual,
+        }
     }
 }
 
@@ -579,5 +589,46 @@ mod tests {
         // Recommended timeout should be reasonable
         assert!(estimate.recommended_timeout_ms >= 40);
         assert!(estimate.recommended_timeout_ms >= estimator.config().target_p99_ms);
+    }
+
+    #[test]
+    fn test_latency_counters_saturate_without_wrapping() {
+        let estimator = create_estimator();
+        estimator.total_queries.store(u64::MAX, Ordering::Relaxed);
+        estimator.p95_breaches.store(u64::MAX, Ordering::Relaxed);
+
+        estimator.record_latency(100_000, 10, 4);
+
+        let stats = estimator.stats();
+        assert_eq!(stats.total_queries, u64::MAX);
+        assert_eq!(stats.p95_breach_count, u64::MAX);
+        assert_eq!(stats.sample_count, 1);
+    }
+
+    #[test]
+    fn test_request_started_saturates_without_wrapping() {
+        let estimator = create_estimator();
+        estimator
+            .concurrent_requests
+            .store(u64::MAX, Ordering::Relaxed);
+        estimator
+            .max_concurrent
+            .store(u64::MAX - 1, Ordering::Relaxed);
+
+        estimator.request_started();
+
+        assert_eq!(
+            estimator.concurrent_requests.load(Ordering::Relaxed),
+            u64::MAX
+        );
+        assert_eq!(estimator.max_concurrent.load(Ordering::Relaxed), u64::MAX);
+        assert_eq!(estimator.calculate_load_factor(), 1.0);
+
+        estimator.request_completed();
+
+        assert_eq!(
+            estimator.concurrent_requests.load(Ordering::Relaxed),
+            u64::MAX - 1
+        );
     }
 }
