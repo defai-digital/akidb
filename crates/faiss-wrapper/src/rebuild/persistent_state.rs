@@ -635,7 +635,7 @@ impl<P: RebuildStatePersistence> PersistentRebuildStateMachine<P> {
                 retry_count,
                 phase_when_failed,
                 ..
-            } => (*retry_count + 1, phase_when_failed.clone()),
+            } => (retry_count.saturating_add(1), phase_when_failed.clone()),
             other => (0, Box::new(other.clone())),
         };
 
@@ -846,6 +846,36 @@ mod tests {
         // Reset for retry
         sm.reset_for_retry(&mut record).unwrap();
         assert!(matches!(record.phase, PersistentRebuildPhase::Building { .. }));
+    }
+
+    #[test]
+    fn test_retry_count_saturates_on_repeated_failure() {
+        let persistence = InMemoryRebuildPersistence::new();
+        let sm = PersistentRebuildStateMachine::new(persistence);
+        let mut record = sm
+            .start_operation("shard-1".to_string(), 100, RebuildPersistentConfig::default())
+            .unwrap();
+        record.phase = PersistentRebuildPhase::Failed {
+            error: "previous".to_string(),
+            retry_count: u32::MAX,
+            failed_at: 0,
+            phase_when_failed: Box::new(PersistentRebuildPhase::Building {
+                vectors_built: 0,
+                total_vectors: 100,
+                temp_index_path: "/tmp/index".to_string(),
+                started_at: 0,
+            }),
+        };
+
+        sm.fail_operation(&mut record, "again".to_string()).unwrap();
+
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Failed {
+                retry_count: u32::MAX,
+                ..
+            }
+        ));
     }
 
     #[test]
