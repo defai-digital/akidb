@@ -5,11 +5,11 @@
 //! - Adaptive batch sizing based on latency
 //! - Concurrent batch processing with backpressure
 
+use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use parking_lot::RwLock;
 use tokio::sync::Semaphore;
 use tracing::debug;
 
@@ -231,11 +231,7 @@ impl BatchProcessor {
     ///
     /// Note: This method does not apply backpressure. For production use with
     /// untrusted input, prefer `try_process_batch` which rejects when queue is full.
-    pub async fn process_batch<T, F, Fut>(
-        &self,
-        items: Vec<T>,
-        processor: F,
-    ) -> BatchResult<T>
+    pub async fn process_batch<T, F, Fut>(&self, items: Vec<T>, processor: F) -> BatchResult<T>
     where
         F: Fn(Vec<T>) -> Fut,
         Fut: std::future::Future<Output = Vec<Result<T, String>>>,
@@ -325,11 +321,7 @@ impl BatchProcessor {
     }
 
     /// Process items in optimal batches
-    pub async fn process_all<T, F, Fut>(
-        &self,
-        items: Vec<T>,
-        processor: F,
-    ) -> Vec<BatchResult<T>>
+    pub async fn process_all<T, F, Fut>(&self, items: Vec<T>, processor: F) -> Vec<BatchResult<T>>
     where
         T: Clone,
         F: Fn(Vec<T>) -> Fut + Clone,
@@ -353,17 +345,22 @@ impl BatchProcessor {
     }
 
     /// Record batch statistics
-    fn record_batch<T>(&self, batch_size: usize, duration: Duration, results: &[Result<T, String>]) {
+    fn record_batch<T>(
+        &self,
+        batch_size: usize,
+        duration: Duration,
+        results: &[Result<T, String>],
+    ) {
         let successful = results.iter().filter(|r| r.is_ok()).count().min(batch_size);
         let failed = batch_size.saturating_sub(successful);
-        let duration_us = duration.as_micros() as u64;
+        let duration_us = duration_micros_u64(duration);
 
         let mut stats = self.stats.write();
-        stats.total_batches += 1;
-        stats.total_items += batch_size as u64;
-        stats.successful_items += successful as u64;
-        stats.failed_items += failed as u64;
-        stats.total_time_us += duration_us;
+        stats.total_batches = stats.total_batches.saturating_add(1);
+        stats.total_items = stats.total_items.saturating_add(batch_size as u64);
+        stats.successful_items = stats.successful_items.saturating_add(successful as u64);
+        stats.failed_items = stats.failed_items.saturating_add(failed as u64);
+        stats.total_time_us = stats.total_time_us.saturating_add(duration_us);
 
         // Record latency for adaptive sizing
         drop(stats);
@@ -377,8 +374,8 @@ impl BatchProcessor {
 
     /// Adjust batch size based on latency
     fn adjust_batch_size(&self, duration: Duration, batch_size: usize) {
-        let target_us = self.config.target_latency.as_micros() as u64;
-        let actual_us = duration.as_micros() as u64;
+        let target_us = duration_micros_u64(self.config.target_latency);
+        let actual_us = duration_micros_u64(duration);
 
         // Calculate per-item latency
         let per_item_us = if batch_size > 0 {
@@ -441,7 +438,7 @@ impl BatchProcessor {
         let per_item_us = avg_latency / avg_batch_size;
 
         // Calculate recommended size
-        let target_us = target_latency.as_micros() as u64;
+        let target_us = duration_micros_u64(target_latency);
         let recommended = if per_item_us > 0 {
             (target_us / per_item_us) as usize
         } else {
@@ -464,6 +461,10 @@ impl BatchProcessor {
         let mut latencies = self.recent_latencies.write();
         latencies.clear();
     }
+}
+
+fn duration_micros_u64(duration: Duration) -> u64 {
+    duration.as_micros().min(u64::MAX as u128) as u64
 }
 
 #[cfg(test)]
@@ -674,5 +675,42 @@ mod tests {
         assert_eq!(stats.successful_items, 2);
         assert_eq!(stats.failed_items, 0);
         assert!(stats.success_rate() <= 1.0);
+    }
+
+    #[test]
+    fn test_record_batch_stats_saturate_without_wrapping() {
+        let processor = BatchProcessor::new(BatchConfig::default());
+        {
+            let mut stats = processor.stats.write();
+            stats.total_batches = u64::MAX;
+            stats.total_items = u64::MAX;
+            stats.successful_items = u64::MAX;
+            stats.failed_items = u64::MAX;
+            stats.total_time_us = u64::MAX;
+        }
+
+        processor.record_batch(
+            2,
+            Duration::from_micros(5),
+            &[Ok(1), Err("fail".to_string())],
+        );
+
+        let stats = processor.stats();
+        assert_eq!(stats.total_batches, u64::MAX);
+        assert_eq!(stats.total_items, u64::MAX);
+        assert_eq!(stats.successful_items, u64::MAX);
+        assert_eq!(stats.failed_items, u64::MAX);
+        assert_eq!(stats.total_time_us, u64::MAX);
+        assert!(stats.success_rate() <= 1.0);
+    }
+
+    #[test]
+    fn test_record_batch_duration_micros_saturates_without_truncating() {
+        let processor = BatchProcessor::new(BatchConfig::default());
+
+        processor.record_batch::<i32>(0, Duration::from_secs(u64::MAX), &[]);
+
+        let stats = processor.stats();
+        assert_eq!(stats.total_time_us, u64::MAX);
     }
 }
