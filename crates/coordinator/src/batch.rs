@@ -241,7 +241,7 @@ impl BatchProcessor {
         }
 
         // FIX BUG-H033: Track pending requests
-        self.pending_requests.fetch_add(1, Ordering::Relaxed);
+        reserve_pending_unbounded(&self.pending_requests);
 
         // Acquire permit for concurrent batch limiting
         let _permit = self.concurrent_semaphore.acquire().await.unwrap();
@@ -254,7 +254,7 @@ impl BatchProcessor {
         let duration = start.elapsed();
 
         // FIX BUG-H033: Decrement pending after processing
-        self.pending_requests.fetch_sub(1, Ordering::Relaxed);
+        release_pending(&self.pending_requests);
 
         // Update statistics
         self.record_batch(batch_size, duration, &results);
@@ -285,16 +285,7 @@ impl BatchProcessor {
             return Ok(BatchResult::new(vec![], Duration::ZERO));
         }
 
-        // Check queue depth before accepting
-        let pending = self.pending_requests.fetch_add(1, Ordering::Relaxed);
-        if pending >= self.config.max_pending_requests {
-            // Undo the increment and reject
-            self.pending_requests.fetch_sub(1, Ordering::Relaxed);
-            return Err(BatchError::QueueFull {
-                pending,
-                max: self.config.max_pending_requests,
-            });
-        }
+        reserve_pending_bounded(&self.pending_requests, self.config.max_pending_requests)?;
 
         // Acquire permit for concurrent batch limiting
         let _permit = self.concurrent_semaphore.acquire().await.unwrap();
@@ -307,7 +298,7 @@ impl BatchProcessor {
         let duration = start.elapsed();
 
         // Decrement pending after processing
-        self.pending_requests.fetch_sub(1, Ordering::Relaxed);
+        release_pending(&self.pending_requests);
 
         // Update statistics
         self.record_batch(batch_size, duration, &results);
@@ -465,6 +456,46 @@ impl BatchProcessor {
 
 fn duration_micros_u64(duration: Duration) -> u64 {
     duration.as_micros().min(u64::MAX as u128) as u64
+}
+
+fn reserve_pending_unbounded(counter: &AtomicUsize) -> usize {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_add(1);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn reserve_pending_bounded(counter: &AtomicUsize, max: usize) -> Result<usize, BatchError> {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        if current >= max {
+            return Err(BatchError::QueueFull {
+                pending: current,
+                max,
+            });
+        }
+
+        let next = current.saturating_add(1);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return Ok(next),
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn release_pending(counter: &AtomicUsize) -> usize {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_sub(1);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -712,5 +743,52 @@ mod tests {
 
         let stats = processor.stats();
         assert_eq!(stats.total_time_us, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn test_process_batch_pending_count_saturates_without_wrapping() {
+        let processor = Arc::new(BatchProcessor::new(BatchConfig::default()));
+        processor
+            .pending_requests
+            .store(usize::MAX, Ordering::Relaxed);
+        let observed = Arc::new(AtomicUsize::new(0));
+        let observed_clone = observed.clone();
+        let processor_clone = processor.clone();
+
+        let result = processor
+            .process_batch(vec![1], move |items| {
+                observed_clone.store(processor_clone.pending_count(), Ordering::Relaxed);
+                async move { items.into_iter().map(Ok).collect() }
+            })
+            .await;
+
+        assert!(result.success);
+        assert_eq!(observed.load(Ordering::Relaxed), usize::MAX);
+        assert_eq!(processor.pending_count(), usize::MAX - 1);
+    }
+
+    #[tokio::test]
+    async fn test_try_process_batch_rejects_saturated_pending_without_wrapping() {
+        let processor = BatchProcessor::new(BatchConfig {
+            max_pending_requests: 1,
+            ..Default::default()
+        });
+        processor
+            .pending_requests
+            .store(usize::MAX, Ordering::Relaxed);
+
+        let err = processor
+            .try_process_batch(vec![1], mock_processor)
+            .await
+            .expect_err("saturated pending count should be rejected");
+
+        assert!(matches!(
+            err,
+            BatchError::QueueFull {
+                pending: usize::MAX,
+                max: 1
+            }
+        ));
+        assert_eq!(processor.pending_count(), usize::MAX);
     }
 }
