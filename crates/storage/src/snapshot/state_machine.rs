@@ -392,7 +392,7 @@ impl<S: StorageBackend> SnapshotStateMachine<S> {
                 retry_count,
                 original_state,
                 ..
-            } => (*retry_count + 1, original_state.clone()),
+            } => (retry_count.saturating_add(1), original_state.clone()),
             other => (0, Box::new(other.clone())),
         };
 
@@ -436,8 +436,7 @@ impl<S: StorageBackend> SnapshotStateMachine<S> {
                 return false;
             }
             // Check if enough time has passed since last attempt
-            let backoff_idx = (*retry_count as usize).min(self.retry_backoff.len() - 1);
-            let backoff_secs = self.retry_backoff.get(backoff_idx).copied().unwrap_or(60);
+            let backoff_secs = self.retry_backoff_secs(*retry_count);
             let elapsed = current_timestamp().saturating_sub(*last_attempt);
             elapsed >= backoff_secs
         } else {
@@ -456,8 +455,7 @@ impl<S: StorageBackend> SnapshotStateMachine<S> {
             if *retry_count >= self.max_retries {
                 return None;
             }
-            let backoff_idx = (*retry_count as usize).min(self.retry_backoff.len() - 1);
-            let backoff_secs = self.retry_backoff.get(backoff_idx).copied().unwrap_or(60);
+            let backoff_secs = self.retry_backoff_secs(*retry_count);
             let elapsed = current_timestamp().saturating_sub(*last_attempt);
             if elapsed >= backoff_secs {
                 Some(0)
@@ -467,6 +465,14 @@ impl<S: StorageBackend> SnapshotStateMachine<S> {
         } else {
             None
         }
+    }
+
+    fn retry_backoff_secs(&self, retry_count: u32) -> u64 {
+        let backoff_idx = usize::try_from(retry_count).unwrap_or(usize::MAX);
+        self.retry_backoff
+            .get(backoff_idx.min(self.retry_backoff.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(60)
     }
 
     /// Reset a failed operation for retry
@@ -689,6 +695,58 @@ mod tests {
 
         // Should be retryable (but backoff not elapsed)
         // Note: In test, time hasn't passed so should_retry would be false
+    }
+
+    #[test]
+    fn test_empty_retry_backoff_uses_default_delay() {
+        let (_dir, storage) = create_test_storage();
+        let sm = SnapshotStateMachine::new(storage)
+            .with_max_retries(3)
+            .with_retry_backoff(vec![]);
+        let mut record =
+            SnapshotStateRecord::new("snap-empty-backoff".to_string(), "test".to_string(), None);
+        record.state = SnapshotState::Failed {
+            error: "retryable".to_string(),
+            retry_count: 0,
+            last_attempt: current_timestamp().saturating_sub(60),
+            original_state: Box::new(SnapshotState::Uploading {
+                chunks_completed: 0,
+                total_chunks: 1,
+                bytes_uploaded: 0,
+                total_bytes: 1,
+                started_at: 0,
+            }),
+        };
+
+        assert!(sm.should_retry(&record));
+        assert_eq!(sm.time_until_retry(&record), Some(0));
+    }
+
+    #[test]
+    fn test_retry_count_saturates_on_repeated_failure() {
+        let (_dir, storage) = create_test_storage();
+        let sm = SnapshotStateMachine::new(storage);
+        let mut record =
+            SnapshotStateRecord::new("snap-retry-overflow".to_string(), "test".to_string(), None);
+        record.state = SnapshotState::Failed {
+            error: "previous".to_string(),
+            retry_count: u32::MAX,
+            last_attempt: 0,
+            original_state: Box::new(SnapshotState::Compressing {
+                progress: 0.0,
+                started_at: 0,
+            }),
+        };
+
+        sm.fail_operation(&mut record, "again".to_string()).unwrap();
+
+        assert!(matches!(
+            record.state,
+            SnapshotState::Failed {
+                retry_count: u32::MAX,
+                ..
+            }
+        ));
     }
 
     #[test]
