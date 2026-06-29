@@ -263,7 +263,7 @@ impl WebhookSender {
     /// Get recent delivery statuses
     pub fn get_recent_deliveries(&self, limit: usize) -> Vec<DeliveryStatus> {
         let deliveries = self.recent_deliveries.read();
-        deliveries.iter().take(limit).cloned().collect()
+        deliveries.iter().rev().take(limit).cloned().collect()
     }
 
     /// Send a webhook payload
@@ -607,5 +607,33 @@ mod tests {
         assert!(json.contains("\"event\":\"snapshot_completed\""));
         assert!(json.contains("\"task_type\":\"snapshot\""));
         assert!(json.contains("\"duration_ms\":60000"));
+    }
+
+    #[test]
+    fn test_recent_deliveries_returns_newest_first() {
+        let sender = WebhookSender::new(WebhookConfig::default(), None);
+
+        {
+            let mut deliveries = sender.recent_deliveries.write();
+            for task_id in ["oldest", "middle", "newest"] {
+                deliveries.push_back(DeliveryStatus {
+                    payload: WebhookPayload::new(WebhookEventType::TaskCompleted)
+                        .with_task("task", task_id),
+                    success: true,
+                    status_code: Some(200),
+                    error: None,
+                    attempts: 1,
+                    last_attempt_ms: 1,
+                });
+            }
+        }
+
+        let task_ids: Vec<String> = sender
+            .get_recent_deliveries(2)
+            .into_iter()
+            .map(|delivery| delivery.payload.task_id.unwrap())
+            .collect();
+
+        assert_eq!(task_ids, vec!["newest", "middle"]);
     }
 }
