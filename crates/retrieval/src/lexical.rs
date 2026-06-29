@@ -232,7 +232,7 @@ impl Bm25Index {
 
         self.doc_terms.insert(id.clone(), terms);
         self.doc_len.insert(id, len);
-        self.total_len += len as u64;
+        self.total_len = self.total_len.saturating_add(len as u64);
     }
 
     /// Remove a document from the index. Returns `true` if it was present.
@@ -240,7 +240,7 @@ impl Bm25Index {
         let Some(len) = self.doc_len.remove(id) else {
             return false;
         };
-        self.total_len -= len as u64;
+        self.total_len = self.total_len.saturating_sub(len as u64);
 
         if let Some(terms) = self.doc_terms.remove(id) {
             for term in terms {
@@ -712,6 +712,35 @@ mod tests {
 
         // Removing a missing id is a no-op returning false.
         assert!(!index.remove(&id("missing")));
+    }
+
+    #[test]
+    fn test_total_len_saturates_without_wrapping_on_insert() {
+        let mut index = Bm25Index::new();
+        index.total_len = u64::MAX;
+
+        index.insert(id("doc"), "alpha beta");
+
+        assert_eq!(index.total_len, u64::MAX);
+        assert_eq!(index.len(), 1);
+        assert!(index.avgdl().is_finite());
+        assert!(index
+            .search("alpha", 10)
+            .iter()
+            .any(|hit| hit.id == id("doc")));
+    }
+
+    #[test]
+    fn test_total_len_saturates_without_underflow_on_remove() {
+        let mut index = Bm25Index::new();
+        index.insert(id("doc"), "alpha beta gamma");
+        index.total_len = 0;
+
+        assert!(index.remove(&id("doc")));
+
+        assert_eq!(index.total_len, 0);
+        assert_eq!(index.len(), 0);
+        assert!(index.search("alpha", 10).is_empty());
     }
 
     #[test]
