@@ -42,7 +42,7 @@ impl<T: Send + 'static> DynamicBatcher<T> {
     /// FIX BUG-H051: Increment pending count when items are queued
     /// Callers should use this to track queue depth accurately
     pub fn increment_pending(&self) {
-        let new_count = self.pending_items.fetch_add(1, Ordering::SeqCst) + 1;
+        let new_count = saturating_add_one_atomic(&self.pending_items);
         self.queue_depth.store(new_count, Ordering::SeqCst);
     }
 
@@ -81,7 +81,8 @@ impl<T: Send + 'static> DynamicBatcher<T> {
     /// Update GPU utilization metric (0.0-1.0, where 1.0 = 100%)
     pub fn update_gpu_util(&self, util: f32) {
         // Store as integer percentage (0-100) for atomic storage
-        self.gpu_util.store((util * 100.0) as usize, Ordering::SeqCst);
+        self.gpu_util
+            .store((util * 100.0) as usize, Ordering::SeqCst);
     }
 
     /// Collect a batch of items
@@ -154,6 +155,17 @@ fn saturating_sub_atomic(value: &AtomicUsize, amount: usize) -> usize {
     let mut current = value.load(Ordering::SeqCst);
     loop {
         let next = current.saturating_sub(amount);
+        match value.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return next,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn saturating_add_one_atomic(value: &AtomicUsize) -> usize {
+    let mut current = value.load(Ordering::SeqCst);
+    loop {
+        let next = current.saturating_add(1);
         match value.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(_) => return next,
             Err(actual) => current = actual,
@@ -272,6 +284,21 @@ mod tests {
 
         batcher.increment_pending();
         assert_eq!(batcher.current_queue_depth(), 1);
+    }
+
+    #[test]
+    fn test_pending_increment_saturates_without_wrapping() {
+        let batcher: DynamicBatcher<String> = DynamicBatcher::new(BatcherConfig {
+            min_batch: 1,
+            max_batch: 1,
+            timeout_ms: 1,
+        });
+        batcher.pending_items.store(usize::MAX, Ordering::SeqCst);
+
+        batcher.increment_pending();
+
+        assert_eq!(batcher.pending_items.load(Ordering::SeqCst), usize::MAX);
+        assert_eq!(batcher.current_queue_depth(), usize::MAX);
     }
 
     #[tokio::test]
