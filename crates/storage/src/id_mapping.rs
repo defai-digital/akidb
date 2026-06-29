@@ -219,11 +219,25 @@ impl<S: StorageBackend> IdMapping<S> {
             if key.len() <= prefix.len() {
                 continue;
             }
-            let id = String::from_utf8_lossy(&key[prefix.len()..]).into_owned();
+            let id = std::str::from_utf8(&key[prefix.len()..])
+                .map_err(|e| {
+                    AkiDbError::SerializationError(format!(
+                        "Invalid UTF-8 in persisted text vector id: {}",
+                        e
+                    ))
+                })?
+                .to_string();
             if id.is_empty() {
                 continue;
             }
-            let text = String::from_utf8_lossy(&value).into_owned();
+            let text = std::str::from_utf8(&value)
+                .map_err(|e| {
+                    AkiDbError::SerializationError(format!(
+                        "Invalid UTF-8 in persisted text payload for {}: {}",
+                        id, e
+                    ))
+                })?
+                .to_string();
             out.push((VectorId::new(id), text));
         }
         Ok(out)
@@ -582,6 +596,31 @@ mod tests {
         c2.store_text(&VectorId::new("x"), "in c2").unwrap();
         assert_eq!(c1.load_all_texts().unwrap(), vec![(VectorId::new("x"), "in c1".to_string())]);
         assert_eq!(c2.load_all_texts().unwrap(), vec![(VectorId::new("x"), "in c2".to_string())]);
+    }
+
+    #[test]
+    fn test_text_persistence_rejects_invalid_utf8_id() {
+        let storage = create_test_storage();
+        let mapping = IdMapping::new(storage.clone(), "test_collection");
+
+        let mut key = mapping.make_collection_prefix(TEXT_PREFIX);
+        key.push(0xff);
+        storage.put(&key, b"valid text").unwrap();
+
+        let err = mapping.load_all_texts().unwrap_err();
+        assert!(matches!(err, AkiDbError::SerializationError(_)));
+    }
+
+    #[test]
+    fn test_text_persistence_rejects_invalid_utf8_payload() {
+        let storage = create_test_storage();
+        let mapping = IdMapping::new(storage.clone(), "test_collection");
+
+        let key = mapping.make_text_key(&VectorId::new("bad-payload"));
+        storage.put(&key, &[0xff]).unwrap();
+
+        let err = mapping.load_all_texts().unwrap_err();
+        assert!(matches!(err, AkiDbError::SerializationError(_)));
     }
 
     #[test]
