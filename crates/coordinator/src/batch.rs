@@ -6,7 +6,7 @@
 //! - Concurrent batch processing with backpressure
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use parking_lot::RwLock;
@@ -46,6 +46,13 @@ impl Default for BatchConfig {
             max_pending_requests: 1000,
         }
     }
+}
+
+fn sanitize_batch_config(mut config: BatchConfig) -> BatchConfig {
+    config.max_batch_size = config.max_batch_size.max(1);
+    config.min_batch_size = config.min_batch_size.clamp(1, config.max_batch_size);
+    config.max_concurrent_batches = config.max_concurrent_batches.max(1);
+    config
 }
 
 /// Result of a batch operation
@@ -179,6 +186,7 @@ pub enum BatchError {
 impl BatchProcessor {
     /// Create a new batch processor
     pub fn new(config: BatchConfig) -> Self {
+        let config = sanitize_batch_config(config);
         let current_batch_size = config.max_batch_size;
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent_batches));
 
@@ -610,5 +618,42 @@ mod tests {
         // Without data, should return max
         let size = processor.recommended_size(Duration::from_millis(100));
         assert_eq!(size, 100);
+    }
+
+    #[tokio::test]
+    async fn test_zero_batch_limits_are_sanitized() {
+        let processor = BatchProcessor::new(BatchConfig {
+            max_batch_size: 0,
+            min_batch_size: 0,
+            max_concurrent_batches: 0,
+            adaptive_sizing: false,
+            ..Default::default()
+        });
+
+        assert_eq!(processor.batch_size(), 1);
+        assert_eq!(processor.config.min_batch_size, 1);
+        assert_eq!(processor.config.max_concurrent_batches, 1);
+
+        let results = tokio::time::timeout(
+            Duration::from_secs(1),
+            processor.process_all(vec![1, 2], mock_processor),
+        )
+        .await
+        .expect("process_all should not panic or hang when limits are zero");
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|batch| batch.batch_size == 1));
+    }
+
+    #[test]
+    fn test_min_batch_size_is_clamped_to_max_batch_size() {
+        let processor = BatchProcessor::new(BatchConfig {
+            max_batch_size: 4,
+            min_batch_size: 10,
+            ..Default::default()
+        });
+
+        assert_eq!(processor.config.max_batch_size, 4);
+        assert_eq!(processor.config.min_batch_size, 4);
     }
 }
