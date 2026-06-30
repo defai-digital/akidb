@@ -165,7 +165,7 @@ fn build_service(
             ef_construction: config.index.hnsw_ef_construction as usize,
             ef_search: config.index.hnsw_ef_search as usize,
         };
-        Arc::new(HnswIndex::new(hnsw_config).expect("Failed to create HNSW index"))
+        Arc::new(HnswIndex::new(hnsw_config)?)
     };
     info!("Vector index initialized (HNSW mode)");
 
@@ -286,4 +286,37 @@ fn build_service(
     }
 
     Ok(service)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "akidb-server-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn build_service_returns_error_for_invalid_hnsw_config() {
+        let rocksdb_path = unique_temp_path("invalid-hnsw");
+        let mut config = AkiDbConfig::default();
+        config.storage.rocksdb_path = rocksdb_path.display().to_string();
+        config.slo.reference.dimensions = 0;
+
+        let result = build_service(&config);
+
+        assert!(result.is_err());
+        let message = result.err().unwrap().to_string();
+        assert!(message.contains("HNSW dimensions must be > 0"));
+
+        let _ = std::fs::remove_dir_all(rocksdb_path);
+    }
 }

@@ -22,7 +22,7 @@ use crate::parsers::{route_parser_with_data, DocumentFormat, DocumentMetadata, P
 use crate::python_client::PythonParserClient;
 use crate::state::{DocumentState, StateTracker};
 use crate::storage::StorageClient;
-use crate::Result;
+use crate::{IngestionError, Result};
 
 /// Main ingestion pipeline
 pub struct IngestionPipeline {
@@ -88,8 +88,21 @@ impl IngestionPipeline {
                     IdempotencyChecker::new(100_000)
                 }
             };
-        let state = StateTracker::new("/var/lib/akidb/ingestion.db")
-            .unwrap_or_else(|_| StateTracker::in_memory().unwrap());
+        let state = match StateTracker::new("/var/lib/akidb/ingestion.db") {
+            Ok(state) => state,
+            Err(persistent_error) => {
+                warn!(
+                    ?persistent_error,
+                    "Failed to create persistent state tracker, falling back to in-memory"
+                );
+                StateTracker::in_memory().map_err(|fallback_error| {
+                    IngestionError::State(format!(
+                        "failed to initialize persistent state tracker ({persistent_error}); \
+                         in-memory fallback also failed ({fallback_error})"
+                    ))
+                })?
+            }
+        };
 
         // Initialize metrics
         let (metrics, _) = IngestionMetrics::default_registry();
