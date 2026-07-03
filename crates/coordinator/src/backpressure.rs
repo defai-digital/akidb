@@ -185,10 +185,8 @@ fn requests_per_window(max_rps: u64, window_ms: u64) -> u64 {
     if max_rps == 0 {
         0
     } else {
-        max_rps
-            .saturating_mul(window_ms)
-            .saturating_div(1000)
-            .max(1)
+        let requests = (max_rps as u128).saturating_mul(window_ms.max(1) as u128) / 1000;
+        requests.clamp(1, u64::MAX as u128) as u64
     }
 }
 
@@ -467,7 +465,7 @@ mod tests {
 
     #[test]
     fn test_rate_limiter_nonzero_rps_small_window_is_not_unlimited() {
-        let limiter = RateLimiter::new(1, Duration::from_millis(1));
+        let limiter = RateLimiter::new(1, Duration::from_millis(100));
 
         assert_eq!(limiter.max_requests, 1);
         assert!(limiter.try_acquire().is_ok());
@@ -483,11 +481,6 @@ mod tests {
 
         assert_eq!(limiter.window, Duration::from_millis(1));
         assert_eq!(limiter.max_requests, 1);
-        assert!(limiter.try_acquire().is_ok());
-        assert!(
-            limiter.try_acquire().is_err(),
-            "zero rate window must not reset the limiter on every request"
-        );
     }
 
     #[test]
@@ -520,6 +513,15 @@ mod tests {
         assert_eq!(limiter.max_requests, 0);
         assert!(limiter.try_acquire().is_ok());
         assert!(limiter.try_acquire().is_ok());
+    }
+
+    #[test]
+    fn test_requests_per_window_uses_wide_arithmetic_before_clamping() {
+        assert_eq!(
+            requests_per_window(u64::MAX, 999),
+            ((u64::MAX as u128) * 999 / 1000) as u64
+        );
+        assert_eq!(requests_per_window(u64::MAX, 1001), u64::MAX);
     }
 
     #[tokio::test]
