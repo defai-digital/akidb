@@ -3,11 +3,11 @@
 //! Provides storage backends for vector metadata, ID mappings, WAL,
 //! snapshot storage for S3/MinIO integration, and tag indexing.
 
-pub mod backend;
-pub mod id_mapping;
+mod backend;
+mod id_mapping;
 pub mod snapshot;
-pub mod tag_index;
-pub mod wal;
+mod tag_index;
+mod wal;
 
 pub use backend::{BatchOperation, RocksDbBackend, StorageBackend};
 pub use id_mapping::{IdMapping, IdMappingEntry};
@@ -20,7 +20,7 @@ pub use snapshot::{
     // Resumable upload types
     CompletedPart, ResumableUploadConfig, ResumableUploader, SnapshotUploadExecutor,
     // Cleanup types
-    CleanupConfig, CleanupResult, SnapshotCleanup,
+    cleanup_orphaned_uploads, CleanupConfig, CleanupResult, SnapshotCleanup,
 };
 pub use tag_index::{TagCondition, TagFilter, TagIndex, TagIndexStats, TagOperator};
 pub use wal::{WalEntry, WriteAheadLog};

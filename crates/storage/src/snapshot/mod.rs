@@ -81,10 +81,10 @@
 //! }
 //! ```
 
-pub mod backend;
-pub mod cleanup;
-pub mod resumable_upload;
-pub mod state_machine;
+mod backend;
+mod cleanup;
+mod resumable_upload;
+mod state_machine;
 
 // Re-export main types from backend
 pub use backend::{
@@ -104,4 +104,4 @@ pub use resumable_upload::{
 };
 
 // Re-export cleanup types
-pub use cleanup::{CleanupConfig, CleanupResult, SnapshotCleanup};
+pub use cleanup::{cleanup_orphaned_uploads, CleanupConfig, CleanupResult, SnapshotCleanup};

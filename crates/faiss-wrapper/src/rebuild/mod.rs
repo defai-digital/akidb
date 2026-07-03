@@ -28,10 +28,10 @@
 //! - System is under high load
 //! - Manual pause requested
 
-pub mod checkpoint;
-pub mod manager;
-pub mod persistent_state;
-pub mod typestate;
+mod checkpoint;
+mod manager;
+mod persistent_state;
+mod typestate;
 
 // Re-export from manager (original rebuild types)
 pub use manager::{RebuildConfig, RebuildManager, RebuildProgress, RebuildState};

@@ -2198,7 +2198,7 @@ where
 mod tests {
     use super::*;
     use crate::proto::Query;
-    use akidb_faiss::mock::MockIndex;
+    use akidb_faiss::MockIndex;
     use akidb_storage::RocksDbBackend;
     use tempfile::TempDir;
     use tonic::Code;

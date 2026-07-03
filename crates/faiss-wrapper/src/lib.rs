@@ -3,16 +3,16 @@
 //! This crate provides a trait-based vector index abstraction with a real
 //! HNSW implementation via usearch and a mock implementation for tests.
 
-pub mod hnsw;
-pub mod index;
+mod hnsw;
+mod index;
 pub mod rebuild;
-pub mod tombstone;
+mod tombstone;
 
 // Mock is available for testing
-pub mod mock;
+mod mock;
 
 pub use hnsw::{HnswConfig, HnswIndex};
-pub use index::{IndexStats, SearchParams, VectorIndex};
+pub use index::{IndexStats, SearchFilter, SearchParams, VectorIndex, VectorIndexAsync};
 pub use rebuild::{
     // Original rebuild types
     RebuildConfig, RebuildManager, RebuildProgress, RebuildState,
