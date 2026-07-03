@@ -84,15 +84,15 @@ impl MemoryCoordinator {
                                     "Pausing ingestion due to memory pressure"
                                 );
                             }
-                        } else if pct <= this.config.resume_threshold_pct {
-                            if this.paused.swap(false, Ordering::SeqCst) {
-                                info!(
-                                    used_mb = used,
-                                    total_mb = total,
-                                    pct,
-                                    "Resuming ingestion, memory recovered"
-                                );
-                            }
+                        } else if pct <= this.config.resume_threshold_pct
+                            && this.paused.swap(false, Ordering::SeqCst)
+                        {
+                            info!(
+                                used_mb = used,
+                                total_mb = total,
+                                pct,
+                                "Resuming ingestion, memory recovered"
+                            );
                         }
                     }
                     Err(e) => {

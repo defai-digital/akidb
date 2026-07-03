@@ -2,6 +2,8 @@
 //!
 //! Provides the gRPC API for vector operations and ingestion management.
 
+#![allow(clippy::result_large_err)]
+
 pub mod admin;
 pub mod filter;
 pub mod ingestion;

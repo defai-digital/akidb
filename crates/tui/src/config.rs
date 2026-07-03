@@ -67,7 +67,7 @@ impl TuiConfig {
     pub fn load(path: Option<&PathBuf>) -> Result<Self> {
         if let Some(path) = path {
             let content = std::fs::read_to_string(path)?;
-            let mut config: TuiConfig = if path.extension().map_or(false, |ext| ext == "json") {
+            let mut config: TuiConfig = if path.extension().is_some_and(|ext| ext == "json") {
                 serde_json::from_str(&content)?
             } else {
                 toml::from_str(&content)?
@@ -213,7 +213,9 @@ mod tests {
         assert!(config.layout.show_topology);
         // Default discovery addresses should be set
         assert!(!config.discovery_addresses.is_empty());
-        assert!(config.discovery_addresses.contains(&"127.0.0.1:50050".to_string()));
+        assert!(config
+            .discovery_addresses
+            .contains(&"127.0.0.1:50050".to_string()));
     }
 
     #[test]

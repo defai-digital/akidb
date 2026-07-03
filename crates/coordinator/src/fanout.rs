@@ -20,8 +20,6 @@ struct ShardConnectionPool {
     clients: Vec<AkidbClient<Channel>>,
     /// Round-robin index
     next_idx: std::sync::atomic::AtomicUsize,
-    /// Address for reconnection
-    address: String,
     /// FIX BUG-H018: Track last successful use AND last access separately
     /// last_used: Updated when pool is actually used for an operation
     /// last_accessed: Updated whenever pool is retrieved (even if operation fails)
@@ -81,7 +79,7 @@ fn shard_search_result(result: ProtoSearchResult) -> SearchResult {
     if !result.metadata.is_empty() {
         out.metadata = Some(
             serde_json::from_str(&result.metadata)
-                .unwrap_or_else(|_| serde_json::Value::String(result.metadata)),
+                .unwrap_or(serde_json::Value::String(result.metadata)),
         );
     }
     out
@@ -167,7 +165,6 @@ impl ShardConnectionPool {
         Ok(Self {
             clients,
             next_idx: std::sync::atomic::AtomicUsize::new(0),
-            address: address.to_string(),
             last_used: parking_lot::Mutex::new(now),
             last_accessed: parking_lot::Mutex::new(now),
         })
@@ -176,7 +173,10 @@ impl ShardConnectionPool {
     fn get_client(&self) -> AkidbClient<Channel> {
         // FIX BUG-H018: Update last_accessed when pool is retrieved
         *self.last_accessed.lock() = Instant::now();
-        let idx = self.next_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.clients.len();
+        let idx = self
+            .next_idx
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.clients.len();
         self.clients[idx].clone()
     }
 
@@ -217,7 +217,11 @@ impl FanoutExecutor {
         Self::with_pool_size(router, timeout, 4)
     }
 
-    pub fn with_pool_size(router: Arc<RwLock<ShardRouter>>, timeout: Duration, pool_size: usize) -> Self {
+    pub fn with_pool_size(
+        router: Arc<RwLock<ShardRouter>>,
+        timeout: Duration,
+        pool_size: usize,
+    ) -> Self {
         // Ensure pool_size is at least 1 to prevent division by zero
         let pool_size = pool_size.max(1);
         Self {
@@ -259,7 +263,10 @@ impl FanoutExecutor {
         }
 
         // Create new pool - this might race, but entry API will ensure only one wins
-        info!("Creating connection pool for {} (size={})", address, self.pool_size);
+        info!(
+            "Creating connection pool for {} (size={})",
+            address, self.pool_size
+        );
         let new_pool = match ShardConnectionPool::new(address, self.pool_size).await {
             Ok(pool) => {
                 // FIX BUG-057: Reset backoff on success
@@ -312,7 +319,11 @@ impl FanoutExecutor {
     ) -> Result<FanoutResult> {
         let request_top_k = fanout_top_k(top_k)?;
         let router = self.router.read().await;
-        let shards: Vec<ShardInfo> = router.healthy_shards().iter().map(|s| (*s).clone()).collect();
+        let shards: Vec<ShardInfo> = router
+            .healthy_shards()
+            .iter()
+            .map(|s| (*s).clone())
+            .collect();
         drop(router);
 
         if shards.is_empty() {
@@ -411,7 +422,10 @@ impl FanoutExecutor {
                 Err(e) => {
                     // FIX BUG-071: Now we can identify which shard's task panicked
                     let shard_id = &handle_shard_ids[idx];
-                    warn!("Task for shard {} panicked or was cancelled: {}", shard_id, e);
+                    warn!(
+                        "Task for shard {} panicked or was cancelled: {}",
+                        shard_id, e
+                    );
 
                     // Update shard health since it's in an unknown state
                     let mut router = self.router.write().await;
@@ -445,15 +459,14 @@ impl FanoutExecutor {
     /// Pools are considered stale if they haven't been accessed in max_age time.
     pub fn cleanup_stale_pools(&self, max_age: Duration) {
         let now = Instant::now();
-        self.pools.retain(|_, pool| now.duration_since(pool.last_accessed_time()) < max_age);
+        self.pools
+            .retain(|_, pool| now.duration_since(pool.last_accessed_time()) < max_age);
     }
 
     /// Get connection pool statistics
     pub fn pool_stats(&self) -> PoolStats {
         let total_pools = self.pools.len();
-        let total_connections = self.pools.iter()
-            .map(|p| p.clients.len())
-            .sum();
+        let total_connections = self.pools.iter().map(|p| p.clients.len()).sum();
         PoolStats {
             total_pools,
             total_connections,
@@ -538,7 +551,8 @@ impl FanoutExecutor {
                         overall_status = DeleteStatus::Deleted;
                         found_on_shard = Some(shard_id);
                     } else if response.status == DeleteStatus::AlreadyDeleted as i32
-                              && overall_status != DeleteStatus::Deleted {
+                        && overall_status != DeleteStatus::Deleted
+                    {
                         overall_status = DeleteStatus::AlreadyDeleted;
                     }
                 }
@@ -549,7 +563,10 @@ impl FanoutExecutor {
                 Err(e) => {
                     // FIX BUG-071: Now we can identify which shard's task panicked
                     let shard_id = &handle_shard_ids[idx];
-                    warn!("Task for shard {} panicked during broadcast delete: {}", shard_id, e);
+                    warn!(
+                        "Task for shard {} panicked during broadcast delete: {}",
+                        shard_id, e
+                    );
                     failed_shards.push(shard_id.clone());
                 }
             }
@@ -619,7 +636,8 @@ impl FanoutExecutor {
         // Only delete from other shards if insert succeeded
         // This ensures we don't lose data on insert failure
         let delete_result = if update_success {
-            self.broadcast_delete_except(collection, id, &shard_id).await?
+            self.broadcast_delete_except(collection, id, &shard_id)
+                .await?
         } else {
             // Return empty delete result on insert failure - preserves old data
             BroadcastDeleteResult {
@@ -664,7 +682,12 @@ impl FanoutExecutor {
             });
         }
 
-        debug!("Broadcasting delete for {} to {} shards (excluding {})", id, shards.len(), except_shard);
+        debug!(
+            "Broadcasting delete for {} to {} shards (excluding {})",
+            id,
+            shards.len(),
+            except_shard
+        );
 
         // FIX BUG-071: Track shard IDs separately to identify failures even on panic
         let mut handles = Vec::with_capacity(shards.len());
@@ -721,7 +744,8 @@ impl FanoutExecutor {
                         overall_status = DeleteStatus::Deleted;
                         found_on_shard = Some(shard_id);
                     } else if response.status == DeleteStatus::AlreadyDeleted as i32
-                              && overall_status != DeleteStatus::Deleted {
+                        && overall_status != DeleteStatus::Deleted
+                    {
                         overall_status = DeleteStatus::AlreadyDeleted;
                     }
                 }
@@ -732,7 +756,10 @@ impl FanoutExecutor {
                 Err(e) => {
                     // FIX BUG-071: Now we can identify which shard's task panicked
                     let shard_id = &handle_shard_ids[idx];
-                    warn!("Task for shard {} panicked during broadcast delete: {}", shard_id, e);
+                    warn!(
+                        "Task for shard {} panicked during broadcast delete: {}",
+                        shard_id, e
+                    );
                     failed_shards.push(shard_id.clone());
                 }
             }

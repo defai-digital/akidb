@@ -270,19 +270,19 @@ impl IngestionPipeline {
 
         // Parse document
         self.state
-            .update_state(&content_hash, DocumentState::Parsing)?;
-        let parsed = self.parse_document(&event, format, &data).await?;
+            .update_state(content_hash, DocumentState::Parsing)?;
+        let parsed = self.parse_document(event, format, data).await?;
 
         // Chunk document
         self.state
-            .update_state(&content_hash, DocumentState::Chunking)?;
+            .update_state(content_hash, DocumentState::Chunking)?;
         let chunks = self.chunker.chunk(&parsed.text);
-        self.state.update_chunk_count(&content_hash, chunks.len())?;
+        self.state.update_chunk_count(content_hash, chunks.len())?;
         self.metrics.chunks_created.inc_by(chunks.len() as f64);
 
         // Embed chunks
         self.state
-            .update_state(&content_hash, DocumentState::Embedding)?;
+            .update_state(content_hash, DocumentState::Embedding)?;
         let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
         let embeddings = self.embedding_client.embed(texts).await?;
         ensure_embedding_alignment(chunks.len(), embeddings.len())?;
@@ -292,7 +292,7 @@ impl IngestionPipeline {
 
         // Insert into AkiDB
         self.state
-            .update_state(&content_hash, DocumentState::Inserting)?;
+            .update_state(content_hash, DocumentState::Inserting)?;
 
         // Build vectors for insertion
         let vectors: Vec<VectorInsert> = chunks
@@ -342,7 +342,7 @@ impl IngestionPipeline {
 
         // Mark completed
         self.state
-            .update_state(&content_hash, DocumentState::Completed)?;
+            .update_state(content_hash, DocumentState::Completed)?;
 
         let duration = start.elapsed();
         info!(

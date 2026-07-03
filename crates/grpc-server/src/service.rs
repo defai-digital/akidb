@@ -885,7 +885,7 @@ where
                         | '>'
                 )
             })
-            .trim_end_matches(|c: char| matches!(c, ':' | '.'))
+            .trim_end_matches([':', '.'])
             .to_string()
     }
 

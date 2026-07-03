@@ -111,6 +111,7 @@ impl SemanticChunker {
         chunks
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_span(
         text: &str,
         span_start: usize,
@@ -124,7 +125,7 @@ impl SemanticChunker {
     ) {
         let span_text = &text[span_start..span_end];
         let sentence_tokens = count_tokens(span_text);
-        let current_tokens = count_tokens(&current_chunk);
+        let current_tokens = count_tokens(current_chunk);
 
         // If adding this sentence would exceed target, create a chunk
         if current_tokens > 0 && current_tokens + sentence_tokens > config.target_tokens {
@@ -143,8 +144,7 @@ impl SemanticChunker {
 
             // Start new chunk with overlap. Keep the overlap as an exact
             // substring of the original text so citation offsets remain valid.
-            let overlap =
-                get_overlap_span(&current_chunk, config.min_overlap, config.max_overlap);
+            let overlap = get_overlap_span(current_chunk, config.min_overlap, config.max_overlap);
 
             match overlap {
                 Some((overlap_start, overlap_text)) => {
@@ -253,7 +253,7 @@ fn count_tokens(text: &str) -> usize {
 /// Used when quick estimation is needed and accuracy is less critical
 #[allow(dead_code)]
 fn estimate_tokens_fast(text: &str) -> usize {
-    (text.len() + 3) / 4
+    text.len().div_ceil(4)
 }
 
 /// Get overlap text from the end of current chunk.
@@ -340,7 +340,7 @@ mod tests {
         let chunks = chunker.chunk(text);
 
         // Should create multiple chunks
-        assert!(chunks.len() >= 1);
+        assert!(!chunks.is_empty());
 
         // Each chunk should have valid indices
         for chunk in &chunks {

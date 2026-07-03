@@ -51,12 +51,16 @@ impl CheckpointManager {
 
     /// Get checkpoint file path for an operation
     pub fn checkpoint_path(&self, operation_id: &str) -> PathBuf {
-        self.config.checkpoint_dir.join(format!("{}.checkpoint", operation_id))
+        self.config
+            .checkpoint_dir
+            .join(format!("{}.checkpoint", operation_id))
     }
 
     /// Get exported vectors path for an operation
     pub fn exported_vectors_path(&self, operation_id: &str) -> PathBuf {
-        self.config.checkpoint_dir.join(format!("{}.vectors", operation_id))
+        self.config
+            .checkpoint_dir
+            .join(format!("{}.vectors", operation_id))
     }
 
     /// Check if a checkpoint should be created
@@ -103,7 +107,8 @@ impl CheckpointManager {
         let path = self.exported_vectors_path(operation_id);
 
         // Serialize vectors
-        let data = bincode::serialize(vectors).map_err(|e| format!("Failed to serialize vectors: {}", e))?;
+        let data = bincode::serialize(vectors)
+            .map_err(|e| format!("Failed to serialize vectors: {}", e))?;
 
         // Optionally compress
         let final_data = if self.config.compress {
@@ -154,8 +159,8 @@ impl CheckpointManager {
             data
         };
 
-        let vectors: Vec<(i64, Vec<f32>)> =
-            bincode::deserialize(&decompressed).map_err(|e| format!("Failed to deserialize vectors: {}", e))?;
+        let vectors: Vec<(i64, Vec<f32>)> = bincode::deserialize(&decompressed)
+            .map_err(|e| format!("Failed to deserialize vectors: {}", e))?;
 
         info!(
             operation_id,
@@ -218,11 +223,9 @@ impl CheckpointManager {
             };
 
             let age = now.duration_since(modified).unwrap_or_default();
-            if age > max_age {
-                if tokio::fs::remove_file(&path).await.is_ok() {
-                    cleaned += 1;
-                    debug!(path = ?path, age_secs = age.as_secs(), "Cleaned up old checkpoint");
-                }
+            if age > max_age && tokio::fs::remove_file(&path).await.is_ok() {
+                cleaned += 1;
+                debug!(path = ?path, age_secs = age.as_secs(), "Cleaned up old checkpoint");
             }
         }
 
@@ -351,19 +354,17 @@ mod tests {
     #[test]
     fn test_resource_scheduler() {
         let latency = std::sync::atomic::AtomicU64::new(20);
-        let scheduler = ResourceAwareScheduler::new(move || {
-            latency.load(std::sync::atomic::Ordering::Relaxed)
-        })
-        .with_latency_threshold(40);
+        let scheduler =
+            ResourceAwareScheduler::new(move || latency.load(std::sync::atomic::Ordering::Relaxed))
+                .with_latency_threshold(40);
 
         assert!(scheduler.can_proceed());
 
         // Simulate high load
         let latency = std::sync::atomic::AtomicU64::new(50);
-        let scheduler = ResourceAwareScheduler::new(move || {
-            latency.load(std::sync::atomic::Ordering::Relaxed)
-        })
-        .with_latency_threshold(40);
+        let scheduler =
+            ResourceAwareScheduler::new(move || latency.load(std::sync::atomic::Ordering::Relaxed))
+                .with_latency_threshold(40);
 
         assert!(!scheduler.can_proceed());
     }

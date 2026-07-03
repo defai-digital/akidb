@@ -2,23 +2,23 @@
 //!
 //! Run with: cargo bench -p akidb-ingestion
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::time::Duration;
 
 use akidb_ingestion::{
-    chunker::SemanticChunker,
-    config::ChunkerConfig,
-    idempotency::IdempotencyChecker,
-    parsers::{DocumentFormat, route_parser},
-    circuit_breaker::CircuitBreaker,
-    config::CircuitBreakerConfig,
     backpressure::BackpressureController,
+    chunker::SemanticChunker,
+    circuit_breaker::CircuitBreaker,
     config::BackpressureConfig,
+    config::ChunkerConfig,
+    config::CircuitBreakerConfig,
+    idempotency::IdempotencyChecker,
+    parsers::{route_parser, DocumentFormat},
 };
 
 /// Generate test documents of various sizes
 fn generate_document(sentences: usize) -> String {
-    let base_sentences = vec![
+    let base_sentences = [
         "This is a test sentence for benchmarking purposes.",
         "The quick brown fox jumps over the lazy dog.",
         "Machine learning models require careful tuning and validation.",
@@ -53,16 +53,12 @@ fn benchmark_chunking(c: &mut Criterion) {
         let doc = generate_document(*size);
         group.throughput(Throughput::Bytes(doc.len() as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("sentences", size),
-            &doc,
-            |b, doc| {
-                b.iter(|| {
-                    let chunks = chunker.chunk(black_box(doc));
-                    black_box(chunks)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("sentences", size), &doc, |b, doc| {
+            b.iter(|| {
+                let chunks = chunker.chunk(black_box(doc));
+                black_box(chunks)
+            })
+        });
     }
 
     group.finish();
@@ -79,16 +75,12 @@ fn benchmark_idempotency(c: &mut Criterion) {
         let data: Vec<u8> = (0..*size).map(|i| (i % 256) as u8).collect();
         group.throughput(Throughput::Bytes(*size as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("bytes", size),
-            &data,
-            |b, data| {
-                b.iter(|| {
-                    let (is_dup, hash) = checker.check_and_mark(black_box(data));
-                    black_box((is_dup, hash))
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("bytes", size), &data, |b, data| {
+            b.iter(|| {
+                let (is_dup, hash) = checker.check_and_mark(black_box(data));
+                black_box((is_dup, hash))
+            })
+        });
     }
 
     group.finish();
@@ -177,16 +169,12 @@ fn benchmark_csv_parsing(c: &mut Criterion) {
         let csv = generate_csv(*rows);
         group.throughput(Throughput::Bytes(csv.len() as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("rows", rows),
-            &csv,
-            |b, csv| {
-                b.iter(|| {
-                    let result = parser.parse(black_box(csv.as_bytes()));
-                    black_box(result)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("rows", rows), &csv, |b, csv| {
+            b.iter(|| {
+                let result = parser.parse(black_box(csv.as_bytes()));
+                black_box(result)
+            })
+        });
     }
 
     group.finish();
@@ -244,9 +232,7 @@ fn benchmark_circuit_breaker(c: &mut Criterion) {
 
     group.bench_function("allow_request", |b| {
         let cb = CircuitBreaker::new(config.clone());
-        b.iter(|| {
-            black_box(cb.allow_request())
-        })
+        b.iter(|| black_box(cb.allow_request()))
     });
 
     group.bench_function("record_success", |b| {
@@ -292,9 +278,7 @@ fn benchmark_backpressure(c: &mut Criterion) {
 
     group.bench_function("is_active", |b| {
         let bp = BackpressureController::new(config.clone());
-        b.iter(|| {
-            black_box(bp.is_active())
-        })
+        b.iter(|| black_box(bp.is_active()))
     });
 
     group.finish();

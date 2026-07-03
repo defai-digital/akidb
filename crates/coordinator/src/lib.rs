@@ -12,6 +12,8 @@
 //! - Embedding service with caching and fallback
 //! - Auto-discovery of coordinators and shards (optional, with `discovery` feature)
 
+#![allow(clippy::result_large_err)]
+
 pub mod backpressure;
 pub mod batch;
 pub mod compaction;

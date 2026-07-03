@@ -371,7 +371,11 @@ impl WebhookSender {
     }
 
     /// Deliver a single webhook
-    async fn deliver(&self, config: &WebhookConfig, payload: &WebhookPayload) -> Result<u16, String> {
+    async fn deliver(
+        &self,
+        config: &WebhookConfig,
+        payload: &WebhookPayload,
+    ) -> Result<u16, String> {
         let body = serde_json::to_string(payload).map_err(|e| e.to_string())?;
 
         let mut request = self.client.post(&config.url).json(payload);
@@ -390,7 +394,7 @@ impl WebhookSender {
         let response = request.send().await.map_err(|e| e.to_string())?;
 
         let status = response.status().as_u16();
-        if status >= 200 && status < 300 {
+        if (200..300).contains(&status) {
             info!(url = %config.url, status, event = ?payload.event, "Webhook delivered successfully");
             Ok(status)
         } else {
@@ -445,12 +449,7 @@ impl WebhookSender {
     }
 
     /// Send snapshot completed event
-    pub async fn snapshot_completed(
-        &self,
-        snapshot_id: &str,
-        duration: Duration,
-        size_bytes: u64,
-    ) {
+    pub async fn snapshot_completed(&self, snapshot_id: &str, duration: Duration, size_bytes: u64) {
         let payload = WebhookPayload::new(WebhookEventType::SnapshotCompleted)
             .with_task("snapshot", snapshot_id)
             .with_duration(duration)
@@ -512,22 +511,24 @@ impl WebhookSender {
 
     /// Send resource exhausted event
     pub async fn resource_exhausted(&self, reason: &str, current_value: f64, limit: f64) {
-        let payload =
-            WebhookPayload::new(WebhookEventType::ResourceExhausted).with_details(serde_json::json!({
+        let payload = WebhookPayload::new(WebhookEventType::ResourceExhausted).with_details(
+            serde_json::json!({
                 "reason": reason,
                 "current_value": current_value,
                 "limit": limit
-            }));
+            }),
+        );
         self.send(payload).await;
     }
 
     /// Send governor cooldown event
     pub async fn governor_cooldown(&self, p95_latency_ms: u64, cooldown_ms: u64) {
-        let payload =
-            WebhookPayload::new(WebhookEventType::GovernorCooldown).with_details(serde_json::json!({
+        let payload = WebhookPayload::new(WebhookEventType::GovernorCooldown).with_details(
+            serde_json::json!({
                 "p95_latency_ms": p95_latency_ms,
                 "cooldown_ms": cooldown_ms
-            }));
+            }),
+        );
         self.send(payload).await;
     }
 }
@@ -539,8 +540,8 @@ fn compute_hmac_signature(secret: &str, body: &str) -> String {
 
     type HmacSha256 = Hmac<Sha256>;
 
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC can take key of any size");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
     mac.update(body.as_bytes());
     let result = mac.finalize();
 

@@ -74,10 +74,10 @@ impl DocumentParser for CsvParser {
             let row_text = match headers.as_deref() {
                 Some(headers) => {
                     row_count += 1;
-                    row_text_with_headers(headers, &cells)
+                    row_text_with_headers(headers, cells)
                 }
                 None => {
-                    let row_text = row_text_from_cells(&cells);
+                    let row_text = row_text_from_cells(cells);
                     if is_likely_header_row(cells, col_count, next_row) {
                         headers = Some(cells.clone());
                     } else {

@@ -113,6 +113,29 @@ fn hash_text(text: &str) -> u64 {
     hash
 }
 
+/// Atomically increment a u64 counter without wrapping at u64::MAX.
+///
+/// A plain `fetch_add(1)` silently wraps from `u64::MAX` to 0, which corrupts
+/// monitoring metrics (hit/miss rates). This helper saturates at `u64::MAX`.
+fn saturating_increment_u64(counter: &AtomicU64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_add(1);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn hit_rate(hits: u64, misses: u64) -> f64 {
+    if hits == 0 && misses == 0 {
+        return 0.0;
+    }
+
+    hits as f64 / (hits as f64 + misses as f64)
+}
+
 /// LRU-based embedding cache
 /// FIX BUG-002: Use consistent lock ordering (entries first, then access_order)
 /// FIX BUG-008: Use VecDeque for O(1) pop_front instead of Vec::remove(0)
@@ -164,7 +187,7 @@ impl EmbeddingCache {
         // entries lock is released here
 
         if let Some(embedding) = result {
-            self.hits.fetch_add(1, Ordering::Relaxed);
+            saturating_increment_u64(&self.hits);
             // Update access order (separate lock acquisition)
             // FIX BUG-039: Only perform O(n) retain if key isn't already at back
             // FIX BUG-069: Verify entry still exists before updating access_order
@@ -181,7 +204,7 @@ impl EmbeddingCache {
             return Some(embedding);
         }
 
-        self.misses.fetch_add(1, Ordering::Relaxed);
+        saturating_increment_u64(&self.misses);
         None
     }
 
@@ -235,16 +258,11 @@ impl EmbeddingCache {
     pub fn stats(&self) -> CacheStats {
         let hits = self.hits.load(Ordering::Relaxed);
         let misses = self.misses.load(Ordering::Relaxed);
-        let total = hits + misses;
 
         CacheStats {
             hits,
             misses,
-            hit_rate: if total > 0 {
-                hits as f64 / total as f64
-            } else {
-                0.0
-            },
+            hit_rate: hit_rate(hits, misses),
             size: self.entries.read().len(),
             max_size: self.max_size,
         }
@@ -560,7 +578,8 @@ impl EmbeddingService for FallbackEmbeddingService {
         // Returning 1 causes 100x performance degradation (single-vector batches).
         // Instead, use the minimum of all backends' batch sizes (even unhealthy ones)
         // as a reasonable fallback, or a sensible default.
-        let healthy_max = self.backends
+        let healthy_max = self
+            .backends
             .iter()
             .filter(|b| b.is_ready())
             .map(|b| b.max_batch_size())
@@ -572,10 +591,7 @@ impl EmbeddingService for FallbackEmbeddingService {
 
         // No healthy backends - use the min batch size from ANY backend as fallback
         // This preserves the expected batch size for when backends recover
-        let any_max = self.backends
-            .iter()
-            .map(|b| b.max_batch_size())
-            .min();
+        let any_max = self.backends.iter().map(|b| b.max_batch_size()).min();
 
         if let Some(max) = any_max {
             warn!(
@@ -612,12 +628,7 @@ impl EmbeddingStats {
     }
 
     pub fn cache_hit_rate(&self) -> f64 {
-        let total = self.cache_hits + self.cache_misses;
-        if total > 0 {
-            self.cache_hits as f64 / total as f64
-        } else {
-            0.0
-        }
+        hit_rate(self.cache_hits, self.cache_misses)
     }
 }
 
@@ -832,5 +843,37 @@ mod tests {
             result,
             Err(EmbeddingError::DimensionMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn test_cache_hit_miss_counters_saturate_without_wrapping() {
+        let cache = EmbeddingCache::new(10, Duration::from_secs(60));
+        cache.hits.store(u64::MAX, Ordering::Relaxed);
+        cache.misses.store(u64::MAX, Ordering::Relaxed);
+
+        // A miss on an empty cache exercises the miss counter path.
+        assert!(cache.get("absent").is_none());
+
+        // A hit exercises the hit counter path.
+        cache.put("present", vec![0.0]);
+        assert!(cache.get("present").is_some());
+
+        // Both counters must saturate at u64::MAX rather than wrap to 0,
+        // which would otherwise corrupt the reported hit_rate metric.
+        let stats = cache.stats();
+        assert_eq!(stats.hits, u64::MAX);
+        assert_eq!(stats.misses, u64::MAX);
+        assert!((stats.hit_rate - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_embedding_stats_hit_rate_does_not_overflow() {
+        let stats = EmbeddingStats {
+            cache_hits: u64::MAX,
+            cache_misses: u64::MAX,
+            ..Default::default()
+        };
+
+        assert!((stats.cache_hit_rate() - 0.5).abs() < f64::EPSILON);
     }
 }

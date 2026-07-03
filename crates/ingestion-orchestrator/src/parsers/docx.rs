@@ -146,9 +146,9 @@ impl DocxParser {
         for (idx, cells) in non_empty_rows.iter().enumerate() {
             let next_row = non_empty_rows.get(idx + 1).map(Vec::as_slice);
             let line = match headers.as_deref() {
-                Some(headers) => row_text_with_headers(headers, &cells),
+                Some(headers) => row_text_with_headers(headers, cells),
                 None => {
-                    let row_text = row_text_from_cells(&cells);
+                    let row_text = row_text_from_cells(cells);
                     if is_likely_header_row(cells, table_cols, next_row) {
                         headers = Some(cells.clone());
                     }
@@ -171,17 +171,14 @@ impl DocxParser {
             let mut cell_text = String::new();
 
             for content in &cell.children {
-                match content {
-                    TableCellContent::Paragraph(p) => {
-                        let paragraph_text = Self::extract_paragraph_text(&p.children);
-                        if !paragraph_text.trim().is_empty() {
-                            if !cell_text.is_empty() {
-                                cell_text.push(' ');
-                            }
-                            cell_text.push_str(&paragraph_text);
+                if let TableCellContent::Paragraph(p) = content {
+                    let paragraph_text = Self::extract_paragraph_text(&p.children);
+                    if !paragraph_text.trim().is_empty() {
+                        if !cell_text.is_empty() {
+                            cell_text.push(' ');
                         }
+                        cell_text.push_str(&paragraph_text);
                     }
-                    _ => {}
                 }
             }
 

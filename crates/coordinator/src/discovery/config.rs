@@ -107,10 +107,7 @@ impl DiscoveryConfig {
         Duration::from_millis(
             self.heartbeat_interval_ms
                 .max(MIN_HEARTBEAT_INTERVAL_MS)
-                .saturating_mul(
-                    self.missed_heartbeats_threshold
-                        .max(MIN_MISSED_HEARTBEATS) as u64,
-                ),
+                .saturating_mul(self.missed_heartbeats_threshold.max(MIN_MISSED_HEARTBEATS) as u64),
         )
     }
 }

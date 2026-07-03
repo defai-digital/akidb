@@ -493,9 +493,19 @@ impl AkiDbMetrics {
     }
 
     /// Record task completed
-    pub fn task_completed(&self, task_type: &str, task_id: &str, duration_secs: f64, success: bool) {
+    pub fn task_completed(
+        &self,
+        task_type: &str,
+        task_id: &str,
+        duration_secs: f64,
+        success: bool,
+    ) {
         let status = if success { "success" } else { "failure" };
-        self.set_task_state(task_type, task_id, if success { "completed" } else { "failed" });
+        self.set_task_state(
+            task_type,
+            task_id,
+            if success { "completed" } else { "failed" },
+        );
         self.background_task_executions_total
             .with_label_values(&[task_type, status])
             .inc();
@@ -567,7 +577,8 @@ impl AkiDbMetrics {
 
     /// Update snapshot progress
     pub fn set_snapshot_progress(&self, progress: f64, uploaded_bytes: u64, total_bytes: u64) {
-        self.snapshot_upload_progress.set(progress.clamp(0.0, 100.0));
+        self.snapshot_upload_progress
+            .set(progress.clamp(0.0, 100.0));
         self.snapshot_total_bytes.set(total_bytes as f64);
         self.snapshot_upload_bytes.inc_by(uploaded_bytes as f64);
     }
@@ -597,14 +608,16 @@ impl AkiDbMetrics {
     /// Set rebuild phase
     pub fn set_rebuild_phase(&self, phase: i64) {
         self.rebuild_phase.set(phase);
-        self.rebuild_in_progress.set(if phase > 0 && phase < 7 { 1.0 } else { 0.0 });
+        self.rebuild_in_progress
+            .set(if phase > 0 && phase < 7 { 1.0 } else { 0.0 });
     }
 
     /// Update rebuild progress
     pub fn set_rebuild_progress(&self, progress: f64, vectors_processed: u64, total_vectors: u64) {
         self.rebuild_progress.set(progress.clamp(0.0, 100.0));
         self.rebuild_vectors_total.set(total_vectors as f64);
-        self.rebuild_vectors_processed.inc_by(vectors_processed as f64);
+        self.rebuild_vectors_processed
+            .inc_by(vectors_processed as f64);
     }
 
     /// Record rebuild completed
@@ -631,11 +644,18 @@ impl AkiDbMetrics {
     // ============================================
 
     /// Update governor resource metrics
-    pub fn update_governor_metrics(&self, p95_ms: u64, cpu_percent: u32, memory_mb: u32, can_accept: bool) {
+    pub fn update_governor_metrics(
+        &self,
+        p95_ms: u64,
+        cpu_percent: u32,
+        memory_mb: u32,
+        can_accept: bool,
+    ) {
         self.governor_p95_latency_ms.set(p95_ms as f64);
         self.governor_cpu_percent.set(cpu_percent as f64);
         self.governor_memory_mb.set(memory_mb as f64);
-        self.governor_can_accept_tasks.set(if can_accept { 1 } else { 0 });
+        self.governor_can_accept_tasks
+            .set(if can_accept { 1 } else { 0 });
     }
 
     /// Record task deferral

@@ -3,6 +3,8 @@
 use crate::{InternalId, Result, SearchResult, VectorId};
 use std::sync::Arc;
 
+pub type SearchFilter = Arc<dyn Fn(&VectorId) -> bool + Send + Sync>;
+
 /// Search parameters for vector queries
 #[derive(Clone)]
 pub struct SearchParams {
@@ -11,7 +13,7 @@ pub struct SearchParams {
     /// Number of probes for IVF index
     pub nprobe: u32,
     /// Optional filter function
-    pub filter: Option<Arc<dyn Fn(&VectorId) -> bool + Send + Sync>>,
+    pub filter: Option<SearchFilter>,
 }
 
 impl std::fmt::Debug for SearchParams {

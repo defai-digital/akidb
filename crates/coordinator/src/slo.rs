@@ -288,9 +288,8 @@ impl SloEstimator {
             ((p99_ms as f64 * load_multiplier * 1.5) as u64).max(self.config.target_p99_ms);
 
         // Confidence based on sample count
-        let confidence = (sample_count as f64 / self.config.sample_window_size as f64)
-            .min(1.0)
-            .max(0.0);
+        let confidence =
+            (sample_count as f64 / self.config.sample_window_size as f64).clamp(0.0, 1.0);
 
         SloEstimate {
             estimated_p50_ms: p50_ms,

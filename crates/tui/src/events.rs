@@ -61,10 +61,10 @@ impl EventHandler {
                                 break;
                             }
                         }
-                        Ok(CrosstermEvent::Resize(width, height)) => {
-                            if tx_key.send(Event::Resize(width, height)).is_err() {
-                                break;
-                            }
+                        Ok(CrosstermEvent::Resize(width, height))
+                            if tx_key.send(Event::Resize(width, height)).is_err() =>
+                        {
+                            break;
                         }
                         _ => {}
                     }
@@ -208,9 +208,6 @@ mod tests {
 
     #[test]
     fn test_zero_tick_rate_is_sanitized() {
-        assert_eq!(
-            sanitize_tick_rate(Duration::ZERO),
-            Duration::from_millis(1)
-        );
+        assert_eq!(sanitize_tick_rate(Duration::ZERO), Duration::from_millis(1));
     }
 }

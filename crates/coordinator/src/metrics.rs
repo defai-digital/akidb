@@ -1,8 +1,8 @@
 //! Prometheus metrics for AkiDB Coordinator
 
 use prometheus::{
-    Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
-    TextEncoder, Encoder,
+    Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts,
+    Registry, TextEncoder,
 };
 use std::sync::OnceLock;
 
@@ -153,7 +153,13 @@ impl CoordinatorMetrics {
     }
 
     /// Record a fanout search
-    pub fn record_fanout(&self, latency_secs: f64, coverage: f64, responding: usize, is_partial: bool) {
+    pub fn record_fanout(
+        &self,
+        latency_secs: f64,
+        coverage: f64,
+        responding: usize,
+        is_partial: bool,
+    ) {
         self.fanout_latency
             .with_label_values(&["search"])
             .observe(latency_secs);

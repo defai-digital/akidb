@@ -124,9 +124,12 @@ impl TagIndex {
                 // FIX BUG-HUNT-203: Use order-preserving encoding for correct sorting
                 // Encode as hex string so it can be used as RocksDB key
                 let encoded = encode_f64_sortable(*n);
-                let hex = encoded.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                let hex = encoded
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<String>();
                 vec![Self::index_key("num", key, &hex)]
-            },
+            }
             TagValue::Boolean(b) => vec![Self::index_key("bool", key, &b.to_string())],
             TagValue::TextList(list) => list
                 .iter()
@@ -177,9 +180,9 @@ impl TagIndex {
     /// Serialize a bitmap for storage
     fn serialize_bitmap(bitmap: &RoaringBitmap) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(bitmap.serialized_size());
-        bitmap.serialize_into(&mut buf).map_err(|e| {
-            AkiDbError::StorageError(format!("Failed to serialize bitmap: {}", e))
-        })?;
+        bitmap
+            .serialize_into(&mut buf)
+            .map_err(|e| AkiDbError::StorageError(format!("Failed to serialize bitmap: {}", e)))?;
         Ok(buf)
     }
 
@@ -228,7 +231,11 @@ impl TagIndex {
             .write(batch)
             .map_err(|e| AkiDbError::StorageError(format!("RocksDB batch write error: {}", e)))?;
 
-        debug!(id = id.0, tag_count = tags.len(), "Added vector to tag index");
+        debug!(
+            id = id.0,
+            tag_count = tags.len(),
+            "Added vector to tag index"
+        );
         Ok(())
     }
 
@@ -279,7 +286,11 @@ impl TagIndex {
             .write(batch)
             .map_err(|e| AkiDbError::StorageError(format!("RocksDB batch write error: {}", e)))?;
 
-        debug!(id = id.0, tag_count = tags.len(), "Removed vector from tag index");
+        debug!(
+            id = id.0,
+            tag_count = tags.len(),
+            "Removed vector from tag index"
+        );
         Ok(())
     }
 
@@ -355,7 +366,11 @@ impl TagIndex {
     /// NOT filters will compute complement against this universe.
     ///
     /// BUG-004 FIX: This method properly handles NOT filters by computing complement
-    pub fn query_with_universe(&self, filter: &TagFilter, universe: &RoaringBitmap) -> Result<RoaringBitmap> {
+    pub fn query_with_universe(
+        &self,
+        filter: &TagFilter,
+        universe: &RoaringBitmap,
+    ) -> Result<RoaringBitmap> {
         self.evaluate_filter(filter, Some(universe))
     }
 
@@ -377,7 +392,7 @@ impl TagIndex {
         &self,
         filter: &TagFilter,
         universe: &RoaringBitmap,
-        limit: Option<usize>
+        limit: Option<usize>,
     ) -> Result<Vec<InternalId>> {
         let bitmap = self.query_with_universe(filter, universe)?;
         let iter = bitmap.iter().map(|id| InternalId::new(i64::from(id)));
@@ -400,7 +415,11 @@ impl TagIndex {
     }
 
     /// Evaluate a filter recursively
-    fn evaluate_filter(&self, filter: &TagFilter, universe: Option<&RoaringBitmap>) -> Result<RoaringBitmap> {
+    fn evaluate_filter(
+        &self,
+        filter: &TagFilter,
+        universe: Option<&RoaringBitmap>,
+    ) -> Result<RoaringBitmap> {
         match filter {
             TagFilter::And(filters) => {
                 if filters.is_empty() {
@@ -448,7 +467,8 @@ impl TagIndex {
                     None => {
                         // No universe provided - return error for NOT without universe
                         Err(AkiDbError::InvalidParameter(
-                            "NOT filter requires universe set. Use query_with_universe() instead.".to_string()
+                            "NOT filter requires universe set. Use query_with_universe() instead."
+                                .to_string(),
                         ))
                     }
                 }
@@ -485,8 +505,7 @@ impl TagIndex {
                             Ok((key, value)) => {
                                 if key.starts_with(scan_prefix.as_bytes()) {
                                     let mut cursor = Cursor::new(value.as_ref());
-                                    if let Ok(bitmap) =
-                                        RoaringBitmap::deserialize_from(&mut cursor)
+                                    if let Ok(bitmap) = RoaringBitmap::deserialize_from(&mut cursor)
                                     {
                                         result |= bitmap;
                                     }
@@ -522,12 +541,12 @@ impl TagIndex {
                     // BUG-H007 FIX: Validate threshold is not NaN/Infinity
                     if threshold.is_nan() {
                         return Err(AkiDbError::InvalidParameter(
-                            "Range query threshold cannot be NaN".to_string()
+                            "Range query threshold cannot be NaN".to_string(),
                         ));
                     }
                     if threshold.is_infinite() {
                         return Err(AkiDbError::InvalidParameter(
-                            "Range query threshold cannot be infinite".to_string()
+                            "Range query threshold cannot be infinite".to_string(),
                         ));
                     }
                     self.range_query(&cond.key, threshold, &cond.op)
@@ -673,6 +692,7 @@ impl TagFilter {
     }
 
     /// Create a NOT filter
+    #[allow(clippy::should_implement_trait)]
     pub fn not(filter: TagFilter) -> Self {
         Self::Not(Box::new(filter))
     }
@@ -738,6 +758,14 @@ impl TagFilter {
             value: TagValue::Number(value),
             op: TagOperator::Lte,
         })
+    }
+}
+
+impl std::ops::Not for TagFilter {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        Self::Not(Box::new(self))
     }
 }
 
@@ -1011,7 +1039,9 @@ mod tests {
 
         let mut new_tags = Tags::new();
         new_tags.insert("status", TagValue::Text("complete".to_string()));
-        index.update(InternalId::new(1), &old_tags, &new_tags).unwrap();
+        index
+            .update(InternalId::new(1), &old_tags, &new_tags)
+            .unwrap();
 
         // Should not be found with old tag
         let filter = TagFilter::eq("status", TagValue::Text("pending".to_string()));
@@ -1066,14 +1096,12 @@ mod tests {
         universe.insert(3);
 
         // Query: NOT red (should return 2 and 3)
-        let filter = TagFilter::not(
-            TagFilter::eq("color", TagValue::Text("red".to_string()))
-        );
+        let filter = TagFilter::not(TagFilter::eq("color", TagValue::Text("red".to_string())));
         let result = index.query_with_universe(&filter, &universe).unwrap();
 
         assert!(!result.contains(1)); // red - excluded
-        assert!(result.contains(2));  // blue - included
-        assert!(result.contains(3));  // green - included
+        assert!(result.contains(2)); // blue - included
+        assert!(result.contains(3)); // green - included
         assert_eq!(result.len(), 2);
     }
 
@@ -1082,9 +1110,7 @@ mod tests {
         let db = create_test_db();
         let index = TagIndex::new(db);
 
-        let filter = TagFilter::not(
-            TagFilter::eq("color", TagValue::Text("red".to_string()))
-        );
+        let filter = TagFilter::not(TagFilter::eq("color", TagValue::Text("red".to_string())));
 
         // Should return error when using NOT without universe
         let result = index.query(&filter);
@@ -1104,7 +1130,10 @@ mod tests {
         let result = index.add(large_id, &tags);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceeds u32 range"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds u32 range"));
     }
 
     #[test]
@@ -1221,19 +1250,19 @@ mod tests {
         let filter = TagFilter::gt("score", -6.0);
         let result = index.query(&filter).unwrap();
         assert!(!result.contains(1)); // -9.0 is NOT > -6.0
-        assert!(result.contains(2));  // -5.0 IS > -6.0
-        assert!(result.contains(3));  // -1.0 IS > -6.0
-        assert!(result.contains(4));  // 0.0 IS > -6.0
-        assert!(result.contains(5));  // 1.0 IS > -6.0
-        assert!(result.contains(6));  // 5.0 IS > -6.0
-        assert!(result.contains(7));  // 9.0 IS > -6.0
+        assert!(result.contains(2)); // -5.0 IS > -6.0
+        assert!(result.contains(3)); // -1.0 IS > -6.0
+        assert!(result.contains(4)); // 0.0 IS > -6.0
+        assert!(result.contains(5)); // 1.0 IS > -6.0
+        assert!(result.contains(6)); // 5.0 IS > -6.0
+        assert!(result.contains(7)); // 9.0 IS > -6.0
         assert_eq!(result.len(), 6);
 
         // Query: score < -2.0 (should return -9, -5 -> IDs 1,2)
         let filter = TagFilter::lt("score", -2.0);
         let result = index.query(&filter).unwrap();
-        assert!(result.contains(1));  // -9.0 IS < -2.0
-        assert!(result.contains(2));  // -5.0 IS < -2.0
+        assert!(result.contains(1)); // -9.0 IS < -2.0
+        assert!(result.contains(2)); // -5.0 IS < -2.0
         assert!(!result.contains(3)); // -1.0 is NOT < -2.0
         assert_eq!(result.len(), 2);
 
@@ -1244,8 +1273,8 @@ mod tests {
         ]);
         let result = index.query(&filter).unwrap();
         assert!(!result.contains(1)); // -9.0 is NOT >= -5.0
-        assert!(result.contains(2));  // -5.0 IS in range
-        assert!(result.contains(3));  // -1.0 IS in range
+        assert!(result.contains(2)); // -5.0 IS in range
+        assert!(result.contains(3)); // -1.0 IS in range
         assert!(!result.contains(4)); // 0.0 is NOT <= -1.0
         assert_eq!(result.len(), 2);
     }
@@ -1253,7 +1282,7 @@ mod tests {
     /// FIX BUG-HUNT-203: Test order-preserving encoding round-trip
     #[test]
     fn test_f64_sortable_encoding() {
-        use super::{encode_f64_sortable, decode_f64_sortable};
+        use super::{decode_f64_sortable, encode_f64_sortable};
 
         // Test various values
         let test_values = [
@@ -1280,15 +1309,19 @@ mod tests {
         }
 
         // Test that encoded values sort correctly
-        let mut encoded: Vec<_> = test_values.iter()
+        let mut encoded: Vec<_> = test_values
+            .iter()
             .map(|&v| (v, encode_f64_sortable(v)))
             .collect();
-        encoded.sort_by(|a, b| a.1.cmp(&b.1));
+        encoded.sort_by_key(|(_, encoded)| *encoded);
 
         let sorted_values: Vec<f64> = encoded.iter().map(|(v, _)| *v).collect();
         let mut expected = test_values.to_vec();
         expected.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-        assert_eq!(sorted_values, expected, "Encoded values don't sort correctly");
+        assert_eq!(
+            sorted_values, expected,
+            "Encoded values don't sort correctly"
+        );
     }
 }

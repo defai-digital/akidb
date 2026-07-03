@@ -93,11 +93,9 @@ fn validate_tag_filter(filter: &TagFilter) -> Result<(), String> {
             .as_deref()
             .map(validate_tag_filter)
             .unwrap_or(Ok(())),
-        Some(FilterType::Condition(cond)) => {
-            TagOperator::try_from(cond.op)
-                .map(|_| ())
-                .map_err(|_| format!("unknown tag operator: {}", cond.op))
-        }
+        Some(FilterType::Condition(cond)) => TagOperator::try_from(cond.op)
+            .map(|_| ())
+            .map_err(|_| format!("unknown tag operator: {}", cond.op)),
         None => Ok(()),
     }
 }

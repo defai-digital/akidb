@@ -18,8 +18,7 @@ use crate::proto::{
     TriggerRebuildResponse, TriggerSnapshotRequest, TriggerSnapshotResponse, WebhookEvent,
 };
 use akidb_common::scheduler::{
-    ResourceGovernor, ResourceRequirements, ResourceSummary, TaskExecution,
-    TaskSchedule, TaskState,
+    ResourceGovernor, ResourceRequirements, ResourceSummary, TaskExecution, TaskSchedule, TaskState,
 };
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -39,6 +38,12 @@ pub struct WebhookConfig {
     pub last_delivery_success: Option<bool>,
 }
 
+type SnapshotTrigger = Box<dyn Fn(bool, Option<String>) -> Result<String, String> + Send + Sync>;
+type RebuildTrigger =
+    Box<dyn Fn(bool, Option<String>, bool) -> Result<String, String> + Send + Sync>;
+type StateReader = Box<dyn Fn() -> i32 + Send + Sync>;
+type TaskCanceller = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
 /// Admin service state
 pub struct AdminState {
     /// Resource governor reference
@@ -52,17 +57,15 @@ pub struct AdminState {
     /// Webhook configuration
     pub webhook_config: RwLock<Option<WebhookConfig>>,
     /// Snapshot trigger callback
-    pub snapshot_trigger:
-        Option<Box<dyn Fn(bool, Option<String>) -> Result<String, String> + Send + Sync>>,
+    pub snapshot_trigger: Option<SnapshotTrigger>,
     /// Snapshot state callback
-    pub snapshot_state: Option<Box<dyn Fn() -> i32 + Send + Sync>>,
+    pub snapshot_state: Option<StateReader>,
     /// Rebuild trigger callback
-    pub rebuild_trigger:
-        Option<Box<dyn Fn(bool, Option<String>, bool) -> Result<String, String> + Send + Sync>>,
+    pub rebuild_trigger: Option<RebuildTrigger>,
     /// Rebuild state callback
-    pub rebuild_state: Option<Box<dyn Fn() -> i32 + Send + Sync>>,
+    pub rebuild_state: Option<StateReader>,
     /// Task cancel callback
-    pub task_canceller: Option<Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>>,
+    pub task_canceller: Option<TaskCanceller>,
 }
 
 /// Registered task info
@@ -144,7 +147,7 @@ impl AdminState {
     pub async fn send_webhook(&self, event: WebhookEvent, payload: serde_json::Value) {
         let config = self.webhook_config.read().clone();
         if let Some(config) = config {
-            if !config.enabled || !config.events.iter().any(|e| *e == event) {
+            if !config.enabled || !config.events.contains(&event) {
                 return;
             }
 
@@ -213,7 +216,7 @@ impl AdminService for AdminServiceImpl {
                 }
                 true
             })
-            .map(|t| registered_task_to_proto(t))
+            .map(registered_task_to_proto)
             .collect();
 
         let summary = self.state.governor.resource_summary();
@@ -268,7 +271,7 @@ impl AdminService for AdminServiceImpl {
                 true
             })
             .take(limit)
-            .map(|e| task_execution_to_record(e))
+            .map(task_execution_to_record)
             .collect();
 
         let total_count = filtered.len() as u32;

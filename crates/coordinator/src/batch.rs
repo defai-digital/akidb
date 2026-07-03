@@ -376,11 +376,10 @@ impl BatchProcessor {
         };
 
         // Calculate ideal batch size for target latency
-        let ideal_size = if per_item_us > 0 {
-            (target_us / per_item_us) as usize
-        } else {
-            self.config.max_batch_size
-        };
+        let ideal_size = target_us
+            .checked_div(per_item_us)
+            .map(|size| size as usize)
+            .unwrap_or(self.config.max_batch_size);
 
         // Smooth adjustment (move 10% toward ideal)
         // FIX BUG-003: Use .max(1) to ensure at least 1 step change when converging
@@ -430,11 +429,10 @@ impl BatchProcessor {
 
         // Calculate recommended size
         let target_us = duration_micros_u64(target_latency);
-        let recommended = if per_item_us > 0 {
-            (target_us / per_item_us) as usize
-        } else {
-            self.config.max_batch_size
-        };
+        let recommended = target_us
+            .checked_div(per_item_us)
+            .map(|size| size as usize)
+            .unwrap_or(self.config.max_batch_size);
 
         recommended
             .max(self.config.min_batch_size)

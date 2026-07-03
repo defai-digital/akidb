@@ -138,7 +138,7 @@ impl<T: Send + 'static> DynamicBatcher<T> {
 }
 
 fn normalize_config(config: BatcherConfig) -> BatcherConfig {
-    let min_batch = config.min_batch.max(1).min(MAX_NORMALIZED_BATCH_SIZE);
+    let min_batch = config.min_batch.clamp(1, MAX_NORMALIZED_BATCH_SIZE);
     let max_batch = config
         .max_batch
         .max(min_batch)

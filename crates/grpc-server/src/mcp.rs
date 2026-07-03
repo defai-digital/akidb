@@ -292,8 +292,9 @@ where
     let id = required_str(args, "id")?;
     let text = required_str(args, "text")?;
     let kind = match arg_str(args, "kind")? {
-        Some(kind) => MemoryKind::parse(&kind)
-            .ok_or_else(|| format!("unknown memory kind: {kind}"))?,
+        Some(kind) => {
+            MemoryKind::parse(&kind).ok_or_else(|| format!("unknown memory kind: {kind}"))?
+        }
         None => MemoryKind::Note,
     };
 

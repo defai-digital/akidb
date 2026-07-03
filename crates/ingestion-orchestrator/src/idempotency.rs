@@ -74,10 +74,8 @@ impl IdempotencyChecker {
                 .map_err(|e| format!("Failed to query hashes: {}", e))?;
 
             let mut loaded_hashes = Vec::new();
-            for row in rows {
-                if let Ok(hash) = row {
-                    loaded_hashes.push(hash);
-                }
+            for hash in rows.flatten() {
+                loaded_hashes.push(hash);
             }
 
             loaded_hashes.reverse();

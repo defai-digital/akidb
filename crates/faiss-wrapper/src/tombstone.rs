@@ -23,6 +23,36 @@ pub struct TombstoneBitset {
     deleted_count: AtomicU64,
 }
 
+fn saturating_increment(counter: &AtomicU64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_add(1);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn saturating_decrement(counter: &AtomicU64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        if current == 0 {
+            return;
+        }
+
+        match counter.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 impl TombstoneBitset {
     /// Create a new tombstone bitset with capacity for `n` vectors
     pub fn new(capacity: u64) -> Self {
@@ -61,7 +91,7 @@ impl TombstoneBitset {
 
         if !was_deleted {
             data[byte_idx] |= mask;
-            self.deleted_count.fetch_add(1, Ordering::Relaxed);
+            saturating_increment(&self.deleted_count);
         }
 
         Ok(())
@@ -114,27 +144,7 @@ impl TombstoneBitset {
 
         if was_deleted {
             data[byte_idx] &= !mask;
-            // FIX BUG-098: Use compare_exchange loop to prevent underflow
-            // The previous fetch_sub approach was flawed because it returns the
-            // PREVIOUS value, meaning the decrement already happened before we
-            // could check. If prev == 0, the counter had already wrapped to u64::MAX.
-            // This loop atomically decrements only if count > 0.
-            loop {
-                let current = self.deleted_count.load(Ordering::Relaxed);
-                if current == 0 {
-                    // Already at zero, nothing to decrement (shouldn't happen normally)
-                    break;
-                }
-                if self.deleted_count.compare_exchange_weak(
-                    current,
-                    current - 1,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ).is_ok() {
-                    break;
-                }
-                // CAS failed, another thread modified it, retry
-            }
+            saturating_decrement(&self.deleted_count);
         }
 
         Ok(())
@@ -269,5 +279,32 @@ mod tests {
         let bitset = TombstoneBitset::new(1_000_000);
         // 1M vectors = 125KB
         assert_eq!(bitset.memory_bytes(), 125_000);
+    }
+
+    #[test]
+    fn test_mark_deleted_count_saturates_without_wrapping() {
+        // Mirror of BUG-098: mark_deleted must not wrap deleted_count past u64::MAX.
+        let bitset = TombstoneBitset::new(8);
+        bitset.deleted_count.store(u64::MAX, Ordering::Relaxed);
+
+        // The bit is cleared, so mark_deleted will try to increment the counter.
+        bitset.mark_deleted(InternalId(0)).unwrap();
+
+        // Counter must saturate at u64::MAX instead of wrapping to 0.
+        assert_eq!(bitset.deleted_count(), u64::MAX);
+        // The bit itself must still be set even though the counter saturated.
+        assert!(bitset.is_deleted(InternalId(0)));
+    }
+
+    #[test]
+    fn test_clear_deleted_count_saturates_without_underflow() {
+        let bitset = TombstoneBitset::new(8);
+        bitset.mark_deleted(InternalId(0)).unwrap();
+        bitset.deleted_count.store(0, Ordering::Relaxed);
+
+        bitset.clear_deleted(InternalId(0)).unwrap();
+
+        assert_eq!(bitset.deleted_count(), 0);
+        assert!(!bitset.is_deleted(InternalId(0)));
     }
 }

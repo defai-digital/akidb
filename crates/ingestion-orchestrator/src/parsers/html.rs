@@ -147,7 +147,7 @@ impl DocumentParser for HtmlParser {
         let mut text = String::new();
 
         // Try to extract from body first
-        if let Some(body_sel) = Selector::parse("body").ok() {
+        if let Ok(body_sel) = Selector::parse("body") {
             if let Some(body) = document.select(&body_sel).next() {
                 Self::extract_text_excluding_scripts(body, &mut text, &excluded_tags);
             }

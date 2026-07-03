@@ -396,10 +396,7 @@ impl QueryWorkflow {
                 timing.total_elapsed = start.elapsed();
                 timing.timed_out = true;
 
-                warn!(
-                    "Query workflow timed out after {:?}",
-                    timing.total_elapsed
-                );
+                warn!("Query workflow timed out after {:?}", timing.total_elapsed);
 
                 QueryWorkflowResult {
                     state: QueryState::TimedOut,
@@ -500,12 +497,12 @@ mod tests {
     fn test_min_coverage_clamping() {
         let query = vec![1.0f32; 128];
 
-        let workflow = QueryWorkflow::new(query.clone(), 10, Duration::from_secs(5))
-            .with_min_coverage(1.5); // Above 1.0
+        let workflow =
+            QueryWorkflow::new(query.clone(), 10, Duration::from_secs(5)).with_min_coverage(1.5); // Above 1.0
         assert_eq!(workflow.min_coverage, 1.0);
 
-        let workflow = QueryWorkflow::new(query.clone(), 10, Duration::from_secs(5))
-            .with_min_coverage(-0.5); // Below 0.0
+        let workflow =
+            QueryWorkflow::new(query.clone(), 10, Duration::from_secs(5)).with_min_coverage(-0.5); // Below 0.0
         assert_eq!(workflow.min_coverage, 0.0);
     }
 }

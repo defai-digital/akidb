@@ -260,7 +260,7 @@ fn update_mock_data(app: &mut App) {
 
     // Slightly vary QPS
     let jitter = (rand_simple() - 0.5) * 10.0;
-    app.metrics.qps = (app.metrics.qps + jitter).max(50.0).min(200.0);
+    app.metrics.qps = (app.metrics.qps + jitter).clamp(50.0, 200.0);
 
     // Add to history
     app.metrics.history.add_qps(app.metrics.qps);
@@ -269,9 +269,7 @@ fn update_mock_data(app: &mut App) {
     // Update shard health slightly
     for shard in &mut app.cluster_state.shards {
         let health_jitter = (rand_simple() - 0.5) * 0.02;
-        shard.health_score = (shard.health_score + health_jitter as f32)
-            .max(0.8)
-            .min(1.0);
+        shard.health_score = (shard.health_score + health_jitter as f32).clamp(0.8, 1.0);
         app.metrics
             .history
             .add_shard_health(&shard.id, shard.health_score);

@@ -14,10 +14,7 @@ pub enum PersistentRebuildPhase {
     #[default]
     Idle,
     /// Preparing for rebuild
-    Preparing {
-        wal_lsn: u64,
-        started_at: u64,
-    },
+    Preparing { wal_lsn: u64, started_at: u64 },
     /// Scanning vectors from current index
     Scanning {
         vectors_scanned: u64,
@@ -44,9 +41,7 @@ pub enum PersistentRebuildPhase {
         started_at: u64,
     },
     /// Swapping indices
-    Swapping {
-        started_at: u64,
-    },
+    Swapping { started_at: u64 },
     /// Cleaning up old index
     Cleaning {
         old_index_path: String,
@@ -312,7 +307,7 @@ impl RebuildStatePersistence for InMemoryRebuildPersistence {
             .filter(|r| r.shard_id == shard_id)
             .cloned()
             .collect();
-        matching.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        matching.sort_by_key(|record| std::cmp::Reverse(record.started_at));
         Ok(matching.into_iter().next())
     }
 
@@ -325,7 +320,7 @@ impl RebuildStatePersistence for InMemoryRebuildPersistence {
     fn list_all(&self) -> Result<Vec<RebuildStateRecord>, String> {
         let states = self.states.read();
         let mut records: Vec<_> = states.values().cloned().collect();
-        records.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        records.sort_by_key(|record| std::cmp::Reverse(record.started_at));
         Ok(records)
     }
 }
@@ -697,7 +692,10 @@ impl<P: RebuildStatePersistence> PersistentRebuildStateMachine<P> {
     /// List all in-progress rebuilds
     pub fn list_in_progress(&self) -> Result<Vec<RebuildStateRecord>, String> {
         let all = self.persistence.list_all()?;
-        Ok(all.into_iter().filter(|r| r.phase.is_in_progress()).collect())
+        Ok(all
+            .into_iter()
+            .filter(|r| r.phase.is_in_progress())
+            .collect())
     }
 
     /// Recover operations after restart
@@ -705,11 +703,16 @@ impl<P: RebuildStatePersistence> PersistentRebuildStateMachine<P> {
         let all = self.persistence.list_all()?;
         let recoverable: Vec<_> = all
             .into_iter()
-            .filter(|r| r.phase.is_in_progress() || (r.phase.is_resumable() && self.should_retry(r)))
+            .filter(|r| {
+                r.phase.is_in_progress() || (r.phase.is_resumable() && self.should_retry(r))
+            })
             .collect();
 
         if !recoverable.is_empty() {
-            info!(count = recoverable.len(), "Found rebuild operations to recover");
+            info!(
+                count = recoverable.len(),
+                "Found rebuild operations to recover"
+            );
         }
 
         Ok(recoverable)
@@ -792,33 +795,61 @@ mod tests {
 
         // Start operation
         let mut record = sm
-            .start_operation("shard-1".to_string(), 100, RebuildPersistentConfig::default())
+            .start_operation(
+                "shard-1".to_string(),
+                100,
+                RebuildPersistentConfig::default(),
+            )
             .unwrap();
-        assert!(matches!(record.phase, PersistentRebuildPhase::Preparing { .. }));
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Preparing { .. }
+        ));
 
         // Transition through phases
         sm.transition_to_scanning(&mut record, 10000).unwrap();
-        assert!(matches!(record.phase, PersistentRebuildPhase::Scanning { .. }));
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Scanning { .. }
+        ));
 
         sm.transition_to_building(&mut record, 10000, "/tmp/index".to_string())
             .unwrap();
-        assert!(matches!(record.phase, PersistentRebuildPhase::Building { .. }));
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Building { .. }
+        ));
 
         sm.transition_to_replaying(&mut record, Some(100)).unwrap();
-        assert!(matches!(record.phase, PersistentRebuildPhase::Replaying { .. }));
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Replaying { .. }
+        ));
 
         sm.transition_to_validating(&mut record, 1000).unwrap();
-        assert!(matches!(record.phase, PersistentRebuildPhase::Validating { .. }));
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Validating { .. }
+        ));
 
         sm.transition_to_swapping(&mut record).unwrap();
-        assert!(matches!(record.phase, PersistentRebuildPhase::Swapping { .. }));
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Swapping { .. }
+        ));
 
         sm.transition_to_cleaning(&mut record, "/old/index".to_string())
             .unwrap();
-        assert!(matches!(record.phase, PersistentRebuildPhase::Cleaning { .. }));
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Cleaning { .. }
+        ));
 
         sm.complete_operation(&mut record, 10000).unwrap();
-        assert!(matches!(record.phase, PersistentRebuildPhase::Completed { .. }));
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Completed { .. }
+        ));
     }
 
     #[test]
@@ -827,7 +858,11 @@ mod tests {
         let sm = PersistentRebuildStateMachine::new(persistence).with_max_retries(3);
 
         let mut record = sm
-            .start_operation("shard-1".to_string(), 100, RebuildPersistentConfig::default())
+            .start_operation(
+                "shard-1".to_string(),
+                100,
+                RebuildPersistentConfig::default(),
+            )
             .unwrap();
         sm.transition_to_building(&mut record, 10000, "/tmp/index".to_string())
             .unwrap();
@@ -835,12 +870,18 @@ mod tests {
         // Fail the operation
         sm.fail_operation(&mut record, "Test error".to_string())
             .unwrap();
-        assert!(matches!(record.phase, PersistentRebuildPhase::Failed { .. }));
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Failed { .. }
+        ));
         assert!(sm.should_retry(&record));
 
         // Reset for retry
         sm.reset_for_retry(&mut record).unwrap();
-        assert!(matches!(record.phase, PersistentRebuildPhase::Building { .. }));
+        assert!(matches!(
+            record.phase,
+            PersistentRebuildPhase::Building { .. }
+        ));
     }
 
     #[test]
@@ -848,7 +889,11 @@ mod tests {
         let persistence = InMemoryRebuildPersistence::new();
         let sm = PersistentRebuildStateMachine::new(persistence);
         let mut record = sm
-            .start_operation("shard-1".to_string(), 100, RebuildPersistentConfig::default())
+            .start_operation(
+                "shard-1".to_string(),
+                100,
+                RebuildPersistentConfig::default(),
+            )
             .unwrap();
         record.phase = PersistentRebuildPhase::Failed {
             error: "previous".to_string(),
@@ -879,11 +924,19 @@ mod tests {
         let sm = PersistentRebuildStateMachine::new(persistence);
 
         let _record = sm
-            .start_operation("shard-1".to_string(), 100, RebuildPersistentConfig::default())
+            .start_operation(
+                "shard-1".to_string(),
+                100,
+                RebuildPersistentConfig::default(),
+            )
             .unwrap();
 
         // Second attempt should fail
-        let result = sm.start_operation("shard-1".to_string(), 200, RebuildPersistentConfig::default());
+        let result = sm.start_operation(
+            "shard-1".to_string(),
+            200,
+            RebuildPersistentConfig::default(),
+        );
         assert!(result.is_err());
     }
 }

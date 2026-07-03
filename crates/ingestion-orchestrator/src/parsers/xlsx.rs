@@ -54,9 +54,9 @@ impl DocumentParser for XlsxParser {
                 for (idx, cells) in sheet_rows.iter().enumerate() {
                     let next_row = sheet_rows.get(idx + 1).map(Vec::as_slice);
                     let text = match headers.as_deref() {
-                        Some(headers) => row_text_with_headers(headers, &cells),
+                        Some(headers) => row_text_with_headers(headers, cells),
                         None => {
-                            let row_text = row_text_from_cells(&cells);
+                            let row_text = row_text_from_cells(cells);
                             if is_likely_header_row(cells, sheet_cols, next_row) {
                                 headers = Some(cells.clone());
                             }

@@ -16,10 +16,7 @@ pub enum SnapshotState {
     #[default]
     Idle,
     /// Compressing local data
-    Compressing {
-        progress: f64,
-        started_at: u64,
-    },
+    Compressing { progress: f64, started_at: u64 },
     /// Uploading to remote storage
     Uploading {
         chunks_completed: u64,
@@ -29,13 +26,9 @@ pub enum SnapshotState {
         started_at: u64,
     },
     /// Verifying upload integrity
-    Verifying {
-        started_at: u64,
-    },
+    Verifying { started_at: u64 },
     /// Completing (atomic rename)
-    Completing {
-        started_at: u64,
-    },
+    Completing { started_at: u64 },
     /// Operation failed
     Failed {
         error: String,
@@ -44,9 +37,7 @@ pub enum SnapshotState {
         original_state: Box<SnapshotState>,
     },
     /// Operation completed successfully
-    Completed {
-        completed_at: u64,
-    },
+    Completed { completed_at: u64 },
 }
 
 impl SnapshotState {
@@ -65,8 +56,7 @@ impl SnapshotState {
     pub fn is_resumable(&self) -> bool {
         matches!(
             self,
-            SnapshotState::Uploading { .. }
-                | SnapshotState::Failed { .. }
+            SnapshotState::Uploading { .. } | SnapshotState::Failed { .. }
         )
     }
 
@@ -83,7 +73,8 @@ impl SnapshotState {
                 if *total_chunks == 0 {
                     0.2
                 } else {
-                    0.2 + (*chunks_completed as f64 / *total_chunks as f64) * 0.6 // 20-80%
+                    0.2 + (*chunks_completed as f64 / *total_chunks as f64) * 0.6
+                    // 20-80%
                 }
             }
             SnapshotState::Verifying { .. } => 0.85,  // 85%
@@ -502,9 +493,8 @@ impl<S: StorageBackend> SnapshotStateMachine<S> {
     /// Save state record
     pub fn save_state(&self, record: &SnapshotStateRecord) -> Result<()> {
         let key = self.state_key(&record.operation_id);
-        let data = serde_json::to_vec(record).map_err(|e| {
-            AkiDbError::StorageError(format!("Failed to serialize state: {}", e))
-        })?;
+        let data = serde_json::to_vec(record)
+            .map_err(|e| AkiDbError::StorageError(format!("Failed to serialize state: {}", e)))?;
         self.storage.put(&key, &data)
     }
 
@@ -546,7 +536,7 @@ impl<S: StorageBackend> SnapshotStateMachine<S> {
             }
         }
         // Sort by started_at descending
-        records.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        records.sort_by_key(|record| std::cmp::Reverse(record.started_at));
         Ok(records)
     }
 

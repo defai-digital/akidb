@@ -196,7 +196,11 @@ impl LocalSnapshotBackend {
 
     /// FIX BUG-054: Validate that a file path stays within the snapshot directory
     /// This prevents path traversal attacks like "../../../etc/passwd"
-    fn validate_path(&self, snapshot_dir: &std::path::Path, relative_path: &str) -> Result<PathBuf> {
+    fn validate_path(
+        &self,
+        snapshot_dir: &std::path::Path,
+        relative_path: &str,
+    ) -> Result<PathBuf> {
         validate_snapshot_file_path(relative_path)?;
 
         // Normalize path components to catch traversal attempts
@@ -249,14 +253,15 @@ impl SnapshotBackend for LocalSnapshotBackend {
         let snapshot_dir = self.snapshot_dir(&metadata.id);
 
         // Create directory
-        tokio::fs::create_dir_all(&snapshot_dir).await.map_err(|e| {
-            AkiDbError::Internal(format!("Failed to create snapshot directory: {}", e))
-        })?;
+        tokio::fs::create_dir_all(&snapshot_dir)
+            .await
+            .map_err(|e| {
+                AkiDbError::Internal(format!("Failed to create snapshot directory: {}", e))
+            })?;
 
         // Save metadata
-        let metadata_json = serde_json::to_string_pretty(metadata).map_err(|e| {
-            AkiDbError::Internal(format!("Failed to serialize metadata: {}", e))
-        })?;
+        let metadata_json = serde_json::to_string_pretty(metadata)
+            .map_err(|e| AkiDbError::Internal(format!("Failed to serialize metadata: {}", e)))?;
         tokio::fs::write(self.metadata_path(&metadata.id), metadata_json)
             .await
             .map_err(|e| AkiDbError::Internal(format!("Failed to write metadata: {}", e)))?;
@@ -270,12 +275,18 @@ impl SnapshotBackend for LocalSnapshotBackend {
                     AkiDbError::Internal(format!("Failed to create parent directory: {}", e))
                 })?;
             }
-            tokio::fs::write(&file_path, &file.data).await.map_err(|e| {
-                AkiDbError::Internal(format!("Failed to write file {}: {}", file.path, e))
-            })?;
+            tokio::fs::write(&file_path, &file.data)
+                .await
+                .map_err(|e| {
+                    AkiDbError::Internal(format!("Failed to write file {}: {}", file.path, e))
+                })?;
         }
 
-        info!("Saved snapshot {} to {}", metadata.id, snapshot_dir.display());
+        info!(
+            "Saved snapshot {} to {}",
+            metadata.id,
+            snapshot_dir.display()
+        );
         Ok(metadata.id.clone())
     }
 
@@ -303,17 +314,20 @@ impl SnapshotBackend for LocalSnapshotBackend {
         let mut stack = vec![snapshot_dir.clone()];
 
         while let Some(dir) = stack.pop() {
-            let mut entries = tokio::fs::read_dir(&dir).await.map_err(|e| {
-                AkiDbError::Internal(format!("Failed to read directory: {}", e))
-            })?;
+            let mut entries = tokio::fs::read_dir(&dir)
+                .await
+                .map_err(|e| AkiDbError::Internal(format!("Failed to read directory: {}", e)))?;
 
-            while let Some(entry) = entries.next_entry().await.map_err(|e| {
-                AkiDbError::Internal(format!("Failed to read entry: {}", e))
-            })? {
+            while let Some(entry) = entries
+                .next_entry()
+                .await
+                .map_err(|e| AkiDbError::Internal(format!("Failed to read entry: {}", e)))?
+            {
                 let path = entry.path();
-                let file_type = entry.file_type().await.map_err(|e| {
-                    AkiDbError::Internal(format!("Failed to get file type: {}", e))
-                })?;
+                let file_type = entry
+                    .file_type()
+                    .await
+                    .map_err(|e| AkiDbError::Internal(format!("Failed to get file type: {}", e)))?;
 
                 if file_type.is_dir() {
                     stack.push(path);
@@ -338,9 +352,9 @@ impl SnapshotBackend for LocalSnapshotBackend {
                         )))?
                         .to_string_lossy()
                         .to_string();
-                    let data = tokio::fs::read(&path).await.map_err(|e| {
-                        AkiDbError::Internal(format!("Failed to read file: {}", e))
-                    })?;
+                    let data = tokio::fs::read(&path)
+                        .await
+                        .map_err(|e| AkiDbError::Internal(format!("Failed to read file: {}", e)))?;
 
                     files.push(SnapshotFile {
                         path: relative_path,
@@ -358,7 +372,10 @@ impl SnapshotBackend for LocalSnapshotBackend {
         let mut snapshots = Vec::new();
 
         // Use async exists check to avoid blocking the runtime
-        if !tokio::fs::try_exists(&self.base_path).await.unwrap_or(false) {
+        if !tokio::fs::try_exists(&self.base_path)
+            .await
+            .unwrap_or(false)
+        {
             return Ok(snapshots);
         }
 
@@ -366,9 +383,11 @@ impl SnapshotBackend for LocalSnapshotBackend {
             AkiDbError::Internal(format!("Failed to read snapshot directory: {}", e))
         })?;
 
-        while let Some(entry) = entries.next_entry().await.map_err(|e| {
-            AkiDbError::Internal(format!("Failed to read entry: {}", e))
-        })? {
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| AkiDbError::Internal(format!("Failed to read entry: {}", e)))?
+        {
             let path = entry.path();
             // Use async file_type check instead of blocking is_dir()
             let file_type = match entry.file_type().await {
@@ -403,7 +422,7 @@ impl SnapshotBackend for LocalSnapshotBackend {
         }
 
         // Sort by created_at descending (newest first)
-        snapshots.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        snapshots.sort_by_key(|snapshot| std::cmp::Reverse(snapshot.created_at));
 
         Ok(snapshots)
     }
@@ -417,9 +436,9 @@ impl SnapshotBackend for LocalSnapshotBackend {
             return Ok(()); // Idempotent
         }
 
-        tokio::fs::remove_dir_all(&snapshot_dir).await.map_err(|e| {
-            AkiDbError::Internal(format!("Failed to delete snapshot: {}", e))
-        })?;
+        tokio::fs::remove_dir_all(&snapshot_dir)
+            .await
+            .map_err(|e| AkiDbError::Internal(format!("Failed to delete snapshot: {}", e)))?;
 
         info!("Deleted snapshot {}", snapshot_id);
         Ok(())
@@ -428,7 +447,9 @@ impl SnapshotBackend for LocalSnapshotBackend {
     async fn exists(&self, snapshot_id: &str) -> Result<bool> {
         validate_snapshot_id(snapshot_id)?;
         // Use async exists check to avoid blocking the runtime
-        Ok(tokio::fs::try_exists(self.metadata_path(snapshot_id)).await.unwrap_or(false))
+        Ok(tokio::fs::try_exists(self.metadata_path(snapshot_id))
+            .await
+            .unwrap_or(false))
     }
 }
 
@@ -479,7 +500,12 @@ impl S3SnapshotBackend {
     }
 
     fn object_url(&self, key: &str) -> String {
-        format!("{}/{}{}", self.endpoint, self.bucket, Self::object_path(key))
+        format!(
+            "{}/{}{}",
+            self.endpoint,
+            self.bucket,
+            Self::object_path(key)
+        )
     }
 
     fn sign_request(&self, method: &str, path: &str, date: &str) -> String {
@@ -491,8 +517,7 @@ impl S3SnapshotBackend {
         // String to sign format: HTTP-Verb + "\n" + Content-MD5 + "\n" + Content-Type + "\n" + Date + "\n" + CanonicalizedResource
         let string_to_sign = format!("{}\n\n\n{}\n/{}{}", method, date, self.bucket, path);
 
-        let mut mac =
-            Hmac::<Sha1>::new_from_slice(self.secret_key.as_bytes()).expect("HMAC init");
+        let mut mac = Hmac::<Sha1>::new_from_slice(self.secret_key.as_bytes()).expect("HMAC init");
         mac.update(string_to_sign.as_bytes());
         let result = mac.finalize();
 
@@ -500,7 +525,9 @@ impl S3SnapshotBackend {
     }
 
     async fn put_object(&self, key: &str, data: &[u8]) -> Result<()> {
-        let date = chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        let date = chrono::Utc::now()
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
         let path = Self::object_path(key);
         let signature = self.sign_request("PUT", &path, &date);
 
@@ -533,7 +560,9 @@ impl S3SnapshotBackend {
     }
 
     async fn get_object(&self, key: &str) -> Result<Vec<u8>> {
-        let date = chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        let date = chrono::Utc::now()
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
         let path = Self::object_path(key);
         let signature = self.sign_request("GET", &path, &date);
 
@@ -575,7 +604,9 @@ impl S3SnapshotBackend {
     }
 
     async fn delete_object(&self, key: &str) -> Result<()> {
-        let date = chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        let date = chrono::Utc::now()
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
         let path = Self::object_path(key);
         let signature = self.sign_request("DELETE", &path, &date);
 
@@ -613,7 +644,9 @@ impl S3SnapshotBackend {
     /// but URL was "/{bucket}?prefix=..." (no trailing slash), causing signature
     /// verification to fail on strict S3 implementations.
     async fn list_objects(&self, prefix: &str) -> Result<Vec<String>> {
-        let date = chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        let date = chrono::Utc::now()
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
         // FIX BUG-HUNT-201: Use empty path for bucket-level ListObjects operation
         // Canonical resource becomes "/{bucket}" matching the URL path
         let path = "";
@@ -648,7 +681,9 @@ impl S3SnapshotBackend {
             )));
         }
 
-        let body = response.text().await
+        let body = response
+            .text()
+            .await
             .map_err(|e| AkiDbError::Internal(format!("Failed to read LIST response: {}", e)))?;
 
         // Parse XML response to extract keys
@@ -686,9 +721,8 @@ impl SnapshotBackend for S3SnapshotBackend {
         }
 
         // Save metadata
-        let metadata_json = serde_json::to_string_pretty(metadata).map_err(|e| {
-            AkiDbError::Internal(format!("Failed to serialize metadata: {}", e))
-        })?;
+        let metadata_json = serde_json::to_string_pretty(metadata)
+            .map_err(|e| AkiDbError::Internal(format!("Failed to serialize metadata: {}", e)))?;
         self.put_object(
             &self.object_key(&metadata.id, SNAPSHOT_METADATA_FILE),
             metadata_json.as_bytes(),
@@ -701,7 +735,10 @@ impl SnapshotBackend for S3SnapshotBackend {
                 .await?;
         }
 
-        info!("Saved snapshot {} to S3 bucket {}", metadata.id, self.bucket);
+        info!(
+            "Saved snapshot {} to S3 bucket {}",
+            metadata.id, self.bucket
+        );
         Ok(metadata.id.clone())
     }
 
@@ -723,7 +760,10 @@ impl SnapshotBackend for S3SnapshotBackend {
         for key in keys {
             // Extract relative path from key
             let Some(relative_path) = key.strip_prefix(&prefix) else {
-                warn!("Ignoring S3 snapshot object outside prefix {}: {}", prefix, key);
+                warn!(
+                    "Ignoring S3 snapshot object outside prefix {}: {}",
+                    prefix, key
+                );
                 continue;
             };
 
@@ -749,7 +789,11 @@ impl SnapshotBackend for S3SnapshotBackend {
             }
         }
 
-        info!("Loaded snapshot {} from S3 with {} files", snapshot_id, files.len());
+        info!(
+            "Loaded snapshot {} from S3 with {} files",
+            snapshot_id,
+            files.len()
+        );
         Ok((metadata, files))
     }
 
@@ -795,7 +839,7 @@ impl SnapshotBackend for S3SnapshotBackend {
         }
 
         // Sort by created_at descending (newest first)
-        snapshots.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        snapshots.sort_by_key(|snapshot| std::cmp::Reverse(snapshot.created_at));
 
         Ok(snapshots)
     }
@@ -848,10 +892,17 @@ impl SnapshotBackend for S3SnapshotBackend {
         if let Err(e) = self.delete_object(&tombstone_key).await {
             // This is not critical - the snapshot is effectively deleted
             // The orphaned tombstone can be cleaned up later
-            warn!("Failed to delete tombstone marker for {}: {}", snapshot_id, e);
+            warn!(
+                "Failed to delete tombstone marker for {}: {}",
+                snapshot_id, e
+            );
         }
 
-        info!("Deleted snapshot {} from S3 ({} objects)", snapshot_id, keys.len());
+        info!(
+            "Deleted snapshot {} from S3 ({} objects)",
+            snapshot_id,
+            keys.len()
+        );
         Ok(())
     }
 
@@ -975,7 +1026,15 @@ mod tests {
     fn test_snapshot_id_validation_rejects_path_segments() {
         assert!(validate_snapshot_id("snap-2026.06.28_ok").is_ok());
 
-        for snapshot_id in ["", ".", "..", "../escape", "nested/snap", "nested\\snap", "snap:1"] {
+        for snapshot_id in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "nested/snap",
+            "nested\\snap",
+            "snap:1",
+        ] {
             assert!(
                 matches!(
                     validate_snapshot_id(snapshot_id),
@@ -1110,10 +1169,7 @@ mod tests {
         for i in 0..3 {
             let mut metadata = SnapshotMetadata::new("test-collection");
             metadata.total_vectors = i * 100;
-            manager
-                .create_snapshot(metadata, vec![])
-                .await
-                .unwrap();
+            manager.create_snapshot(metadata, vec![]).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 

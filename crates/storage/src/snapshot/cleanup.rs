@@ -90,7 +90,9 @@ impl<S: StorageBackend> SnapshotCleanup<S> {
         match self.cleanup_state_records() {
             Ok(count) => result.state_records_cleaned = count,
             Err(e) => {
-                result.errors.push(format!("State record cleanup failed: {}", e));
+                result
+                    .errors
+                    .push(format!("State record cleanup failed: {}", e));
             }
         }
 
@@ -102,7 +104,9 @@ impl<S: StorageBackend> SnapshotCleanup<S> {
                     result.bytes_freed += bytes;
                 }
                 Err(e) => {
-                    result.errors.push(format!("Local temp cleanup failed: {}", e));
+                    result
+                        .errors
+                        .push(format!("Local temp cleanup failed: {}", e));
                 }
             }
         }
@@ -138,19 +142,19 @@ impl<S: StorageBackend> SnapshotCleanup<S> {
         let max_age = self.config.temp_file_max_age;
         let now = SystemTime::now();
 
-        let mut entries = tokio::fs::read_dir(temp_dir).await.map_err(|e| {
-            AkiDbError::Internal(format!("Failed to read temp directory: {}", e))
-        })?;
+        let mut entries = tokio::fs::read_dir(temp_dir)
+            .await
+            .map_err(|e| AkiDbError::Internal(format!("Failed to read temp directory: {}", e)))?;
 
-        while let Some(entry) = entries.next_entry().await.map_err(|e| {
-            AkiDbError::Internal(format!("Failed to read directory entry: {}", e))
-        })? {
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| AkiDbError::Internal(format!("Failed to read directory entry: {}", e)))?
+        {
             let path = entry.path();
 
             // Only clean up files/directories with temp markers
-            let name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             if !name.starts_with(".tmp") && !name.contains("_tmp_") && !name.ends_with(".tmp") {
                 continue;
@@ -180,10 +184,7 @@ impl<S: StorageBackend> SnapshotCleanup<S> {
 
             let size = if metadata.is_dir() {
                 // Calculate directory size recursively
-                match calculate_dir_size(&path).await {
-                    Ok(s) => s,
-                    Err(_) => 0,
-                }
+                calculate_dir_size(&path).await.unwrap_or_default()
             } else {
                 metadata.len()
             };
@@ -256,9 +257,10 @@ pub async fn cleanup_orphaned_uploads(
         )));
     }
 
-    let body = response.text().await.map_err(|e| {
-        AkiDbError::Internal(format!("Failed to read upload list: {}", e))
-    })?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| AkiDbError::Internal(format!("Failed to read upload list: {}", e)))?;
 
     // Parse uploads (simplified - look for Upload blocks)
     let mut aborted = 0;
@@ -277,8 +279,10 @@ pub async fn cleanup_orphaned_uploads(
                 if age.num_seconds() > max_age.as_secs() as i64 {
                     // Abort this upload
                     if let Err(e) = abort_multipart_upload(
-                        client, endpoint, bucket, access_key, secret_key, &key, &upload_id
-                    ).await {
+                        client, endpoint, bucket, access_key, secret_key, &key, &upload_id,
+                    )
+                    .await
+                    {
                         warn!(upload_id = %upload_id, key = %key, error = %e, "Failed to abort orphaned upload");
                     } else {
                         aborted += 1;
@@ -406,16 +410,19 @@ async fn calculate_dir_size(path: &Path) -> Result<u64> {
     let mut stack = vec![path.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        let mut entries = tokio::fs::read_dir(&dir).await.map_err(|e| {
-            AkiDbError::Internal(format!("Failed to read directory: {}", e))
-        })?;
+        let mut entries = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(|e| AkiDbError::Internal(format!("Failed to read directory: {}", e)))?;
 
-        while let Some(entry) = entries.next_entry().await.map_err(|e| {
-            AkiDbError::Internal(format!("Failed to read entry: {}", e))
-        })? {
-            let metadata = entry.metadata().await.map_err(|e| {
-                AkiDbError::Internal(format!("Failed to get metadata: {}", e))
-            })?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| AkiDbError::Internal(format!("Failed to read entry: {}", e)))?
+        {
+            let metadata = entry
+                .metadata()
+                .await
+                .map_err(|e| AkiDbError::Internal(format!("Failed to get metadata: {}", e)))?;
 
             if metadata.is_dir() {
                 stack.push(entry.path());
@@ -436,7 +443,10 @@ mod tests {
     fn test_extract_xml_value() {
         let xml = "<Root><UploadId>abc123</UploadId><Key>test/file</Key></Root>";
 
-        assert_eq!(extract_xml_value(xml, "UploadId"), Some("abc123".to_string()));
+        assert_eq!(
+            extract_xml_value(xml, "UploadId"),
+            Some("abc123".to_string())
+        );
         assert_eq!(extract_xml_value(xml, "Key"), Some("test/file".to_string()));
         assert_eq!(extract_xml_value(xml, "Missing"), None);
     }

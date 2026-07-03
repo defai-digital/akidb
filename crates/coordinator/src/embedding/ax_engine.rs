@@ -32,7 +32,6 @@ struct SingleEmbeddingRequest {
 #[derive(Debug, Deserialize)]
 struct EmbeddingResponse {
     data: Vec<EmbeddingData>,
-    model: String,
     usage: Option<UsageInfo>,
 }
 
@@ -40,7 +39,6 @@ struct EmbeddingResponse {
 struct EmbeddingData {
     embedding: Vec<f32>,
     index: usize,
-    object: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -439,15 +437,12 @@ mod tests {
                 EmbeddingData {
                     embedding: vec![4.0, 4.0, 4.0, 4.0],
                     index: 1,
-                    object: "embedding".to_string(),
                 },
                 EmbeddingData {
                     embedding: vec![1.0, 1.0, 1.0, 1.0],
                     index: 0,
-                    object: "embedding".to_string(),
                 },
             ],
-            model: "test-model".to_string(),
             usage: None,
         };
 
@@ -468,9 +463,7 @@ mod tests {
             data: vec![EmbeddingData {
                 embedding: vec![1.0, 2.0, 3.0, 4.0],
                 index: 0,
-                object: "embedding".to_string(),
             }],
-            model: "test-model".to_string(),
             usage: None,
         };
 
@@ -489,15 +482,12 @@ mod tests {
                 EmbeddingData {
                     embedding: vec![1.0, 1.0, 1.0, 1.0],
                     index: 0,
-                    object: "embedding".to_string(),
                 },
                 EmbeddingData {
                     embedding: vec![2.0, 2.0, 2.0, 2.0],
                     index: 0,
-                    object: "embedding".to_string(),
                 },
             ],
-            model: "test-model".to_string(),
             usage: None,
         };
 
@@ -517,15 +507,12 @@ mod tests {
                 EmbeddingData {
                     embedding: vec![1.0, 1.0, 1.0, 1.0],
                     index: 0,
-                    object: "embedding".to_string(),
                 },
                 EmbeddingData {
                     embedding: vec![2.0, 2.0, 2.0, 2.0],
                     index: 9,
-                    object: "embedding".to_string(),
                 },
             ],
-            model: "test-model".to_string(),
             usage: None,
         };
 
@@ -544,9 +531,7 @@ mod tests {
             data: vec![EmbeddingData {
                 embedding: vec![1.0, f32::NAN, 3.0, 4.0],
                 index: 0,
-                object: "embedding".to_string(),
             }],
-            model: "test-model".to_string(),
             usage: None,
         };
 
