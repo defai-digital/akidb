@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use akidb_common::types::tag::{TagValue as RustTagValue, Tags};
 use tonic::Status;
 
-use crate::proto::{tag_value::Value as ProtoValue, TagValue as ProtoTagValue, TextList};
+use crate::proto::{TagValue as ProtoTagValue, tag_value::Value as ProtoValue, TextList};
 
 /// Convert proto TagValue to Rust TagValue
 pub fn proto_to_rust_tag_value(proto: &ProtoTagValue) -> Result<RustTagValue, Status> {
@@ -92,8 +92,11 @@ mod tests {
 
     #[test]
     fn test_text_list_tag_conversion() {
-        let rust_value =
-            RustTagValue::TextList(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let rust_value = RustTagValue::TextList(vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+        ]);
         let proto_value = rust_to_proto_tag_value(&rust_value);
         let back = proto_to_rust_tag_value(&proto_value).unwrap();
 

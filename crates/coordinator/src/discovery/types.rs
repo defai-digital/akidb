@@ -36,11 +36,17 @@ pub enum DiscoveryEvent {
         node_type: NodeType,
     },
     /// A peer expired (no longer responding)
-    PeerExpired { peer_id: String },
+    PeerExpired {
+        peer_id: String,
+    },
     /// Cluster state update received via gossip
-    ClusterStateReceived { state: ClusterStateMessage },
+    ClusterStateReceived {
+        state: ClusterStateMessage,
+    },
     /// Metrics update received via gossip
-    MetricsReceived { metrics: MetricsMessage },
+    MetricsReceived {
+        metrics: MetricsMessage,
+    },
     /// Leader changed
     LeaderChanged {
         old_leader: Option<String>,
@@ -133,10 +139,7 @@ pub struct ClusterState {
 impl ClusterState {
     /// Check if a given peer is the current leader
     pub fn is_leader(&self, peer_id: &str) -> bool {
-        self.leader_id
-            .as_ref()
-            .map(|l| l == peer_id)
-            .unwrap_or(false)
+        self.leader_id.as_ref().map(|l| l == peer_id).unwrap_or(false)
     }
 
     /// Get coordinator count
@@ -153,11 +156,7 @@ impl ClusterState {
     pub fn merge(&mut self, other: &ClusterStateMessage) {
         // Merge coordinators (add new ones, update existing)
         for coord in &other.coordinators {
-            if let Some(existing) = self
-                .coordinators
-                .iter_mut()
-                .find(|c| c.peer_id == coord.peer_id)
-            {
+            if let Some(existing) = self.coordinators.iter_mut().find(|c| c.peer_id == coord.peer_id) {
                 // Update existing
                 existing.address = coord.address.clone();
                 existing.is_leader = coord.is_leader;

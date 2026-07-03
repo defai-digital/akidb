@@ -7,8 +7,10 @@ use std::time::Duration;
 use anyhow::Result;
 #[cfg(feature = "discovery")]
 use libp2p::{
-    core::upgrade, gossipsub, identify, mdns, noise, swarm::NetworkBehaviour, tcp, yamux, PeerId,
-    Swarm, SwarmBuilder,
+    core::upgrade,
+    gossipsub, identify, mdns, noise,
+    swarm::NetworkBehaviour,
+    tcp, yamux, PeerId, Swarm, SwarmBuilder,
 };
 #[cfg(feature = "discovery")]
 use tracing::info;
@@ -51,7 +53,10 @@ pub async fn create_swarm(config: &DiscoveryConfig) -> Result<Swarm<AkiDbBehavio
         )?
         .with_behaviour(|key| {
             // Configure mDNS
-            let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)?;
+            let mdns = mdns::tokio::Behaviour::new(
+                mdns::Config::default(),
+                local_peer_id,
+            )?;
 
             // Configure gossipsub
             let gossipsub_config = gossipsub::ConfigBuilder::default()
@@ -69,10 +74,12 @@ pub async fn create_swarm(config: &DiscoveryConfig) -> Result<Swarm<AkiDbBehavio
             )?;
 
             // Configure identify
-            let identify = identify::Behaviour::new(identify::Config::new(
-                format!("/akidb/{}/1.0.0", config.namespace),
-                key.public(),
-            ));
+            let identify = identify::Behaviour::new(
+                identify::Config::new(
+                    format!("/akidb/{}/1.0.0", config.namespace),
+                    key.public(),
+                )
+            );
 
             Ok(AkiDbBehaviour {
                 mdns,

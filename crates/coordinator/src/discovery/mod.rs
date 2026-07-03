@@ -25,7 +25,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(feature = "discovery")]
 use anyhow::Result;
 #[cfg(feature = "discovery")]
-use libp2p::{futures::StreamExt, gossipsub, swarm::SwarmEvent, Swarm};
+use libp2p::{
+    futures::StreamExt,
+    gossipsub,
+    swarm::SwarmEvent,
+    Swarm,
+};
 #[cfg(feature = "discovery")]
 use tokio::sync::RwLock;
 #[cfg(feature = "discovery")]
@@ -62,7 +67,10 @@ pub struct DiscoveryService {
 #[cfg(feature = "discovery")]
 impl DiscoveryService {
     /// Create a new discovery service
-    pub async fn new(config: DiscoveryConfig, grpc_address: String) -> Result<Self> {
+    pub async fn new(
+        config: DiscoveryConfig,
+        grpc_address: String,
+    ) -> Result<Self> {
         let config = config.normalized();
         let mut swarm = network::create_swarm(&config).await?;
         let local_peer_id = swarm.local_peer_id().to_string();
@@ -73,7 +81,10 @@ impl DiscoveryService {
         // Subscribe to gossip topics
         gossip_handler.subscribe(&mut swarm.behaviour_mut().gossipsub)?;
 
-        info!("Discovery service created with PeerId: {}", local_peer_id);
+        info!(
+            "Discovery service created with PeerId: {}",
+            local_peer_id
+        );
 
         Ok(Self {
             swarm,
@@ -148,13 +159,14 @@ impl DiscoveryService {
                     self.handle_discovery_event(evt).await?;
                 }
             }
-            SwarmEvent::Behaviour(AkiDbBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                message,
-                ..
-            })) => match self.gossip_handler.handle_message(message) {
-                Ok(evt) => self.handle_gossip_event(evt).await?,
-                Err(e) => warn!("Error handling gossip message: {}", e),
-            },
+            SwarmEvent::Behaviour(AkiDbBehaviourEvent::Gossipsub(
+                gossipsub::Event::Message { message, .. },
+            )) => {
+                match self.gossip_handler.handle_message(message) {
+                    Ok(evt) => self.handle_gossip_event(evt).await?,
+                    Err(e) => warn!("Error handling gossip message: {}", e),
+                }
+            }
             SwarmEvent::Behaviour(AkiDbBehaviourEvent::Gossipsub(
                 gossipsub::Event::Subscribed { peer_id, topic },
             )) => {
@@ -207,7 +219,10 @@ impl DiscoveryService {
                 old_leader,
                 new_leader,
             } => {
-                info!("Leader changed: {:?} -> {}", old_leader, new_leader);
+                info!(
+                    "Leader changed: {:?} -> {}",
+                    old_leader, new_leader
+                );
             }
         }
         Ok(())
@@ -242,7 +257,9 @@ impl DiscoveryService {
 
         let message = ClusterStateMessage {
             sender: self.local_peer_id.clone(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)?
+                .as_secs(),
             coordinators: vec![CoordinatorAnnouncement {
                 peer_id: self.local_peer_id.clone(),
                 address: self.grpc_address.clone(),
@@ -254,8 +271,10 @@ impl DiscoveryService {
         };
         drop(state);
 
-        self.gossip_handler
-            .publish_state(&mut self.swarm.behaviour_mut().gossipsub, &message)?;
+        self.gossip_handler.publish_state(
+            &mut self.swarm.behaviour_mut().gossipsub,
+            &message,
+        )?;
 
         debug!("Announced self to cluster");
         Ok(())
@@ -284,7 +303,10 @@ impl DiscoveryService {
             state.shards.push(shard);
         }
 
-        info!("Registered shard, total shards: {}", state.shards.len());
+        info!(
+            "Registered shard, total shards: {}",
+            state.shards.len()
+        );
         Ok(())
     }
 
@@ -309,7 +331,10 @@ pub struct DiscoveryService;
 #[cfg(not(feature = "discovery"))]
 impl DiscoveryService {
     /// Discovery is disabled
-    pub async fn new(_config: DiscoveryConfig, _grpc_address: String) -> anyhow::Result<Self> {
+    pub async fn new(
+        _config: DiscoveryConfig,
+        _grpc_address: String,
+    ) -> anyhow::Result<Self> {
         tracing::warn!("Discovery feature is not enabled. Compile with --features discovery");
         Ok(Self)
     }

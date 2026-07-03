@@ -135,7 +135,9 @@ impl CompactionScheduler {
     /// Create a new compaction scheduler
     ///
     /// Returns the scheduler handle and a receiver for compaction triggers
-    pub fn new(config: CompactionConfig) -> (Self, mpsc::Receiver<(String, CompactionTrigger)>) {
+    pub fn new(
+        config: CompactionConfig,
+    ) -> (Self, mpsc::Receiver<(String, CompactionTrigger)>) {
         let (tx, event_rx) = mpsc::channel(100);
         let (trigger_tx, trigger_rx) = mpsc::channel(10);
         let stats = Arc::new(parking_lot::RwLock::new(CompactionStats::default()));
@@ -147,14 +149,7 @@ impl CompactionScheduler {
         let shutdown_clone = shutdown.clone();
 
         tokio::spawn(async move {
-            run_scheduler(
-                config_clone,
-                event_rx,
-                trigger_tx,
-                stats_clone,
-                shutdown_clone,
-            )
-            .await;
+            run_scheduler(config_clone, event_rx, trigger_tx, stats_clone, shutdown_clone).await;
         });
 
         (
@@ -556,10 +551,7 @@ mod tests {
         assert!(trigger.is_ok());
         if let Ok(Some((shard_id, trigger))) = trigger {
             assert_eq!(shard_id, "shard-1");
-            assert!(matches!(
-                trigger,
-                CompactionTrigger::TombstoneThreshold { .. }
-            ));
+            assert!(matches!(trigger, CompactionTrigger::TombstoneThreshold { .. }));
         }
 
         scheduler.shutdown().await.unwrap();

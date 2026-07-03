@@ -46,13 +46,10 @@ impl ShardRouter {
         for (shard_idx, shard) in self.shards.iter().enumerate() {
             for vnode in 0..VIRTUAL_NODES_PER_SHARD {
                 let hash = Self::hash_key(&format!("{}:{}", shard.id, vnode));
-                self.ring.insert(
-                    hash,
-                    RingEntry {
-                        shard_index: shard_idx,
-                        _virtual_node_id: vnode,
-                    },
-                );
+                self.ring.insert(hash, RingEntry {
+                    shard_index: shard_idx,
+                    _virtual_node_id: vnode,
+                });
             }
         }
     }
@@ -106,10 +103,7 @@ impl ShardRouter {
 
     /// Route a batch of vector IDs, grouping by shard
     /// Returns a map of shard_id -> list of (vector_id, original_index)
-    pub fn route_batch<'a>(
-        &'a self,
-        ids: &'a [VectorId],
-    ) -> HashMap<&'a str, Vec<(&'a VectorId, usize)>> {
+    pub fn route_batch<'a>(&'a self, ids: &'a [VectorId]) -> HashMap<&'a str, Vec<(&'a VectorId, usize)>> {
         let mut groups: HashMap<&str, Vec<(&VectorId, usize)>> = HashMap::new();
 
         for (idx, id) in ids.iter().enumerate() {
