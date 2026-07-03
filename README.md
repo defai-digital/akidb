@@ -97,7 +97,9 @@ are maintained internally and are not published in this repository.
 akidb/
 ├── crates/
 │   ├── common/          # Shared types, errors, config
-│   ├── faiss-wrapper/   # Optional FAISS FFI bindings
+│   ├── proto/           # Generated protobuf and gRPC bindings
+│   ├── embedding/       # Embedding service abstraction and ax-engine client
+│   ├── faiss-wrapper/   # Vector index abstraction (usearch HNSW)
 │   ├── graph/           # Native GraphRAG graph index and traversal contract
 │   ├── retrieval/       # BM25, RRF, rerank, context packing
 │   ├── sql/             # Optional SQLite metadata SQL adapter

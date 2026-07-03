@@ -75,7 +75,9 @@ akidb-cli            Single `akidb` entry point; dispatches server/coordinator/t
 akidb-server         Shard server binary (run() takes Args)
 akidb-coordinator    Stateless fan-out query coordinator (run_server() takes ServerArgs)
 akidb-tui            Terminal operations UI
-akidb-grpc           gRPC service layer (proto + tonic-generated code)
+akidb-grpc           gRPC service layer (server impls, MCP bridge, admin, ingestion, webhook)
+akidb-proto          Generated protobuf and gRPC bindings (proto in crates/proto/proto/)
+akidb-embedding      Embedding service abstraction with caching, fallback, and ax-engine client
 akidb-faiss          Vector index abstraction (usearch HNSW; crate dir is faiss-wrapper)
 akidb-storage        RocksDB backend, WAL, ID mapping, S3/MinIO snapshots
 akidb-common         Shared types (Vector, VectorId, InternalId, SearchResult), AkiDbError, config
@@ -88,9 +90,10 @@ akidb-benchmark      Benchmark harness
 ### Dependency direction
 
 `akidb-cli` sits on top of `akidb-server`, `akidb-coordinator`, and `akidb-tui`.
-`akidb-server` pulls in `akidb-grpc`, `akidb-faiss`, `akidb-storage`, and
-`akidb-coordinator`. `akidb-faiss` and `akidb-storage` depend on `akidb-common`;
-`akidb-faiss` and the boundary layers also use `akidb-contracts` / `akidb-invariants`.
+`akidb-server` pulls in `akidb-grpc`, `akidb-proto`, `akidb-embedding`,
+`akidb-faiss`, `akidb-storage`, and `akidb-coordinator`. `akidb-faiss` and
+`akidb-storage` depend on `akidb-common`; `akidb-faiss` and the boundary layers
+also use `akidb-contracts` / `akidb-invariants`.
 
 ### Distributed design
 
@@ -117,8 +120,8 @@ akidb-benchmark      Benchmark harness
 
 ## Proto API
 
-Service definition: `crates/grpc-server/proto/akidb.proto` (package `akidb.v1`).
-Regenerated automatically via `tonic-build` in `crates/grpc-server/build.rs`.
+Service definition: `crates/proto/proto/akidb.proto` (package `akidb.v1`).
+Regenerated automatically via `tonic-build` in `crates/proto/build.rs`.
 
 Three services:
 - **Akidb**: Insert, Search, Delete, Update, Get, Health, InsertBatch, SearchBatch,

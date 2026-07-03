@@ -3,12 +3,14 @@
 ## Project Structure & Module Organization
 
 AkiDB is a Mac-only Rust workspace with Python sidecar services. Core Rust crates
-live in `crates/`: `common` for shared types/config, `contracts` for validation,
-`faiss-wrapper` for the portable vector index abstraction, `storage` for
-RocksDB/WAL/snapshots, `grpc-server` for protobuf/gRPC APIs, `coordinator` for
-fan-out routing, `server` for the shard binary, `tui` for terminal operations,
-and `ingestion-orchestrator` for document ingestion. Python services live in
-`services/doc-parser` and `services/upload-gateway`. Configuration is in
+live in `crates/`: `common` for shared types/config, `proto` for generated
+protobuf/gRPC bindings, `embedding` for the embedding service abstraction and
+ax-engine client, `contracts` for validation, `faiss-wrapper` for the portable
+vector index abstraction, `storage` for RocksDB/WAL/snapshots, `grpc-server` for
+protobuf/gRPC APIs, `coordinator` for fan-out routing, `server` for the shard
+binary, `cli` for the single `akidb` command entry point, `tui` for terminal
+operations, and `ingestion-orchestrator` for document ingestion. Python services
+live in `services/doc-parser` and `services/upload-gateway`. Configuration is in
 `config/`, scripts in `scripts/`, deployment files in `deploy/`, and canonical
 docs in `docs/`. The local embedding wrapper lives at
 `scripts/ax_engine_embedding_server.py`.
