@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Task schedule definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum TaskSchedule {
     /// Run on a cron-like schedule (simplified format: "0 */6 * * *")
     Cron(String),
@@ -16,13 +16,8 @@ pub enum TaskSchedule {
     /// Run once and complete
     Once,
     /// Only run when manually triggered
+    #[default]
     Manual,
-}
-
-impl Default for TaskSchedule {
-    fn default() -> Self {
-        TaskSchedule::Manual
-    }
 }
 
 /// Resource requirements for a task

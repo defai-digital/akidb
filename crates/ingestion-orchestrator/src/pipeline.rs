@@ -8,7 +8,6 @@ use tracing::{debug, error, info, warn};
 
 use crate::akidb_client::{AkiDbClient, BatchInsertResult, VectorInsert};
 use crate::backpressure::BackpressureController;
-use crate::batcher::DynamicBatcher;
 use crate::chunker::{Chunk, SemanticChunker};
 use crate::circuit_breaker::{CircuitBreaker, CircuitState};
 use crate::config::IngestionConfig;
@@ -33,7 +32,6 @@ pub struct IngestionPipeline {
     akidb: AkiDbClient,
     python_client: PythonParserClient,
     chunker: SemanticChunker,
-    batcher: DynamicBatcher<String>,
     embedding_client: EmbeddingClient,
     circuit_breaker: Arc<CircuitBreaker>,
     backpressure: Arc<BackpressureController>,
@@ -64,9 +62,8 @@ impl IngestionPipeline {
         // Initialize parser clients
         let python_client = PythonParserClient::new(&config.doc_parser_url);
 
-        // Initialize chunking and batching
+        // Initialize chunking
         let chunker = SemanticChunker::new(config.chunker.clone());
-        let batcher = DynamicBatcher::new(config.batcher.clone());
 
         // Initialize embedding client
         let embedding_client = EmbeddingClient::with_qwen3(&config.embedding_url);
@@ -117,7 +114,6 @@ impl IngestionPipeline {
             akidb,
             python_client,
             chunker,
-            batcher,
             embedding_client,
             circuit_breaker,
             backpressure,

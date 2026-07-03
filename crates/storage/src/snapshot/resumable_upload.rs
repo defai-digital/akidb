@@ -109,7 +109,7 @@ impl ResumableUploader {
             return 1;
         }
         let chunk_size = self.config.chunk_size as u64;
-        (file_size / chunk_size) + u64::from(file_size % chunk_size != 0)
+        file_size.div_ceil(chunk_size)
     }
 
     fn object_path(object_key: &str) -> String {

@@ -31,7 +31,7 @@
 //! ```
 
 use crate::fanout::{FanoutExecutor, FanoutResult};
-use akidb_common::{Result, SearchResult};
+use akidb_common::SearchResult;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 

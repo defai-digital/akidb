@@ -220,11 +220,6 @@ mod proptests {
         prop::collection::vec(-1e6f32..1e6f32, 1..1024)
     }
 
-    /// Strategy for generating vectors that might be invalid
-    fn any_vector_strategy() -> impl Strategy<Value = Vec<f32>> {
-        prop::collection::vec(prop::num::f32::ANY, 0..MAX_VECTOR_DIMENSIONS + 10)
-    }
-
     /// Strategy for valid external IDs
     fn valid_id_strategy() -> impl Strategy<Value = String> {
         // Generate non-empty strings within length limit

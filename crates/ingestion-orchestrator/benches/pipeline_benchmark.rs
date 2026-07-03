@@ -10,7 +10,7 @@ use akidb_ingestion::{
     config::ChunkerConfig,
     idempotency::IdempotencyChecker,
     parsers::{DocumentFormat, route_parser},
-    circuit_breaker::{CircuitBreaker, CircuitState},
+    circuit_breaker::CircuitBreaker,
     config::CircuitBreakerConfig,
     backpressure::BackpressureController,
     config::BackpressureConfig,

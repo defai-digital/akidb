@@ -26,7 +26,7 @@ pub struct TombstoneBitset {
 impl TombstoneBitset {
     /// Create a new tombstone bitset with capacity for `n` vectors
     pub fn new(capacity: u64) -> Self {
-        let byte_count = ((capacity + 7) / 8) as usize;
+        let byte_count = capacity.div_ceil(8) as usize;
         Self {
             data: RwLock::new(vec![0u8; byte_count]),
             capacity: AtomicU64::new(capacity),
@@ -168,7 +168,7 @@ impl TombstoneBitset {
 
     /// Resize the bitset for new capacity
     pub fn resize(&self, new_capacity: u64) -> Result<()> {
-        let new_byte_count = ((new_capacity + 7) / 8) as usize;
+        let new_byte_count = new_capacity.div_ceil(8) as usize;
         let mut data = self.data.write();
         // FIX BUG-HUNT-603: Resize data FIRST, then update capacity
         // This ensures data is always large enough for any capacity value visible

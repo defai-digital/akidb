@@ -5,7 +5,6 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::config::{Builder, Credentials, Region};
-use std::time::Duration;
 use tracing::{debug, info, error};
 
 use crate::config::StorageConfig;

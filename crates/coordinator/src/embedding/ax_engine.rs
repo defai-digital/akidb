@@ -291,6 +291,7 @@ mod tests {
     }
 
     /// Start a mock HTTP server that returns valid embeddings
+    #[allow(dead_code)]
     fn start_mock_server(dimensions: usize) -> (String, tokio::task::JoinHandle<()>) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;

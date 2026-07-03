@@ -4,8 +4,8 @@
 //! during index rebuild operations.
 
 use super::persistent_state::{RebuildCheckpoint, RebuildStateRecord};
-use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use std::path::PathBuf;
+use tracing::{debug, info};
 
 /// Configuration for checkpoint management
 #[derive(Debug, Clone)]
@@ -61,7 +61,7 @@ impl CheckpointManager {
 
     /// Check if a checkpoint should be created
     pub fn should_checkpoint(&self, vectors_processed: u64) -> bool {
-        vectors_processed > 0 && vectors_processed % self.config.checkpoint_interval == 0
+        vectors_processed > 0 && vectors_processed.is_multiple_of(self.config.checkpoint_interval)
     }
 
     /// Create a checkpoint for the current rebuild state

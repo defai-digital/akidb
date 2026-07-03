@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn test_collection_key_bijective() {
         // Property: Different inputs always produce different outputs
-        let test_cases = vec![
+        let test_cases = [
             ("a", "b"),
             ("ab", ""),
             ("", "ab"),

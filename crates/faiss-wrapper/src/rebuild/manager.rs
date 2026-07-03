@@ -27,7 +27,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Rebuild state machine
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -768,7 +768,7 @@ mod tests {
         let manager = create_test_manager();
 
         // Insert before rebuild
-        let id1 = manager
+        let _id1 = manager
             .insert(&VectorId::new("vec-1"), &vec![1.0; 128])
             .unwrap();
 
@@ -778,7 +778,7 @@ mod tests {
         manager.set_shadow(shadow);
 
         // Insert during rebuild (should go to both)
-        let id2 = manager
+        let _id2 = manager
             .insert(&VectorId::new("vec-2"), &vec![2.0; 128])
             .unwrap();
 

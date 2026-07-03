@@ -251,17 +251,12 @@ pub struct CollectionConfig {
     pub index_config: IndexConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DistanceMetric {
+    #[default]
     Cosine,
     L2,
     InnerProduct,
-}
-
-impl Default for DistanceMetric {
-    fn default() -> Self {
-        Self::Cosine
-    }
 }
 
 /// Index configuration for FAISS IVF-Flat

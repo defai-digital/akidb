@@ -194,6 +194,7 @@ impl ShardConnectionPool {
     }
 
     /// Get the last successful use timestamp (for health tracking)
+    #[allow(dead_code)]
     fn last_used_time(&self) -> Instant {
         *self.last_used.lock()
     }

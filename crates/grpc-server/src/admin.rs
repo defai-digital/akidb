@@ -18,7 +18,7 @@ use crate::proto::{
     TriggerRebuildResponse, TriggerSnapshotRequest, TriggerSnapshotResponse, WebhookEvent,
 };
 use akidb_common::scheduler::{
-    ResourceGovernor, ResourceRequirements, ResourceSummary, RunningTask, TaskExecution,
+    ResourceGovernor, ResourceRequirements, ResourceSummary, TaskExecution,
     TaskSchedule, TaskState,
 };
 use parking_lot::RwLock;

@@ -172,7 +172,7 @@ impl CoordinatorMetrics {
     }
 
     /// Update pool stats
-    pub fn update_pool_stats(&self, total_pools: usize, pool_size: usize) {
+    pub fn update_pool_stats(&self, total_pools: usize, _pool_size: usize) {
         self.pool_count.set(total_pools as f64);
         // Note: per-shard stats would need to be updated individually
     }

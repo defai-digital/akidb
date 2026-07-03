@@ -3,10 +3,9 @@
 //! Metrics for monitoring the ingestion pipeline.
 
 use prometheus::{
-    Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec,
+    Counter, CounterVec, Gauge, Histogram, HistogramOpts, HistogramVec,
     Opts, Registry,
 };
-use std::sync::Arc;
 
 /// Ingestion metrics
 pub struct IngestionMetrics {

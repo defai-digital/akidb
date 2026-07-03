@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Main AkiDB configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AkiDbConfig {
     pub server: ServerConfig,
     pub index: IndexSettings,
@@ -13,20 +13,6 @@ pub struct AkiDbConfig {
     pub observability: ObservabilityConfig,
     pub slo: SloConfig,
     pub embedding: EmbeddingClientConfig,
-}
-
-impl Default for AkiDbConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            index: IndexSettings::default(),
-            storage: StorageConfig::default(),
-            sql: SqlMetadataConfig::default(),
-            observability: ObservabilityConfig::default(),
-            slo: SloConfig::default(),
-            embedding: EmbeddingClientConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,21 +192,12 @@ pub enum LogFormat {
     Pretty,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SloConfig {
     /// Reference configuration for SLO targets
     pub reference: SloReference,
     /// Backpressure settings
     pub backpressure: BackpressureConfig,
-}
-
-impl Default for SloConfig {
-    fn default() -> Self {
-        Self {
-            reference: SloReference::default(),
-            backpressure: BackpressureConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -8,9 +8,8 @@ use std::time::Duration;
 use akidb_ingestion::{
     config::{
         BackpressureConfig, BatcherConfig, ChunkerConfig, CircuitBreakerConfig,
-        IngestionConfig, MemoryConfig, NatsConfig, StorageConfig, AkiDbConfig, MinioConfig,
+        MemoryConfig, NatsConfig, StorageConfig, AkiDbConfig,
     },
-    storage::StorageClient,
     chunker::SemanticChunker,
     circuit_breaker::{CircuitBreaker, CircuitState},
     backpressure::BackpressureController,

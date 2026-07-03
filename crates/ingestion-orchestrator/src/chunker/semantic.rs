@@ -251,6 +251,7 @@ fn count_tokens(text: &str) -> usize {
 
 /// Fallback: Estimate token count (rough approximation: ~4 chars per token)
 /// Used when quick estimation is needed and accuracy is less critical
+#[allow(dead_code)]
 fn estimate_tokens_fast(text: &str) -> usize {
     (text.len() + 3) / 4
 }

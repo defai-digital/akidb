@@ -103,13 +103,15 @@ impl HnswIndex {
             ));
         }
 
-        let mut options = IndexOptions::default();
-        options.dimensions = config.dimensions;
-        options.metric = MetricKind::Cos;
-        options.quantization = ScalarKind::F32;
-        options.connectivity = config.m;
-        options.expansion_add = config.ef_construction;
-        options.expansion_search = config.ef_search;
+        let options = IndexOptions {
+            dimensions: config.dimensions,
+            metric: MetricKind::Cos,
+            quantization: ScalarKind::F32,
+            connectivity: config.m,
+            expansion_add: config.ef_construction,
+            expansion_search: config.ef_search,
+            ..Default::default()
+        };
 
         let index = Index::new(&options).map_err(|e| {
             AkiDbError::InvalidParameter(format!("Failed to create HNSW index: {}", e))

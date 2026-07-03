@@ -87,7 +87,7 @@ impl Default for SloEstimate {
 #[derive(Debug, Clone)]
 struct LatencySample {
     latency_us: u64,
-    timestamp: Instant,
+    _timestamp: Instant,
     top_k: usize,
     num_shards: usize,
 }
@@ -124,7 +124,7 @@ impl SloEstimator {
     pub fn record_latency(&self, latency_us: u64, top_k: usize, num_shards: usize) {
         let sample = LatencySample {
             latency_us,
-            timestamp: Instant::now(),
+            _timestamp: Instant::now(),
             top_k,
             num_shards,
         };

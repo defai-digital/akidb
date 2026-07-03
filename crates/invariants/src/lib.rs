@@ -198,8 +198,6 @@ macro_rules! invariant_or {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_debug_invariant_passes() {
         debug_invariant!(true, "This should not panic");

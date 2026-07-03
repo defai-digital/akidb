@@ -28,10 +28,11 @@ pub const DEFAULT_HARD_DELETE_DELAY_DAYS: u32 = 7;
 ///                                                           v
 ///                                                    [Permanently Deleted]
 /// ```
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "state")]
 pub enum DeleteState {
     /// Document is active and searchable
+    #[default]
     Active,
 
     /// Source file missing from MinIO, awaiting confirmation
@@ -105,12 +106,6 @@ impl DeleteState {
             DeleteState::ConfirmedMissing { confirmed_at } => Some(*confirmed_at),
             DeleteState::HardDeleteScheduled { scheduled_for } => Some(*scheduled_for),
         }
-    }
-}
-
-impl Default for DeleteState {
-    fn default() -> Self {
-        Self::Active
     }
 }
 

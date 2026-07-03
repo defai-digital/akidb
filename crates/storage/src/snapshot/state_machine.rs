@@ -10,9 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 /// Snapshot operation state
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub enum SnapshotState {
     /// No operation in progress
+    #[default]
     Idle,
     /// Compressing local data
     Compressing {
@@ -103,12 +104,6 @@ impl SnapshotState {
             SnapshotState::Failed { .. } => "failed",
             SnapshotState::Completed { .. } => "completed",
         }
-    }
-}
-
-impl Default for SnapshotState {
-    fn default() -> Self {
-        SnapshotState::Idle
     }
 }
 

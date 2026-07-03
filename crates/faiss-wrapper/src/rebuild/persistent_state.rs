@@ -8,9 +8,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 /// Persistent rebuild state that can be stored in RocksDB
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub enum PersistentRebuildPhase {
     /// No rebuild in progress
+    #[default]
     Idle,
     /// Preparing for rebuild
     Preparing {
@@ -168,12 +169,6 @@ impl PersistentRebuildPhase {
                 phase_when_failed, ..
             } => phase_when_failed.progress(),
         }
-    }
-}
-
-impl Default for PersistentRebuildPhase {
-    fn default() -> Self {
-        PersistentRebuildPhase::Idle
     }
 }
 
@@ -429,7 +424,7 @@ impl<P: RebuildStatePersistence> PersistentRebuildStateMachine<P> {
             record.updated_at = current_timestamp();
 
             // Only save periodically to reduce I/O
-            if vectors_scanned % record.config.checkpoint_interval == 0 {
+            if vectors_scanned.is_multiple_of(record.config.checkpoint_interval) {
                 self.persistence.save_state(record)?;
             }
         }
@@ -478,7 +473,7 @@ impl<P: RebuildStatePersistence> PersistentRebuildStateMachine<P> {
             record.checkpoint = checkpoint;
             record.updated_at = current_timestamp();
 
-            if vectors_built % record.config.checkpoint_interval == 0 {
+            if vectors_built.is_multiple_of(record.config.checkpoint_interval) {
                 self.persistence.save_state(record)?;
             }
         }
@@ -521,7 +516,7 @@ impl<P: RebuildStatePersistence> PersistentRebuildStateMachine<P> {
             };
             record.updated_at = current_timestamp();
             // Save less frequently for WAL replay
-            if entries_replayed % 10000 == 0 {
+            if entries_replayed.is_multiple_of(10000) {
                 self.persistence.save_state(record)?;
             }
         }

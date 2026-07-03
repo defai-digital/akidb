@@ -633,7 +633,7 @@ impl TagIndex {
 
                     let mut cursor = Cursor::new(value.as_ref());
                     if let Ok(bitmap) = RoaringBitmap::deserialize_from(&mut cursor) {
-                        total_ids += bitmap.len() as u64;
+                        total_ids += bitmap.len();
                     }
                 }
                 Err(_) => break,

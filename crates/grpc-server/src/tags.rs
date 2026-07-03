@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use akidb_common::types::tag::{TagValue as RustTagValue, Tags, TagValidationError};
+use akidb_common::types::tag::{TagValue as RustTagValue, Tags};
 use tonic::Status;
 
 use crate::proto::{TagValue as ProtoTagValue, tag_value::Value as ProtoValue, TextList};

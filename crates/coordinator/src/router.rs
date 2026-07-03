@@ -18,7 +18,7 @@ pub struct ShardInfo {
 #[derive(Debug, Clone)]
 struct RingEntry {
     shard_index: usize,
-    virtual_node_id: u32,
+    _virtual_node_id: u32,
 }
 
 /// Shard router using consistent hashing for better distribution
@@ -48,7 +48,7 @@ impl ShardRouter {
                 let hash = Self::hash_key(&format!("{}:{}", shard.id, vnode));
                 self.ring.insert(hash, RingEntry {
                     shard_index: shard_idx,
-                    virtual_node_id: vnode,
+                    _virtual_node_id: vnode,
                 });
             }
         }
