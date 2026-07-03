@@ -1,8 +1,8 @@
 //! Prometheus metrics for AkiDB Coordinator
 
 use prometheus::{
-    Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
-    TextEncoder, Encoder,
+    Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, Opts,
+    Registry, TextEncoder,
 };
 use std::sync::OnceLock;
 
@@ -139,21 +139,29 @@ impl CoordinatorMetrics {
 
     /// Register all metrics with a Prometheus registry
     pub fn register(&self, registry: &Registry) -> Result<(), prometheus::Error> {
-        registry.register(Box::new(self.fanout_latency.clone()))?;
-        registry.register(Box::new(self.shard_coverage.clone()))?;
-        registry.register(Box::new(self.responding_shards.clone()))?;
-        registry.register(Box::new(self.requests_total.clone()))?;
-        registry.register(Box::new(self.pool_connections.clone()))?;
-        registry.register(Box::new(self.pool_count.clone()))?;
-        registry.register(Box::new(self.shard_health.clone()))?;
-        registry.register(Box::new(self.partial_results.clone()))?;
-        registry.register(Box::new(self.batch_insert_latency.clone()))?;
-        registry.register(Box::new(self.shard_vector_count.clone()))?;
-        Ok(())
+        akidb_common::register_prometheus_collectors!(
+            registry,
+            self.fanout_latency,
+            self.shard_coverage,
+            self.responding_shards,
+            self.requests_total,
+            self.pool_connections,
+            self.pool_count,
+            self.shard_health,
+            self.partial_results,
+            self.batch_insert_latency,
+            self.shard_vector_count,
+        )
     }
 
     /// Record a fanout search
-    pub fn record_fanout(&self, latency_secs: f64, coverage: f64, responding: usize, is_partial: bool) {
+    pub fn record_fanout(
+        &self,
+        latency_secs: f64,
+        coverage: f64,
+        responding: usize,
+        is_partial: bool,
+    ) {
         self.fanout_latency
             .with_label_values(&["search"])
             .observe(latency_secs);

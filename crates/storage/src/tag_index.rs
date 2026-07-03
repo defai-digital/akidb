@@ -62,7 +62,6 @@ fn encode_f64_sortable(value: f64) -> [u8; 8] {
 }
 
 /// FIX BUG-HUNT-203: Decode order-preserving f64 encoding back to f64
-#[allow(dead_code)]
 fn decode_f64_sortable(bytes: &[u8]) -> Option<f64> {
     if bytes.len() != 8 {
         return None;

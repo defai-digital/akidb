@@ -81,8 +81,7 @@ impl std::error::Error for BackpressureError {}
 /// Guard that tracks an in-flight request
 pub struct RequestGuard<'a> {
     controller: &'a BackpressureController,
-    #[allow(dead_code)]
-    permit: tokio::sync::SemaphorePermit<'a>,
+    _permit: tokio::sync::SemaphorePermit<'a>,
 }
 
 impl<'a> Drop for RequestGuard<'a> {
@@ -301,7 +300,7 @@ impl BackpressureController {
 
         Ok(RequestGuard {
             controller: self,
-            permit,
+            _permit: permit,
         })
     }
 

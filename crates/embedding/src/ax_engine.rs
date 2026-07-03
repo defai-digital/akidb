@@ -288,69 +288,6 @@ mod tests {
         }
     }
 
-    /// Start a mock HTTP server that returns valid embeddings
-    #[allow(dead_code)]
-    fn start_mock_server(dimensions: usize) -> (String, tokio::task::JoinHandle<()>) {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let url = format!("http://{}/v1/embeddings", addr);
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_clone = call_count.clone();
-
-        let handle = tokio::spawn(async move {
-            // Simple synchronous mock for tests
-            tokio::task::spawn_blocking(move || {
-                for _ in 0..10 {
-                    if let Ok((mut stream, _)) = listener.accept() {
-                        use std::io::{Read, Write};
-                        let mut buf = [0u8; 4096];
-                        let n = stream.read(&mut buf).unwrap_or(0);
-                        let request = String::from_utf8_lossy(&buf[..n]);
-
-                        // Parse input array size from request body
-                        let input_count = request.matches("\"input\"").count();
-                        let is_batch = request.contains('[') && input_count > 0;
-
-                        // Build embedding data array
-                        let mut data_parts = Vec::new();
-                        let actual_count = if is_batch { 2 } else { 1 }; // Default batch of 2 for tests
-                        for i in 0..actual_count {
-                            let embedding: Vec<f32> = (0..dimensions)
-                                .map(|j| (i as f32 + 1.0) * (j as f32 + 1.0) * 0.1)
-                                .collect();
-                            let emb_str: Vec<String> = embedding.iter().map(|v| v.to_string()).collect();
-                            data_parts.push(format!(
-                                r#"{{"embedding":[{}],"index":{},"object":"embedding"}}"#,
-                                emb_str.join(","),
-                                i
-                            ));
-                        }
-
-                        let body = format!(
-                            r#"{{"data":[{}],"model":"test-model","usage":{{"prompt_tokens":10,"total_tokens":10}}}}"#,
-                            data_parts.join(",")
-                        );
-
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                            body.len(),
-                            body
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                        call_count_clone.fetch_add(1, Ordering::SeqCst);
-                    }
-                }
-            })
-            .await
-            .ok();
-        });
-
-        (url, handle)
-    }
-
     #[test]
     fn test_ax_engine_client_creation() {
         let config = test_config();

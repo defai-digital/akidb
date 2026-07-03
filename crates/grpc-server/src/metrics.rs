@@ -392,55 +392,45 @@ impl AkiDbMetrics {
 
     /// Register all metrics with a Prometheus registry
     pub fn register(&self, registry: &Registry) -> Result<(), prometheus::Error> {
-        // Request metrics
-        registry.register(Box::new(self.requests_total.clone()))?;
-        registry.register(Box::new(self.request_latency.clone()))?;
-
-        // Vector index metrics
-        registry.register(Box::new(self.active_vectors.clone()))?;
-        registry.register(Box::new(self.tombstoned_vectors.clone()))?;
-        registry.register(Box::new(self.gpu_memory_bytes.clone()))?;
-        registry.register(Box::new(self.write_buffer_size.clone()))?;
-        registry.register(Box::new(self.flush_lag_ms.clone()))?;
-        registry.register(Box::new(self.ryw_violations.clone()))?;
-        registry.register(Box::new(self.slo_breaches.clone()))?;
-        registry.register(Box::new(self.rebuild_in_progress.clone()))?;
-
-        // Background task metrics
-        registry.register(Box::new(self.background_task_state.clone()))?;
-        registry.register(Box::new(self.background_task_executions_total.clone()))?;
-        registry.register(Box::new(self.background_task_duration_seconds.clone()))?;
-        registry.register(Box::new(self.background_tasks_running.clone()))?;
-        registry.register(Box::new(self.background_task_progress.clone()))?;
-        registry.register(Box::new(self.background_task_items_processed.clone()))?;
-        registry.register(Box::new(self.background_task_bytes_processed.clone()))?;
-        registry.register(Box::new(self.background_task_failures.clone()))?;
-        registry.register(Box::new(self.background_task_retries.clone()))?;
-
-        // Snapshot metrics
-        registry.register(Box::new(self.snapshot_state.clone()))?;
-        registry.register(Box::new(self.snapshot_upload_progress.clone()))?;
-        registry.register(Box::new(self.snapshot_upload_bytes.clone()))?;
-        registry.register(Box::new(self.snapshot_total_bytes.clone()))?;
-        registry.register(Box::new(self.snapshot_duration_seconds.clone()))?;
-        registry.register(Box::new(self.snapshot_operations_total.clone()))?;
-
-        // Rebuild metrics
-        registry.register(Box::new(self.rebuild_phase.clone()))?;
-        registry.register(Box::new(self.rebuild_progress.clone()))?;
-        registry.register(Box::new(self.rebuild_vectors_processed.clone()))?;
-        registry.register(Box::new(self.rebuild_vectors_total.clone()))?;
-        registry.register(Box::new(self.rebuild_duration_seconds.clone()))?;
-        registry.register(Box::new(self.rebuild_operations_total.clone()))?;
-
-        // Governor metrics
-        registry.register(Box::new(self.governor_p95_latency_ms.clone()))?;
-        registry.register(Box::new(self.governor_cpu_percent.clone()))?;
-        registry.register(Box::new(self.governor_memory_mb.clone()))?;
-        registry.register(Box::new(self.governor_deferrals_total.clone()))?;
-        registry.register(Box::new(self.governor_can_accept_tasks.clone()))?;
-
-        Ok(())
+        akidb_common::register_prometheus_collectors!(
+            registry,
+            self.requests_total,
+            self.request_latency,
+            self.active_vectors,
+            self.tombstoned_vectors,
+            self.gpu_memory_bytes,
+            self.write_buffer_size,
+            self.flush_lag_ms,
+            self.ryw_violations,
+            self.slo_breaches,
+            self.rebuild_in_progress,
+            self.background_task_state,
+            self.background_task_executions_total,
+            self.background_task_duration_seconds,
+            self.background_tasks_running,
+            self.background_task_progress,
+            self.background_task_items_processed,
+            self.background_task_bytes_processed,
+            self.background_task_failures,
+            self.background_task_retries,
+            self.snapshot_state,
+            self.snapshot_upload_progress,
+            self.snapshot_upload_bytes,
+            self.snapshot_total_bytes,
+            self.snapshot_duration_seconds,
+            self.snapshot_operations_total,
+            self.rebuild_phase,
+            self.rebuild_progress,
+            self.rebuild_vectors_processed,
+            self.rebuild_vectors_total,
+            self.rebuild_duration_seconds,
+            self.rebuild_operations_total,
+            self.governor_p95_latency_ms,
+            self.governor_cpu_percent,
+            self.governor_memory_mb,
+            self.governor_deferrals_total,
+            self.governor_can_accept_tasks,
+        )
     }
 
     // ============================================
@@ -493,9 +483,19 @@ impl AkiDbMetrics {
     }
 
     /// Record task completed
-    pub fn task_completed(&self, task_type: &str, task_id: &str, duration_secs: f64, success: bool) {
+    pub fn task_completed(
+        &self,
+        task_type: &str,
+        task_id: &str,
+        duration_secs: f64,
+        success: bool,
+    ) {
         let status = if success { "success" } else { "failure" };
-        self.set_task_state(task_type, task_id, if success { "completed" } else { "failed" });
+        self.set_task_state(
+            task_type,
+            task_id,
+            if success { "completed" } else { "failed" },
+        );
         self.background_task_executions_total
             .with_label_values(&[task_type, status])
             .inc();
@@ -567,7 +567,8 @@ impl AkiDbMetrics {
 
     /// Update snapshot progress
     pub fn set_snapshot_progress(&self, progress: f64, uploaded_bytes: u64, total_bytes: u64) {
-        self.snapshot_upload_progress.set(progress.clamp(0.0, 100.0));
+        self.snapshot_upload_progress
+            .set(progress.clamp(0.0, 100.0));
         self.snapshot_total_bytes.set(total_bytes as f64);
         self.snapshot_upload_bytes.inc_by(uploaded_bytes as f64);
     }
@@ -597,14 +598,16 @@ impl AkiDbMetrics {
     /// Set rebuild phase
     pub fn set_rebuild_phase(&self, phase: i64) {
         self.rebuild_phase.set(phase);
-        self.rebuild_in_progress.set(if phase > 0 && phase < 7 { 1.0 } else { 0.0 });
+        self.rebuild_in_progress
+            .set(if phase > 0 && phase < 7 { 1.0 } else { 0.0 });
     }
 
     /// Update rebuild progress
     pub fn set_rebuild_progress(&self, progress: f64, vectors_processed: u64, total_vectors: u64) {
         self.rebuild_progress.set(progress.clamp(0.0, 100.0));
         self.rebuild_vectors_total.set(total_vectors as f64);
-        self.rebuild_vectors_processed.inc_by(vectors_processed as f64);
+        self.rebuild_vectors_processed
+            .inc_by(vectors_processed as f64);
     }
 
     /// Record rebuild completed
@@ -631,11 +634,18 @@ impl AkiDbMetrics {
     // ============================================
 
     /// Update governor resource metrics
-    pub fn update_governor_metrics(&self, p95_ms: u64, cpu_percent: u32, memory_mb: u32, can_accept: bool) {
+    pub fn update_governor_metrics(
+        &self,
+        p95_ms: u64,
+        cpu_percent: u32,
+        memory_mb: u32,
+        can_accept: bool,
+    ) {
         self.governor_p95_latency_ms.set(p95_ms as f64);
         self.governor_cpu_percent.set(cpu_percent as f64);
         self.governor_memory_mb.set(memory_mb as f64);
-        self.governor_can_accept_tasks.set(if can_accept { 1 } else { 0 });
+        self.governor_can_accept_tasks
+            .set(if can_accept { 1 } else { 0 });
     }
 
     /// Record task deferral

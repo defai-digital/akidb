@@ -25,8 +25,8 @@
 
 use lazy_static::lazy_static;
 use prometheus::{
-    register_histogram_vec, register_int_counter_vec, register_int_gauge_vec,
-    HistogramVec, IntCounterVec, IntGaugeVec,
+    core::Collector, register_histogram_vec, register_int_counter_vec, register_int_gauge_vec,
+    Error as PrometheusError, HistogramVec, IntCounterVec, IntGaugeVec, Registry,
 };
 
 lazy_static! {
@@ -106,6 +106,27 @@ lazy_static! {
         "Total count of operation errors by type",
         &["operation", "error_type"]
     ).expect("Failed to create OPERATION_ERRORS metric");
+}
+
+/// Register a cloneable Prometheus collector with the provided registry.
+pub fn register_collector<C>(registry: &Registry, collector: &C) -> Result<(), PrometheusError>
+where
+    C: Collector + Clone + 'static,
+{
+    registry.register(Box::new(collector.clone()))
+}
+
+/// Register multiple Prometheus collectors while keeping metric modules concise.
+#[macro_export]
+macro_rules! register_prometheus_collectors {
+    ($registry:expr, $($collector:expr),+ $(,)?) => {{
+        (|| -> Result<(), prometheus::Error> {
+            $(
+                $crate::metrics::register_collector($registry, &$collector)?;
+            )+
+            Ok(())
+        })()
+    }};
 }
 
 /// Record an invariant violation

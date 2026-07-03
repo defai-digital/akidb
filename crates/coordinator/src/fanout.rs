@@ -192,12 +192,6 @@ impl ShardConnectionPool {
     fn last_accessed_time(&self) -> Instant {
         *self.last_accessed.lock()
     }
-
-    /// Get the last successful use timestamp (for health tracking)
-    #[allow(dead_code)]
-    fn last_used_time(&self) -> Instant {
-        *self.last_used.lock()
-    }
 }
 
 /// Fan-out search executor with connection pooling
