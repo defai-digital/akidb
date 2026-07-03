@@ -14,19 +14,19 @@
 
 #![allow(clippy::result_large_err)]
 
-pub mod backpressure;
-pub mod batch;
-pub mod compaction;
-pub mod consistency;
-pub mod discovery;
-pub mod embedding;
-pub mod fanout;
-pub mod merger;
-pub mod metrics;
-pub mod router;
-pub mod server;
-pub mod slo;
-pub mod workflow;
+mod backpressure;
+mod batch;
+mod compaction;
+mod consistency;
+mod discovery;
+mod embedding;
+mod fanout;
+mod merger;
+mod metrics;
+mod router;
+mod server;
+mod slo;
+mod workflow;
 
 pub use backpressure::{
     BackpressureConfig, BackpressureController, BackpressureError, BackpressureStats,
@@ -36,11 +36,13 @@ pub use compaction::{CompactionConfig, CompactionScheduler, CompactionStats, Com
 pub use consistency::{ConsistencyConfig, ConsistencyStats, ConsistencyTracker, WriteEntry};
 pub use discovery::{
     ClusterState, ClusterStateMessage, CoordinatorAnnouncement, CoordinatorMode, DiscoveryConfig,
-    DiscoveryService, ShardAnnouncement,
+    DiscoveryEvent, DiscoveryService, GossipEvent, MetricsMessage, NodeType, PeerInfo,
+    ShardAnnouncement,
 };
 pub use embedding::{
     ax_engine::AxEngineEmbedding, CacheStats, CachedEmbeddingService, EmbeddingConfig,
-    EmbeddingError, EmbeddingService, FallbackEmbeddingService, MockEmbeddingService,
+    EmbeddingError, EmbeddingService, EmbeddingStats, FallbackEmbeddingService,
+    MockEmbeddingService,
 };
 pub use fanout::{
     BroadcastDeleteResult, BroadcastUpdateResult, FanoutExecutor, FanoutResult, PoolStats,

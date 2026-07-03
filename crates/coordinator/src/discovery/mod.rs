@@ -5,17 +5,20 @@
 //! - Gossipsub for cluster state dissemination
 //! - Noise protocol for transport encryption
 
-pub mod config;
+mod config;
 #[cfg(feature = "discovery")]
-pub mod gossip;
+mod gossip;
 #[cfg(feature = "discovery")]
-pub mod mdns;
+mod mdns;
 #[cfg(feature = "discovery")]
-pub mod network;
-pub mod types;
+mod network;
+mod types;
 
 pub use config::{CoordinatorMode, DiscoveryConfig};
-pub use types::{ClusterState, ClusterStateMessage, CoordinatorAnnouncement, ShardAnnouncement};
+pub use types::{
+    ClusterState, ClusterStateMessage, CoordinatorAnnouncement, DiscoveryEvent, GossipEvent,
+    MetricsMessage, NodeType, PeerInfo, ShardAnnouncement,
+};
 
 #[cfg(feature = "discovery")]
 use std::sync::Arc;
