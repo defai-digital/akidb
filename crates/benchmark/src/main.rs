@@ -2,8 +2,8 @@
 //!
 //! This tool benchmarks the AkiDB vector database on the supported Mac-only path.
 
-use akidb_grpc::proto::akidb_client::AkidbClient;
-use akidb_grpc::proto::{HealthRequest, InsertBatchRequest, InsertRequest, SearchRequest, Vector};
+use akidb_proto::akidb_client::AkidbClient;
+use akidb_proto::{HealthRequest, InsertBatchRequest, InsertRequest, SearchRequest, Vector};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::rngs::StdRng;

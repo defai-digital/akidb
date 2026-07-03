@@ -2,12 +2,14 @@
 
 use std::time::{Duration, Instant};
 
-use akidb_grpc::proto::akidb_client::AkidbClient;
-use akidb_grpc::proto::{GetClusterStateRequest, NodeStatus};
+use akidb_proto::akidb_client::AkidbClient;
+use akidb_proto::{GetClusterStateRequest, NodeStatus};
 use tonic::transport::Channel;
 use tracing::{debug, warn};
 
-use crate::app::{ClusterState, CoordinatorInfo, MetricsState, NodeStatus as AppNodeStatus, ShardInfo};
+use crate::app::{
+    ClusterState, CoordinatorInfo, MetricsState, NodeStatus as AppNodeStatus, ShardInfo,
+};
 
 /// Client for connecting to AkiDB coordinator
 pub struct CoordinatorClient {
@@ -34,7 +36,9 @@ impl CoordinatorClient {
     }
 
     /// Fetch the current cluster state
-    pub async fn get_cluster_state(&mut self) -> Result<(ClusterState, MetricsState), tonic::Status> {
+    pub async fn get_cluster_state(
+        &mut self,
+    ) -> Result<(ClusterState, MetricsState), tonic::Status> {
         let request = tonic::Request::new(GetClusterStateRequest {});
         let response = self.client.get_cluster_state(request).await?;
         let state = response.into_inner();

@@ -15,12 +15,13 @@ postgres = ["akidb-sql/postgres"]
 
 [dependencies]
 akidb-common = { path = "../common" }
+akidb-embedding = { path = "../embedding" }
 akidb-faiss = { path = "../faiss-wrapper" }
 akidb-graph = { path = "../graph" }
 akidb-sql = { path = "../sql" }
 akidb-storage = { path = "../storage" }
 akidb-grpc = { path = "../grpc-server" }
-akidb-coordinator = { path = "../coordinator" }
+akidb-proto = { path = "../proto" }
 
 tokio.workspace = true
 tonic.workspace = true

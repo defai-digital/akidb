@@ -23,6 +23,4 @@ pub use tags::{
 pub use webhook::{WebhookConfig, WebhookEventType, WebhookPayload, WebhookSender, WebhookStats};
 
 /// Generated protobuf types
-pub mod proto {
-    tonic::include_proto!("akidb.v1");
-}
+pub use akidb_proto as proto;

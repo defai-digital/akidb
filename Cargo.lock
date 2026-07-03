@@ -68,7 +68,7 @@ dependencies = [
 name = "akidb-benchmark"
 version = "0.8.0"
 dependencies = [
- "akidb-grpc",
+ "akidb-proto",
  "clap",
  "indicatif",
  "rand 0.8.6",
@@ -133,8 +133,9 @@ name = "akidb-coordinator"
 version = "0.8.0"
 dependencies = [
  "akidb-common",
- "akidb-grpc",
+ "akidb-embedding",
  "akidb-invariants",
+ "akidb-proto",
  "anyhow",
  "chrono",
  "clap",
@@ -158,6 +159,20 @@ dependencies = [
  "tonic 0.11.0",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "akidb-embedding"
+version = "0.8.0"
+dependencies = [
+ "akidb-common",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -201,6 +216,7 @@ dependencies = [
  "akidb-common",
  "akidb-faiss",
  "akidb-graph",
+ "akidb-proto",
  "akidb-retrieval",
  "akidb-sql",
  "akidb-storage",
@@ -210,8 +226,6 @@ dependencies = [
  "hmac 0.12.1",
  "parking_lot",
  "prometheus",
- "prost 0.12.6",
- "prost-types 0.12.6",
  "reqwest",
  "serde",
  "serde_json",
@@ -220,7 +234,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tonic 0.11.0",
- "tonic-build",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -231,7 +244,7 @@ name = "akidb-ingestion"
 version = "0.8.0"
 dependencies = [
  "akidb-common",
- "akidb-grpc",
+ "akidb-proto",
  "akidb-storage",
  "anyhow",
  "async-nats",
@@ -284,6 +297,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "akidb-proto"
+version = "0.8.0"
+dependencies = [
+ "prost 0.12.6",
+ "prost-types 0.12.6",
+ "tonic 0.11.0",
+ "tonic-build",
+]
+
+[[package]]
 name = "akidb-retrieval"
 version = "0.8.0"
 dependencies = [
@@ -299,10 +322,11 @@ name = "akidb-server"
 version = "0.8.0"
 dependencies = [
  "akidb-common",
- "akidb-coordinator",
+ "akidb-embedding",
  "akidb-faiss",
  "akidb-graph",
  "akidb-grpc",
+ "akidb-proto",
  "akidb-sql",
  "akidb-storage",
  "clap",
@@ -362,7 +386,7 @@ name = "akidb-tui"
 version = "0.8.0"
 dependencies = [
  "akidb-common",
- "akidb-grpc",
+ "akidb-proto",
  "anyhow",
  "atty",
  "chrono",

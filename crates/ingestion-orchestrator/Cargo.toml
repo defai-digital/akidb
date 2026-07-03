@@ -48,7 +48,7 @@ tonic = { version = "0.11", features = ["transport"] }
 prost = "0.12"
 
 # AkiDB gRPC types (generated client)
-akidb-grpc = { path = "../grpc-server" }
+akidb-proto = { path = "../proto" }
 
 # Metrics
 prometheus = "0.14"

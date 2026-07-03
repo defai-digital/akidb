@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CANON="$ROOT/crates/grpc-server/proto/akidb.proto"
+CANON="$ROOT/crates/proto/proto/akidb.proto"
 
 if [[ ! -f "$CANON" ]]; then
   echo "canonical proto not found at $CANON" >&2

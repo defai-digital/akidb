@@ -6,11 +6,11 @@
 
 use akidb_common::config::AkiDbConfig;
 use akidb_common::VectorId;
-use akidb_coordinator::AxEngineEmbedding;
+use akidb_embedding::ax_engine::AxEngineEmbedding;
 use akidb_faiss::{HnswConfig, HnswIndex, VectorIndex};
 use akidb_graph::NativeGraphIndex;
-use akidb_grpc::proto::akidb_server::AkidbServer;
 use akidb_grpc::{AkiDbService, EmbeddingProvider};
+use akidb_proto::akidb_server::AkidbServer;
 #[cfg(feature = "postgres")]
 use akidb_sql::PostgresMetadataIndex;
 use akidb_sql::{SqliteMetadataIndex, POSTGRES_BACKEND, SQLITE_BACKEND};
@@ -22,7 +22,7 @@ use tonic::transport::Server;
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
-/// Adapter from coordinator's AxEngineEmbedding to the gRPC EmbeddingProvider trait
+/// Adapter from the shared AxEngineEmbedding client to the gRPC EmbeddingProvider trait.
 struct AxEngineProvider {
     inner: AxEngineEmbedding,
 }
@@ -35,12 +35,12 @@ impl AxEngineProvider {
 
 impl EmbeddingProvider for AxEngineProvider {
     fn embed_text(&self, text: &str) -> std::result::Result<Vec<f32>, String> {
-        use akidb_coordinator::EmbeddingService;
+        use akidb_embedding::EmbeddingService;
         tokio::task::block_in_place(|| self.inner.embed(text)).map_err(|e| e.to_string())
     }
 
     fn embedding_dimensions(&self) -> usize {
-        use akidb_coordinator::EmbeddingService;
+        use akidb_embedding::EmbeddingService;
         self.inner.dimensions()
     }
 }

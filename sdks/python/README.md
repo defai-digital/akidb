@@ -80,7 +80,7 @@ constructor options on both `AkiDBClient` and `AsyncAkiDBClient`.
 ## Regenerating gRPC stubs / proto drift
 
 The committed `akidb/akidb_pb2*.py` are generated from the vendored
-`proto/akidb.proto` (a copy of `crates/grpc-server/proto/akidb.proto`):
+`proto/akidb.proto` (a copy of `crates/proto/proto/akidb.proto`):
 
 ```bash
 python -m grpc_tools.protoc -I proto \

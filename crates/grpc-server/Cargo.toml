@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 akidb-common = { path = "../common" }
+akidb-proto = { path = "../proto" }
 akidb-faiss = { path = "../faiss-wrapper" }
 akidb-storage = { path = "../storage" }
 akidb-retrieval = { path = "../retrieval" }
@@ -14,8 +15,6 @@ akidb-graph = { path = "../graph" }
 akidb-sql = { path = "../sql" }
 
 tonic.workspace = true
-prost.workspace = true
-prost-types.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
@@ -43,9 +42,6 @@ reqwest.workspace = true
 sha2.workspace = true
 hmac = "0.12"
 hex = "0.4"
-
-[build-dependencies]
-tonic-build.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

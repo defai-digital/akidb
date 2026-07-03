@@ -15,7 +15,8 @@ discovery = ["libp2p", "libp2p-identity"]
 
 [dependencies]
 akidb-common = { path = "../common" }
-akidb-grpc = { path = "../grpc-server" }
+akidb-embedding = { path = "../embedding" }
+akidb-proto = { path = "../proto" }
 akidb-invariants = { path = "../invariants" }
 
 tonic.workspace = true

@@ -10,7 +10,7 @@ name = "akidb-bench"
 path = "src/main.rs"
 
 [dependencies]
-akidb-grpc = { path = "../grpc-server" }
+akidb-proto = { path = "../proto" }
 
 tokio.workspace = true
 tonic.workspace = true

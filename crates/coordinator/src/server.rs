@@ -7,8 +7,8 @@ use crate::{
     coordinator_metrics, export_metrics, BackpressureConfig, BackpressureController,
     ConsistencyTracker, FanoutExecutor, ShardInfo, ShardRouter,
 };
-use akidb_grpc::proto::akidb_server::{Akidb, AkidbServer};
-use akidb_grpc::proto::{
+use akidb_proto::akidb_server::{Akidb, AkidbServer};
+use akidb_proto::{
     ClusterMetrics, CoordinatorNode, DeleteRequest, DeleteResponse, GetClusterStateRequest,
     GetClusterStateResponse, GetRequest, GetResponse, HealthRequest, HealthResponse,
     InsertBatchRequest, InsertBatchResponse, InsertRequest, InsertResponse, NodeStatus,
@@ -514,7 +514,7 @@ impl Akidb for CoordinatorService {
         let router = self.router.read().await;
 
         // Partition vectors by shard using consistent hashing
-        let mut shard_batches: std::collections::HashMap<String, Vec<akidb_grpc::proto::Vector>> =
+        let mut shard_batches: std::collections::HashMap<String, Vec<akidb_proto::Vector>> =
             std::collections::HashMap::new();
         let mut unrouted_ids = Vec::new();
 
@@ -891,7 +891,7 @@ async fn run_metrics_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use akidb_grpc::proto::Query;
+    use akidb_proto::Query;
     use tonic::Code;
 
     fn test_service() -> CoordinatorService {

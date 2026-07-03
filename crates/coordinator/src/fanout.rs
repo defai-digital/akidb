@@ -3,8 +3,8 @@
 use crate::merger::ResultMerger;
 use crate::router::{ShardInfo, ShardRouter};
 use akidb_common::{AkiDbError, Result, SearchResult, VectorId};
-use akidb_grpc::proto::akidb_client::AkidbClient;
-use akidb_grpc::proto::{
+use akidb_proto::akidb_client::AkidbClient;
+use akidb_proto::{
     DeleteRequest, DeleteStatus, SearchRequest, SearchResult as ProtoSearchResult, TagFilter,
     UpdateRequest,
 };

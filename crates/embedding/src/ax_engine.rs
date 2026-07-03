@@ -4,7 +4,7 @@
 //! The sidecar wraps the current ax-engine native `Session.embed_batch*` API,
 //! while this Rust client keeps a stable HTTP contract.
 
-use crate::embedding::{EmbeddingError, EmbeddingResult, EmbeddingService};
+use crate::{EmbeddingError, EmbeddingResult, EmbeddingService};
 use akidb_common::config::EmbeddingClientConfig;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};

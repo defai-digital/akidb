@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 akidb-common = { path = "../common" }
-akidb-grpc = { path = "../grpc-server" }
+akidb-proto = { path = "../proto" }
 
 # TUI framework
 ratatui = "0.28"

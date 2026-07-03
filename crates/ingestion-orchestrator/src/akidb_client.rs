@@ -8,7 +8,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::AkiDbConfig;
 use crate::Result;
-use akidb_grpc::proto::{
+use akidb_proto::{
     akidb_client::AkidbClient as GrpcClient, HealthRequest, InsertBatchRequest,
     InsertBatchResponse, SearchRequest as GrpcSearchRequest, Vector as ProtoVector,
 };

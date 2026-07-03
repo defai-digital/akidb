@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const vendored = join(here, '..', 'proto', 'akidb.proto');
-const canonical = join(here, '..', '..', '..', 'crates', 'grpc-server', 'proto', 'akidb.proto');
+const canonical = join(here, '..', '..', '..', 'crates', 'proto', 'proto', 'akidb.proto');
 
 describe('proto drift', () => {
   it('vendored proto matches the canonical engine proto', () => {

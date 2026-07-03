@@ -28,7 +28,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTO_DIR = ROOT / "crates" / "grpc-server" / "proto"
+PROTO_DIR = ROOT / "crates" / "proto" / "proto"
 PROTO_FILE = "akidb.proto"
 
 

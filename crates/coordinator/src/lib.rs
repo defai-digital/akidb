@@ -19,7 +19,6 @@ mod batch;
 mod compaction;
 mod consistency;
 mod discovery;
-mod embedding;
 mod fanout;
 mod merger;
 mod metrics;
@@ -28,6 +27,11 @@ mod server;
 mod slo;
 mod workflow;
 
+pub use akidb_embedding::{
+    ax_engine::AxEngineEmbedding, CacheStats, CachedEmbeddingService, EmbeddingConfig,
+    EmbeddingError, EmbeddingService, EmbeddingStats, FallbackEmbeddingService,
+    MockEmbeddingService,
+};
 pub use backpressure::{
     BackpressureConfig, BackpressureController, BackpressureError, BackpressureStats,
 };
@@ -38,11 +42,6 @@ pub use discovery::{
     ClusterState, ClusterStateMessage, CoordinatorAnnouncement, CoordinatorMode, DiscoveryConfig,
     DiscoveryEvent, DiscoveryService, GossipEvent, MetricsMessage, NodeType, PeerInfo,
     ShardAnnouncement,
-};
-pub use embedding::{
-    ax_engine::AxEngineEmbedding, CacheStats, CachedEmbeddingService, EmbeddingConfig,
-    EmbeddingError, EmbeddingService, EmbeddingStats, FallbackEmbeddingService,
-    MockEmbeddingService,
 };
 pub use fanout::{
     BroadcastDeleteResult, BroadcastUpdateResult, FanoutExecutor, FanoutResult, PoolStats,
