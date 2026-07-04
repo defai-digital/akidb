@@ -215,8 +215,8 @@ pub struct WebhookStats {
 pub struct WebhookSender {
     /// Configuration
     config: Arc<RwLock<WebhookConfig>>,
-    /// HTTP client
-    client: reqwest::Client,
+    /// HTTP client (behind RwLock so timeout changes in update_config take effect)
+    client: RwLock<reqwest::Client>,
     /// Pending webhooks queue
     pending: Arc<RwLock<VecDeque<(WebhookPayload, u32)>>>,
     /// Recent delivery statuses (for debugging)
@@ -237,7 +237,7 @@ impl WebhookSender {
 
         Self {
             config: Arc::new(RwLock::new(config)),
-            client,
+            client: RwLock::new(client),
             pending: Arc::new(RwLock::new(VecDeque::new())),
             recent_deliveries: Arc::new(RwLock::new(VecDeque::new())),
             stats: Arc::new(RwLock::new(WebhookStats::default())),
@@ -247,6 +247,12 @@ impl WebhookSender {
 
     /// Update configuration
     pub fn update_config(&self, config: WebhookConfig) {
+        // FIX BUG: rebuild the HTTP client so timeout changes take effect
+        let new_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(config.timeout_secs))
+            .build()
+            .unwrap_or_default();
+        *self.client.write() = new_client;
         *self.config.write() = config;
     }
 
@@ -378,7 +384,7 @@ impl WebhookSender {
     ) -> Result<u16, String> {
         let body = serde_json::to_string(payload).map_err(|e| e.to_string())?;
 
-        let mut request = self.client.post(&config.url).json(payload);
+        let mut request = self.client.read().post(&config.url).json(payload);
 
         // Add custom headers
         for (key, value) in &config.headers {
