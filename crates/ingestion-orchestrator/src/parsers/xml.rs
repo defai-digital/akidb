@@ -2,6 +2,7 @@
 
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use quick_xml::XmlVersion;
 
 use crate::parsers::{DocumentFormat, DocumentMetadata, DocumentParser, ParsedDocument};
 use crate::Result;
@@ -34,7 +35,7 @@ impl DocumentParser for XmlParser {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Text(e)) => {
-                    if let Ok(text) = e.unescape() {
+                    if let Ok(text) = e.decode() {
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
                             texts.push(text_with_current_element(&element_stack, trimmed));
@@ -131,7 +132,7 @@ fn attribute_texts(
         .filter_map(|attr| {
             let key = element_name(attr.key.as_ref());
             let value = attr
-                .unescape_value()
+                .normalized_value(XmlVersion::Implicit1_0)
                 .map(|value| value.into_owned())
                 .unwrap_or_else(|_| String::from_utf8_lossy(attr.value.as_ref()).into_owned())
                 .trim()

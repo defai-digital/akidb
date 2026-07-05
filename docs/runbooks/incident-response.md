@@ -45,7 +45,7 @@ docker compose logs --tail=200 akidb-coordinator
 Resolution:
 
 - Restart the unhealthy service: `docker compose restart akidb-server`.
-- Verify data paths under `/var/lib/akidb` or the configured local paths.
+- Verify data paths under `./data/rocksdb` and `./data/wal` (or the configured paths in `config/default.toml`).
 - Restore from the latest valid snapshot if storage is corrupt.
 
 ## Ingestion Backpressure

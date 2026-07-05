@@ -1,12 +1,15 @@
 //! Spreadsheet Document Parser
 
-use calamine::{open_workbook_auto_from_rs, Data, Reader};
-use std::io::Cursor;
+use quick_xml::events::{BytesStart, BytesText, Event};
+use quick_xml::reader::Reader;
+use std::collections::HashMap;
+use std::io::{Cursor, Read};
+use zip::ZipArchive;
 
 use crate::parsers::{DocumentFormat, DocumentMetadata, DocumentParser, ParsedDocument};
 use crate::Result;
 
-/// Spreadsheet parser using calamine's auto workbook reader.
+/// Spreadsheet parser for simple XLSX workbooks.
 pub struct XlsxParser;
 
 impl XlsxParser {
@@ -23,49 +26,42 @@ impl Default for XlsxParser {
 
 impl DocumentParser for XlsxParser {
     fn parse(&self, data: &[u8]) -> Result<ParsedDocument> {
-        let cursor = Cursor::new(data);
-        let mut workbook = open_workbook_auto_from_rs(cursor)
-            .map_err(|e| crate::IngestionError::Parse(format!("Spreadsheet error: {}", e)))?;
-
+        let workbook = parse_workbook(data)?;
         let mut texts = Vec::new();
         let mut total_rows = 0;
         let mut total_cols = 0;
-        let sheet_names: Vec<String> = workbook.sheet_names().to_vec();
-        let sheet_count = sheet_names.len();
+        let sheet_count = workbook.sheets.len();
 
-        for sheet_name in sheet_names {
-            if let Ok(range) = workbook.worksheet_range(&sheet_name) {
-                let (rows, _) = range.get_size();
-                total_rows += rows;
+        for sheet in workbook.sheets {
+            total_rows += sheet.rows.len();
 
-                let sheet_rows: Vec<Vec<Option<String>>> = range
-                    .rows()
-                    .map(|row| row.iter().map(cell_to_string).collect::<Vec<_>>())
-                    .filter(|cells| !row_is_empty(cells))
-                    .collect();
-                let sheet_cols = sheet_rows
-                    .iter()
-                    .map(|cells| cells.iter().filter(|cell| cell.is_some()).count())
-                    .max()
-                    .unwrap_or(0);
-                total_cols = total_cols.max(sheet_cols);
+            let sheet_rows: Vec<Vec<Option<String>>> = sheet
+                .rows
+                .into_iter()
+                .filter(|cells| !row_is_empty(cells))
+                .collect();
+            let sheet_cols = sheet_rows
+                .iter()
+                .map(|cells| cells.iter().filter(|cell| cell.is_some()).count())
+                .max()
+                .unwrap_or(0);
+            total_cols = total_cols.max(sheet_cols);
 
-                let mut headers: Option<Vec<Option<String>>> = None;
-                for (idx, cells) in sheet_rows.iter().enumerate() {
-                    let next_row = sheet_rows.get(idx + 1).map(Vec::as_slice);
-                    let text = match headers.as_deref() {
-                        Some(headers) => row_text_with_headers(headers, cells),
-                        None => {
-                            let row_text = row_text_from_cells(cells);
-                            if is_likely_header_row(cells, sheet_cols, next_row) {
-                                headers = Some(cells.clone());
-                            }
-                            row_text
+            let mut headers: Option<Vec<Option<String>>> = None;
+            for (idx, cells) in sheet_rows.iter().enumerate() {
+                let next_row = sheet_rows.get(idx + 1).map(Vec::as_slice);
+                let text = match headers.as_deref() {
+                    Some(headers) => row_text_with_headers(headers, cells),
+                    None => {
+                        let row_text = row_text_from_cells(cells);
+                        if is_likely_header_row(cells, sheet_cols, next_row) {
+                            headers = Some(cells.to_vec());
                         }
-                    };
-                    if !text.is_empty() {
-                        texts.push(text);
+                        row_text
                     }
+                };
+                if !text.is_empty() {
+                    texts.push(text);
                 }
             }
         }
@@ -235,26 +231,286 @@ fn row_text_with_headers(headers: &[Option<String>], cells: &[Option<String>]) -
         .join(" ")
 }
 
-/// Convert cell data to string
-fn cell_to_string(cell: &Data) -> Option<String> {
-    match cell {
-        Data::Empty => None,
-        Data::String(s) => {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
+struct WorkbookData {
+    sheets: Vec<SheetData>,
+}
+
+struct SheetData {
+    rows: Vec<Vec<Option<String>>>,
+}
+
+fn parse_workbook(data: &[u8]) -> Result<WorkbookData> {
+    let mut archive = ZipArchive::new(Cursor::new(data))
+        .map_err(|e| crate::IngestionError::Parse(format!("Spreadsheet error: {}", e)))?;
+    let shared_strings = read_shared_strings(&mut archive)?;
+    let relationships = read_workbook_relationships(&mut archive)?;
+    let sheet_paths = read_sheet_paths(&mut archive, &relationships)?;
+
+    let mut sheets = Vec::new();
+    for path in sheet_paths {
+        if let Ok(mut file) = archive.by_name(&path) {
+            let mut xml = String::new();
+            file.read_to_string(&mut xml).map_err(|e| {
+                crate::IngestionError::Parse(format!("Failed to read sheet {}: {}", path, e))
+            })?;
+            sheets.push(SheetData {
+                rows: parse_sheet_rows(&xml, &shared_strings)?,
+            });
+        }
+    }
+
+    Ok(WorkbookData { sheets })
+}
+
+fn read_shared_strings(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<String>> {
+    let Ok(mut file) = archive.by_name("xl/sharedStrings.xml") else {
+        return Ok(Vec::new());
+    };
+    let mut xml = String::new();
+    file.read_to_string(&mut xml).map_err(|e| {
+        crate::IngestionError::Parse(format!("Failed to read shared strings: {}", e))
+    })?;
+
+    let mut reader = Reader::from_str(&xml);
+    reader.config_mut().trim_text(false);
+    let mut strings = Vec::new();
+    let mut current = String::new();
+    let mut in_si = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if local_name(e.name().as_ref()) == b"si" => {
+                in_si = true;
+                current.clear();
+            }
+            Ok(Event::Text(e)) if in_si => current.push_str(&decode_text(&e)),
+            Ok(Event::CData(e)) if in_si => {
+                current.push_str(&String::from_utf8_lossy(e.as_ref()));
+            }
+            Ok(Event::End(e)) if local_name(e.name().as_ref()) == b"si" => {
+                strings.push(current.clone());
+                in_si = false;
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                return Err(crate::IngestionError::Parse(format!(
+                    "Shared strings parse error: {}",
+                    e
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(strings)
+}
+
+fn read_workbook_relationships(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+) -> Result<HashMap<String, String>> {
+    let Ok(mut file) = archive.by_name("xl/_rels/workbook.xml.rels") else {
+        return Ok(HashMap::new());
+    };
+    let mut xml = String::new();
+    file.read_to_string(&mut xml).map_err(|e| {
+        crate::IngestionError::Parse(format!("Failed to read workbook relationships: {}", e))
+    })?;
+
+    let mut reader = Reader::from_str(&xml);
+    let mut relationships = HashMap::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Empty(e)) | Ok(Event::Start(e))
+                if local_name(e.name().as_ref()) == b"Relationship" =>
+            {
+                if let (Some(id), Some(target)) = (attr_value(&e, b"Id"), attr_value(&e, b"Target"))
+                {
+                    relationships.insert(id, normalize_sheet_target(&target));
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                return Err(crate::IngestionError::Parse(format!(
+                    "Workbook relationships parse error: {}",
+                    e
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(relationships)
+}
+
+fn read_sheet_paths(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    relationships: &HashMap<String, String>,
+) -> Result<Vec<String>> {
+    let mut paths = Vec::new();
+    if let Ok(mut file) = archive.by_name("xl/workbook.xml") {
+        let mut xml = String::new();
+        file.read_to_string(&mut xml)
+            .map_err(|e| crate::IngestionError::Parse(format!("Failed to read workbook: {}", e)))?;
+        let mut reader = Reader::from_str(&xml);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Empty(e)) | Ok(Event::Start(e))
+                    if local_name(e.name().as_ref()) == b"sheet" =>
+                {
+                    if let Some(rid) = attr_value(&e, b"id") {
+                        if let Some(path) = relationships.get(&rid) {
+                            paths.push(path.clone());
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    return Err(crate::IngestionError::Parse(format!(
+                        "Workbook parse error: {}",
+                        e
+                    )));
+                }
+                _ => {}
             }
         }
-        Data::Float(f) => Some(f.to_string()),
-        Data::Int(i) => Some(i.to_string()),
-        Data::Bool(b) => Some(b.to_string()),
-        Data::Error(e) => Some(format!("#ERROR:{:?}", e)),
-        Data::DateTime(dt) => Some(dt.to_string()),
-        Data::DateTimeIso(s) => Some(s.clone()),
-        Data::DurationIso(s) => Some(s.clone()),
     }
+
+    if paths.is_empty() {
+        for i in 0..archive.len() {
+            if let Ok(file) = archive.by_index_raw(i) {
+                let name = file.name();
+                if name.starts_with("xl/worksheets/") && name.ends_with(".xml") {
+                    paths.push(name.to_string());
+                }
+            }
+        }
+        paths.sort();
+    }
+
+    Ok(paths)
+}
+
+fn parse_sheet_rows(xml: &str, shared_strings: &[String]) -> Result<Vec<Vec<Option<String>>>> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut rows = Vec::new();
+    let mut current_row: Option<Vec<Option<String>>> = None;
+    let mut current_cell_type: Option<String> = None;
+    let mut current_cell_value = String::new();
+    let mut collecting_value = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => match local_name(e.name().as_ref()) {
+                b"row" => current_row = Some(Vec::new()),
+                b"c" => {
+                    current_cell_type = attr_value(&e, b"t");
+                    current_cell_value.clear();
+                }
+                b"v" | b"t" => collecting_value = true,
+                _ => {}
+            },
+            Ok(Event::Empty(e)) if local_name(e.name().as_ref()) == b"c" => {
+                if let Some(row) = current_row.as_mut() {
+                    row.push(None);
+                }
+            }
+            Ok(Event::Text(e)) if collecting_value => current_cell_value.push_str(&decode_text(&e)),
+            Ok(Event::CData(e)) if collecting_value => {
+                current_cell_value.push_str(&String::from_utf8_lossy(e.as_ref()));
+            }
+            Ok(Event::End(e)) => match local_name(e.name().as_ref()) {
+                b"v" | b"t" => collecting_value = false,
+                b"c" => {
+                    if let Some(row) = current_row.as_mut() {
+                        row.push(resolve_cell_value(
+                            current_cell_type.as_deref(),
+                            &current_cell_value,
+                            shared_strings,
+                        ));
+                    }
+                    current_cell_type = None;
+                    current_cell_value.clear();
+                    collecting_value = false;
+                }
+                b"row" => {
+                    if let Some(row) = current_row.take() {
+                        rows.push(row);
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                return Err(crate::IngestionError::Parse(format!(
+                    "Worksheet parse error: {}",
+                    e
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(rows)
+}
+
+fn resolve_cell_value(
+    cell_type: Option<&str>,
+    raw_value: &str,
+    shared_strings: &[String],
+) -> Option<String> {
+    let value = match cell_type {
+        Some("s") => raw_value
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .and_then(|idx| shared_strings.get(idx).cloned())
+            .unwrap_or_default(),
+        Some("b") => match raw_value.trim() {
+            "1" => "true".to_string(),
+            "0" => "false".to_string(),
+            other => other.to_string(),
+        },
+        _ => raw_value.to_string(),
+    };
+    normalize_cell_text(&value)
+}
+
+fn normalize_cell_text(text: &str) -> Option<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn attr_value(start: &BytesStart<'_>, key: &[u8]) -> Option<String> {
+    start
+        .attributes()
+        .filter_map(|attr| attr.ok())
+        .find(|attr| local_name(attr.key.as_ref()) == key)
+        .map(|attr| String::from_utf8_lossy(attr.value.as_ref()).into_owned())
+}
+
+fn normalize_sheet_target(target: &str) -> String {
+    let target = target.trim_start_matches('/');
+    if target.starts_with("xl/") {
+        target.to_string()
+    } else {
+        format!("xl/{}", target)
+    }
+}
+
+fn decode_text(text: &BytesText<'_>) -> String {
+    text.decode()
+        .map(|text| text.into_owned())
+        .unwrap_or_else(|_| String::from_utf8_lossy(text.as_ref()).into_owned())
+}
+
+fn local_name(name: &[u8]) -> &[u8] {
+    name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
 }
 
 #[cfg(test)]

@@ -1,13 +1,12 @@
 //! DOCX Parser
 //!
-//! Rust-native parser for simple DOCX files using docx-rs.
+//! Rust-native parser for simple DOCX files.
 //! Complex DOCX files (macros, ActiveX, OLE objects) are routed to Python.
 
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
-use docx_rs::{
-    read_docx, DocumentChild, ParagraphChild, RunChild, TableCellContent, TableChild, TableRowChild,
-};
+use quick_xml::events::Event;
+use quick_xml::reader::Reader;
 use zip::ZipArchive;
 
 use crate::parsers::{DocumentFormat, DocumentMetadata, DocumentParser, ParsedDocument};
@@ -80,60 +79,11 @@ impl DocxParser {
         true
     }
 
-    /// Extract text from a paragraph
-    fn extract_paragraph_text(children: &[ParagraphChild]) -> String {
-        let mut text = String::new();
-
-        for child in children {
-            match child {
-                ParagraphChild::Run(run) => {
-                    for run_child in &run.children {
-                        match run_child {
-                            RunChild::Text(t) => {
-                                text.push_str(&t.text);
-                            }
-                            RunChild::Tab(_) => {
-                                text.push('\t');
-                            }
-                            RunChild::Break(_) => {
-                                text.push('\n');
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                ParagraphChild::Hyperlink(link) => {
-                    // Extract text from hyperlink runs
-                    for run in &link.children {
-                        if let ParagraphChild::Run(r) = run {
-                            for run_child in &r.children {
-                                if let RunChild::Text(t) = run_child {
-                                    text.push_str(&t.text);
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        text
-    }
-
     /// Extract text from a table
-    fn extract_table_text(rows: &[TableChild]) -> String {
+    fn extract_table_text(rows: Vec<Vec<Option<String>>>) -> String {
         let mut lines = Vec::new();
         let mut headers: Option<Vec<Option<String>>> = None;
-        let table_rows: Vec<Vec<Option<String>>> = rows
-            .iter()
-            .map(|row_child| {
-                let TableChild::TableRow(row) = row_child;
-                Self::extract_table_row_cells(row)
-            })
-            .collect();
-
-        let non_empty_rows: Vec<Vec<Option<String>>> = table_rows
+        let non_empty_rows: Vec<Vec<Option<String>>> = rows
             .into_iter()
             .filter(|cells| !row_is_empty(cells))
             .collect();
@@ -161,31 +111,6 @@ impl DocxParser {
         }
 
         lines.join("\n")
-    }
-
-    fn extract_table_row_cells(row: &docx_rs::TableRow) -> Vec<Option<String>> {
-        let mut cells = Vec::new();
-
-        for cell_child in &row.cells {
-            let TableRowChild::TableCell(cell) = cell_child;
-            let mut cell_text = String::new();
-
-            for content in &cell.children {
-                if let TableCellContent::Paragraph(p) = content {
-                    let paragraph_text = Self::extract_paragraph_text(&p.children);
-                    if !paragraph_text.trim().is_empty() {
-                        if !cell_text.is_empty() {
-                            cell_text.push(' ');
-                        }
-                        cell_text.push_str(&paragraph_text);
-                    }
-                }
-            }
-
-            cells.push(normalize_cell_text(&cell_text));
-        }
-
-        cells
     }
 }
 
@@ -356,30 +281,7 @@ impl DocumentParser for DocxParser {
             )));
         }
 
-        // Parse the DOCX file
-        let docx = read_docx(data)
-            .map_err(|e| IngestionError::Parse(format!("Failed to parse DOCX: {}", e)))?;
-
-        let mut text_parts = Vec::new();
-
-        // Extract text from document body
-        for child in &docx.document.children {
-            match child {
-                DocumentChild::Paragraph(p) => {
-                    let para_text = Self::extract_paragraph_text(&p.children);
-                    if !para_text.trim().is_empty() {
-                        text_parts.push(para_text);
-                    }
-                }
-                DocumentChild::Table(table) => {
-                    let table_text = Self::extract_table_text(&table.rows);
-                    if !table_text.trim().is_empty() {
-                        text_parts.push(table_text);
-                    }
-                }
-                _ => {}
-            }
-        }
+        let text_parts = extract_document_text_parts(data)?;
 
         let text = text_parts.join("\n");
         let word_count = text.split_whitespace().count();
@@ -400,6 +302,116 @@ impl DocumentParser for DocxParser {
     fn format(&self) -> DocumentFormat {
         DocumentFormat::Docx
     }
+}
+
+fn extract_document_text_parts(data: &[u8]) -> Result<Vec<String>> {
+    let mut archive = ZipArchive::new(Cursor::new(data))
+        .map_err(|e| IngestionError::Parse(format!("Failed to open DOCX: {}", e)))?;
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .map_err(|e| IngestionError::Parse(format!("DOCX missing word/document.xml: {}", e)))?
+        .read_to_string(&mut document_xml)
+        .map_err(|e| IngestionError::Parse(format!("Failed to read DOCX document XML: {}", e)))?;
+
+    parse_document_xml(&document_xml)
+}
+
+fn parse_document_xml(document_xml: &str) -> Result<Vec<String>> {
+    let mut reader = Reader::from_str(document_xml);
+    reader.config_mut().trim_text(false);
+
+    let mut text_parts = Vec::new();
+    let mut current_paragraph: Option<String> = None;
+    let mut current_table: Option<Vec<Vec<Option<String>>>> = None;
+    let mut current_row: Option<Vec<Option<String>>> = None;
+    let mut current_cell_paragraphs: Option<Vec<String>> = None;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => match local_name(e.name().as_ref()) {
+                b"tbl" => current_table = Some(Vec::new()),
+                b"tr" if current_table.is_some() => current_row = Some(Vec::new()),
+                b"tc" if current_row.is_some() => current_cell_paragraphs = Some(Vec::new()),
+                b"p" => current_paragraph = Some(String::new()),
+                _ => {}
+            },
+            Ok(Event::Empty(e)) => match local_name(e.name().as_ref()) {
+                b"tab" => append_to_current_paragraph(&mut current_paragraph, '\t'),
+                b"br" | b"cr" => append_to_current_paragraph(&mut current_paragraph, '\n'),
+                _ => {}
+            },
+            Ok(Event::Text(e)) => {
+                if let Some(paragraph) = current_paragraph.as_mut() {
+                    let text = e
+                        .decode()
+                        .map(|text| text.into_owned())
+                        .unwrap_or_else(|_| String::from_utf8_lossy(e.as_ref()).into_owned());
+                    paragraph.push_str(&text);
+                }
+            }
+            Ok(Event::CData(e)) => {
+                if let Some(paragraph) = current_paragraph.as_mut() {
+                    paragraph.push_str(&String::from_utf8_lossy(e.as_ref()));
+                }
+            }
+            Ok(Event::End(e)) => match local_name(e.name().as_ref()) {
+                b"p" => {
+                    if let Some(paragraph) = current_paragraph.take() {
+                        let normalized = paragraph.trim().to_string();
+                        if !normalized.is_empty() {
+                            if let Some(cell_paragraphs) = current_cell_paragraphs.as_mut() {
+                                cell_paragraphs.push(normalized);
+                            } else if current_table.is_none() {
+                                text_parts.push(normalized);
+                            }
+                        }
+                    }
+                }
+                b"tc" => {
+                    if let (Some(row), Some(cell_paragraphs)) =
+                        (current_row.as_mut(), current_cell_paragraphs.take())
+                    {
+                        row.push(normalize_cell_text(&cell_paragraphs.join(" ")));
+                    }
+                }
+                b"tr" => {
+                    if let (Some(table), Some(row)) = (current_table.as_mut(), current_row.take()) {
+                        table.push(row);
+                    }
+                }
+                b"tbl" => {
+                    if let Some(table) = current_table.take() {
+                        let table_text = DocxParser::extract_table_text(table);
+                        if !table_text.trim().is_empty() {
+                            text_parts.push(table_text);
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                return Err(IngestionError::Parse(format!(
+                    "DOCX document XML parse error: {}",
+                    e
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(text_parts)
+}
+
+fn append_to_current_paragraph(current_paragraph: &mut Option<String>, value: char) {
+    if let Some(paragraph) = current_paragraph.as_mut() {
+        paragraph.push(value);
+    }
+}
+
+fn local_name(name: &[u8]) -> &[u8] {
+    name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
 }
 
 #[cfg(test)]

@@ -40,7 +40,7 @@ The Ingestion Orchestrator is a hybrid Rust/Python document processing pipeline 
 │                           ▼                                       │
 │            ┌─────────────────────────────┐                       │
 │            │    Embedding Client         │                       │
-│            │  (Qwen3-Embedding-8B)       │                       │
+│            │  (ax-engine sidecar)        │                       │
 │            └──────────────┬──────────────┘                       │
 │                           ▼                                       │
 │            ┌─────────────────────────────┐                       │
@@ -87,7 +87,7 @@ The Ingestion Orchestrator is a hybrid Rust/Python document processing pipeline 
 3. **Format Detection**: Extension-based routing
 4. **Parsing**: Rust-native or Python sidecar
 5. **Chunking**: Sentence-boundary aware, tiktoken token counting
-6. **Embedding**: Qwen3-Embedding-8B via vLLM
+6. **Embedding**: Qwen3-Embedding via ax-engine sidecar
 7. **Insertion**: AkiDB gRPC batch insert
 
 ## Configuration
@@ -127,12 +127,14 @@ CIRCUIT_BREAKER_HALF_OPEN_CALLS=1
 # Backpressure
 BACKPRESSURE_LATENCY_THRESHOLD_MS=500
 BACKPRESSURE_QUEUE_DEPTH=10000
+BACKPRESSURE_QUEUE_LOW_WATER=5000
 BACKPRESSURE_PAUSE_SECS=5
 
 # Memory
 MEMORY_PAUSE_THRESHOLD_PCT=70
 MEMORY_RESUME_THRESHOLD_PCT=60
 MEMORY_POLL_INTERVAL_MS=1000
+MEMORY_MAX_PAUSE_SECS=300
 
 # Chunker
 CHUNKER_TARGET_TOKENS=512

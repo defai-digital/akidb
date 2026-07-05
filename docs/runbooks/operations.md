@@ -43,6 +43,7 @@ curl http://localhost:8222/healthz
 curl http://localhost:9000/minio/health/live
 curl http://localhost:8080/health
 curl http://localhost:8081/health
+curl http://localhost:8000/health
 curl http://localhost:9090/-/healthy
 docker compose logs --tail=100 akidb-server
 docker compose logs --tail=100 akidb-coordinator
@@ -58,12 +59,12 @@ containing `model-manifest.json`:
 python3 scripts/ax_engine_embedding_server.py \
   --model-dir /path/to/Qwen3-Embedding-4B \
   --model-id Qwen/Qwen3-Embedding-4B \
-  --port 8081
+  --port 8000
 ```
 
 `ax-engine serve <embedding-alias>` is not the supported embedding path. The
 validator uses `AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-4B` to start the
-sidecar, and skips `TextSearch` when that variable is absent.
+sidecar on port 8000, and skips `TextSearch` when that variable is absent.
 For `Qwen3-Embedding-0.6B`, also set `AX_ENGINE_MODEL=Qwen/Qwen3-Embedding-0.6B`
 and `EMBEDDING_DIMENSIONS=1024`.
 

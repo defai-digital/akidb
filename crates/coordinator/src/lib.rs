@@ -10,7 +10,7 @@
 //! - Automatic compaction scheduling
 //! - SLO estimation and monitoring
 //! - Embedding service with caching and fallback
-//! - Auto-discovery of coordinators and shards (optional, with `discovery` feature)
+//! - Static coordinator and shard routing
 
 #![allow(clippy::result_large_err)]
 

@@ -2,7 +2,7 @@
 //!
 //! Terminal User Interface for monitoring AkiDB deployments.
 
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -113,7 +113,7 @@ pub async fn run(args: Args) -> Result<()> {
 /// Run the TUI application
 async fn run_tui(config: TuiConfig) -> Result<()> {
     // Check if we have a terminal
-    if !atty::is(atty::Stream::Stdout) {
+    if !io::stdout().is_terminal() {
         return Err(anyhow::anyhow!(
             "TUI requires an interactive terminal.\n\
              Run locally on the Mac host: akidb tui --coordinator 127.0.0.1:50050\n\

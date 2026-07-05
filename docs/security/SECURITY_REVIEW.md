@@ -1,9 +1,15 @@
 # AkiDB Security Review
 
-**Version:** 1.0
-**Date:** 2026-01-21
-**Status:** Review Complete
+**Version:** 1.1
+**Date:** 2026-07-05
+**Status:** Baseline Review (partial refresh)
 **Classification:** Internal
+
+> **Notice:** This review was originally written in January 2026 when the vector
+> index was FAISS-based. The codebase has since migrated to HNSW (usearch) and
+> ax-engine embeddings. Several recommendation code samples are aspirational
+> templates, not current implementations. Treat open items as a backlog, not as
+> a current-state audit.
 
 ## Executive Summary
 
@@ -91,10 +97,11 @@ This security review covers the Mac-only AkiDB deployment, including the core ve
 
 | Data Type | Storage | Encryption |
 |-----------|---------|------------|
-| Vectors | FAISS Index | None |
+| Vectors | HNSW Index (usearch) | None |
 | Metadata | RocksDB | None |
 | Documents | MinIO | Server-side (optional) |
-| State DB | SQLite | None |
+| Ingestion state | SQLite | None |
+| Optional SQL metadata | SQLite/PostgreSQL | None |
 
 #### Data in Transit
 
@@ -104,7 +111,7 @@ This security review covers the Mac-only AkiDB deployment, including the core ve
 | Coordinator → Shards | gRPC | None |
 | Ingestion → NATS | TCP | None |
 | Ingestion → MinIO | HTTP | None |
-| Ingestion → vLLM | HTTP | None |
+| Ingestion → Embedding | HTTP | None |
 
 #### Recommendations
 
@@ -124,10 +131,11 @@ This security review covers the Mac-only AkiDB deployment, including the core ve
    mc admin config set local/ storage_class standard_sse AES256
    ```
 
-3. **Encrypt Sensitive Configuration**
+3. **Environment-Based Secrets**
    ```bash
-   # Use Ansible Vault for secrets
-   ansible-vault encrypt deploy/ansible/group_vars/all/secrets.yml
+   # Use macOS Keychain or a .env file (gitignored) for local secrets.
+   # For Compose, use Docker secrets or an env_file with restricted permissions.
+   chmod 600 deploy/compose/.env
    ```
 
 ### 3. Input Validation
@@ -214,12 +222,11 @@ This security review covers the Mac-only AkiDB deployment, including the core ve
        internal: true
    ```
 
-2. **Firewall Rules**
+2. **macOS Application Firewall**
    ```bash
-   # Only allow necessary ports
-   ufw allow 8081/tcp  # Upload Gateway
-   ufw deny 4222/tcp   # NATS (internal only)
-   ufw deny 9000/tcp   # MinIO (internal only)
+   # Use pf (packet filter) on macOS to restrict local ports
+   # Example: block external access to internal-only services
+   echo "block in from any to any port {4222, 9000}" | sudo pfctl -ef -
    ```
 
 ### 5. Secrets Management
@@ -294,7 +301,7 @@ This security review covers the Mac-only AkiDB deployment, including the core ve
 | Aspect | Status | Notes |
 |--------|--------|-------|
 | Non-root user | Partial | Some containers run as root |
-| Read-only filesystem | No | Writable |
+| Read-only filesystem | Partial | doc-parser, upload-gateway use `read_only: true` |
 | Resource limits | Yes | In prod compose |
 | Security scanning | No | Not implemented |
 

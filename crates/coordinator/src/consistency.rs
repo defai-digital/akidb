@@ -140,11 +140,13 @@ impl ConsistencyTracker {
         let ttl = self.config.write_ttl;
 
         let total = self.writes.len();
-        let active = self.writes
+        let active = self
+            .writes
             .iter()
             .filter(|e| now.duration_since(e.written_at) <= ttl)
             .count();
-        let confirmed = self.writes
+        let confirmed = self
+            .writes
             .iter()
             .filter(|e| e.confirmed && now.duration_since(e.written_at) <= ttl)
             .count();
@@ -173,13 +175,15 @@ impl ConsistencyTracker {
         // Fix: Use Instant::now() inside the retain closure to get fresh time for each entry
         let ttl = self.config.write_ttl;
 
-        self.writes.retain(|_, entry| Instant::now().duration_since(entry.written_at) <= ttl);
+        self.writes
+            .retain(|_, entry| Instant::now().duration_since(entry.written_at) <= ttl);
 
         // If still over limit, remove oldest entries
         let current_len = self.writes.len();
         if current_len > self.config.max_entries {
             // Get entries sorted by sequence (oldest first)
-            let mut entries: Vec<_> = self.writes
+            let mut entries: Vec<_> = self
+                .writes
                 .iter()
                 .map(|e| (e.key().clone(), e.sequence))
                 .collect();
@@ -191,7 +195,8 @@ impl ConsistencyTracker {
             // FIX BUG-045: Only remove if sequence hasn't changed (entry wasn't updated)
             // This prevents removing fresh writes that were updated between collection and removal
             for (key, expected_seq) in entries.into_iter().take(to_remove) {
-                self.writes.remove_if(&key, |_, entry| entry.sequence == expected_seq);
+                self.writes
+                    .remove_if(&key, |_, entry| entry.sequence == expected_seq);
             }
         }
     }
@@ -201,7 +206,8 @@ impl ConsistencyTracker {
     /// FIX BUG-H030: Use fresh timestamp per entry to avoid TOCTOU race
     pub fn cleanup(&self) {
         let ttl = self.config.write_ttl;
-        self.writes.retain(|_, entry| Instant::now().duration_since(entry.written_at) <= ttl);
+        self.writes
+            .retain(|_, entry| Instant::now().duration_since(entry.written_at) <= ttl);
     }
 }
 

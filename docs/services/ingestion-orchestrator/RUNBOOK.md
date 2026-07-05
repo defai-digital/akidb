@@ -27,6 +27,7 @@ curl http://localhost:8222/healthz
 curl http://localhost:9000/minio/health/live
 curl http://localhost:8080/health
 curl http://localhost:8081/health
+curl http://localhost:8000/health
 docker compose logs --tail=100 ingestion
 ```
 
