@@ -424,13 +424,53 @@ fn read_sheet_paths(
     Ok(paths)
 }
 
+/// Extract the 0-based column index from a cell reference like "A1", "B2", "AA26".
+/// Returns None if the reference has no alphabetic prefix.
+fn col_index_from_ref(cell_ref: &[u8]) -> Option<usize> {
+    let mut col: usize = 0;
+    let mut has_letters = false;
+    for &b in cell_ref {
+        if b.is_ascii_alphabetic() {
+            col = col * 26 + (b.to_ascii_uppercase() - b'A') as usize + 1;
+            has_letters = true;
+        } else {
+            break;
+        }
+    }
+    if has_letters { Some(col - 1) } else { None }
+}
+
+/// Place a resolved cell value at the correct column position, growing the row
+/// with `None` fills when the cell reference indicates a sparse gap.
+fn place_cell(row: &mut Vec<Option<String>>, col_idx: Option<usize>, value: Option<String>) {
+    match col_idx {
+        Some(idx) => {
+            if idx >= row.len() {
+                row.resize(idx + 1, None);
+            }
+            row[idx] = value;
+        }
+        None => row.push(value),
+    }
+}
+
+/// Returns raw attribute bytes to avoid heap-allocating a String on the hot path.
+fn attr_value_bytes(start: &BytesStart<'_>, key: &[u8]) -> Option<Vec<u8>> {
+    start
+        .attributes()
+        .filter_map(|attr| attr.ok())
+        .find(|attr| local_name(attr.key.as_ref()) == key)
+        .map(|attr| attr.value.as_ref().to_vec())
+}
+
 fn parse_sheet_xml(xml: &str, shared_strings: &[String]) -> Result<Vec<Vec<Option<String>>>> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
 
     let mut rows = Vec::new();
     let mut current_row: Option<Vec<Option<String>>> = None;
-    let mut current_cell_type: Option<String> = None;
+    let mut current_col_idx: Option<usize> = None;
+    let mut current_cell_type: Option<Vec<u8>> = None;
     let mut current_cell_value = String::new();
     let mut collecting_value = false;
 
@@ -439,15 +479,22 @@ fn parse_sheet_xml(xml: &str, shared_strings: &[String]) -> Result<Vec<Vec<Optio
             Ok(Event::Start(e)) => match local_name(e.name().as_ref()) {
                 b"row" => current_row = Some(Vec::new()),
                 b"c" => {
-                    current_cell_type = attr_value(&e, b"t");
+                    current_col_idx = attr_value_bytes(&e, b"r")
+                        .as_deref()
+                        .and_then(col_index_from_ref);
+                    current_cell_type = attr_value_bytes(&e, b"t");
                     current_cell_value.clear();
                 }
+                b"is" => collecting_value = true,
                 b"v" | b"t" => collecting_value = true,
                 _ => {}
             },
             Ok(Event::Empty(e)) if local_name(e.name().as_ref()) == b"c" => {
                 if let Some(row) = current_row.as_mut() {
-                    row.push(None);
+                    let col = attr_value_bytes(&e, b"r")
+                        .as_deref()
+                        .and_then(col_index_from_ref);
+                    place_cell(row, col, None);
                 }
             }
             Ok(Event::Text(e)) if collecting_value => current_cell_value.push_str(&decode_text(&e)),
@@ -455,16 +502,21 @@ fn parse_sheet_xml(xml: &str, shared_strings: &[String]) -> Result<Vec<Vec<Optio
                 current_cell_value.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
             Ok(Event::End(e)) => match local_name(e.name().as_ref()) {
-                b"v" | b"t" => collecting_value = false,
+                b"is" | b"v" | b"t" => collecting_value = false,
                 b"c" => {
                     if let Some(row) = current_row.as_mut() {
-                        row.push(resolve_cell_value(
-                            current_cell_type.as_deref(),
+                        let cell_type_str = current_cell_type
+                            .as_deref()
+                            .and_then(|b| std::str::from_utf8(b).ok());
+                        let value = resolve_cell_value(
+                            cell_type_str,
                             &current_cell_value,
                             shared_strings,
-                        ));
+                        );
+                        place_cell(row, current_col_idx, value);
                     }
                     current_cell_type = None;
+                    current_col_idx = None;
                     current_cell_value.clear();
                     collecting_value = false;
                 }
@@ -776,6 +828,50 @@ mod tests {
 
         assert!(result.text.contains("ID 123"), "{}", result.text);
         assert!(result.text.contains("Name Alice"), "{}", result.text);
+    }
+
+    #[test]
+    fn test_parse_xlsx_sparse_columns_align_headers_with_values() {
+        let parser = XlsxParser::new();
+        let data = minimal_xlsx_with_sheet_data(
+            r#"<row r="1">
+      <c r="A1" t="inlineStr"><is><t>name</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>score</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>Alice</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>ignored</t></is></c>
+      <c r="C2"><v>95</v></c>
+    </row>"#,
+        );
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("name Alice"), "got: {}", result.text);
+        assert!(result.text.contains("score 95"), "got: {}", result.text);
+        assert!(result.text.contains("ignored"), "got: {}", result.text);
+        assert!(!result.text.contains("name ignored"), "got: {}", result.text);
+        assert!(!result.text.contains("score ignored"), "got: {}", result.text);
+    }
+
+    #[test]
+    fn test_parse_xlsx_empty_cell_with_ref_fills_none_gap() {
+        let parser = XlsxParser::new();
+        let data = minimal_xlsx_with_sheet_data(
+            r#"<row r="1">
+      <c r="A1" t="inlineStr"><is><t>first</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>last</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>Jane</t></is></c>
+      <c r="C2" t="inlineStr"><is><t>Doe</t></is></c>
+    </row>"#,
+        );
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("first Jane"), "got: {}", result.text);
+        assert!(result.text.contains("last Doe"), "got: {}", result.text);
     }
 
     fn contract_sheet_rows() -> &'static str {
