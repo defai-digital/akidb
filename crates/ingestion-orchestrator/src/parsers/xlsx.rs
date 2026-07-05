@@ -2,8 +2,9 @@
 
 use quick_xml::events::{BytesStart, BytesText, Event};
 use quick_xml::reader::Reader;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read};
+use std::sync::LazyLock;
 use zip::ZipArchive;
 
 use crate::parsers::{DocumentFormat, DocumentMetadata, DocumentParser, ParsedDocument};
@@ -133,26 +134,45 @@ fn is_likely_header_cell(cell: &str) -> bool {
         && (!is_short_uppercase_acronym(trimmed) || has_strong_header_signal(trimmed))
 }
 
+static HEADER_LABEL_SET: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| COMMON_HEADER_LABELS.iter().copied().collect());
+
 fn has_strong_header_signal(cell: &str) -> bool {
     let trimmed = cell.trim();
-    let lower = trimmed.to_ascii_lowercase();
     if trimmed.contains('_') || trimmed.contains('-') {
         return true;
     }
-    if COMMON_HEADER_LABELS.contains(&lower.as_str()) {
+    // Use stack buffer for lowercase conversion to avoid allocation on short strings
+    let mut buf = [0u8; 128];
+    let lower: std::borrow::Cow<'_, str> = if trimmed.len() <= buf.len() {
+        let bytes = trimmed.as_bytes();
+        buf[..bytes.len()].copy_from_slice(bytes);
+        buf[..bytes.len()].make_ascii_lowercase();
+        // SAFETY: we only changed ASCII case, preserving UTF-8 validity
+        std::borrow::Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(&buf[..bytes.len()]) })
+    } else {
+        std::borrow::Cow::Owned(trimmed.to_ascii_lowercase())
+    };
+    if HEADER_LABEL_SET.contains(lower.as_ref()) {
         return true;
     }
     lower
         .split_whitespace()
-        .all(|part| COMMON_HEADER_LABELS.contains(&part))
+        .all(|part| HEADER_LABEL_SET.contains(part))
 }
 
 fn is_short_uppercase_acronym(value: &str) -> bool {
-    let letters: Vec<char> = value.chars().filter(|c| c.is_alphabetic()).collect();
-    !letters.is_empty()
-        && letters.len() <= 8
-        && letters.iter().all(|c| c.is_uppercase())
-        && !value.chars().any(|c| c.is_lowercase())
+    let mut letter_count = 0usize;
+    let mut has_lowercase = false;
+    for c in value.chars() {
+        if c.is_alphabetic() {
+            letter_count += 1;
+            if c.is_lowercase() {
+                has_lowercase = true;
+            }
+        }
+    }
+    letter_count > 0 && letter_count <= 8 && !has_lowercase
 }
 
 const COMMON_HEADER_LABELS: &[&str] = &[
@@ -203,32 +223,45 @@ const COMMON_HEADER_LABELS: &[&str] = &[
 ];
 
 fn row_text_from_cells(cells: &[Option<String>]) -> String {
-    cells
-        .iter()
-        .filter_map(|cell| cell.as_deref())
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut result = String::new();
+    let mut first = true;
+    for cell in cells {
+        if let Some(val) = cell.as_deref() {
+            if !first {
+                result.push(' ');
+            }
+            result.push_str(val);
+            first = false;
+        }
+    }
+    result
 }
 
 fn row_text_with_headers(headers: &[Option<String>], cells: &[Option<String>]) -> String {
-    cells
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, cell)| {
-            let value = cell.as_deref()?;
-            let header = headers
-                .get(idx)
-                .and_then(|header| header.as_deref())
-                .unwrap_or_default()
-                .trim();
-            if header.is_empty() {
-                Some(value.to_string())
-            } else {
-                Some(format!("{} {}", header, value))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut result = String::new();
+    let mut first = true;
+    for (idx, cell) in cells.iter().enumerate() {
+        let Some(value) = cell.as_deref() else {
+            continue;
+        };
+        if !first {
+            result.push(' ');
+        }
+        let header = headers
+            .get(idx)
+            .and_then(|h| h.as_deref())
+            .unwrap_or_default()
+            .trim();
+        if header.is_empty() {
+            result.push_str(value);
+        } else {
+            result.push_str(header);
+            result.push(' ');
+            result.push_str(value);
+        }
+        first = false;
+    }
+    result
 }
 
 struct WorkbookData {
@@ -253,8 +286,9 @@ fn parse_workbook(data: &[u8]) -> Result<WorkbookData> {
             file.read_to_string(&mut xml).map_err(|e| {
                 crate::IngestionError::Parse(format!("Failed to read sheet {}: {}", path, e))
             })?;
+            drop(file);
             sheets.push(SheetData {
-                rows: parse_sheet_rows(&xml, &shared_strings)?,
+                rows: parse_sheet_xml(&xml, &shared_strings)?,
             });
         }
     }
@@ -288,7 +322,7 @@ fn read_shared_strings(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<St
                 current.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
             Ok(Event::End(e)) if local_name(e.name().as_ref()) == b"si" => {
-                strings.push(current.clone());
+                strings.push(std::mem::take(&mut current));
                 in_si = false;
             }
             Ok(Event::Eof) => break,
@@ -390,7 +424,7 @@ fn read_sheet_paths(
     Ok(paths)
 }
 
-fn parse_sheet_rows(xml: &str, shared_strings: &[String]) -> Result<Vec<Vec<Option<String>>>> {
+fn parse_sheet_xml(xml: &str, shared_strings: &[String]) -> Result<Vec<Vec<Option<String>>>> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
 
@@ -478,11 +512,19 @@ fn resolve_cell_value(
 }
 
 fn normalize_cell_text(text: &str) -> Option<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
+    let mut result = String::with_capacity(text.len());
+    let mut first_word = true;
+    for word in text.split_whitespace() {
+        if !first_word {
+            result.push(' ');
+        }
+        result.push_str(word);
+        first_word = false;
+    }
+    if result.is_empty() {
         None
     } else {
-        Some(normalized)
+        Some(result)
     }
 }
 
