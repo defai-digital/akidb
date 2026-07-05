@@ -13,6 +13,9 @@ on:
       - 'crates/grpc-server/proto/**'
       - '.github/workflows/sdks.yml'
 
+permissions:
+  contents: read
+
 jobs:
   sdks:
     # Apple Silicon: the engine is Mac-first, so the server is built/run here.

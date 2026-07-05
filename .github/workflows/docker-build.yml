@@ -26,6 +26,9 @@ env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ${{ github.repository }}
 
+permissions:
+  contents: read
+
 jobs:
   # Build and test akidb-server Docker image
   build-server:
