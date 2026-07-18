@@ -314,6 +314,9 @@ impl QueryWorkflow {
                 self.nprobe,
                 &[],
                 None,
+                None,
+                String::new(),
+                None,
             ),
         )
         .await;

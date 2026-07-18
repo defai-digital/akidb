@@ -62,15 +62,47 @@ async fn test_initialize_reports_server_info() {
 async fn test_tools_list_exposes_the_tool_surface() {
     let svc = setup();
     let v = call(&svc, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).await;
-    let names: Vec<&str> = v["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let tools = v["result"]["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in ["search", "pack", "memory_write", "memory_read", "status"] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
+    // Workspace ACL must be documented on memory tools (criterion 2).
+    for name in ["memory_write", "memory_read", "search", "pack"] {
+        let tool = tools.iter().find(|t| t["name"] == name).unwrap();
+        let props = &tool["inputSchema"]["properties"];
+        assert!(
+            props.get("workspace").is_some() || props.get("workspace_id").is_some(),
+            "{name} schema must expose workspace"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_mcp_memory_workspace_isolation() {
+    let svc = setup();
+
+    // Write into two workspaces via the real MCP tools/call path.
+    let write_a = r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"memory_write","arguments":{"id":"mem-a","text":"alpha secret note","workspace":"ws-a"}}}"#;
+    let write_b = r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"memory_write","arguments":{"id":"mem-b","text":"beta secret note","workspace":"ws-b"}}}"#;
+    let ra = call(&svc, write_a).await;
+    assert_eq!(ra["result"]["isError"], false, "{ra}");
+    let rb = call(&svc, write_b).await;
+    assert_eq!(rb["result"]["isError"], false, "{rb}");
+
+    let read_a = r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"memory_read","arguments":{"query":"secret note","workspace":"ws-a","top_k":10}}}"#;
+    let va = call(&svc, read_a).await;
+    assert_eq!(va["result"]["isError"], false, "{va}");
+    let text_a = va["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text_a.contains("mem-a"), "ws-a should see mem-a: {text_a}");
+    assert!(!text_a.contains("mem-b"), "ws-a must not see mem-b: {text_a}");
+
+    let read_b = r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"memory_read","arguments":{"query":"secret note","workspace":"ws-b","top_k":10}}}"#;
+    let vb = call(&svc, read_b).await;
+    assert_eq!(vb["result"]["isError"], false, "{vb}");
+    let text_b = vb["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(text_b.contains("mem-b"), "ws-b should see mem-b: {text_b}");
+    assert!(!text_b.contains("mem-a"), "ws-b must not see mem-a: {text_b}");
 }
 
 #[tokio::test]

@@ -235,6 +235,55 @@ impl CoordinatorService {
         metadata.map(|value| value.to_string()).unwrap_or_default()
     }
 
+    /// Post-merge score cut + group_by (Phase C knobs survive multi-shard path).
+    fn apply_score_and_group(
+        results: Vec<ProtoSearchResult>,
+        top_k: usize,
+        score_threshold: Option<f32>,
+        group_by: &str,
+        group_size: Option<u32>,
+    ) -> Vec<ProtoSearchResult> {
+        let mut filtered: Vec<ProtoSearchResult> = match score_threshold {
+            Some(min) if min.is_finite() => results
+                .into_iter()
+                .filter(|r| r.score.is_finite() && r.score >= min)
+                .collect(),
+            _ => results,
+        };
+        let key = group_by.trim();
+        if key.is_empty() {
+            return filtered.into_iter().take(top_k).collect();
+        }
+        let per_group = group_size.unwrap_or(1).max(1) as usize;
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut out = Vec::new();
+        for r in filtered.drain(..) {
+            let group_val = {
+                if r.metadata.is_empty() {
+                    String::new()
+                } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(&r.metadata) {
+                    match v.get(key) {
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(serde_json::Value::Number(n)) => n.to_string(),
+                        Some(other) => other.to_string(),
+                        None => String::new(),
+                    }
+                } else {
+                    String::new()
+                }
+            };
+            let n = counts.entry(group_val).or_insert(0);
+            if *n < per_group {
+                *n += 1;
+                out.push(r);
+            }
+            if out.len() >= top_k {
+                break;
+            }
+        }
+        out
+    }
+
     fn accumulate_shard_insert_response(
         vector_ids: &[String],
         response: InsertBatchResponse,
@@ -333,7 +382,7 @@ impl Akidb for CoordinatorService {
             Status::resource_exhausted(format!("Backpressure: {}", e))
         })?;
 
-        // Fan-out search to all shards
+        // Fan-out search to all shards (forward Phase C knobs).
         let result = self
             .fanout
             .search(
@@ -343,6 +392,9 @@ impl Akidb for CoordinatorService {
                 req.nprobe.unwrap_or(32),
                 &req.filter,
                 req.tag_filter.clone(),
+                req.score_threshold,
+                req.group_by.clone(),
+                req.group_size,
             )
             .await
             .map_err(|e| {
@@ -368,8 +420,9 @@ impl Akidb for CoordinatorService {
         );
         coordinator_metrics().record_request("search", "success");
 
-        // Convert results to proto format
-        let results: Vec<ProtoSearchResult> = result
+        // Convert results to proto format, then re-apply knobs after merge so
+        // multi-shard fanout cannot bypass threshold/group semantics.
+        let mut results: Vec<ProtoSearchResult> = result
             .results
             .into_iter()
             .map(|r| ProtoSearchResult {
@@ -378,6 +431,13 @@ impl Akidb for CoordinatorService {
                 metadata: Self::search_result_metadata(r.metadata),
             })
             .collect();
+        results = Self::apply_score_and_group(
+            results,
+            req.top_k as usize,
+            req.score_threshold,
+            &req.group_by,
+            req.group_size,
+        );
 
         Ok(Response::new(SearchResponse {
             results,
@@ -1009,6 +1069,51 @@ mod tests {
             group_by: String::new(),
             group_size: None,
         }
+    }
+
+    #[test]
+    fn test_apply_score_and_group_forwards_threshold_and_parent_group() {
+        let results = vec![
+            ProtoSearchResult {
+                id: "a1".into(),
+                score: 0.95,
+                metadata: r#"{"parent_id":"p1"}"#.into(),
+            },
+            ProtoSearchResult {
+                id: "a2".into(),
+                score: 0.90,
+                metadata: r#"{"parent_id":"p1"}"#.into(),
+            },
+            ProtoSearchResult {
+                id: "b1".into(),
+                score: 0.40,
+                metadata: r#"{"parent_id":"p2"}"#.into(),
+            },
+            ProtoSearchResult {
+                id: "c1".into(),
+                score: 0.85,
+                metadata: r#"{"parent_id":"p3"}"#.into(),
+            },
+        ];
+        let out = CoordinatorService::apply_score_and_group(
+            results,
+            10,
+            Some(0.5),
+            "parent_id",
+            Some(1),
+        );
+        assert!(out.iter().all(|r| r.score >= 0.5));
+        assert!(!out.iter().any(|r| r.id == "b1"));
+        let parents: std::collections::HashSet<_> = out
+            .iter()
+            .map(|r| {
+                let v: serde_json::Value = serde_json::from_str(&r.metadata).unwrap();
+                v["parent_id"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(parents.len(), out.len());
+        assert!(out.iter().any(|r| r.id == "a1" || r.id == "a2"));
+        assert!(out.iter().any(|r| r.id == "c1"));
     }
 
     fn search_batch_request(top_k: u32, nprobe: Option<u32>) -> SearchBatchRequest {

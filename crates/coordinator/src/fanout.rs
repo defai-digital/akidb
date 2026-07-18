@@ -49,6 +49,9 @@ fn shard_search_request(
     nprobe: u32,
     filter: Vec<u8>,
     tag_filter: Option<TagFilter>,
+    score_threshold: Option<f32>,
+    group_by: String,
+    group_size: Option<u32>,
 ) -> SearchRequest {
     SearchRequest {
         collection,
@@ -57,9 +60,9 @@ fn shard_search_request(
         nprobe: Some(nprobe),
         filter,
         tag_filter,
-        score_threshold: None,
-        group_by: String::new(),
-        group_size: None,
+        score_threshold,
+        group_by,
+        group_size,
     }
 }
 
@@ -313,8 +316,17 @@ impl FanoutExecutor {
         nprobe: u32,
         filter: &[u8],
         tag_filter: Option<TagFilter>,
+        score_threshold: Option<f32>,
+        group_by: String,
+        group_size: Option<u32>,
     ) -> Result<FanoutResult> {
-        let request_top_k = fanout_top_k(top_k)?;
+        // Over-fetch when grouping so post-merge cuts still fill top_k.
+        let fetch_k = if group_by.trim().is_empty() {
+            top_k
+        } else {
+            top_k.saturating_mul(4).max(top_k)
+        };
+        let request_top_k = fanout_top_k(fetch_k)?;
         let router = self.router.read().await;
         let shards: Vec<ShardInfo> = router
             .healthy_shards()
@@ -358,6 +370,9 @@ impl FanoutExecutor {
             let query_clone = query_vec.clone();
             let filter = filter.clone();
             let tag_filter = tag_filter.clone();
+            let score_threshold = score_threshold;
+            let group_by = group_by.clone();
+            let group_size = group_size;
             let timeout = self.timeout;
             let shard_id = shard.id.clone();
             handle_shard_ids.push(shard_id.clone()); // Track shard ID outside async block
@@ -373,6 +388,9 @@ impl FanoutExecutor {
                     nprobe,
                     filter,
                     tag_filter,
+                    score_threshold,
+                    group_by,
+                    group_size,
                 );
 
                 let search_result = tokio::time::timeout(timeout, client.search(request)).await;
@@ -878,8 +896,17 @@ mod tests {
 
     #[test]
     fn test_shard_search_request_uses_requested_collection() {
-        let request =
-            shard_search_request("tenant-a".to_string(), vec![0.1, 0.2], 5, 32, vec![], None);
+        let request = shard_search_request(
+            "tenant-a".to_string(),
+            vec![0.1, 0.2],
+            5,
+            32,
+            vec![],
+            None,
+            None,
+            String::new(),
+            None,
+        );
 
         assert_eq!(request.collection, "tenant-a");
         assert_eq!(request.query, vec![0.1, 0.2]);
@@ -899,10 +926,31 @@ mod tests {
             32,
             filter.clone(),
             Some(tag_filter.clone()),
+            None,
+            String::new(),
+            None,
         );
 
         assert_eq!(request.filter, filter);
         assert_eq!(request.tag_filter, Some(tag_filter));
+    }
+
+    #[test]
+    fn test_shard_search_request_forwards_score_threshold_and_group_by() {
+        let request = shard_search_request(
+            "tenant-a".to_string(),
+            vec![0.1, 0.2],
+            5,
+            32,
+            vec![],
+            None,
+            Some(0.42),
+            "parent_id".to_string(),
+            Some(1),
+        );
+        assert_eq!(request.score_threshold, Some(0.42));
+        assert_eq!(request.group_by, "parent_id");
+        assert_eq!(request.group_size, Some(1));
     }
 
     #[test]

@@ -105,18 +105,16 @@ echo "Config: $CONFIG"
 echo "Starting akidb server on 127.0.0.1:50051 (standalone)..."
 
 if $SMOKE; then
-  # Smoke without grpcurl: run unit path that exercises shipped auth/search.
-  for filt in \
-    test_workspace_acl_isolates_search_results \
-    test_score_threshold_excludes_low_scores \
-    test_group_by_parent_keeps_one_per_group
-  do
-    cargo test -p akidb-grpc --lib "$filt" -- --nocapture
-  done
-  echo "Smoke unit path OK (server start path validated via config write + CLI build)."
-  cargo build -p akidb-cli -q
-  echo "akidb CLI build OK. To run server: cargo run -p akidb-cli -- server --standalone --config $CONFIG --listen 127.0.0.1:50051"
-  exit 0
+  # Live Docker-free path: boot real server, insert/search with workspace ACL.
+  export AKIDB_SMOKE_SCRATCH="${AKIDB_SMOKE_SCRATCH:-$PROJECT_ROOT/qa-results}"
+  PY="$PROJECT_ROOT/.venv-smoke/bin/python"
+  if [ ! -x "$PY" ]; then
+    python3 -m venv "$PROJECT_ROOT/.venv-smoke"
+    "$PROJECT_ROOT/.venv-smoke/bin/pip" install -q 'grpcio>=1.60'
+    PY="$PROJECT_ROOT/.venv-smoke/bin/python"
+  fi
+  "$PY" "$SCRIPT_DIR/entry_smoke_live.py"
+  exit $?
 fi
 
 exec cargo run -p akidb-cli -- server --standalone --config "$CONFIG" --listen 127.0.0.1:50051

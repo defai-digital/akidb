@@ -72,3 +72,6 @@ secrets/
 *.tar.gz
 *.zip
 dist/
+
+# Local smoke venv
+.venv-smoke/

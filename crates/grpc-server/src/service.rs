@@ -3477,51 +3477,62 @@ mod tests {
             .with_graph_index(graph)
             .with_embedding_provider(Arc::new(FixedEmbedder));
 
-        // Seed caller + callee with calls edge in metadata.
+        // Seed: BM25-only match + orthogonal hidden target reachable only via calls edge.
         service
             .insert(Request::new(InsertRequest {
                 collection: "test".to_string(),
-                id: "fn_add".to_string(),
+                id: "fn_seed".to_string(),
                 vector: vec![1.0, 0.0],
-                metadata: br#"{"symbol":"Add"}"#.to_vec(),
-                text: "func Add(a, b int) int { return a + b }".to_string(),
+                metadata: br#"{"calls":["fn_hidden"]}"#.to_vec(),
+                text: "seed_marker_token_alpha unique_body".to_string(),
             }))
             .await
             .unwrap();
         service
             .insert(Request::new(InsertRequest {
                 collection: "test".to_string(),
-                id: "fn_test_add".to_string(),
-                vector: vec![0.95, 0.05],
-                metadata: br#"{"symbol":"TestAdd","calls":["fn_add"],"tested_by":[]}"#.to_vec(),
-                text: "func TestAdd(t *testing.T) { Add(1,2) }".to_string(),
-            }))
-            .await
-            .unwrap();
-        // Re-index Add with tested_by reverse edge.
-        service
-            .insert(Request::new(InsertRequest {
-                collection: "test".to_string(),
-                id: "fn_add".to_string(),
-                vector: vec![1.0, 0.0],
-                metadata: br#"{"symbol":"Add","tested_by":["fn_test_add"]}"#.to_vec(),
-                text: "func Add(a, b int) int { return a + b }".to_string(),
+                id: "fn_hidden".to_string(),
+                // Orthogonal vector + text with no lexical overlap to the query.
+                vector: vec![0.0, 1.0],
+                metadata: br#"{"symbol":"Hidden"}"#.to_vec(),
+                text: "zzzz_unrelated_body_no_overlap_xyz".to_string(),
             }))
             .await
             .unwrap();
 
-        let mut req = bm25_text_search_request("Add", 10);
-        req.retrieval_mode = "graph_hybrid".to_string();
-        req.hybrid = true;
-        let response = service
-            .text_search(Request::new(req))
+        // Baseline: BM25 without graph must not return the hidden target.
+        let mut bm25 = bm25_text_search_request("seed_marker_token_alpha", 10);
+        bm25.retrieval_mode = "bm25".to_string();
+        let bm25_hits = service
+            .text_search(Request::new(bm25))
             .await
             .unwrap()
-            .into_inner();
-        let ids: Vec<_> = response.results.iter().map(|r| r.id.as_str()).collect();
+            .into_inner()
+            .results;
         assert!(
-            ids.contains(&"fn_add") || ids.contains(&"fn_test_add"),
-            "graph_hybrid should surface seeded code ids, got {ids:?}"
+            bm25_hits.iter().any(|r| r.id == "fn_seed"),
+            "seed should match BM25"
+        );
+        assert!(
+            !bm25_hits.iter().any(|r| r.id == "fn_hidden"),
+            "hidden target must not match BM25 alone, got {:?}",
+            bm25_hits.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
+
+        // graph_hybrid expands seed → fn_hidden via the calls edge.
+        let mut graph_req = bm25_text_search_request("seed_marker_token_alpha", 10);
+        graph_req.retrieval_mode = "graph_hybrid".to_string();
+        graph_req.hybrid = true;
+        let graph_hits = service
+            .text_search(Request::new(graph_req))
+            .await
+            .unwrap()
+            .into_inner()
+            .results;
+        let ids: Vec<_> = graph_hits.iter().map(|r| r.id.as_str()).collect();
+        assert!(
+            ids.contains(&"fn_hidden"),
+            "graph_hybrid must expand calls edge to fn_hidden, got {ids:?}"
         );
     }
 }

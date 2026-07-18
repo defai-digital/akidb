@@ -101,7 +101,9 @@ fn tool_definitions() -> Value {
                 "properties": {
                     "query": { "type": "string" },
                     "top_k": { "type": "integer" },
-                    "hybrid": { "type": "boolean" }
+                    "hybrid": { "type": "boolean" },
+                    "workspace": { "type": "string", "description": "Workspace ACL scope (workspace_id)." },
+                    "workspace_id": { "type": "string" }
                 },
                 "required": ["query"]
             }
@@ -114,7 +116,9 @@ fn tool_definitions() -> Value {
                 "properties": {
                     "query": { "type": "string" },
                     "top_k": { "type": "integer" },
-                    "token_budget": { "type": "integer" }
+                    "token_budget": { "type": "integer" },
+                    "workspace": { "type": "string" },
+                    "workspace_id": { "type": "string" }
                 },
                 "required": ["query"]
             }
@@ -131,20 +135,24 @@ fn tool_definitions() -> Value {
                     "conversation_id": { "type": "string" },
                     "task_id": { "type": "string" },
                     "tool": { "type": "string" },
-                    "source_uri": { "type": "string" }
+                    "source_uri": { "type": "string" },
+                    "workspace": { "type": "string", "description": "Workspace ACL scope (workspace_id)." },
+                    "workspace_id": { "type": "string" }
                 },
                 "required": ["id", "text"]
             }
         },
         {
             "name": "memory_read",
-            "description": "Retrieve agent memory, optionally scoped to a conversation_id.",
+            "description": "Retrieve agent memory, optionally scoped to a conversation_id and workspace.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string" },
                     "conversation_id": { "type": "string" },
-                    "top_k": { "type": "integer" }
+                    "top_k": { "type": "integer" },
+                    "workspace": { "type": "string", "description": "Workspace ACL scope (workspace_id)." },
+                    "workspace_id": { "type": "string" }
                 },
                 "required": ["query"]
             }
@@ -239,6 +247,10 @@ fn text_search_request(
     }
 }
 
+fn arg_workspace(args: &Value) -> Result<Option<String>, String> {
+    Ok(arg_str(args, "workspace")?.or(arg_str(args, "workspace_id")?))
+}
+
 async fn tool_search<I, S>(service: &AkiDbService<I, S>, args: &Value) -> Result<String, String>
 where
     I: VectorIndex + 'static,
@@ -247,10 +259,12 @@ where
     let query = required_str(args, "query")?;
     let top_k = arg_u32(args, "top_k", 10)?;
     let hybrid = arg_bool(args, "hybrid", true)?;
+    let workspace = arg_workspace(args)?;
     let resp = service
-        .text_search(Request::new(text_search_request(
-            query, top_k, hybrid, false, None,
-        )))
+        .text_search(request_with_workspace(
+            text_search_request(query, top_k, hybrid, false, None),
+            workspace.as_deref(),
+        ))
         .await
         .map_err(|e| e.message().to_string())?
         .into_inner();
@@ -270,14 +284,12 @@ where
     let query = required_str(args, "query")?;
     let top_k = arg_u32(args, "top_k", 10)?;
     let budget = arg_u32(args, "token_budget", 1024)?;
+    let workspace = arg_workspace(args)?;
     let resp = service
-        .text_search(Request::new(text_search_request(
-            query,
-            top_k,
-            true,
-            true,
-            Some(budget),
-        )))
+        .text_search(request_with_workspace(
+            text_search_request(query, top_k, true, true, Some(budget)),
+            workspace.as_deref(),
+        ))
         .await
         .map_err(|e| e.message().to_string())?
         .into_inner();
