@@ -432,6 +432,9 @@ async fn benchmark_searches(
             nprobe: Some(args.nprobe),
             filter: vec![],
             tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         };
 
         let start = Instant::now();
@@ -553,6 +556,9 @@ async fn benchmark_searches_concurrent(
                 nprobe: Some(nprobe),
                 filter: vec![],
                 tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
             };
 
             let start = Instant::now();

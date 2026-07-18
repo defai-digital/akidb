@@ -5,17 +5,19 @@
 //! symbol* (functions, types, classes), keeping each definition intact along with
 //! its immediately-preceding doc comments and attributes.
 //!
-//! It is a deliberately dependency-free heuristic: Rust blocks are found by brace
-//! matching, Python blocks by indentation. This avoids pulling in tree-sitter's
-//! compiled C grammars. A tree-sitter backend (precise spans, nested symbols,
-//! call/import edges) is the documented future upgrade behind this same API.
-//! Known limitation: this is still a heuristic scanner, not a full parser.
+//! Dependency-free language scanners for Rust, Python, TypeScript/JavaScript,
+//! and Go. Blocks use brace matching (or Python indentation). Spans are stable
+//! line + byte ranges suitable for graph edges and citations. Known limitation:
+//! not a full tree-sitter parse of nested / macro-heavy code.
 
 /// Source language for chunking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     Rust,
     Python,
+    TypeScript,
+    JavaScript,
+    Go,
     Other,
 }
 
@@ -25,6 +27,9 @@ impl Language {
         match ext.to_ascii_lowercase().as_str() {
             "rs" => Language::Rust,
             "py" => Language::Python,
+            "ts" | "tsx" => Language::TypeScript,
+            "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
+            "go" => Language::Go,
             _ => Language::Other,
         }
     }
@@ -47,7 +52,7 @@ pub enum SymbolKind {
     Other,
 }
 
-/// One code chunk: a top-level symbol with its source span (1-based lines).
+/// One code chunk: a top-level symbol with its source span (1-based lines + bytes).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeChunk {
     pub kind: SymbolKind,
@@ -55,6 +60,26 @@ pub struct CodeChunk {
     pub text: String,
     pub start_line: usize,
     pub end_line: usize,
+    /// Inclusive byte offset of the first character of `start_line` in source.
+    pub start_byte: usize,
+    /// Exclusive byte offset after the last character of `end_line` in source.
+    pub end_byte: usize,
+}
+
+/// Edge kinds emitted for code graph expansion (calls / imports / tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeEdgeKind {
+    Imports,
+    Calls,
+    TestedBy,
+}
+
+/// A lightweight code graph edge: source symbol → target name (or path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeEdge {
+    pub kind: CodeEdgeKind,
+    pub from_symbol: Option<String>,
+    pub to_symbol: String,
 }
 
 /// Chunk source code into top-level symbol chunks.
@@ -65,20 +90,208 @@ pub fn chunk_code(source: &str, lang: Language) -> Vec<CodeChunk> {
     match lang {
         Language::Rust => chunk_rust(source),
         Language::Python => chunk_python(source),
+        Language::TypeScript | Language::JavaScript => chunk_js_family(source),
+        Language::Go => chunk_go(source),
         Language::Other => {
             if source.trim().is_empty() {
                 Vec::new()
             } else {
                 let line_count = source.lines().count().max(1);
+                let (start_byte, end_byte) = line_byte_range(source, 1, line_count);
                 vec![CodeChunk {
                     kind: SymbolKind::Other,
                     name: None,
                     text: source.to_string(),
                     start_line: 1,
                     end_line: line_count,
+                    start_byte,
+                    end_byte,
                 }]
             }
         }
+    }
+}
+
+/// Extract import / call / tested_by edges from a source unit for graph indexing.
+pub fn extract_code_edges(source: &str, lang: Language, from_symbol: Option<&str>) -> Vec<CodeEdge> {
+    let mut edges = Vec::new();
+    match lang {
+        Language::Rust => {
+            for line in source.lines() {
+                let t = line.trim();
+                if let Some(rest) = t.strip_prefix("use ") {
+                    let target = rest
+                        .trim_end_matches(';')
+                        .split(" as ")
+                        .next()
+                        .unwrap_or(rest)
+                        .trim()
+                        .to_string();
+                    if !target.is_empty() {
+                        edges.push(CodeEdge {
+                            kind: CodeEdgeKind::Imports,
+                            from_symbol: from_symbol.map(str::to_string),
+                            to_symbol: target,
+                        });
+                    }
+                }
+                // Heuristic call sites: foo( or Foo::bar(
+                for token in t.split(|c: char| !c.is_alphanumeric() && c != '_' && c != ':') {
+                    if token.contains("::") {
+                        let name = token.split("::").last().unwrap_or(token);
+                        if !name.is_empty() && name.chars().next().is_some_and(|c| c.is_lowercase())
+                        {
+                            edges.push(CodeEdge {
+                                kind: CodeEdgeKind::Calls,
+                                from_symbol: from_symbol.map(str::to_string),
+                                to_symbol: name.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Language::Python => {
+            for line in source.lines() {
+                let t = line.trim();
+                if let Some(rest) = t.strip_prefix("import ") {
+                    let target = rest.split_whitespace().next().unwrap_or("").to_string();
+                    if !target.is_empty() {
+                        edges.push(CodeEdge {
+                            kind: CodeEdgeKind::Imports,
+                            from_symbol: from_symbol.map(str::to_string),
+                            to_symbol: target,
+                        });
+                    }
+                }
+                if let Some(rest) = t.strip_prefix("from ") {
+                    let target = rest.split_whitespace().next().unwrap_or("").to_string();
+                    if !target.is_empty() {
+                        edges.push(CodeEdge {
+                            kind: CodeEdgeKind::Imports,
+                            from_symbol: from_symbol.map(str::to_string),
+                            to_symbol: target,
+                        });
+                    }
+                }
+            }
+            if let Some(sym) = from_symbol {
+                if let Some(target) = sym.strip_prefix("test_") {
+                    edges.push(CodeEdge {
+                        kind: CodeEdgeKind::TestedBy,
+                        from_symbol: Some(sym.to_string()),
+                        to_symbol: target.to_string(),
+                    });
+                }
+            }
+        }
+        Language::TypeScript | Language::JavaScript => {
+            for line in source.lines() {
+                let t = line.trim();
+                if t.starts_with("import ") {
+                    if let Some(from) = t.split(" from ").nth(1) {
+                        let target = from
+                            .trim()
+                            .trim_matches(';')
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_string();
+                        if !target.is_empty() {
+                            edges.push(CodeEdge {
+                                kind: CodeEdgeKind::Imports,
+                                from_symbol: from_symbol.map(str::to_string),
+                                to_symbol: target,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Language::Go => {
+            let mut in_import = false;
+            for line in source.lines() {
+                let t = line.trim();
+                if t.starts_with("import (") {
+                    in_import = true;
+                    continue;
+                }
+                if in_import {
+                    if t.starts_with(')') {
+                        in_import = false;
+                        continue;
+                    }
+                    let target = t.trim_matches('"').to_string();
+                    if !target.is_empty() && !target.starts_with("//") {
+                        edges.push(CodeEdge {
+                            kind: CodeEdgeKind::Imports,
+                            from_symbol: from_symbol.map(str::to_string),
+                            to_symbol: target,
+                        });
+                    }
+                } else if let Some(rest) = t.strip_prefix("import ") {
+                    let target = rest.trim().trim_matches('"').to_string();
+                    if !target.is_empty() {
+                        edges.push(CodeEdge {
+                            kind: CodeEdgeKind::Imports,
+                            from_symbol: from_symbol.map(str::to_string),
+                            to_symbol: target,
+                        });
+                    }
+                }
+            }
+            if let Some(sym) = from_symbol {
+                if let Some(target) = sym.strip_prefix("Test") {
+                    edges.push(CodeEdge {
+                        kind: CodeEdgeKind::TestedBy,
+                        from_symbol: Some(sym.to_string()),
+                        to_symbol: target.to_string(),
+                    });
+                }
+            }
+        }
+        Language::Other => {}
+    }
+    edges
+}
+
+fn line_byte_range(source: &str, start_line: usize, end_line: usize) -> (usize, usize) {
+    let start_line = start_line.max(1);
+    let end_line = end_line.max(start_line);
+    let mut start_byte = 0usize;
+    let mut end_byte = source.len();
+    let mut line = 1usize;
+    let mut pos = 0usize;
+    for part in source.split_inclusive('\n') {
+        if line == start_line {
+            start_byte = pos;
+        }
+        if line == end_line {
+            end_byte = pos + part.len();
+            break;
+        }
+        pos += part.len();
+        line += 1;
+    }
+    (start_byte, end_byte)
+}
+
+fn make_chunk(
+    source: &str,
+    kind: SymbolKind,
+    name: Option<String>,
+    text: String,
+    start_line: usize,
+    end_line: usize,
+) -> CodeChunk {
+    let (start_byte, end_byte) = line_byte_range(source, start_line, end_line);
+    CodeChunk {
+        kind,
+        name,
+        text,
+        start_line,
+        end_line,
+        start_byte,
+        end_byte,
     }
 }
 
@@ -681,13 +894,14 @@ fn chunk_rust(source: &str) -> Vec<CodeChunk> {
                 let name = rust_symbol_name(trimmed, kind);
                 let end = rust_block_end(&lines, i);
                 let chunk_start = extend_start_with_decorations(&lines, i);
-                chunks.push(CodeChunk {
+                chunks.push(make_chunk(
+                    source,
                     kind,
                     name,
-                    text: lines[chunk_start..=end].join("\n"),
-                    start_line: chunk_start + 1,
-                    end_line: end + 1,
-                });
+                    lines[chunk_start..=end].join("\n"),
+                    chunk_start + 1,
+                    end + 1,
+                ));
                 i = end + 1;
                 continue;
             }
@@ -723,19 +937,208 @@ fn chunk_python(source: &str) -> Vec<CodeChunk> {
             let end = python_block_end(&lines, i);
             let name = python_name(trimmed, kind);
             let chunk_start = extend_start_with_python_decorators(&lines, i);
-            chunks.push(CodeChunk {
+            chunks.push(make_chunk(
+                source,
                 kind,
                 name,
-                text: lines[chunk_start..=end].join("\n"),
-                start_line: chunk_start + 1,
-                end_line: end + 1,
-            });
+                lines[chunk_start..=end].join("\n"),
+                chunk_start + 1,
+                end + 1,
+            ));
             i = end + 1;
             continue;
         }
         i += 1;
     }
     chunks
+}
+
+/// TypeScript / JavaScript: top-level function / class / export function.
+fn chunk_js_family(source: &str) -> Vec<CodeChunk> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut chunks = Vec::new();
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if depth == 0 {
+            if let Some((kind, name)) = js_symbol_start(trimmed) {
+                let end = brace_block_end(&lines, i);
+                let chunk_start = i;
+                chunks.push(make_chunk(
+                    source,
+                    kind,
+                    name,
+                    lines[chunk_start..=end].join("\n"),
+                    chunk_start + 1,
+                    end + 1,
+                ));
+                i = end + 1;
+                continue;
+            }
+        }
+        depth += brace_delta(lines[i]);
+        if depth < 0 {
+            depth = 0;
+        }
+        i += 1;
+    }
+    chunks
+}
+
+fn js_symbol_start(trimmed: &str) -> Option<(SymbolKind, Option<String>)> {
+    let t = trimmed.trim_start_matches("export ").trim_start_matches("default ");
+    if t.starts_with("function ") || t.starts_with("async function ") {
+        let rest = t
+            .trim_start_matches("async ")
+            .trim_start_matches("function ")
+            .trim_start();
+        let name = rest
+            .split(|c: char| c == '(' || c.is_whitespace())
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        return Some((SymbolKind::Function, name));
+    }
+    if t.starts_with("class ") {
+        let rest = t.trim_start_matches("class ").trim_start();
+        let name = rest
+            .split(|c: char| c == '{' || c.is_whitespace())
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        return Some((SymbolKind::Class, name));
+    }
+    // const foo = (...) => { or const foo = function
+    if t.starts_with("const ") || t.starts_with("let ") || t.starts_with("var ") {
+        if t.contains("=>") || t.contains("function") {
+            let after = t
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("")
+                .trim_end_matches('=')
+                .trim()
+                .to_string();
+            if !after.is_empty() {
+                return Some((SymbolKind::Function, Some(after)));
+            }
+        }
+    }
+    None
+}
+
+fn chunk_go(source: &str) -> Vec<CodeChunk> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut chunks = Vec::new();
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if depth == 0 && trimmed.starts_with("func ") {
+            let name = go_func_name(trimmed);
+            let end = brace_block_end(&lines, i);
+            chunks.push(make_chunk(
+                source,
+                SymbolKind::Function,
+                name,
+                lines[i..=end].join("\n"),
+                i + 1,
+                end + 1,
+            ));
+            i = end + 1;
+            continue;
+        }
+        depth += brace_delta(lines[i]);
+        if depth < 0 {
+            depth = 0;
+        }
+        i += 1;
+    }
+    chunks
+}
+
+fn go_func_name(trimmed: &str) -> Option<String> {
+    // func Name( or func (r *T) Name(
+    let rest = trimmed.trim_start_matches("func ").trim_start();
+    if rest.starts_with('(') {
+        // method: find ) then name
+        let after = rest.find(')').map(|i| rest[i + 1..].trim_start())?;
+        let name = after
+            .split(|c: char| c == '(' || c.is_whitespace())
+            .next()?
+            .to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    } else {
+        let name = rest
+            .split(|c: char| c == '(' || c.is_whitespace())
+            .next()?
+            .to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    }
+}
+
+fn brace_delta(line: &str) -> i32 {
+    let mut delta = 0i32;
+    let mut in_str = false;
+    let mut quote = '\0';
+    let mut escaped = false;
+    for c in line.chars() {
+        if in_str {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if c == '\\' {
+                escaped = true;
+                continue;
+            }
+            if c == quote {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' | '`' => {
+                in_str = true;
+                quote = c;
+            }
+            '{' => delta += 1,
+            '}' => delta -= 1,
+            _ => {}
+        }
+    }
+    delta
+}
+
+fn brace_block_end(lines: &[&str], start: usize) -> usize {
+    let mut depth = 0i32;
+    let mut seen_open = false;
+    for (idx, line) in lines.iter().enumerate().skip(start) {
+        let d = brace_delta(line);
+        if d > 0 {
+            seen_open = true;
+        }
+        depth += d;
+        if seen_open && depth <= 0 {
+            return idx;
+        }
+        // single-line bodies without braces: stop at same line
+        if !seen_open && idx > start && !line.trim().is_empty() && !line.trim().ends_with('{') {
+            // keep scanning until we see a brace or blank? Prefer end at start for arrow one-liners
+        }
+    }
+    if !seen_open {
+        return start;
+    }
+    lines.len().saturating_sub(1)
 }
 
 fn extend_start_with_python_decorators(lines: &[&str], start: usize) -> usize {
@@ -1539,5 +1942,67 @@ def next_symbol():
         assert_eq!(chunks[0].kind, SymbolKind::Other);
         assert_eq!(chunks[0].end_line, 2);
         assert!(chunk_code("   ", Language::Other).is_empty());
+        assert!(chunks[0].end_byte > chunks[0].start_byte);
+    }
+
+    #[test]
+    fn test_typescript_function_and_class_chunks() {
+        let src = r#"
+import { foo } from "./foo";
+
+export function greet(name: string) {
+  return name;
+}
+
+export class Greeter {
+  greet() {
+    return "hi";
+  }
+}
+"#;
+        let chunks = chunk_code(src, Language::TypeScript);
+        assert!(chunks.len() >= 2, "got {:?}", chunks.iter().map(|c| &c.name).collect::<Vec<_>>());
+        assert!(chunks.iter().any(|c| c.name.as_deref() == Some("greet")));
+        assert!(chunks.iter().any(|c| c.name.as_deref() == Some("Greeter")));
+        let edges = extract_code_edges(src, Language::TypeScript, Some("greet"));
+        assert!(edges.iter().any(|e| e.kind == CodeEdgeKind::Imports && e.to_symbol.contains("foo")));
+    }
+
+    #[test]
+    fn test_go_func_chunks_and_test_edge() {
+        let src = r#"
+package demo
+
+import "fmt"
+
+func Add(a, b int) int {
+  return a + b
+}
+
+func TestAdd(t *testing.T) {
+  if Add(1, 2) != 3 {
+    t.Fatal("nope")
+  }
+}
+"#;
+        let chunks = chunk_code(src, Language::Go);
+        assert!(chunks.iter().any(|c| c.name.as_deref() == Some("Add")));
+        assert!(chunks.iter().any(|c| c.name.as_deref() == Some("TestAdd")));
+        let edges = extract_code_edges(src, Language::Go, Some("TestAdd"));
+        assert!(edges.iter().any(|e| e.kind == CodeEdgeKind::TestedBy && e.to_symbol == "Add"));
+        assert!(edges.iter().any(|e| e.kind == CodeEdgeKind::Imports));
+    }
+
+    #[test]
+    fn test_byte_spans_cover_chunk_text() {
+        let src = "fn alpha() {}\n\nfn beta() {}\n";
+        let chunks = chunk_code(src, Language::Rust);
+        assert_eq!(chunks.len(), 2);
+        for c in &chunks {
+            assert!(c.end_byte <= src.len());
+            assert!(c.start_byte < c.end_byte);
+            let slice = &src[c.start_byte..c.end_byte];
+            assert!(slice.contains(c.name.as_deref().unwrap_or("")));
+        }
     }
 }

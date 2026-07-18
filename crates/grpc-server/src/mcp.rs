@@ -233,6 +233,9 @@ fn text_search_request(
         filter: vec![],
         tag_filter: None,
         retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
     }
 }
 
@@ -281,6 +284,21 @@ where
     Ok(resp.context_pack)
 }
 
+fn request_with_workspace<T>(inner: T, workspace: Option<&str>) -> Request<T> {
+    use crate::auth::AuthContext;
+    let mut req = Request::new(inner);
+    if let Some(ws) = workspace {
+        if !ws.is_empty() {
+            req.extensions_mut().insert(AuthContext {
+                workspace_id: ws.to_string(),
+                agent_id: None,
+                authenticated: true,
+            });
+        }
+    }
+    req
+}
+
 async fn tool_memory_write<I, S>(
     service: &AkiDbService<I, S>,
     args: &Value,
@@ -296,6 +314,8 @@ where
             .ok_or_else(|| format!("unknown memory kind: {kind}"))?,
         None => MemoryKind::Note,
     };
+    let workspace = arg_str(args, "workspace")?
+        .or_else(|| arg_str(args, "workspace_id").ok().flatten());
 
     let mut entry = MemoryEntry::new(id.clone(), kind, text.clone());
     if let Some(v) = arg_str(args, "conversation_id")? {
@@ -312,15 +332,24 @@ where
     }
 
     let vector = service.embed_text(&text)?;
-    let metadata = serde_json::to_vec(&entry.to_metadata()).map_err(|e| e.to_string())?;
+    let mut meta_value = entry.to_metadata();
+    if let Some(ws) = &workspace {
+        if let serde_json::Value::Object(map) = &mut meta_value {
+            map.insert("workspace_id".to_string(), json!(ws));
+        }
+    }
+    let metadata = serde_json::to_vec(&meta_value).map_err(|e| e.to_string())?;
     service
-        .insert(Request::new(InsertRequest {
-            collection: COLLECTION.to_string(),
-            id: id.clone(),
-            vector,
-            metadata,
-            text,
-        }))
+        .insert(request_with_workspace(
+            InsertRequest {
+                collection: COLLECTION.to_string(),
+                id: id.clone(),
+                vector,
+                metadata,
+                text,
+            },
+            workspace.as_deref(),
+        ))
         .await
         .map_err(|e| e.message().to_string())?;
     Ok(format!("stored memory '{id}'"))
@@ -337,6 +366,8 @@ where
     let query = required_str(args, "query")?;
     let top_k = arg_u32(args, "top_k", 10)?;
     let vector = service.embed_text(&query)?;
+    let workspace = arg_str(args, "workspace")?
+        .or_else(|| arg_str(args, "workspace_id").ok().flatten());
 
     // Scope to a conversation when provided, via a typed tag filter.
     let tag_filter = arg_str(args, "conversation_id")?.map(|cid| TagFilter {
@@ -350,14 +381,20 @@ where
     });
 
     let resp = service
-        .search(Request::new(SearchRequest {
-            collection: COLLECTION.to_string(),
-            query: vector,
-            top_k,
-            nprobe: None,
-            filter: vec![],
-            tag_filter,
-        }))
+        .search(request_with_workspace(
+            SearchRequest {
+                collection: COLLECTION.to_string(),
+                query: vector,
+                top_k,
+                nprobe: None,
+                filter: vec![],
+                tag_filter,
+                score_threshold: None,
+                group_by: String::new(),
+                group_size: None,
+            },
+            workspace.as_deref(),
+        ))
         .await
         .map_err(|e| e.message().to_string())?
         .into_inner();

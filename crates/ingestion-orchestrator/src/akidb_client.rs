@@ -201,6 +201,9 @@ impl AkiDbClient {
             nprobe: Some(32),
             filter: vec![],
             tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         });
 
         let mut client = client.clone();

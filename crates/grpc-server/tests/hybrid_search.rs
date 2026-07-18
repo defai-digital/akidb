@@ -128,6 +128,9 @@ async fn search(
             filter: vec![],
             tag_filter: None,
             retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -163,6 +166,9 @@ async fn test_text_search_rejects_whitespace_only_query() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect_err("whitespace-only TextSearch should be rejected");
@@ -239,6 +245,9 @@ async fn test_hybrid_top_k_above_pool_cap_does_not_panic() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("hybrid top_k above the default pool cap should not panic")
@@ -280,6 +289,9 @@ async fn test_hybrid_rejects_zero_fusion_weights() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect_err("zero fusion weights should be rejected");
@@ -310,6 +322,9 @@ async fn test_retrieval_mode_vector_overrides_hybrid_flag() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "vector".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -342,6 +357,9 @@ async fn test_retrieval_mode_bm25_does_not_require_embedding_provider() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 text_search should not require an embedder")
@@ -372,6 +390,9 @@ async fn test_invalid_retrieval_mode_error_lists_sql_modes() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bogus".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect_err("invalid retrieval_mode should be rejected");
@@ -418,6 +439,10 @@ async fn test_bm25_metadata_filter_applies_before_top_k_cutoff() {
             filter: br#"{"tenant_id":"b"}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 filter search failed")
@@ -472,6 +497,10 @@ async fn test_bm25_tag_filter_applies_before_top_k_cutoff() {
                 })),
             }),
             retrieval_mode: "bm25".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 tag filter search failed")
@@ -510,6 +539,10 @@ async fn test_text_search_rejects_unknown_tag_operator() {
                 })),
             }),
             retrieval_mode: "bm25".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect_err("unknown tag operator should be rejected");
@@ -563,6 +596,10 @@ async fn test_bm25_tag_filter_matches_nested_metadata_path() {
                 })),
             }),
             retrieval_mode: "bm25".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 nested tag filter search failed")
@@ -609,6 +646,10 @@ async fn test_retrieval_mode_sql_uses_metadata_adapter_without_embedder() {
             filter: br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("sql text_search should not require an embedder")
@@ -642,6 +683,10 @@ async fn test_retrieval_mode_sql_uses_metadata_adapter_without_embedder() {
             filter: br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("sql text_search should still succeed after delete")
@@ -686,6 +731,10 @@ async fn test_retrieval_mode_sql_matches_null_metadata_filter() {
             filter: br#"{"tenant_id":"defai","deleted_at":null}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("sql null filter text_search should succeed")
@@ -732,6 +781,10 @@ async fn test_retrieval_mode_sql_applies_nested_legacy_metadata_filter() {
             filter: br#"{"contract":{"customer":"HGC","year":2025}}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("sql nested metadata text_search should succeed")
@@ -778,6 +831,10 @@ async fn test_retrieval_mode_sql_preserves_literal_dotted_legacy_filter_key() {
             filter: br#"{"contract.year":2025}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("sql literal dotted metadata filter should succeed")
@@ -832,6 +889,10 @@ async fn test_retrieval_mode_sql_empty_object_filter_requires_object_value() {
             filter: br#"{"contract":{}}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("sql empty object metadata filter should succeed")
@@ -878,6 +939,10 @@ async fn test_retrieval_mode_sql_array_filter_uses_post_filter_before_top_k_cuto
             filter: br#"{"tags":["rust","rag"]}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("sql array metadata filter should succeed")
@@ -932,6 +997,10 @@ async fn test_retrieval_mode_sql_applies_tag_filter_before_top_k_cutoff() {
                 })),
             }),
             retrieval_mode: "sql".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("sql tag_filter text_search should succeed")
@@ -970,6 +1039,10 @@ async fn test_retrieval_mode_sql_pack_builds_context() {
             filter: br#"{"customer":"HGC","year":2025}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("sql pack text_search should succeed")
@@ -1027,6 +1100,10 @@ async fn test_rebuild_sql_metadata_index_removes_deleted_vectors() {
             filter: br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("sql text_search after rebuild should succeed")
@@ -1113,6 +1190,9 @@ async fn test_insert_upsert_empty_text_removes_stale_bm25_document() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 search failed")
@@ -1138,6 +1218,9 @@ async fn test_insert_upsert_empty_text_removes_stale_bm25_document() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 search after upsert failed")
@@ -1194,6 +1277,9 @@ async fn test_batch_insert_upsert_empty_text_removes_stale_bm25_document() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 search after batch upsert failed")
@@ -1262,6 +1348,9 @@ async fn test_batch_insert_rejects_invalid_vectors_without_indexing_text() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 search after partial batch insert failed")
@@ -1293,6 +1382,9 @@ async fn test_pack_returns_cited_context() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -1334,6 +1426,9 @@ async fn test_pack_respects_token_budget() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -1365,6 +1460,9 @@ async fn test_no_pack_leaves_context_empty() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -1394,6 +1492,9 @@ async fn test_text_search_accepts_long_multibyte_query() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("long multibyte text_search should not panic")
@@ -1488,6 +1589,9 @@ async fn test_rebuild_lexical_index_removes_stale_in_memory_text() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 search failed")
@@ -1516,6 +1620,9 @@ async fn test_rebuild_lexical_index_removes_stale_in_memory_text() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 search after rebuild failed")
@@ -1572,6 +1679,9 @@ async fn test_rebuild_lexical_index_skips_deleted_vectors_with_stale_text() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("bm25 search after rebuild failed")
@@ -1616,6 +1726,9 @@ async fn test_rerank_promotes_query_term_match() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -1652,6 +1765,9 @@ async fn test_diversity_demotes_near_duplicate() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -1687,6 +1803,9 @@ async fn test_diversity_rejects_invalid_mmr_lambda() {
                 filter: vec![],
                 tag_filter: None,
                 retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
             }))
             .await
             .expect_err("invalid mmr_lambda should be rejected");
@@ -1717,6 +1836,9 @@ async fn pack_for(
         filter: vec![],
         tag_filter: None,
         retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
     }))
     .await
     .expect("text_search failed")
@@ -1891,6 +2013,9 @@ async fn test_graph_mode_returns_graph_expanded_results() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "graph".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -1937,6 +2062,9 @@ async fn test_auto_graph_query_expands_file_metadata_seed() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -1988,6 +2116,9 @@ async fn test_auto_graph_query_expands_symbol_metadata_seed() {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: String::new(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -2348,6 +2479,10 @@ async fn test_text_search_applies_legacy_metadata_filter_to_hybrid_results() {
             filter: br#"{"tenant":"a"}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: String::new(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -2394,6 +2529,10 @@ async fn test_text_search_applies_nested_legacy_metadata_filter() {
             filter: br#"{"contract":{"year":2025}}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: String::new(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")
@@ -2440,6 +2579,10 @@ async fn test_text_search_filter_blocks_graph_expanded_context() {
             filter: br#"{"tenant":"a"}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "graph_hybrid".into(),
+        
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }))
         .await
         .expect("text_search failed")

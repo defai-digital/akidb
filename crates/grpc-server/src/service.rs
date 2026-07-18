@@ -552,6 +552,61 @@ where
         }
     }
 
+    /// Apply score_threshold then optional group_by (Phase C knobs).
+    fn apply_score_and_group(
+        &self,
+        results: Vec<SearchResult>,
+        top_k: usize,
+        score_threshold: Option<f32>,
+        group_by: &str,
+        group_size: Option<u32>,
+    ) -> Vec<SearchResult> {
+        let mut filtered: Vec<SearchResult> = match score_threshold {
+            Some(min) if min.is_finite() => results
+                .into_iter()
+                .filter(|r| r.score.is_finite() && r.score >= min)
+                .collect(),
+            _ => results,
+        };
+
+        let key = group_by.trim();
+        if key.is_empty() {
+            return filtered.into_iter().take(top_k).collect();
+        }
+
+        let per_group = group_size.unwrap_or(1).max(1) as usize;
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut out = Vec::new();
+        for r in filtered.drain(..) {
+            let group_val = Self::metadata_group_key(&r.metadata, key);
+            let n = counts.entry(group_val).or_insert(0);
+            if *n < per_group {
+                *n += 1;
+                out.push(r);
+            }
+            if out.len() >= top_k {
+                break;
+            }
+        }
+        out
+    }
+
+    fn metadata_group_key(metadata: &str, key: &str) -> String {
+        if metadata.is_empty() {
+            return String::new();
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata) else {
+            return String::new();
+        };
+        match value.get(key) {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Number(n)) => n.to_string(),
+            Some(serde_json::Value::Bool(b)) => b.to_string(),
+            Some(other) => other.to_string(),
+            None => String::new(),
+        }
+    }
+
     fn validate_unique_batch_ids(vectors: &[Vector]) -> Result<(), Status> {
         let mut seen = HashSet::with_capacity(vectors.len());
         for vector in vectors {
@@ -1665,7 +1720,13 @@ where
             .map(Arc::new);
         let top_k = req.top_k as usize;
         let search_k = self.filtered_search_k(top_k, metadata_filter.is_some());
-        let params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
+        // Over-fetch when grouping so each group still has candidates after cut.
+        let fetch_k = if req.group_by.trim().is_empty() {
+            search_k
+        } else {
+            search_k.saturating_mul(4).max(search_k)
+        };
+        let params = SearchParams::new(fetch_k).with_nprobe(req.nprobe.unwrap_or(32));
         let params = self.attach_metadata_predicate(params, metadata_filter);
 
         let results = self
@@ -1676,15 +1737,21 @@ where
         let elapsed = start.elapsed();
         let latency_us = elapsed.as_micros() as u64;
 
-        let response_results: Vec<SearchResult> = results
+        let mapped: Vec<SearchResult> = results
             .into_iter()
-            .take(top_k)
             .map(|r| SearchResult {
                 id: r.id.to_string(),
                 score: r.score,
                 metadata: self.load_metadata_string(&r.id),
             })
             .collect();
+        let response_results = self.apply_score_and_group(
+            mapped,
+            top_k,
+            req.score_threshold,
+            &req.group_by,
+            req.group_size,
+        );
 
         info!(
             "Search returned {} results in {:?}",
@@ -2401,8 +2468,10 @@ where
             }
         }
 
-        ranked.truncate(top_k);
-        let response_results: Vec<SearchResult> = ranked
+        // Keep a larger pool before score/group cuts so threshold/group_by can select.
+        let pool_cap = top_k.saturating_mul(8).max(top_k);
+        ranked.truncate(pool_cap);
+        let mapped: Vec<SearchResult> = ranked
             .iter()
             .map(|s| SearchResult {
                 metadata: self.load_metadata_string(&s.id),
@@ -2410,6 +2479,13 @@ where
                 score: s.score,
             })
             .collect();
+        let response_results = self.apply_score_and_group(
+            mapped,
+            top_k,
+            req.score_threshold,
+            &req.group_by,
+            req.group_size,
+        );
 
         // Optionally assemble a source-grounded, citation-bearing context pack
         // (PACK-*). Matched child chunks are expanded to their parent context
@@ -2510,6 +2586,9 @@ mod tests {
             filter: vec![],
             tag_filter: None,
             retrieval_mode: "bm25".to_string(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }
     }
 
@@ -2551,6 +2630,9 @@ mod tests {
                 nprobe: None,
                 filter: vec![],
                 tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
             }))
             .await
             .unwrap()
@@ -2594,6 +2676,9 @@ mod tests {
                 nprobe: None,
                 filter: br#"{"tenant":"a"}"#.to_vec(),
                 tag_filter: None,
+                score_threshold: None,
+                group_by: String::new(),
+                group_size: None,
             }))
             .await
             .unwrap()
@@ -2652,6 +2737,9 @@ mod tests {
                 nprobe: None,
                 filter: vec![],
                 tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
             }))
             .await
             .unwrap()
@@ -2678,6 +2766,9 @@ mod tests {
                 nprobe: Some(0),
                 filter: vec![],
                 tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
             }))
             .await;
 
@@ -2697,6 +2788,9 @@ mod tests {
                 nprobe: None,
                 filter: vec![],
                 tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
             }))
             .await;
 
@@ -2906,6 +3000,9 @@ mod tests {
                     nprobe: None,
                     filter: vec![],
                     tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
                 }))
                 .await
                 .expect_err("search should reject wrong collection"),
@@ -2941,6 +3038,9 @@ mod tests {
                     filter: vec![],
                     tag_filter: None,
                     retrieval_mode: "bm25".to_string(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
                 }))
                 .await
                 .expect_err("text_search should reject wrong collection"),
@@ -3156,5 +3256,272 @@ mod tests {
             .unwrap()
             .into_inner();
         assert_eq!(second.status, DeleteStatus::AlreadyDeleted as i32);
+    }
+
+    fn with_workspace(workspace: &str) -> crate::auth::AuthContext {
+        crate::auth::AuthContext {
+            workspace_id: workspace.to_string(),
+            agent_id: Some("agent-test".to_string()),
+            authenticated: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_workspace_acl_isolates_search_results() {
+        let (service, _dir) = test_service();
+
+        let mut req_a = Request::new(InsertRequest {
+            collection: "test".to_string(),
+            id: "a1".to_string(),
+            vector: vec![1.0, 0.0],
+            metadata: br#"{"title":"alpha"}"#.to_vec(),
+            text: "alpha secret".to_string(),
+        });
+        req_a.extensions_mut().insert(with_workspace("ws-a"));
+        service.insert(req_a).await.unwrap();
+
+        let mut req_b = Request::new(InsertRequest {
+            collection: "test".to_string(),
+            id: "b1".to_string(),
+            vector: vec![0.99, 0.01],
+            metadata: br#"{"title":"beta"}"#.to_vec(),
+            text: "beta secret".to_string(),
+        });
+        req_b.extensions_mut().insert(with_workspace("ws-b"));
+        service.insert(req_b).await.unwrap();
+
+        let mut search_a = Request::new(SearchRequest {
+            collection: "test".to_string(),
+            query: vec![1.0, 0.0],
+            top_k: 10,
+            nprobe: None,
+            filter: vec![],
+            tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
+        });
+        search_a.extensions_mut().insert(with_workspace("ws-a"));
+        let hits_a = service
+            .search(search_a)
+            .await
+            .unwrap()
+            .into_inner()
+            .results;
+        assert!(hits_a.iter().any(|h| h.id == "a1"));
+        assert!(!hits_a.iter().any(|h| h.id == "b1"));
+
+        let mut search_b = Request::new(SearchRequest {
+            collection: "test".to_string(),
+            query: vec![1.0, 0.0],
+            top_k: 10,
+            nprobe: None,
+            filter: vec![],
+            tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
+        });
+        search_b.extensions_mut().insert(with_workspace("ws-b"));
+        let hits_b = service
+            .search(search_b)
+            .await
+            .unwrap()
+            .into_inner()
+            .results;
+        assert!(hits_b.iter().any(|h| h.id == "b1"));
+        assert!(!hits_b.iter().any(|h| h.id == "a1"));
+    }
+
+    #[tokio::test]
+    async fn test_score_threshold_excludes_low_scores() {
+        let (service, _dir) = test_service();
+        insert_text(&service, "high", vec![1.0, 0.0], "high score doc").await;
+        insert_text(&service, "low", vec![0.0, 1.0], "orthogonal doc").await;
+
+        let response = service
+            .search(Request::new(SearchRequest {
+                collection: "test".to_string(),
+                query: vec![1.0, 0.0],
+                top_k: 10,
+                nprobe: None,
+                filter: vec![],
+                tag_filter: None,
+                score_threshold: Some(0.99),
+                group_by: String::new(),
+                group_size: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(!response.results.is_empty());
+        assert!(response.results.iter().all(|r| r.score >= 0.99));
+        assert!(response.results.iter().any(|r| r.id == "high"));
+        assert!(!response.results.iter().any(|r| r.id == "low"));
+    }
+
+    #[tokio::test]
+    async fn test_group_by_parent_keeps_one_per_group() {
+        let (service, _dir) = test_service();
+        for (id, meta) in [
+            ("c1", br#"{"parent_id":"p1"}"#.as_slice()),
+            ("c2", br#"{"parent_id":"p1"}"#.as_slice()),
+            ("c3", br#"{"parent_id":"p2"}"#.as_slice()),
+        ] {
+            service
+                .insert(Request::new(InsertRequest {
+                    collection: "test".to_string(),
+                    id: id.to_string(),
+                    vector: vec![1.0, 0.0],
+                    metadata: meta.to_vec(),
+                    text: id.to_string(),
+                }))
+                .await
+                .unwrap();
+        }
+
+        let response = service
+            .search(Request::new(SearchRequest {
+                collection: "test".to_string(),
+                query: vec![1.0, 0.0],
+                top_k: 10,
+                nprobe: None,
+                filter: vec![],
+                tag_filter: None,
+                score_threshold: None,
+                group_by: "parent_id".to_string(),
+                group_size: Some(1),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let mut parents = std::collections::HashSet::new();
+        for r in &response.results {
+            let v: serde_json::Value = serde_json::from_str(&r.metadata).unwrap();
+            let p = v["parent_id"].as_str().unwrap().to_string();
+            assert!(parents.insert(p), "duplicate parent in results: {:?}", response.results);
+        }
+        assert!(response.results.len() <= 2);
+        assert!(response.results.len() >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_collection_lifecycle_apis() {
+        let (service, _dir) = test_service();
+        service.seed_collection_schema(2, "cosine", "f32", "test-model");
+
+        let created = service
+            .create_collection(Request::new(crate::proto::CreateCollectionRequest {
+                name: "extra".to_string(),
+                dimensions: 2,
+                metric: "cosine".to_string(),
+                embedding_model_id: "m".to_string(),
+                vector_precision: "f32".to_string(),
+                chunk_strategy: "code".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(created.success);
+
+        let listed = service
+            .list_collections(Request::new(crate::proto::ListCollectionsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(listed.collections.iter().any(|c| c.name == "extra"));
+        assert!(listed.collections.iter().any(|c| c.name == "test"));
+
+        let got = service
+            .get_collection(Request::new(crate::proto::GetCollectionRequest {
+                name: "extra".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(got.found);
+        assert_eq!(got.collection.as_ref().unwrap().chunk_strategy, "code");
+
+        let dropped = service
+            .drop_collection(Request::new(crate::proto::DropCollectionRequest {
+                name: "extra".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(dropped.success);
+    }
+
+    struct FixedEmbedder;
+
+    impl EmbeddingProvider for FixedEmbedder {
+        fn embed_text(&self, _text: &str) -> std::result::Result<Vec<f32>, String> {
+            Ok(vec![1.0, 0.0])
+        }
+
+        fn embedding_dimensions(&self) -> usize {
+            2
+        }
+    }
+
+    #[tokio::test]
+    async fn test_graph_hybrid_expands_related_edges() {
+        let dir = TempDir::new().unwrap();
+        let storage = Arc::new(RocksDbBackend::open(dir.path()).unwrap());
+        let id_mapping = Arc::new(IdMapping::new(storage.clone(), "test"));
+        let index = Arc::new(MockIndex::new(2, 16));
+        let graph = Arc::new(akidb_graph::NativeGraphIndex::new(storage));
+        let service = AkiDbService::new(index, id_mapping, "test")
+            .with_graph_index(graph)
+            .with_embedding_provider(Arc::new(FixedEmbedder));
+
+        // Seed caller + callee with calls edge in metadata.
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: "fn_add".to_string(),
+                vector: vec![1.0, 0.0],
+                metadata: br#"{"symbol":"Add"}"#.to_vec(),
+                text: "func Add(a, b int) int { return a + b }".to_string(),
+            }))
+            .await
+            .unwrap();
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: "fn_test_add".to_string(),
+                vector: vec![0.95, 0.05],
+                metadata: br#"{"symbol":"TestAdd","calls":["fn_add"],"tested_by":[]}"#.to_vec(),
+                text: "func TestAdd(t *testing.T) { Add(1,2) }".to_string(),
+            }))
+            .await
+            .unwrap();
+        // Re-index Add with tested_by reverse edge.
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: "fn_add".to_string(),
+                vector: vec![1.0, 0.0],
+                metadata: br#"{"symbol":"Add","tested_by":["fn_test_add"]}"#.to_vec(),
+                text: "func Add(a, b int) int { return a + b }".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let mut req = bm25_text_search_request("Add", 10);
+        req.retrieval_mode = "graph_hybrid".to_string();
+        req.hybrid = true;
+        let response = service
+            .text_search(Request::new(req))
+            .await
+            .unwrap()
+            .into_inner();
+        let ids: Vec<_> = response.results.iter().map(|r| r.id.as_str()).collect();
+        assert!(
+            ids.contains(&"fn_add") || ids.contains(&"fn_test_add"),
+            "graph_hybrid should surface seeded code ids, got {ids:?}"
+        );
     }
 }

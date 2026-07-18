@@ -703,6 +703,9 @@ impl Akidb for CoordinatorService {
                     nprobe: req.nprobe,
                     filter: vec![],
                     tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
                 };
                 self.search(Request::new(search_req))
             })
@@ -1002,6 +1005,9 @@ mod tests {
             nprobe,
             filter: vec![],
             tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
         }
     }
 

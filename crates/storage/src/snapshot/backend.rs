@@ -144,6 +144,53 @@ impl SnapshotMetadata {
             description: None,
         }
     }
+
+    /// Integrity checks that must pass before a restored snapshot serves traffic
+    /// (GAP-028 / SEC-105).
+    pub fn verify_for_restore(&self, files: &[SnapshotFile]) -> Result<()> {
+        if self.id.trim().is_empty() {
+            return Err(AkiDbError::InvalidParameter(
+                "snapshot id is empty".to_string(),
+            ));
+        }
+        if self.collection.trim().is_empty() {
+            return Err(AkiDbError::InvalidParameter(
+                "snapshot collection is empty".to_string(),
+            ));
+        }
+        if self.dimensions == 0 {
+            return Err(AkiDbError::InvalidParameter(
+                "snapshot dimensions must be > 0 before serving".to_string(),
+            ));
+        }
+        if self.active_vectors > self.total_vectors {
+            return Err(AkiDbError::InvalidParameter(format!(
+                "snapshot active_vectors ({}) exceeds total_vectors ({})",
+                self.active_vectors, self.total_vectors
+            )));
+        }
+        let sum_bytes: u64 = files.iter().map(|f| f.data.len() as u64).sum();
+        if self.size_bytes > 0 && sum_bytes > 0 && self.size_bytes != sum_bytes {
+            return Err(AkiDbError::InvalidParameter(format!(
+                "snapshot size_bytes mismatch: meta={} files={}",
+                self.size_bytes, sum_bytes
+            )));
+        }
+        for file in files {
+            if file.path.trim().is_empty() {
+                return Err(AkiDbError::InvalidParameter(
+                    "snapshot file path is empty".to_string(),
+                ));
+            }
+            if file.path.contains("..") {
+                return Err(AkiDbError::InvalidParameter(format!(
+                    "snapshot file path escapes sandbox: {}",
+                    file.path
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A snapshot file to be stored
@@ -954,12 +1001,14 @@ impl SnapshotManager {
         Ok(snapshot_id)
     }
 
-    /// Restore a snapshot
+    /// Restore a snapshot after integrity verification (GAP-028).
     pub async fn restore_snapshot(
         &self,
         snapshot_id: &str,
     ) -> Result<(SnapshotMetadata, Vec<SnapshotFile>)> {
-        self.backend.load(snapshot_id).await
+        let (metadata, files) = self.backend.load(snapshot_id).await?;
+        metadata.verify_for_restore(&files)?;
+        Ok((metadata, files))
     }
 
     /// List snapshots for a collection
@@ -999,6 +1048,28 @@ fn encode_s3_object_key_path(key: &str) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_snapshot_verify_for_restore_rejects_zero_dimensions() {
+        let mut meta = SnapshotMetadata::new("default");
+        meta.dimensions = 0;
+        let err = meta.verify_for_restore(&[]).unwrap_err();
+        assert!(err.to_string().contains("dimensions"));
+    }
+
+    #[test]
+    fn test_snapshot_verify_for_restore_accepts_consistent_meta() {
+        let mut meta = SnapshotMetadata::new("default");
+        meta.dimensions = 768;
+        meta.total_vectors = 10;
+        meta.active_vectors = 8;
+        meta.size_bytes = 3;
+        let files = vec![SnapshotFile {
+            path: "index.bin".into(),
+            data: vec![1, 2, 3],
+        }];
+        meta.verify_for_restore(&files).unwrap();
+    }
 
     #[test]
     fn test_s3_object_path_encodes_key_segments_without_encoding_slashes() {

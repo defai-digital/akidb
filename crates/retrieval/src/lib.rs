@@ -24,7 +24,9 @@ pub mod packer;
 pub mod planner;
 pub mod rerank;
 
-pub use code::{chunk_code, CodeChunk, Language, SymbolKind};
+pub use code::{
+    chunk_code, extract_code_edges, CodeChunk, CodeEdge, CodeEdgeKind, Language, SymbolKind,
+};
 pub use context::{contextualize, Contextualization};
 pub use eval::{ndcg_at_k, recall_at_k, run_controlled_eval, EvalSummary};
 pub use expansion::{expand_to_parents, MatchedChunk};

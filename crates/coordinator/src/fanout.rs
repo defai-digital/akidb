@@ -57,6 +57,9 @@ fn shard_search_request(
         nprobe: Some(nprobe),
         filter,
         tag_filter,
+        score_threshold: None,
+        group_by: String::new(),
+        group_size: None,
     }
 }
 

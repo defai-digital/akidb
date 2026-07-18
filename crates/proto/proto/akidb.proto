@@ -115,6 +115,11 @@ message SearchRequest {
   optional uint32 nprobe = 4;  // IVF probes, default 32
   bytes filter = 5;  // Optional metadata filter (legacy JSON)
   TagFilter tag_filter = 6;  // Optional typed tag filter
+  // Minimum score to keep (similarity; higher is better). Unset = no cut.
+  optional float score_threshold = 7;
+  // Group results by metadata key (e.g. parent_id, document_id); keep group_size per key.
+  string group_by = 8;
+  optional uint32 group_size = 9;  // default 1 when group_by set
 }
 
 message SearchResponse {
@@ -306,6 +311,9 @@ message TextSearchRequest {
   bytes filter = 13;  // Optional metadata filter (legacy JSON)
   TagFilter tag_filter = 14;  // Optional typed tag filter
   string retrieval_mode = 15;  // Optional planner override: auto/vector/bm25/hybrid/graph/graph_hybrid
+  optional float score_threshold = 16;
+  string group_by = 17;
+  optional uint32 group_size = 18;
 }
 
 // ============================================
