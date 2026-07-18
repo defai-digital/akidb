@@ -2327,9 +2327,14 @@ where
             let params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
             let params = self.attach_metadata_predicate(params, metadata_filter.clone());
 
-            self.index
+            // Drop non-positive dense scores before fusion so orthogonal
+            // zero-cosine hits cannot enter RRF ranks by index position alone.
+            let mut dense_hits = self
+                .index
                 .search(&query_vector, &params)
-                .map_err(Self::to_status)?
+                .map_err(Self::to_status)?;
+            dense_hits.retain(|r| r.score.is_finite() && r.score > 0.0);
+            dense_hits
         } else {
             Vec::new()
         };
@@ -3477,7 +3482,7 @@ mod tests {
             .with_graph_index(graph)
             .with_embedding_provider(Arc::new(FixedEmbedder));
 
-        // Seed: BM25-only match + orthogonal hidden target reachable only via calls edge.
+        // Seed BM25+dense match with a calls edge to an orthogonal non-matching target.
         service
             .insert(Request::new(InsertRequest {
                 collection: "test".to_string(),
@@ -3492,7 +3497,7 @@ mod tests {
             .insert(Request::new(InsertRequest {
                 collection: "test".to_string(),
                 id: "fn_hidden".to_string(),
-                // Orthogonal vector + text with no lexical overlap to the query.
+                // Orthogonal dense (cosine 0) + no lexical overlap → not base-retrievable.
                 vector: vec![0.0, 1.0],
                 metadata: br#"{"symbol":"Hidden"}"#.to_vec(),
                 text: "zzzz_unrelated_body_no_overlap_xyz".to_string(),
@@ -3500,8 +3505,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Baseline: BM25 without graph must not return the hidden target.
-        let mut bm25 = bm25_text_search_request("seed_marker_token_alpha", 10);
+        let query = "seed_marker_token_alpha";
+
+        // Control 1: BM25-only misses hidden.
+        let mut bm25 = bm25_text_search_request(query, 10);
         bm25.retrieval_mode = "bm25".to_string();
         let bm25_hits = service
             .text_search(Request::new(bm25))
@@ -3509,18 +3516,33 @@ mod tests {
             .unwrap()
             .into_inner()
             .results;
-        assert!(
-            bm25_hits.iter().any(|r| r.id == "fn_seed"),
-            "seed should match BM25"
-        );
+        assert!(bm25_hits.iter().any(|r| r.id == "fn_seed"));
         assert!(
             !bm25_hits.iter().any(|r| r.id == "fn_hidden"),
-            "hidden target must not match BM25 alone, got {:?}",
+            "BM25 alone must miss fn_hidden, got {:?}",
             bm25_hits.iter().map(|r| &r.id).collect::<Vec<_>>()
         );
 
-        // graph_hybrid expands seed → fn_hidden via the calls edge.
-        let mut graph_req = bm25_text_search_request("seed_marker_token_alpha", 10);
+        // Control 2: hybrid dense+lexical WITHOUT graph must still miss hidden
+        // (zero-cosine dense hits are dropped before RRF fusion).
+        let mut hybrid = bm25_text_search_request(query, 10);
+        hybrid.retrieval_mode = "hybrid".to_string();
+        hybrid.hybrid = true;
+        let hybrid_hits = service
+            .text_search(Request::new(hybrid))
+            .await
+            .unwrap()
+            .into_inner()
+            .results;
+        assert!(hybrid_hits.iter().any(|r| r.id == "fn_seed"));
+        assert!(
+            !hybrid_hits.iter().any(|r| r.id == "fn_hidden"),
+            "hybrid without graph must miss fn_hidden (proves edge path is required), got {:?}",
+            hybrid_hits.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
+
+        // Positive: graph_hybrid expands seed → fn_hidden only via the calls edge.
+        let mut graph_req = bm25_text_search_request(query, 10);
         graph_req.retrieval_mode = "graph_hybrid".to_string();
         graph_req.hybrid = true;
         let graph_hits = service
@@ -3533,6 +3555,21 @@ mod tests {
         assert!(
             ids.contains(&"fn_hidden"),
             "graph_hybrid must expand calls edge to fn_hidden, got {ids:?}"
+        );
+
+        // Also prove pure graph mode (lexical-only + expand, no dense).
+        let mut graph_only = bm25_text_search_request(query, 10);
+        graph_only.retrieval_mode = "graph".to_string();
+        let graph_only_hits = service
+            .text_search(Request::new(graph_only))
+            .await
+            .unwrap()
+            .into_inner()
+            .results;
+        assert!(
+            graph_only_hits.iter().any(|r| r.id == "fn_hidden"),
+            "graph mode must expand calls edge to fn_hidden, got {:?}",
+            graph_only_hits.iter().map(|r| &r.id).collect::<Vec<_>>()
         );
     }
 }
