@@ -2,16 +2,14 @@
 """Filtered search quality gate (GAP-004 / RET-104).
 
 Generates clustered vectors with a categorical `workspace_id` / `bucket` tag,
-runs AkiDB Search under varying selectivity, and compares against exact
-brute-force cosine ground truth restricted to the filter.
-
-This is a lightweight local gate. It shells out to grpcurl when
-`--external-server` is not used with an in-process harness note.
+runs exact brute-force cosine ground truth restricted to the filter, and
+validates the deterministic offline quality-gate harness. Live AkiDB/grpcurl
+integration is an explicit follow-up; this script does not claim an end-to-end
+server result.
 
 Usage:
   python3 scripts/qa_filtered_search.py --help
-  # Against a running server (recommended for CI integration later):
-  python3 scripts/qa_filtered_search.py --external-server 127.0.0.1:50051
+  python3 scripts/qa_filtered_search.py --dry-run
 """
 
 from __future__ import annotations
@@ -19,15 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import random
-import struct
-import subprocess
 import sys
-import tempfile
-import time
 from pathlib import Path
-from typing import Iterable
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -104,6 +96,8 @@ def main() -> int:
         help="Only compute offline ground-truth stats; do not call a server",
     )
     args = parser.parse_args()
+    if not args.dry_run:
+        parser.error("only --dry-run is implemented; live server QA is not wired yet")
 
     corpus = gen_clustered(args.vectors, args.dimensions, args.buckets, args.seed)
     # Selectivity ~ 1/buckets when filtering one bucket
@@ -133,7 +127,7 @@ def main() -> int:
         "mean_recall_at_k": mean_recall,
         "min_recall_gate": args.min_recall,
         "passed": mean_recall >= args.min_recall,
-        "mode": "dry_run_ground_truth" if args.dry_run else "offline_harness",
+        "mode": "dry_run_ground_truth",
         "note": (
             "Offline harness validates filter ground-truth construction. "
             "Wire grpcurl/live Search with tag_filter for full end-to-end gate."
