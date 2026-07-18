@@ -4,17 +4,22 @@
 //! In standalone mode (`--standalone`), it runs with no external dependencies
 //! (no MinIO, no NATS) and optionally uses ax-engine for text embeddings.
 
-use akidb_common::config::AkiDbConfig;
+use akidb_common::config::{AkiDbConfig, AuthMode};
+use akidb_common::scheduler::{ResourceGovernor, ResourceGovernorConfig, SimpleMetricsSource};
 use akidb_common::VectorId;
 use akidb_embedding::ax_engine::AxEngineEmbedding;
-use akidb_faiss::{HnswConfig, HnswIndex, VectorIndex};
+use akidb_faiss::{DistanceMetric, HnswConfig, HnswIndex, VectorIndex, VectorPrecision};
 use akidb_graph::NativeGraphIndex;
-use akidb_grpc::{AkiDbService, EmbeddingProvider};
+use akidb_grpc::{
+    AdminState, AkiDbService, AuthInterceptor, AuthRuntime, EmbeddingProvider,
+    ManagementServiceImpl, ManagementState, StagingRegistry,
+};
 use akidb_proto::akidb_server::AkidbServer;
+use akidb_proto::management_service_server::ManagementServiceServer;
 #[cfg(feature = "postgres")]
 use akidb_sql::PostgresMetadataIndex;
 use akidb_sql::{SqliteMetadataIndex, POSTGRES_BACKEND, SQLITE_BACKEND};
-use akidb_storage::{IdMapping, RocksDbBackend};
+use akidb_storage::{IdMapping, LocalSnapshotBackend, RocksDbBackend, SnapshotManager};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,8 +57,8 @@ pub struct Args {
     #[arg(short, long, default_value = "/opt/akidb/config/akidb.toml")]
     pub config: PathBuf,
 
-    /// gRPC listen address
-    #[arg(short, long, default_value = "0.0.0.0:50051")]
+    /// gRPC listen address (default: config server.host:grpc_port, loopback-first)
+    #[arg(short, long, default_value = "")]
     pub listen: String,
 
     /// Log level (trace, debug, info, warn, error)
@@ -99,13 +104,70 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let service = build_service(&config)?;
 
-    // Parse listen address
-    let addr: SocketAddr = args.listen.parse()?;
+    // Resolve listen address: CLI override, else config (secure loopback default).
+    let listen = if args.listen.trim().is_empty() {
+        format!("{}:{}", config.server.host, config.server.grpc_port)
+    } else {
+        args.listen.clone()
+    };
+    let addr: SocketAddr = listen.parse()?;
+    let bind_host = addr.ip().to_string();
+    if !addr.ip().is_loopback() {
+        warn!(
+            %addr,
+            "binding non-loopback address; bearer auth is required unless auth.mode=disabled"
+        );
+    }
+
+    let auth_runtime = AuthRuntime::bootstrap(config.auth.clone(), &bind_host)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let data_interceptor = AuthInterceptor::new(auth_runtime.clone());
+
+    let collections = service.collection_registry();
+    let metrics = Arc::new(SimpleMetricsSource::new());
+    let governor = Arc::new(ResourceGovernor::new(
+        ResourceGovernorConfig::default(),
+        metrics,
+    ));
+    let admin_state = Arc::new(AdminState::new(governor));
+    let rocksdb_path = PathBuf::from(&config.storage.rocksdb_path);
+    let snapshot_path = rocksdb_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("snapshots");
+    let snapshot_manager = Arc::new(SnapshotManager::new(LocalSnapshotBackend::new(
+        snapshot_path,
+    )));
+    let auth_mode = match config.auth.mode {
+        AuthMode::LoopbackOptional => "loopback_optional",
+        AuthMode::Required => "required",
+        AuthMode::Disabled => "disabled",
+    };
+    let management_state = Arc::new(ManagementState::new(
+        admin_state,
+        collections,
+        Some(snapshot_manager),
+        Arc::new(StagingRegistry::default()),
+        config.management.import_plan.clone(),
+        config.management.audit_max_entries,
+        env!("CARGO_PKG_VERSION"),
+        auth_mode,
+        // Tonic TLS is not wired in this binary yet; report transport truth,
+        // not merely the configured intent.
+        false,
+    ));
+    let management = ManagementServiceImpl::new(management_state);
+    let management_interceptor = AuthInterceptor::new(auth_runtime);
+
     info!("Starting gRPC server on {}", addr);
 
-    // Start server
+    // Start server with auth interceptor (GAP-001)
     Server::builder()
-        .add_service(AkidbServer::new(service))
+        .add_service(AkidbServer::with_interceptor(service, data_interceptor))
+        .add_service(ManagementServiceServer::with_interceptor(
+            management,
+            management_interceptor,
+        ))
         .serve(addr)
         .await?;
 
@@ -157,6 +219,8 @@ fn build_service(
     let id_mapping = Arc::new(IdMapping::new(storage.clone(), "default"));
 
     // Initialize vector index
+    let precision = VectorPrecision::parse(&config.index.vector_precision)?;
+    let metric = DistanceMetric::parse(&config.index.metric)?;
     let index = {
         let hnsw_config = HnswConfig {
             dimensions: config.slo.reference.dimensions,
@@ -164,10 +228,16 @@ fn build_service(
             m: config.index.hnsw_m as usize,
             ef_construction: config.index.hnsw_ef_construction as usize,
             ef_search: config.index.hnsw_ef_search as usize,
+            precision,
+            metric,
         };
         Arc::new(HnswIndex::new(hnsw_config)?)
     };
-    info!("Vector index initialized (HNSW mode)");
+    info!(
+        precision = ?precision,
+        metric = ?metric,
+        "Vector index initialized (HNSW mode)"
+    );
 
     let stored_vectors = id_mapping.load_active_vectors()?;
     if !stored_vectors.is_empty() {
@@ -214,7 +284,17 @@ fn build_service(
 
     // Create gRPC service
     let graph_index = Arc::new(NativeGraphIndex::new(storage));
-    let mut service = AkiDbService::new(index, id_mapping, "default").with_graph_index(graph_index);
+    let mut service = AkiDbService::new(index, id_mapping, "default")
+        .with_graph_index(graph_index)
+        .with_acl(config.auth.acl.clone())
+        .with_filter_settings(config.index.filter.clone())
+        .with_embedding_model_id(config.embedding.model.clone());
+    service.seed_collection_schema(
+        config.slo.reference.dimensions as u32,
+        &config.index.metric,
+        &config.index.vector_precision,
+        &config.embedding.model,
+    );
     info!("Native graph index enabled");
 
     if config.sql.enabled {

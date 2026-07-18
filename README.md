@@ -79,7 +79,9 @@ cargo test
 # Run AkiDB through the single CLI entry point
 cargo run -p akidb-cli -- server --standalone --config config/default.toml
 cargo run -p akidb-cli -- coordinator --shards 127.0.0.1:50051
-cargo run -p akidb-cli -- tui --coordinator 127.0.0.1:50050
+cargo run -p akidb-cli -- tui \
+  --coordinator 127.0.0.1:50050 \
+  --management 127.0.0.1:50051
 
 # Format and lint
 cargo fmt

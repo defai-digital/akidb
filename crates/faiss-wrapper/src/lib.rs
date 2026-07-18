@@ -11,7 +11,7 @@ mod tombstone;
 // Mock is available for testing
 mod mock;
 
-pub use hnsw::{HnswConfig, HnswIndex};
+pub use hnsw::{DistanceMetric, HnswConfig, HnswIndex, VectorPrecision};
 pub use index::{IndexStats, SearchFilter, SearchParams, VectorIndex, VectorIndexAsync};
 pub use rebuild::{
     // Original rebuild types

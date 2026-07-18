@@ -7,22 +7,42 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use crossterm::{
+    cursor,
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use tokio::sync::mpsc;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use std::time::Duration;
 
 use crate::{
-    client::CoordinatorClient,
+    action::Action,
+    client::{CoordinatorClient, OperationsClient},
     config::TuiConfig,
+    effect::Effect,
     events::{handle_key_event, Event, EventHandler},
     ui, App,
 };
+
+/// Best-effort terminal restoration on normal return, error, or unwinding.
+struct TerminalRestoreGuard;
+
+impl Drop for TerminalRestoreGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let mut stdout = io::stdout();
+        let _ = execute!(
+            stdout,
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            cursor::Show
+        );
+    }
+}
 
 /// AkiDB TUI Dashboard - Monitor your AkiDB deployment
 #[derive(clap::Args, Debug)]
@@ -34,6 +54,10 @@ pub struct Args {
     /// Coordinator address to connect to (e.g., 127.0.0.1:50050)
     #[arg(long)]
     pub coordinator: Option<String>,
+
+    /// Shard management address (defaults to 127.0.0.1:50051)
+    #[arg(long)]
+    pub management: Option<String>,
 
     /// Use mock data for testing
     #[arg(long)]
@@ -88,6 +112,9 @@ pub async fn run(args: Args) -> Result<()> {
     if let Some(coordinator) = args.coordinator.clone() {
         config.coordinator_address = Some(coordinator);
     }
+    if let Some(management) = args.management.clone() {
+        config.management_address = Some(management);
+    }
     if args.mock {
         config.mock_mode = true;
     }
@@ -123,6 +150,7 @@ async fn run_tui(config: TuiConfig) -> Result<()> {
 
     // Setup terminal
     enable_raw_mode()?;
+    let _restore_guard = TerminalRestoreGuard;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
@@ -178,6 +206,69 @@ async fn run_tui(config: TuiConfig) -> Result<()> {
         }
     }
 
+    let cluster_refresh = coordinator_client.take().map(|mut client| {
+        let (refresh_tx, mut refresh_rx) = mpsc::channel(1);
+        let event_tx = events.sender();
+        tokio::spawn(async move {
+            while refresh_rx.recv().await.is_some() {
+                match client.get_cluster_state().await {
+                    Ok((cluster_state, metrics)) => {
+                        if event_tx.send(Event::ClusterUpdate(cluster_state)).is_err()
+                            || event_tx.send(Event::MetricsUpdate(metrics)).is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "failed to fetch cluster state");
+                    }
+                }
+            }
+        });
+        refresh_tx
+    });
+
+    // The coordinator does not yet aggregate management metadata, so the
+    // Operations Console connects to the shard's authenticated read/plan API.
+    // One bounded worker owns the client and serializes effects; rendering and
+    // keyboard input never perform management RPCs.
+    let mut management_effects: Option<mpsc::Sender<Effect>> = None;
+    if !app.config.mock_mode {
+        let management_address = app
+            .config
+            .management_address
+            .clone()
+            .unwrap_or_else(|| "127.0.0.1:50051".to_string());
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            OperationsClient::connect(&management_address),
+        )
+        .await
+        {
+            Ok(Ok(client)) => {
+                let (effect_tx, effect_rx) = mpsc::channel(8);
+                let event_tx = events.sender();
+                tokio::spawn(run_management_worker(client, effect_rx, event_tx));
+                management_effects = Some(effect_tx);
+                app.queue_initial_effects();
+                app.set_status(format!("Management connected: {management_address}"));
+            }
+            Ok(Err(error)) => {
+                let message = format!("management endpoint unavailable: {error}");
+                app.update(Action::CapabilitiesLoaded(Err(message.clone())));
+                app.update(Action::CollectionsLoaded(Err(message.clone())));
+                app.update(Action::OperationsLoaded(Err(message.clone())));
+                app.update(Action::SnapshotsLoaded(Err(message.clone())));
+                app.update(Action::AuditLoaded(Err(message)));
+            }
+            Err(_) => {
+                app.update(Action::CapabilitiesLoaded(Err(
+                    "management connection timed out".to_string(),
+                )));
+            }
+        }
+    }
+
     // Main event loop
     loop {
         // Clear expired status messages
@@ -192,29 +283,12 @@ async fn run_tui(config: TuiConfig) -> Result<()> {
                 if app.config.mock_mode {
                     // Update mock data for testing
                     update_mock_data(&mut app);
-                } else if let Some(ref mut client) = coordinator_client {
-                    // Fetch cluster state from coordinator
-                    match client.get_cluster_state().await {
-                        Ok((cluster_state, metrics)) => {
-                            app.cluster_state = cluster_state;
-                            // Preserve history but update current metrics
-                            app.metrics.qps = metrics.qps;
-                            app.metrics.p50_latency_ms = metrics.p50_latency_ms;
-                            app.metrics.p95_latency_ms = metrics.p95_latency_ms;
-                            app.metrics.p99_latency_ms = metrics.p99_latency_ms;
-                            app.metrics.coverage = metrics.coverage;
-                            app.metrics.backpressure = metrics.backpressure;
-                            app.metrics.within_slo = metrics.within_slo;
-                            // Update history
-                            app.metrics.history.add_qps(metrics.qps);
-                            app.metrics.history.add_latency(metrics.p50_latency_ms);
-                        }
-                        Err(e) => {
-                            // Log error but don't spam status bar
-                            tracing::debug!("Failed to fetch cluster state: {}", e);
-                        }
-                    }
+                } else if let Some(refresh) = &cluster_refresh {
+                    // Capacity one guarantees at most one queued refresh while
+                    // the worker owns the only in-flight cluster request.
+                    let _ = refresh.try_send(());
                 }
+                app.queue_due_refresh();
             }
             Some(Event::Key(key)) => {
                 if handle_key_event(&mut app, key) {
@@ -225,7 +299,18 @@ async fn run_tui(config: TuiConfig) -> Result<()> {
                 app.cluster_state = state;
             }
             Some(Event::MetricsUpdate(metrics)) => {
-                app.metrics = metrics;
+                app.metrics.qps = metrics.qps;
+                app.metrics.p50_latency_ms = metrics.p50_latency_ms;
+                app.metrics.p95_latency_ms = metrics.p95_latency_ms;
+                app.metrics.p99_latency_ms = metrics.p99_latency_ms;
+                app.metrics.coverage = metrics.coverage;
+                app.metrics.backpressure = metrics.backpressure;
+                app.metrics.within_slo = metrics.within_slo;
+                app.metrics.history.add_qps(metrics.qps);
+                app.metrics.history.add_latency(metrics.p50_latency_ms);
+            }
+            Some(Event::ConsoleAction(action)) => {
+                app.update(action);
             }
             Some(Event::Resize(_, _)) => {
                 // Terminal will handle resize automatically
@@ -238,20 +323,75 @@ async fn run_tui(config: TuiConfig) -> Result<()> {
         if app.should_quit {
             break;
         }
+
+        let mut management_closed = false;
+        if let Some(effect_tx) = &management_effects {
+            while let Some(effect) = app.take_effect() {
+                match effect_tx.try_send(effect.clone()) {
+                    Ok(()) => app.mark_loading(&effect),
+                    Err(mpsc::error::TrySendError::Full(effect)) => {
+                        app.queue_effect(effect);
+                        break;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        app.set_status("Management connection closed");
+                        management_closed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if management_closed {
+            management_effects = None;
+        }
     }
 
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    // The restoration guard handles raw mode and alternate-screen cleanup even
+    // when an earlier draw or RPC path returns an error.
     terminal.show_cursor()?;
 
     info!("AkiDB TUI Dashboard shutdown complete");
 
     Ok(())
+}
+
+async fn run_management_worker(
+    mut client: OperationsClient,
+    mut effects: mpsc::Receiver<Effect>,
+    events: mpsc::UnboundedSender<Event>,
+) {
+    while let Some(effect) = effects.recv().await {
+        if !effect.is_read_or_validate_only() {
+            continue;
+        }
+        let action = match effect {
+            Effect::LoadCapabilities => {
+                Action::CapabilitiesLoaded(client.capabilities().await.map_err(status_message))
+            }
+            Effect::LoadCollections => {
+                Action::CollectionsLoaded(client.list_collections().await.map_err(status_message))
+            }
+            Effect::LoadOperations => {
+                Action::OperationsLoaded(client.list_operations().await.map_err(status_message))
+            }
+            Effect::LoadSnapshots => {
+                Action::SnapshotsLoaded(client.list_snapshots().await.map_err(status_message))
+            }
+            Effect::PlanImport(input) => {
+                Action::ImportPlanLoaded(client.plan_import(input).await.map_err(status_message))
+            }
+            Effect::LoadAudit => {
+                Action::AuditLoaded(client.list_audit().await.map_err(status_message))
+            }
+        };
+        if events.send(Event::ConsoleAction(action)).is_err() {
+            break;
+        }
+    }
+}
+
+fn status_message(status: tonic::Status) -> String {
+    format!("{:?}: {}", status.code(), status.message())
 }
 
 /// Update mock data to simulate live updates

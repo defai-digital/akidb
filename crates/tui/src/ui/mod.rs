@@ -3,6 +3,7 @@
 pub mod controls;
 pub mod health;
 pub mod layout;
+pub mod management;
 pub mod metrics;
 pub mod topology;
 

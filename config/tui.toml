@@ -9,6 +9,9 @@ show_gpu_metrics = false
 # Coordinator address (optional, can also use --coordinator CLI flag)
 # coordinator_address = "127.0.0.1:50050"
 
+# Authenticated read/plan management endpoint (optional; defaults to shard 50051)
+# management_address = "127.0.0.1:50051"
+
 # Use mock data for testing
 mock_mode = false
 
@@ -27,8 +30,8 @@ show_metrics = true
 show_health = true
 
 [controls]
-# Allow node eviction from TUI
-allow_eviction = true
+# Reserved legacy flag. Operations Console v1 never evicts nodes.
+allow_eviction = false
 
 # Require quorum confirmation for destructive actions
 require_quorum_confirmation = true

@@ -16,6 +16,63 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tracing::{debug, warn};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
+/// Vector storage precision for usearch (GAP-010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VectorPrecision {
+    #[default]
+    F32,
+    F16,
+}
+
+impl VectorPrecision {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "f32" | "float32" | "" => Ok(Self::F32),
+            "f16" | "float16" | "half" => Ok(Self::F16),
+            other => Err(AkiDbError::InvalidParameter(format!(
+                "unsupported vector_precision '{other}'; expected f32 or f16"
+            ))),
+        }
+    }
+
+    fn to_scalar_kind(self) -> ScalarKind {
+        match self {
+            Self::F32 => ScalarKind::F32,
+            Self::F16 => ScalarKind::F16,
+        }
+    }
+}
+
+/// Distance metric for HNSW (GAP-007).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DistanceMetric {
+    #[default]
+    Cosine,
+    L2,
+    InnerProduct,
+}
+
+impl DistanceMetric {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cosine" | "cos" | "" => Ok(Self::Cosine),
+            "l2" | "euclidean" => Ok(Self::L2),
+            "ip" | "inner_product" | "dot" => Ok(Self::InnerProduct),
+            other => Err(AkiDbError::InvalidParameter(format!(
+                "unsupported metric '{other}'; expected cosine, l2, or ip"
+            ))),
+        }
+    }
+
+    fn to_metric_kind(self) -> MetricKind {
+        match self {
+            Self::Cosine => MetricKind::Cos,
+            Self::L2 => MetricKind::L2sq,
+            Self::InnerProduct => MetricKind::IP,
+        }
+    }
+}
+
 /// Configuration for HNSW index
 #[derive(Debug, Clone)]
 pub struct HnswConfig {
@@ -29,6 +86,10 @@ pub struct HnswConfig {
     pub ef_construction: usize,
     /// ef_search parameter (default 64)
     pub ef_search: usize,
+    /// Storage precision (f32 default; f16 for lower RAM)
+    pub precision: VectorPrecision,
+    /// Distance metric (cosine default)
+    pub metric: DistanceMetric,
 }
 
 impl Default for HnswConfig {
@@ -39,6 +100,8 @@ impl Default for HnswConfig {
             m: 16,
             ef_construction: 128,
             ef_search: 64,
+            precision: VectorPrecision::F32,
+            metric: DistanceMetric::Cosine,
         }
     }
 }
@@ -105,8 +168,8 @@ impl HnswIndex {
 
         let options = IndexOptions {
             dimensions: config.dimensions,
-            metric: MetricKind::Cos,
-            quantization: ScalarKind::F32,
+            metric: config.metric.to_metric_kind(),
+            quantization: config.precision.to_scalar_kind(),
             connectivity: config.m,
             expansion_add: config.ef_construction,
             expansion_search: config.ef_search,
@@ -127,6 +190,8 @@ impl HnswIndex {
             m = config.m,
             ef_construction = config.ef_construction,
             ef_search = config.ef_search,
+            precision = ?config.precision,
+            metric = ?config.metric,
             "HNSW index created"
         );
 
@@ -402,6 +467,7 @@ mod tests {
             m: 16,
             ef_construction: 64,
             ef_search: 32,
+            ..Default::default()
         }
     }
 
@@ -558,6 +624,7 @@ mod tests {
             m: 16,
             ef_construction: 64,
             ef_search: 32,
+            ..Default::default()
         };
         let index = HnswIndex::new(config).unwrap();
 

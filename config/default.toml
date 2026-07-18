@@ -1,18 +1,50 @@
 # AkiDB macOS Apple Silicon - Default Configuration
 
 [server]
-host = "0.0.0.0"
+# Secure appliance default: loopback only (ADR-0002.2). Use 0.0.0.0 only with auth.
+host = "127.0.0.1"
 port = 8080
 grpc_port = 50051
 tls_enabled = false
 # tls_cert_path = "/etc/akidb/certs/server.crt"
 # tls_key_path = "/etc/akidb/certs/server.key"
 
+[auth]
+# loopback_optional | required | disabled
+mode = "loopback_optional"
+token_file = "./data/auth.token"
+# token = "set-explicitly-or-use-AKIDB_AUTH_TOKEN"
+
+[auth.acl]
+default_workspace = "default"
+enforce_workspace = true
+
+[management]
+audit_max_entries = 1000
+
+[management.import_plan]
+# Keep disabled until the upload gateway provides server-issued immutable
+# staging references to the management service.
+enabled = false
+max_source_bytes = 104857600
+max_expanded_bytes = 536870912
+plan_ttl_seconds = 300
+
 [index]
 index_type = "HNSW"
 hnsw_m = 16
 hnsw_ef_construction = 128
 hnsw_ef_search = 64
+# f32 (default) or f16 for lower RAM (GAP-010)
+vector_precision = "f32"
+# cosine | l2 | ip
+metric = "cosine"
+
+[index.filter]
+# pre | post | adaptive (GAP-003)
+mode = "adaptive"
+postfilter_overfetch_factor = 5
+adaptive_pre_selectivity = 0.20
 
 [index.rebuild]
 tombstone_ratio_trigger = 0.10

@@ -1,9 +1,15 @@
 //! Application state management for the TUI dashboard.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use crate::action::Action;
 use crate::config::TuiConfig;
+use crate::effect::Effect;
+use crate::model::{
+    AuditPageView, CapabilitiesView, CapabilityView, CollectionView, ConsoleState, ImportPlanInput,
+    LoadState, OperationView, SnapshotView,
+};
 
 /// Main application state
 pub struct App {
@@ -13,6 +19,8 @@ pub struct App {
     pub metrics: MetricsState,
     /// Currently selected panel
     pub selected_panel: Panel,
+    /// Active Operations Console screen
+    pub screen: Screen,
     /// Selected item index within panel
     pub selected_index: usize,
     /// Whether to quit the application
@@ -25,6 +33,15 @@ pub struct App {
     pub show_help: bool,
     /// Status message
     pub status_message: Option<(String, Instant)>,
+    /// Read/plan-only management state
+    pub console: ConsoleState,
+    /// Pending side effects executed by the runtime
+    pending_effects: VecDeque<Effect>,
+    /// Validation-only import form state
+    pub import_form: ImportForm,
+    /// Case-insensitive filter applied to the active inventory screen.
+    pub filter: String,
+    pub filter_editing: bool,
 }
 
 impl App {
@@ -35,12 +52,18 @@ impl App {
             cluster_state: ClusterState::default(),
             metrics: MetricsState::default(),
             selected_panel: Panel::Topology,
+            screen: Screen::Overview,
             selected_index: 0,
             should_quit: false,
             tick_rate: Duration::from_millis(config.refresh_interval_ms),
             config,
             show_help: false,
             status_message: None,
+            console: ConsoleState::default(),
+            pending_effects: VecDeque::new(),
+            import_form: ImportForm::default(),
+            filter: String::new(),
+            filter_editing: false,
         }
     }
 
@@ -49,6 +72,76 @@ impl App {
         let mut app = Self::new(config);
         app.cluster_state = ClusterState::mock();
         app.metrics = MetricsState::mock();
+        app.console.capabilities = LoadState::Ready {
+            value: CapabilitiesView {
+                server_version: "mock".to_string(),
+                api_version: 1,
+                workspace_id: "default".to_string(),
+                agent_id: Some("mock-operator".to_string()),
+                authenticated: true,
+                tls_active: false,
+                auth_mode: "loopback_optional".to_string(),
+                credential_source: "none".to_string(),
+                capabilities: vec![CapabilityView {
+                    name: "operations.read".to_string(),
+                    supported: true,
+                    authorized: true,
+                    unavailable_reason: String::new(),
+                }],
+            },
+            observed_at: Instant::now(),
+            partial: false,
+        };
+        app.console.collections = LoadState::Ready {
+            value: vec![CollectionView {
+                name: "default".to_string(),
+                dimensions: 2560,
+                metric: "cosine".to_string(),
+                embedding_model_id: "mock-embedding".to_string(),
+                vector_precision: "f32".to_string(),
+                chunk_strategy: "fixed".to_string(),
+                vector_count: 80,
+            }],
+            observed_at: Instant::now(),
+            partial: false,
+        };
+        app.console.operations = LoadState::Ready {
+            value: vec![OperationView {
+                id: "op-mock-1".to_string(),
+                operation_type: "CREATE_SNAPSHOT".to_string(),
+                state: "OPERATION_SUCCEEDED".to_string(),
+                target: "task:daily".to_string(),
+                progress_percent: Some(100.0),
+                updated_at_ms: 0,
+                items_processed: 80,
+                bytes_processed: 4096,
+                problem: None,
+            }],
+            observed_at: Instant::now(),
+            partial: false,
+        };
+        app.console.snapshots = LoadState::Ready {
+            value: vec![SnapshotView {
+                id: "snapshot-mock-1".to_string(),
+                collection: "default".to_string(),
+                created_at_ms: 0,
+                size_bytes: 4096,
+                manifest_present: true,
+                verification_state: "VERIFICATION_UNKNOWN".to_string(),
+                restore_test_state: "RESTORE_TEST_NEVER".to_string(),
+            }],
+            observed_at: Instant::now(),
+            partial: false,
+        };
+        app.console.audit = LoadState::Ready {
+            value: AuditPageView {
+                events: Vec::new(),
+                retention_notice: "mock local retention".to_string(),
+                integrity_status: "not-tamper-evident".to_string(),
+            },
+            observed_at: Instant::now(),
+            partial: false,
+        };
         app
     }
 
@@ -75,11 +168,20 @@ impl App {
 
     /// Move selection down
     pub fn select_next(&mut self) {
-        let max_index = match self.selected_panel {
-            Panel::Topology => {
+        let max_index = match self.screen {
+            Screen::Overview => {
                 self.cluster_state.coordinators.len() + self.cluster_state.shards.len()
             }
-            Panel::Health => self.cluster_state.shards.len(),
+            Screen::Collections => load_len(&self.console.collections),
+            Screen::Operations => load_len(&self.console.operations),
+            Screen::Snapshots => load_len(&self.console.snapshots),
+            Screen::Audit => match &self.console.audit {
+                LoadState::Ready { value, .. } | LoadState::Stale { value, .. } => {
+                    value.events.len()
+                }
+                _ => 0,
+            },
+            Screen::ImportPlan | Screen::Access => 0,
         };
         if self.selected_index < max_index.saturating_sub(1) {
             self.selected_index += 1;
@@ -99,6 +201,156 @@ impl App {
     pub fn previous_panel(&mut self) {
         self.next_panel(); // Only two panels, so same as next
     }
+
+    pub fn next_screen(&mut self) {
+        self.screen = self.screen.next();
+        self.selected_index = 0;
+        self.queue_refresh(self.screen);
+    }
+
+    pub fn previous_screen(&mut self) {
+        self.screen = self.screen.previous();
+        self.selected_index = 0;
+        self.queue_refresh(self.screen);
+    }
+
+    pub fn queue_initial_effects(&mut self) {
+        self.queue_effect(Effect::LoadCapabilities);
+        self.queue_effect(Effect::LoadCollections);
+        self.queue_effect(Effect::LoadOperations);
+        self.queue_effect(Effect::LoadSnapshots);
+        self.queue_effect(Effect::LoadAudit);
+    }
+
+    pub fn queue_refresh(&mut self, screen: Screen) {
+        let effect = match screen {
+            Screen::Overview | Screen::Access => Effect::LoadCapabilities,
+            Screen::Collections => Effect::LoadCollections,
+            Screen::Operations => Effect::LoadOperations,
+            Screen::Snapshots => Effect::LoadSnapshots,
+            Screen::Audit => Effect::LoadAudit,
+            Screen::ImportPlan => return,
+        };
+        self.queue_effect(effect);
+    }
+
+    pub fn queue_due_refresh(&mut self) {
+        let due = match self.screen {
+            Screen::Collections => state_due(&self.console.collections, Duration::from_secs(5)),
+            Screen::Operations => state_due(&self.console.operations, Duration::from_secs(1)),
+            Screen::Snapshots => state_due(&self.console.snapshots, Duration::from_secs(30)),
+            _ => false,
+        };
+        if due {
+            self.queue_refresh(self.screen);
+        }
+    }
+
+    pub fn queue_effect(&mut self, effect: Effect) {
+        if !effect.is_read_or_validate_only() {
+            return;
+        }
+        if self
+            .pending_effects
+            .iter()
+            .any(|pending| pending.kind() == effect.kind())
+        {
+            return;
+        }
+        self.pending_effects.push_back(effect);
+    }
+
+    pub fn take_effect(&mut self) -> Option<Effect> {
+        self.pending_effects.pop_front()
+    }
+
+    pub fn request_import_plan(&mut self) {
+        match self.import_form.input() {
+            Ok(input) => self.queue_effect(Effect::PlanImport(input)),
+            Err(error) => self.set_status(error),
+        }
+    }
+
+    pub fn mark_loading(&mut self, effect: &Effect) {
+        match effect {
+            Effect::LoadCapabilities => start_loading(&mut self.console.capabilities),
+            Effect::LoadCollections => start_loading(&mut self.console.collections),
+            Effect::LoadOperations => start_loading(&mut self.console.operations),
+            Effect::LoadSnapshots => start_loading(&mut self.console.snapshots),
+            Effect::PlanImport(_) => start_loading(&mut self.console.import_plan),
+            Effect::LoadAudit => start_loading(&mut self.console.audit),
+        }
+    }
+
+    pub fn update(&mut self, action: Action) {
+        match action {
+            Action::CapabilitiesLoaded(result) => {
+                finish_loading(&mut self.console.capabilities, result, "diagnostics.read")
+            }
+            Action::CollectionsLoaded(result) => {
+                finish_loading(&mut self.console.collections, result, "collections.read")
+            }
+            Action::OperationsLoaded(result) => {
+                finish_loading(&mut self.console.operations, result, "operations.read")
+            }
+            Action::SnapshotsLoaded(result) => {
+                finish_loading(&mut self.console.snapshots, result, "snapshots.read")
+            }
+            Action::ImportPlanLoaded(result) => {
+                finish_loading(&mut self.console.import_plan, result, "data.import.plan")
+            }
+            Action::AuditLoaded(result) => {
+                finish_loading(&mut self.console.audit, result, "audit.read")
+            }
+        }
+    }
+}
+
+fn load_len<T>(state: &LoadState<Vec<T>>) -> usize {
+    match state {
+        LoadState::Ready { value, .. } | LoadState::Stale { value, .. } => value.len(),
+        _ => 0,
+    }
+}
+
+fn state_due<T>(state: &LoadState<T>, interval: Duration) -> bool {
+    !state.is_loading() && state.age().is_none_or(|age| age >= interval)
+}
+
+fn start_loading<T>(state: &mut LoadState<T>) {
+    let previous = match std::mem::take(state) {
+        LoadState::Ready { value, .. } | LoadState::Stale { value, .. } => Some(value),
+        LoadState::Loading { previous } => previous,
+        _ => None,
+    };
+    *state = LoadState::Loading { previous };
+}
+
+fn finish_loading<T>(state: &mut LoadState<T>, result: Result<T, String>, capability: &str) {
+    let previous = match std::mem::take(state) {
+        LoadState::Loading { previous } => previous,
+        LoadState::Ready { value, .. } | LoadState::Stale { value, .. } => Some(value),
+        _ => None,
+    };
+    *state = match result {
+        Ok(value) => LoadState::Ready {
+            value,
+            observed_at: Instant::now(),
+            partial: false,
+        },
+        Err(error) => match previous {
+            Some(value) => LoadState::Stale {
+                value,
+                observed_at: Instant::now(),
+                error,
+            },
+            None if error.starts_with("PermissionDenied:") => LoadState::Denied {
+                capability: capability.to_string(),
+            },
+            None if error.starts_with("Unimplemented:") => LoadState::Unsupported { reason: error },
+            None => LoadState::Failed(error),
+        },
+    };
 }
 
 #[cfg(test)]
@@ -114,7 +366,46 @@ mod tests {
         });
 
         assert_eq!(app.config.refresh_interval_ms, MIN_REFRESH_INTERVAL_MS);
-        assert_eq!(app.tick_rate, Duration::from_millis(MIN_REFRESH_INTERVAL_MS));
+        assert_eq!(
+            app.tick_rate,
+            Duration::from_millis(MIN_REFRESH_INTERVAL_MS)
+        );
+    }
+
+    #[test]
+    fn import_form_builds_validation_input_only() {
+        let mut form = ImportForm {
+            staging_id: "stage-1".to_string(),
+            object_id: "object-1".to_string(),
+            etag: "etag-1".to_string(),
+            size_bytes: "1024".to_string(),
+            collection: "default".to_string(),
+            duplicate_policy: "skip".to_string(),
+            ..ImportForm::default()
+        };
+        let input = form.input().unwrap();
+        assert_eq!(input.size_bytes, 1024);
+        form.duplicate_policy = "overwrite-everything".to_string();
+        assert!(form.input().is_err());
+    }
+
+    #[test]
+    fn failed_refresh_preserves_stale_data() {
+        let mut state = LoadState::Ready {
+            value: vec!["existing".to_string()],
+            observed_at: Instant::now(),
+            partial: false,
+        };
+        start_loading(&mut state);
+        finish_loading(
+            &mut state,
+            Err("Unavailable: offline".to_string()),
+            "test.read",
+        );
+        match state {
+            LoadState::Stale { value, .. } => assert_eq!(value, vec!["existing"]),
+            _ => panic!("expected stale state"),
+        }
     }
 }
 
@@ -124,6 +415,150 @@ pub enum Panel {
     #[default]
     Topology,
     Health,
+}
+
+/// Top-level Operations Console navigation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Screen {
+    #[default]
+    Overview,
+    Collections,
+    Operations,
+    Snapshots,
+    ImportPlan,
+    Access,
+    Audit,
+}
+
+impl Screen {
+    pub const ALL: [Self; 7] = [
+        Self::Overview,
+        Self::Collections,
+        Self::Operations,
+        Self::Snapshots,
+        Self::ImportPlan,
+        Self::Access,
+        Self::Audit,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Collections => "Collections",
+            Self::Operations => "Operations",
+            Self::Snapshots => "Snapshots",
+            Self::ImportPlan => "Import Plan",
+            Self::Access => "Access",
+            Self::Audit => "Audit",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|screen| *screen == self)
+            .unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    pub fn previous(self) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|screen| *screen == self)
+            .unwrap_or(0);
+        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImportField {
+    #[default]
+    StagingId,
+    ObjectId,
+    Etag,
+    SizeBytes,
+    Collection,
+    DuplicatePolicy,
+}
+
+impl ImportField {
+    pub fn next(self) -> Self {
+        match self {
+            Self::StagingId => Self::ObjectId,
+            Self::ObjectId => Self::Etag,
+            Self::Etag => Self::SizeBytes,
+            Self::SizeBytes => Self::Collection,
+            Self::Collection => Self::DuplicatePolicy,
+            Self::DuplicatePolicy => Self::StagingId,
+        }
+    }
+}
+
+/// Non-secret form for a validation-only staged import request.
+#[derive(Debug, Clone)]
+pub struct ImportForm {
+    pub staging_id: String,
+    pub object_id: String,
+    pub etag: String,
+    pub size_bytes: String,
+    pub collection: String,
+    pub duplicate_policy: String,
+    pub active_field: ImportField,
+    pub editing: bool,
+}
+
+impl Default for ImportForm {
+    fn default() -> Self {
+        Self {
+            staging_id: String::new(),
+            object_id: String::new(),
+            etag: String::new(),
+            size_bytes: String::new(),
+            collection: "default".to_string(),
+            duplicate_policy: "skip".to_string(),
+            active_field: ImportField::StagingId,
+            editing: false,
+        }
+    }
+}
+
+impl ImportForm {
+    pub fn active_value_mut(&mut self) -> &mut String {
+        match self.active_field {
+            ImportField::StagingId => &mut self.staging_id,
+            ImportField::ObjectId => &mut self.object_id,
+            ImportField::Etag => &mut self.etag,
+            ImportField::SizeBytes => &mut self.size_bytes,
+            ImportField::Collection => &mut self.collection,
+            ImportField::DuplicatePolicy => &mut self.duplicate_policy,
+        }
+    }
+
+    pub fn input(&self) -> Result<ImportPlanInput, String> {
+        if self.staging_id.trim().is_empty()
+            || self.object_id.trim().is_empty()
+            || self.etag.trim().is_empty()
+            || self.collection.trim().is_empty()
+        {
+            return Err("Import plan fields are incomplete".to_string());
+        }
+        let size_bytes = self
+            .size_bytes
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| "Source size must be a non-negative integer".to_string())?;
+        if !matches!(self.duplicate_policy.as_str(), "reject" | "skip" | "update") {
+            return Err("Duplicate policy must be reject, skip, or update".to_string());
+        }
+        Ok(ImportPlanInput {
+            staging_id: self.staging_id.trim().to_string(),
+            object_id: self.object_id.trim().to_string(),
+            etag: self.etag.trim().to_string(),
+            size_bytes,
+            collection: self.collection.trim().to_string(),
+            duplicate_policy: self.duplicate_policy.clone(),
+        })
+    }
 }
 
 /// Cluster state containing coordinator and shard information

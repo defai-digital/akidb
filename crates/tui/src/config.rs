@@ -26,6 +26,11 @@ pub struct TuiConfig {
     #[serde(default)]
     pub coordinator_address: Option<String>,
 
+    /// Shard management endpoint. This is separate from the coordinator until
+    /// management aggregation is implemented there.
+    #[serde(default)]
+    pub management_address: Option<String>,
+
     /// Discovery addresses to try when coordinator_address is not specified
     #[serde(default = "default_discovery_addresses")]
     pub discovery_addresses: Vec<String>,
@@ -50,6 +55,7 @@ impl Default for TuiConfig {
             show_gpu_metrics: default_show_gpu_metrics(),
             theme: ThemeConfig::default(),
             coordinator_address: None,
+            management_address: None,
             discovery_addresses: default_discovery_addresses(),
             mock_mode: false,
             layout: LayoutConfig::default(),
@@ -156,8 +162,8 @@ impl Default for LayoutConfig {
 /// Controls configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlsConfig {
-    /// Allow node eviction from TUI
-    #[serde(default = "default_true")]
+    /// Reserved legacy flag. Operations Console v1 has no eviction effect.
+    #[serde(default)]
     pub allow_eviction: bool,
 
     /// Require quorum confirmation for destructive actions
@@ -168,7 +174,7 @@ pub struct ControlsConfig {
 impl Default for ControlsConfig {
     fn default() -> Self {
         Self {
-            allow_eviction: true,
+            allow_eviction: false,
             require_quorum_confirmation: true,
         }
     }

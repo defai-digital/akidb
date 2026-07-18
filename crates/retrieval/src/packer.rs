@@ -13,9 +13,13 @@
 //! changing the packing logic.
 
 use akidb_common::VectorId;
+use serde::{Deserialize, Serialize};
+
+/// Versioned citation contract id (GAP-018 / PAK-102).
+pub const CITATION_SCHEMA_VERSION: &str = "akidb.citation.v1";
 
 /// A traceable pointer from a packed span back to its origin.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Citation {
     /// Origin document/source identifier (URI, path, etc.).
     pub source_uri: String,
@@ -149,6 +153,86 @@ pub struct ContextPack {
     pub dropped: Vec<VectorId>,
     /// Estimated tokens used by the assembled context.
     pub used_tokens: usize,
+}
+
+/// Wire format for citation-bearing packs (schema-stable JSON).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CitationDocumentV1 {
+    pub schema_version: String,
+    pub items: Vec<CitationItemV1>,
+    pub token_budget: usize,
+    pub used_tokens: usize,
+    /// Assembled pack text (optional when only citations are needed).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CitationItemV1 {
+    pub id: String,
+    pub source_uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<CitationSpanV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub score: f32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CitationSpanV1 {
+    pub start: usize,
+    pub end: usize,
+    #[serde(default = "byte_unit")]
+    pub unit: String,
+}
+
+fn byte_unit() -> String {
+    "byte".to_string()
+}
+
+impl ContextPack {
+    /// Serialize this pack as citation schema v1 JSON (GAP-018).
+    pub fn to_citation_document_v1(
+        &self,
+        token_budget: usize,
+        scores: &[f32],
+    ) -> CitationDocumentV1 {
+        let items = self
+            .included
+            .iter()
+            .zip(self.citations.iter())
+            .enumerate()
+            .map(|(i, (id, cite))| CitationItemV1 {
+                id: id.to_string(),
+                source_uri: cite.source_uri.clone(),
+                chunk_id: Some(id.to_string()),
+                span: cite.span.map(|(start, end)| CitationSpanV1 {
+                    start,
+                    end,
+                    unit: byte_unit(),
+                }),
+                version: cite.version.clone(),
+                score: scores.get(i).copied().unwrap_or(0.0),
+                text: String::new(),
+            })
+            .collect();
+        CitationDocumentV1 {
+            schema_version: CITATION_SCHEMA_VERSION.to_string(),
+            items,
+            token_budget,
+            used_tokens: self.used_tokens,
+            text: self.text.clone(),
+        }
+    }
+
+    pub fn to_citation_json_v1(&self, token_budget: usize, scores: &[f32]) -> String {
+        serde_json::to_string_pretty(&self.to_citation_document_v1(token_budget, scores))
+            .unwrap_or_else(|_| "{}".to_string())
+    }
 }
 
 /// Deterministic token estimate: count of whitespace-separated words.
@@ -387,6 +471,36 @@ mod tests {
         for (id, cite) in out.included.iter().zip(out.citations.iter()) {
             assert_eq!(cite.source_uri, format!("{}.txt", id.as_str()));
         }
+    }
+
+    #[test]
+    fn test_citation_schema_v1_golden_shape() {
+        let p = Passage::new(
+            VectorId::new("chunk-1"),
+            "body",
+            0.91,
+            Citation::new("file://repo/a.rs")
+                .with_version("abc123")
+                .with_span(10, 40),
+        );
+        let out = pack(std::slice::from_ref(&p), &PackerConfig::new(64));
+        let doc = out.to_citation_document_v1(64, &[0.91]);
+        assert_eq!(doc.schema_version, CITATION_SCHEMA_VERSION);
+        assert_eq!(doc.items.len(), 1);
+        assert_eq!(doc.items[0].id, "chunk-1");
+        assert_eq!(doc.items[0].source_uri, "file://repo/a.rs");
+        assert_eq!(doc.items[0].version.as_deref(), Some("abc123"));
+        assert_eq!(
+            doc.items[0]
+                .span
+                .as_ref()
+                .map(|s| (s.start, s.end, s.unit.as_str())),
+            Some((10, 40, "byte"))
+        );
+        let json = out.to_citation_json_v1(64, &[0.91]);
+        let parsed: CitationDocumentV1 = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.schema_version, CITATION_SCHEMA_VERSION);
+        assert_eq!(parsed.items[0].chunk_id.as_deref(), Some("chunk-1"));
     }
 
     #[test]

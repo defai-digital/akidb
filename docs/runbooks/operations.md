@@ -15,8 +15,26 @@ cargo test --workspace
 cargo build --release -p akidb-cli
 akidb server --standalone --config config/default.toml
 akidb coordinator --shards 127.0.0.1:50051
-akidb tui --coordinator 127.0.0.1:50050
+akidb tui \
+  --coordinator 127.0.0.1:50050 \
+  --management 127.0.0.1:50051
 ```
+
+The Operations Console is read/plan-only. The same server state is available as
+JSON for automation:
+
+```bash
+akidb ops --management 127.0.0.1:50051 capabilities
+akidb ops --management 127.0.0.1:50051 collections
+akidb ops --management 127.0.0.1:50051 operations
+akidb ops --management 127.0.0.1:50051 snapshots
+akidb ops --management 127.0.0.1:50051 audit
+```
+
+Set `AKIDB_AUTH_TOKEN` or point `AKIDB_AUTH_TOKEN_FILE` at a regular mode-0600
+file. The TUI and CLI report only the credential source category, never its
+value or path. Import planning accepts only a server-issued immutable staging
+reference and remains unavailable until trusted upload staging is connected.
 
 ## Docker Compose Stack
 

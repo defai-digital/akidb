@@ -5,6 +5,7 @@ use std::time::Duration;
 use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc;
 
+use crate::action::Action;
 use crate::app::{App, ClusterState, MetricsState};
 
 /// TUI events
@@ -18,6 +19,8 @@ pub enum Event {
     ClusterUpdate(ClusterState),
     /// Metrics update from coordinator
     MetricsUpdate(MetricsState),
+    /// Result from the bounded management effect worker
+    ConsoleAction(Action),
     /// Resize event
     Resize(u16, u16),
 }
@@ -93,10 +96,43 @@ fn sanitize_tick_rate(tick_rate: Duration) -> Duration {
 /// Handle a key event and update app state
 /// Returns true if the app should quit
 pub fn handle_key_event(app: &mut App, key: KeyEvent) -> bool {
-    // Check for quit keys first
-    if key.code == KeyCode::Char('q')
-        || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
-    {
+    // Ctrl-C remains an unconditional clean exit.
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.should_quit = true;
+        return true;
+    }
+
+    // Import-plan editing captures printable input but never credential data.
+    if app.screen == crate::app::Screen::ImportPlan && app.import_form.editing {
+        match key.code {
+            KeyCode::Esc => app.import_form.editing = false,
+            KeyCode::Enter | KeyCode::Tab => {
+                app.import_form.active_field = app.import_form.active_field.next();
+            }
+            KeyCode::Backspace => {
+                app.import_form.active_value_mut().pop();
+            }
+            KeyCode::Char(character) if !character.is_control() => {
+                app.import_form.active_value_mut().push(character);
+            }
+            _ => {}
+        }
+        return false;
+    }
+
+    if app.filter_editing {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => app.filter_editing = false,
+            KeyCode::Backspace => {
+                app.filter.pop();
+            }
+            KeyCode::Char(character) if !character.is_control() => app.filter.push(character),
+            _ => {}
+        }
+        return false;
+    }
+
+    if key.code == KeyCode::Char('q') {
         app.should_quit = true;
         return true;
     }
@@ -122,29 +158,31 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> bool {
             app.select_next();
         }
         KeyCode::Left | KeyCode::Char('h') => {
-            app.previous_panel();
+            app.previous_screen();
         }
         KeyCode::Right | KeyCode::Char('l') => {
-            app.next_panel();
+            app.next_screen();
         }
         KeyCode::Tab => {
-            app.next_panel();
+            app.next_screen();
         }
         KeyCode::BackTab => {
-            app.previous_panel();
+            app.previous_screen();
         }
 
         // Actions
         KeyCode::Char('r') => {
             app.set_status("Refreshing...");
-            // Actual refresh would be handled by the main loop
+            app.queue_refresh(app.screen);
         }
-        KeyCode::Char('e') => {
-            if app.config.controls.allow_eviction {
-                app.set_status("Eviction not yet implemented");
-            } else {
-                app.set_status("Eviction disabled in config");
-            }
+        KeyCode::Char('/') => {
+            app.filter_editing = true;
+        }
+        KeyCode::Char('i') if app.screen == crate::app::Screen::ImportPlan => {
+            app.import_form.editing = true;
+        }
+        KeyCode::Char('p') if app.screen == crate::app::Screen::ImportPlan => {
+            app.request_import_plan();
         }
 
         // Theme cycling
@@ -195,15 +233,15 @@ mod tests {
     }
 
     #[test]
-    fn test_panel_switch() {
+    fn test_screen_switch() {
         let mut app = App::new(TuiConfig::default());
-        use crate::app::Panel;
+        use crate::app::Screen;
 
-        assert_eq!(app.selected_panel, Panel::Topology);
+        assert_eq!(app.screen, Screen::Overview);
 
         let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
         handle_key_event(&mut app, key);
-        assert_eq!(app.selected_panel, Panel::Health);
+        assert_eq!(app.screen, Screen::Collections);
     }
 
     #[test]

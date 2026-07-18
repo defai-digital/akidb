@@ -26,9 +26,33 @@ pub struct MetadataFilter {
     legacy: Option<serde_json::Map<String, Value>>,
     /// Typed recursive tag filter.
     tag: Option<TagFilter>,
+    /// Optional conjunction of two fully compiled filters (workspace ACL AND user filter).
+    extra: Option<Box<(MetadataFilter, MetadataFilter)>>,
+    /// Workspace scope: missing/`null` metadata is treated as workspace `"default"`.
+    workspace_scope: Option<String>,
 }
 
 impl MetadataFilter {
+    /// Logical AND of two compiled filters (both must match).
+    pub fn and(left: Self, right: Self) -> Self {
+        Self {
+            legacy: None,
+            tag: None,
+            extra: Some(Box::new((left, right))),
+            workspace_scope: None,
+        }
+    }
+
+    /// Filter that enforces workspace ACL with legacy-default semantics.
+    pub fn workspace_scope(workspace_id: impl Into<String>) -> Self {
+        Self {
+            legacy: None,
+            tag: None,
+            extra: None,
+            workspace_scope: Some(workspace_id.into()),
+        }
+    }
+
     /// Build a filter from the raw `SearchRequest` inputs.
     ///
     /// Returns `Ok(None)` when neither input is present (no filtering). Returns
@@ -59,13 +83,26 @@ impl MetadataFilter {
         if legacy.is_none() && tag.is_none() {
             Ok(None)
         } else {
-            Ok(Some(Self { legacy, tag }))
+            Ok(Some(Self {
+                legacy,
+                tag,
+                extra: None,
+                workspace_scope: None,
+            }))
         }
     }
 
     /// Whether `metadata` (a candidate vector's stored metadata JSON) satisfies
     /// the filter. Both the legacy and tag filters must pass when present.
     pub fn matches(&self, metadata: &Value) -> bool {
+        if let Some((left, right)) = self.extra.as_deref() {
+            return left.matches(metadata) && right.matches(metadata);
+        }
+        if let Some(ws) = &self.workspace_scope {
+            if !crate::acl::metadata_in_workspace(metadata, ws) {
+                return false;
+            }
+        }
         if let Some(legacy) = &self.legacy {
             if !legacy.iter().all(|(k, expected)| {
                 metadata

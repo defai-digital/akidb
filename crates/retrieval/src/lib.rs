@@ -31,7 +31,10 @@ pub use expansion::{expand_to_parents, MatchedChunk};
 pub use fusion::{Fusion, HybridFuser, RankedInput, Rrf};
 pub use lexical::Bm25Index;
 pub use memory::{MemoryEntry, MemoryKind};
-pub use packer::{pack, Citation, ContextPack, PackStrategy, PackerConfig, Passage};
+pub use packer::{
+    pack, Citation, CitationDocumentV1, CitationItemV1, CitationSpanV1, ContextPack, PackStrategy,
+    PackerConfig, Passage, CITATION_SCHEMA_VERSION,
+};
 pub use planner::{plan_query, PlannerInput, PlannerTrace, RetrievalMode};
 pub use rerank::{
     cosine_similarity, mmr, IdentityReranker, LexicalOverlapReranker, MmrItem, RerankItem, Reranker,

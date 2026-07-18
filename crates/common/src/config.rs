@@ -13,6 +13,12 @@ pub struct AkiDbConfig {
     pub observability: ObservabilityConfig,
     pub slo: SloConfig,
     pub embedding: EmbeddingClientConfig,
+    /// Authentication and request authorization (v3.1 trust).
+    #[serde(default)]
+    pub auth: AuthConfig,
+    /// Read/plan-only operations console settings.
+    #[serde(default)]
+    pub management: ManagementConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,12 +34,187 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            host: "0.0.0.0".to_string(),
+            // Secure appliance default: loopback only (ADR-0002.2 / GAP-029).
+            host: "127.0.0.1".to_string(),
             port: 8080,
             grpc_port: 50051,
             tls_enabled: false,
             tls_cert_path: None,
             tls_key_path: None,
+        }
+    }
+}
+
+/// How strictly the data-plane requires a bearer token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMode {
+    /// Token optional on loopback; required on non-loopback binds.
+    #[default]
+    LoopbackOptional,
+    /// Token always required.
+    Required,
+    /// No auth checks (tests only).
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// Authentication mode.
+    #[serde(default)]
+    pub mode: AuthMode,
+    /// Path to a token file (mode 0600). Created on first start when missing.
+    #[serde(default = "default_token_file")]
+    pub token_file: String,
+    /// Optional explicit token (overrides file). Prefer env/file in production.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// Workspace ACL settings.
+    #[serde(default)]
+    pub acl: AclConfig,
+}
+
+fn default_token_file() -> String {
+    "./data/auth.token".to_string()
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            mode: AuthMode::LoopbackOptional,
+            token_file: default_token_file(),
+            token: None,
+            acl: AclConfig::default(),
+        }
+    }
+}
+
+/// Read/plan-only management API configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagementConfig {
+    /// Maximum number of redacted audit events retained in memory.
+    #[serde(default = "default_audit_max_entries")]
+    pub audit_max_entries: usize,
+    /// Import validation-plan limits. Planning never executes ingestion.
+    #[serde(default)]
+    pub import_plan: ImportPlanConfig,
+}
+
+impl Default for ManagementConfig {
+    fn default() -> Self {
+        Self {
+            audit_max_entries: default_audit_max_entries(),
+            import_plan: ImportPlanConfig::default(),
+        }
+    }
+}
+
+fn default_audit_max_entries() -> usize {
+    1000
+}
+
+/// Limits for validation-only import planning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportPlanConfig {
+    /// Enable planning when a trusted staging resolver is connected.
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_import_plan_source_bytes")]
+    pub max_source_bytes: u64,
+    #[serde(default = "default_import_plan_expanded_bytes")]
+    pub max_expanded_bytes: u64,
+    #[serde(default = "default_import_plan_ttl_seconds")]
+    pub plan_ttl_seconds: u64,
+}
+
+impl Default for ImportPlanConfig {
+    fn default() -> Self {
+        Self {
+            // Disabled until the upload gateway can resolve server-issued,
+            // immutable staging references in this process.
+            enabled: false,
+            max_source_bytes: default_import_plan_source_bytes(),
+            max_expanded_bytes: default_import_plan_expanded_bytes(),
+            plan_ttl_seconds: default_import_plan_ttl_seconds(),
+        }
+    }
+}
+
+fn default_import_plan_source_bytes() -> u64 {
+    100 * 1024 * 1024
+}
+
+fn default_import_plan_expanded_bytes() -> u64 {
+    512 * 1024 * 1024
+}
+
+fn default_import_plan_ttl_seconds() -> u64 {
+    300
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AclConfig {
+    /// Default workspace stamped on writes when the client omits one.
+    #[serde(default = "default_workspace_id")]
+    pub default_workspace: String,
+    /// When true, search/memory reads are scoped to the caller workspace.
+    #[serde(default = "default_true")]
+    pub enforce_workspace: bool,
+}
+
+fn default_workspace_id() -> String {
+    "default".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AclConfig {
+    fn default() -> Self {
+        Self {
+            default_workspace: default_workspace_id(),
+            enforce_workspace: true,
+        }
+    }
+}
+
+/// Filtered ANN strategy (ADR-0002.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterMode {
+    Pre,
+    Post,
+    #[default]
+    Adaptive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilterSettings {
+    #[serde(default)]
+    pub mode: FilterMode,
+    /// Over-fetch factor for post-filter candidate generation.
+    #[serde(default = "default_overfetch")]
+    pub postfilter_overfetch_factor: u32,
+    /// When estimated selectivity is at or below this, adaptive prefers pre-filter.
+    #[serde(default = "default_adaptive_pre_selectivity")]
+    pub adaptive_pre_selectivity: f32,
+}
+
+fn default_overfetch() -> u32 {
+    5
+}
+
+fn default_adaptive_pre_selectivity() -> f32 {
+    0.20
+}
+
+impl Default for FilterSettings {
+    fn default() -> Self {
+        Self {
+            mode: FilterMode::Adaptive,
+            postfilter_overfetch_factor: default_overfetch(),
+            adaptive_pre_selectivity: default_adaptive_pre_selectivity(),
         }
     }
 }
@@ -48,10 +229,27 @@ pub struct IndexSettings {
     pub hnsw_ef_construction: u32,
     /// Default ef_search parameter
     pub hnsw_ef_search: u32,
+    /// Vector storage precision: `f32` (default) or `f16` (GAP-010).
+    #[serde(default = "default_vector_precision")]
+    pub vector_precision: String,
+    /// Distance metric: `cosine` (default), `l2`, or `ip`.
+    #[serde(default = "default_metric")]
+    pub metric: String,
+    /// Filtered search settings.
+    #[serde(default)]
+    pub filter: FilterSettings,
     /// Rebuild settings
     pub rebuild: RebuildSettings,
     /// Tombstone settings
     pub tombstone: TombstoneSettings,
+}
+
+fn default_vector_precision() -> String {
+    "f32".to_string()
+}
+
+fn default_metric() -> String {
+    "cosine".to_string()
 }
 
 impl Default for IndexSettings {
@@ -61,6 +259,9 @@ impl Default for IndexSettings {
             hnsw_m: 16,
             hnsw_ef_construction: 128,
             hnsw_ef_search: 64,
+            vector_precision: default_vector_precision(),
+            metric: default_metric(),
+            filter: FilterSettings::default(),
             rebuild: RebuildSettings::default(),
             tombstone: TombstoneSettings::default(),
         }
@@ -281,8 +482,14 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = AkiDbConfig::default();
+        assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.grpc_port, 50051);
         assert_eq!(config.index.hnsw_m, 16);
+        assert_eq!(config.index.vector_precision, "f32");
+        assert_eq!(config.index.metric, "cosine");
+        assert_eq!(config.index.filter.mode, FilterMode::Adaptive);
+        assert_eq!(config.auth.mode, AuthMode::LoopbackOptional);
+        assert!(config.auth.acl.enforce_workspace);
         assert_eq!(config.slo.reference.dimensions, 768);
         assert!(!config.sql.enabled);
         assert_eq!(config.sql.backend, "sqlite");

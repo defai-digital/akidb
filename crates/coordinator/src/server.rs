@@ -9,12 +9,14 @@ use crate::{
 };
 use akidb_proto::akidb_server::{Akidb, AkidbServer};
 use akidb_proto::{
-    ClusterMetrics, CoordinatorNode, DeleteRequest, DeleteResponse, GetClusterStateRequest,
-    GetClusterStateResponse, GetRequest, GetResponse, HealthRequest, HealthResponse,
-    InsertBatchRequest, InsertBatchResponse, InsertRequest, InsertResponse, NodeStatus,
-    SearchBatchRequest, SearchBatchResponse, SearchRequest, SearchResponse,
-    SearchResult as ProtoSearchResult, ShardNode, TextSearchRequest, UpdateRequest, UpdateResponse,
-    UpdateStatus, Vector, VisibilityInfo,
+    ClusterMetrics, CollectionInfo, CoordinatorNode, CreateCollectionRequest,
+    CreateCollectionResponse, DeleteRequest, DeleteResponse, DropCollectionRequest,
+    DropCollectionResponse, GetClusterStateRequest, GetClusterStateResponse, GetCollectionRequest,
+    GetCollectionResponse, GetRequest, GetResponse, HealthRequest, HealthResponse,
+    InsertBatchRequest, InsertBatchResponse, InsertRequest, InsertResponse, ListCollectionsRequest,
+    ListCollectionsResponse, NodeStatus, SearchBatchRequest, SearchBatchResponse, SearchRequest,
+    SearchResponse, SearchResult as ProtoSearchResult, ShardNode, TextSearchRequest, UpdateRequest,
+    UpdateResponse, UpdateStatus, Vector, VisibilityInfo,
 };
 use http_body_util::Full;
 use hyper::body::Bytes;
@@ -22,6 +24,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request as HyperRequest, Response as HyperResponse};
 use hyper_util::rt::TokioIo;
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -132,6 +135,50 @@ impl CoordinatorService {
             return Err(Status::invalid_argument("collection cannot be empty"));
         }
         Ok(())
+    }
+
+    async fn aggregate_collections(&self) -> Result<Vec<CollectionInfo>, Status> {
+        let shards = self.router.read().await.all_shards().to_vec();
+        if shards.is_empty() {
+            return Err(Status::unavailable("No shards available"));
+        }
+
+        let mut merged: BTreeMap<String, CollectionInfo> = BTreeMap::new();
+        for shard in shards {
+            let mut client = self
+                .fanout
+                .get_shard_client(&shard.address)
+                .await
+                .map_err(|_| Status::unavailable("Failed to connect to a shard"))?;
+            let response = client
+                .list_collections(ListCollectionsRequest {})
+                .await
+                .map_err(|_| Status::unavailable("A shard collection inventory is unavailable"))?
+                .into_inner();
+            for collection in response.collections {
+                match merged.get_mut(&collection.name) {
+                    Some(existing) => {
+                        if existing.dimensions != collection.dimensions
+                            || existing.metric != collection.metric
+                            || existing.embedding_model_id != collection.embedding_model_id
+                            || existing.vector_precision != collection.vector_precision
+                            || existing.chunk_strategy != collection.chunk_strategy
+                        {
+                            return Err(Status::failed_precondition(
+                                "collection schemas differ across shards",
+                            ));
+                        }
+                        existing.vector_count = existing
+                            .vector_count
+                            .saturating_add(collection.vector_count);
+                    }
+                    None => {
+                        merged.insert(collection.name.clone(), collection);
+                    }
+                }
+            }
+        }
+        Ok(merged.into_values().collect())
     }
 
     fn validate_vector_id(id: &str) -> Result<(), Status> {
@@ -733,6 +780,49 @@ impl Akidb for CoordinatorService {
             local_peer_id: self.local_id.clone(),
             metrics: cluster_metrics,
         }))
+    }
+
+    async fn create_collection(
+        &self,
+        _request: Request<CreateCollectionRequest>,
+    ) -> Result<Response<CreateCollectionResponse>, Status> {
+        Err(Status::failed_precondition(
+            "collection creation is not coordinated yet; use an explicitly selected shard",
+        ))
+    }
+
+    async fn get_collection(
+        &self,
+        request: Request<GetCollectionRequest>,
+    ) -> Result<Response<GetCollectionResponse>, Status> {
+        let name = request.into_inner().name;
+        let collection = self
+            .aggregate_collections()
+            .await?
+            .into_iter()
+            .find(|collection| collection.name == name);
+        Ok(Response::new(GetCollectionResponse {
+            found: collection.is_some(),
+            collection,
+        }))
+    }
+
+    async fn list_collections(
+        &self,
+        _request: Request<ListCollectionsRequest>,
+    ) -> Result<Response<ListCollectionsResponse>, Status> {
+        Ok(Response::new(ListCollectionsResponse {
+            collections: self.aggregate_collections().await?,
+        }))
+    }
+
+    async fn drop_collection(
+        &self,
+        _request: Request<DropCollectionRequest>,
+    ) -> Result<Response<DropCollectionResponse>, Status> {
+        Err(Status::failed_precondition(
+            "collection deletion is not coordinated yet; use an explicitly selected shard",
+        ))
     }
 
     async fn text_search(

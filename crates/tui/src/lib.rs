@@ -2,10 +2,13 @@
 //!
 //! Terminal User Interface for monitoring AkiDB deployments.
 
+pub mod action;
 pub mod app;
 pub mod client;
 pub mod config;
+pub mod effect;
 pub mod events;
+pub mod model;
 pub mod runtime;
 pub mod theme;
 pub mod ui;

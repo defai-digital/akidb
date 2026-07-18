@@ -1,13 +1,20 @@
 //! AkiDB gRPC service implementation
 
+use crate::acl::{self, stamp_write_metadata};
+use crate::auth::{self, AuthContext};
+use crate::collections::{CollectionMeta, CollectionRegistry, SharedCollectionRegistry};
 use crate::filter::MetadataFilter;
 use crate::proto::{
-    akidb_server::Akidb, DeleteRequest, DeleteResponse, DeleteStatus, GetClusterStateRequest,
-    GetClusterStateResponse, GetRequest, GetResponse, HealthRequest, HealthResponse,
-    InsertBatchRequest, InsertBatchResponse, InsertRequest, InsertResponse, SearchBatchRequest,
-    SearchBatchResponse, SearchRequest, SearchResponse, SearchResult, TextSearchRequest,
-    UpdateRequest, UpdateResponse, UpdateStatus, Vector, VisibilityInfo,
+    akidb_server::Akidb, CollectionInfo, CreateCollectionRequest, CreateCollectionResponse,
+    DeleteRequest, DeleteResponse, DeleteStatus, DropCollectionRequest, DropCollectionResponse,
+    GetClusterStateRequest, GetClusterStateResponse, GetCollectionRequest, GetCollectionResponse,
+    GetRequest, GetResponse, HealthRequest, HealthResponse, InsertBatchRequest,
+    InsertBatchResponse, InsertRequest, InsertResponse, ListCollectionsRequest,
+    ListCollectionsResponse, SearchBatchRequest, SearchBatchResponse, SearchRequest,
+    SearchResponse, SearchResult, TextSearchRequest, UpdateRequest, UpdateResponse, UpdateStatus,
+    Vector, VisibilityInfo,
 };
+use akidb_common::config::{AclConfig, FilterMode, FilterSettings};
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
 use akidb_graph::{
@@ -107,12 +114,20 @@ where
     graph_index: Option<Arc<dyn GraphIndex>>,
     /// Optional SQL metadata mirror for exact structured metadata filters.
     metadata_sql_index: Option<Arc<dyn MetadataSqlIndex>>,
+    /// Workspace ACL configuration (v3.1).
+    acl: AclConfig,
+    /// Filtered search strategy (v3.1).
+    filter_settings: FilterSettings,
+    /// Collection schema registry (v3.1).
+    collections: SharedCollectionRegistry,
+    /// Embedding model id bound to this shard for schema/metadata stamping.
+    embedding_model_id: Option<String>,
 }
 
 impl<I, S> AkiDbService<I, S>
 where
-    I: VectorIndex,
-    S: StorageBackend,
+    I: VectorIndex + 'static,
+    S: StorageBackend + 'static,
 {
     /// Default SLO threshold in microseconds (50ms)
     const DEFAULT_SLO_THRESHOLD_US: u64 = 50_000;
@@ -141,10 +156,13 @@ where
         collection: impl Into<String>,
         slo_threshold_us: u64,
     ) -> Self {
+        let collection = collection.into();
+        let collections = Arc::new(CollectionRegistry::new());
+        collections.ensure_default(&collection, 0, "cosine", "f32", "");
         Self {
             index,
             id_mapping,
-            collection: collection.into(),
+            collection,
             update_locks: DashSet::new(),
             slo_threshold_us,
             embedding_provider: None,
@@ -152,7 +170,58 @@ where
             documents: Arc::new(RwLock::new(HashMap::new())),
             graph_index: None,
             metadata_sql_index: None,
+            acl: AclConfig::default(),
+            filter_settings: FilterSettings::default(),
+            collections,
+            embedding_model_id: None,
         }
+    }
+
+    /// Configure workspace ACL enforcement.
+    pub fn with_acl(mut self, acl: AclConfig) -> Self {
+        self.acl = acl;
+        self
+    }
+
+    /// Configure filtered search strategy.
+    pub fn with_filter_settings(mut self, filter_settings: FilterSettings) -> Self {
+        self.filter_settings = filter_settings;
+        self
+    }
+
+    /// Attach a shared collection registry (usually pre-seeded at boot).
+    pub fn with_collections(mut self, collections: SharedCollectionRegistry) -> Self {
+        self.collections = collections;
+        self
+    }
+
+    /// Bind the embedding model identity used for metadata stamping / schema.
+    pub fn with_embedding_model_id(mut self, model_id: impl Into<String>) -> Self {
+        self.embedding_model_id = Some(model_id.into());
+        self
+    }
+
+    /// Seed/update the default collection schema for this shard.
+    pub fn seed_collection_schema(
+        &self,
+        dimensions: u32,
+        metric: &str,
+        precision: &str,
+        embedding_model_id: &str,
+    ) {
+        self.collections.ensure_default(
+            &self.collection,
+            dimensions,
+            metric,
+            precision,
+            embedding_model_id,
+        );
+    }
+
+    /// Return the shared collection schema registry for read-only management
+    /// services. Mutations remain governed by the data-plane RPC contract.
+    pub fn collection_registry(&self) -> SharedCollectionRegistry {
+        self.collections.clone()
     }
 
     /// Set the embedding provider for text search support
@@ -389,13 +458,98 @@ where
         if collection.is_empty() {
             return Err(Status::invalid_argument("collection cannot be empty"));
         }
+        // Allow registered collection names; the active shard still serves one
+        // physical index, so non-active registered collections are rejected
+        // until multi-index routing lands.
         if collection != self.collection {
+            if self.collections.get(collection).is_some() {
+                return Err(Status::failed_precondition(format!(
+                    "collection '{collection}' is registered but not the active shard collection '{}'",
+                    self.collection
+                )));
+            }
             return Err(Status::invalid_argument(format!(
                 "collection '{}' does not match shard collection '{}'",
                 collection, self.collection
             )));
         }
         Ok(())
+    }
+
+    fn request_auth_context<T>(&self, request: &Request<T>) -> AuthContext {
+        auth::auth_context(request)
+    }
+
+    /// Build metadata filter from request inputs + workspace ACL scope.
+    fn compile_search_filter(
+        &self,
+        filter_bytes: &[u8],
+        tag_filter: Option<crate::proto::TagFilter>,
+        ctx: &AuthContext,
+    ) -> Result<Option<MetadataFilter>, Status> {
+        let user =
+            MetadataFilter::build(filter_bytes, tag_filter).map_err(Status::invalid_argument)?;
+        acl::apply_workspace_scope(user, ctx, &self.acl).map_err(Status::invalid_argument)
+    }
+
+    fn attach_metadata_predicate(
+        &self,
+        mut params: SearchParams,
+        metadata_filter: Option<Arc<MetadataFilter>>,
+    ) -> SearchParams {
+        if let Some(metadata_filter) = metadata_filter {
+            let id_mapping = self.id_mapping.clone();
+            params = params.with_filter(Arc::new(move |id: &VectorId| {
+                match id_mapping.get_vector(id) {
+                    Ok(Some(entry)) => {
+                        let meta = if entry.metadata.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            match serde_json::from_slice(&entry.metadata) {
+                                Ok(meta) => meta,
+                                Err(_) => return false,
+                            }
+                        };
+                        metadata_filter.matches(&meta)
+                    }
+                    _ => false,
+                }
+            }));
+        }
+        params
+    }
+
+    /// Effective candidate `top_k` under the configured filter strategy.
+    fn filtered_search_k(&self, top_k: usize, has_filter: bool) -> usize {
+        if !has_filter {
+            return top_k;
+        }
+        let factor = self.filter_settings.postfilter_overfetch_factor.max(1) as usize;
+        match self.filter_settings.mode {
+            FilterMode::Pre => top_k,
+            FilterMode::Post | FilterMode::Adaptive => {
+                // Adaptive currently uses post-filter over-fetch; true prefilter
+                // bitmap integration is tracked as a follow-up inside GAP-003.
+                top_k.saturating_mul(factor).clamp(top_k, top_k.max(500))
+            }
+        }
+    }
+
+    fn collection_info(&self, meta: &CollectionMeta) -> CollectionInfo {
+        let vector_count = if meta.name == self.collection {
+            self.index.stats().active_vectors
+        } else {
+            0
+        };
+        CollectionInfo {
+            name: meta.name.clone(),
+            dimensions: meta.dimensions,
+            metric: meta.metric.clone(),
+            embedding_model_id: meta.embedding_model_id.clone(),
+            vector_precision: meta.vector_precision.clone(),
+            chunk_strategy: meta.chunk_strategy.clone(),
+            vector_count,
+        }
     }
 
     fn validate_unique_batch_ids(vectors: &[Vector]) -> Result<(), Status> {
@@ -1411,6 +1565,7 @@ where
         request: Request<InsertRequest>,
     ) -> Result<Response<InsertResponse>, Status> {
         let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
         let req = request.into_inner();
 
         debug!("Insert request for ID: {}", req.id);
@@ -1423,6 +1578,14 @@ where
         if let Err(message) = Self::validate_metadata_json(&req.metadata) {
             return Err(Status::invalid_argument(message));
         }
+
+        let stamped_metadata = stamp_write_metadata(
+            &req.metadata,
+            &ctx,
+            &self.acl,
+            self.embedding_model_id.as_deref(),
+        )
+        .map_err(Status::invalid_argument)?;
 
         let vector_id = VectorId::new(&req.id);
         let vector: Vec<f32> = req.vector;
@@ -1443,7 +1606,7 @@ where
         // rollback the index insert.
         let mapping_result =
             self.id_mapping
-                .upsert_with_vector(&vector_id, internal_id, &vector, &req.metadata);
+                .upsert_with_vector(&vector_id, internal_id, &vector, &stamped_metadata);
 
         if let Err(e) = mapping_result {
             // FIX BUG-HUNT-601: Log rollback failures instead of silently ignoring
@@ -1465,8 +1628,8 @@ where
         if let Some(metadata) = old_metadata {
             self.delete_graph_edges_from_metadata(&vector_id, &metadata);
         }
-        self.index_graph_chunk(&vector_id, &req.metadata);
-        self.index_sql_metadata(&vector_id, internal_id.0, &req.metadata);
+        self.index_graph_chunk(&vector_id, &stamped_metadata);
+        self.index_sql_metadata(&vector_id, internal_id.0, &stamped_metadata);
 
         let elapsed = start.elapsed();
         info!("Inserted vector {} in {:?}", req.id, elapsed);
@@ -1488,6 +1651,7 @@ where
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
         let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
         let req = request.into_inner();
 
         debug!("Search request, top_k: {}", req.top_k);
@@ -1496,37 +1660,13 @@ where
         Self::validate_search_controls(req.top_k, req.nprobe)?;
         Self::validate_query_vector(&req.query)?;
 
-        let mut params =
-            SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
-
-        // Wire optional metadata filtering (RET-003). The predicate loads each
-        // candidate's stored metadata and evaluates the request's tag/legacy
-        // filter against it; candidates that fail (or whose metadata cannot be
-        // read) are excluded.
-        match crate::filter::MetadataFilter::build(&req.filter, req.tag_filter.clone()) {
-            Ok(Some(metadata_filter)) => {
-                let metadata_filter = Arc::new(metadata_filter);
-                let id_mapping = self.id_mapping.clone();
-                params = params.with_filter(Arc::new(move |id: &VectorId| {
-                    match id_mapping.get_vector(id) {
-                        Ok(Some(entry)) => {
-                            let meta = if entry.metadata.is_empty() {
-                                serde_json::Value::Null
-                            } else {
-                                match serde_json::from_slice(&entry.metadata) {
-                                    Ok(meta) => meta,
-                                    Err(_) => return false,
-                                }
-                            };
-                            metadata_filter.matches(&meta)
-                        }
-                        _ => false,
-                    }
-                }));
-            }
-            Ok(None) => {}
-            Err(msg) => return Err(Status::invalid_argument(msg)),
-        }
+        let metadata_filter = self
+            .compile_search_filter(&req.filter, req.tag_filter.clone(), &ctx)?
+            .map(Arc::new);
+        let top_k = req.top_k as usize;
+        let search_k = self.filtered_search_k(top_k, metadata_filter.is_some());
+        let params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
+        let params = self.attach_metadata_predicate(params, metadata_filter);
 
         let results = self
             .index
@@ -1538,6 +1678,7 @@ where
 
         let response_results: Vec<SearchResult> = results
             .into_iter()
+            .take(top_k)
             .map(|r| SearchResult {
                 id: r.id.to_string(),
                 score: r.score,
@@ -1632,7 +1773,8 @@ where
         &self,
         request: Request<UpdateRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
-        let req = request.into_inner();
+        let ctx = self.request_auth_context(&request);
+        let mut req = request.into_inner();
 
         debug!("Update request for ID: {}", req.id);
         self.validate_request_collection(&req.collection)?;
@@ -1657,6 +1799,15 @@ where
         if let Err(message) = Self::validate_metadata_json(&req.metadata) {
             return Err(Status::invalid_argument(message));
         }
+
+        // Stamp workspace / embedding model after JSON validation (same as insert).
+        req.metadata = stamp_write_metadata(
+            &req.metadata,
+            &ctx,
+            &self.acl,
+            self.embedding_model_id.as_deref(),
+        )
+        .map_err(Status::invalid_argument)?;
 
         let vector_id = VectorId::new(&req.id);
 
@@ -1918,11 +2069,132 @@ where
     }
 
     #[instrument(skip(self, request))]
+    async fn create_collection(
+        &self,
+        request: Request<CreateCollectionRequest>,
+    ) -> Result<Response<CreateCollectionResponse>, Status> {
+        let req = request.into_inner();
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(Status::invalid_argument("collection name cannot be empty"));
+        }
+        let dimensions = if req.dimensions == 0 {
+            self.index.dimensions() as u32
+        } else {
+            req.dimensions
+        };
+        if name == self.collection && dimensions as usize != self.index.dimensions() {
+            return Err(Status::invalid_argument(format!(
+                "dimensions {dimensions} do not match active index dimensions {}",
+                self.index.dimensions()
+            )));
+        }
+        let metric = if req.metric.trim().is_empty() {
+            "cosine".to_string()
+        } else {
+            req.metric.trim().to_ascii_lowercase()
+        };
+        let precision = if req.vector_precision.trim().is_empty() {
+            "f32".to_string()
+        } else {
+            req.vector_precision.trim().to_ascii_lowercase()
+        };
+        let embedding_model_id = if req.embedding_model_id.trim().is_empty() {
+            self.embedding_model_id.clone().unwrap_or_default()
+        } else {
+            req.embedding_model_id.trim().to_string()
+        };
+        let chunk_strategy = if req.chunk_strategy.trim().is_empty() {
+            "fixed".to_string()
+        } else {
+            req.chunk_strategy.trim().to_string()
+        };
+
+        let meta = CollectionMeta {
+            name: name.clone(),
+            dimensions,
+            metric,
+            embedding_model_id,
+            vector_precision: precision,
+            chunk_strategy,
+        };
+        match self.collections.create(meta) {
+            Ok(_) => Ok(Response::new(CreateCollectionResponse {
+                success: true,
+                name,
+                message: "created".to_string(),
+            })),
+            Err(e) if e.contains("already exists") => Ok(Response::new(CreateCollectionResponse {
+                success: false,
+                name,
+                message: e,
+            })),
+            Err(e) => Err(Status::invalid_argument(e)),
+        }
+    }
+
+    #[instrument(skip(self, request))]
+    async fn get_collection(
+        &self,
+        request: Request<GetCollectionRequest>,
+    ) -> Result<Response<GetCollectionResponse>, Status> {
+        let name = request.into_inner().name;
+        match self.collections.get(&name) {
+            Some(meta) => Ok(Response::new(GetCollectionResponse {
+                found: true,
+                collection: Some(self.collection_info(&meta)),
+            })),
+            None => Ok(Response::new(GetCollectionResponse {
+                found: false,
+                collection: None,
+            })),
+        }
+    }
+
+    #[instrument(skip(self, _request))]
+    async fn list_collections(
+        &self,
+        _request: Request<ListCollectionsRequest>,
+    ) -> Result<Response<ListCollectionsResponse>, Status> {
+        let collections = self
+            .collections
+            .list()
+            .iter()
+            .map(|m| self.collection_info(m))
+            .collect();
+        Ok(Response::new(ListCollectionsResponse { collections }))
+    }
+
+    #[instrument(skip(self, request))]
+    async fn drop_collection(
+        &self,
+        request: Request<DropCollectionRequest>,
+    ) -> Result<Response<DropCollectionResponse>, Status> {
+        let name = request.into_inner().name;
+        if name == self.collection {
+            return Err(Status::failed_precondition(
+                "cannot drop the active shard collection",
+            ));
+        }
+        match self.collections.remove(&name) {
+            Ok(()) => Ok(Response::new(DropCollectionResponse {
+                success: true,
+                message: "dropped".to_string(),
+            })),
+            Err(e) => Ok(Response::new(DropCollectionResponse {
+                success: false,
+                message: e,
+            })),
+        }
+    }
+
+    #[instrument(skip(self, request))]
     async fn text_search(
         &self,
         request: Request<TextSearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
         let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
         let req = request.into_inner();
 
         if req.text.trim().is_empty() {
@@ -1932,11 +2204,9 @@ where
         Self::validate_search_controls(req.top_k, req.nprobe)?;
         Self::validate_text_search_options(&req)?;
 
-        let metadata_filter = match MetadataFilter::build(&req.filter, req.tag_filter.clone()) {
-            Ok(Some(filter)) => Some(Arc::new(filter)),
-            Ok(None) => None,
-            Err(msg) => return Err(Status::invalid_argument(msg)),
-        };
+        let metadata_filter = self
+            .compile_search_filter(&req.filter, req.tag_filter.clone(), &ctx)?
+            .map(Arc::new);
 
         let requested_mode = Self::requested_text_retrieval_mode(&req)?;
         let mut planner_input = PlannerInput::new(req.text.clone())
@@ -1962,11 +2232,12 @@ where
         let use_dense = planner_trace.vector_weight > 0.0;
         let use_lexical = planner_trace.lexical_weight > 0.0;
         let needs_pool = (use_dense && use_lexical) || req.rerank || req.diversity;
-        let search_k = if needs_pool {
+        let mut search_k = if needs_pool {
             top_k.saturating_mul(4).clamp(top_k, top_k.max(200))
         } else {
             top_k
         };
+        search_k = self.filtered_search_k(search_k, metadata_filter.is_some());
 
         // Dense stage.
         let dense = if use_dense {
@@ -1986,24 +2257,8 @@ where
                 "TextSearch embedding generated"
             );
 
-            let mut params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
-            if let Some(metadata_filter) = metadata_filter.clone() {
-                let id_mapping = self.id_mapping.clone();
-                params = params.with_filter(Arc::new(move |id: &VectorId| {
-                    match id_mapping.get_vector(id) {
-                        Ok(Some(entry)) => {
-                            let meta = if entry.metadata.is_empty() {
-                                serde_json::Value::Null
-                            } else {
-                                serde_json::from_slice(&entry.metadata)
-                                    .unwrap_or(serde_json::Value::Null)
-                            };
-                            metadata_filter.matches(&meta)
-                        }
-                        _ => false,
-                    }
-                }));
-            }
+            let params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
+            let params = self.attach_metadata_predicate(params, metadata_filter.clone());
 
             self.index
                 .search(&query_vector, &params)
