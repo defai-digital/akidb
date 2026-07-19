@@ -111,20 +111,21 @@ pub fn mmr(items: &[MmrItem], lambda: f32, top_k: usize) -> Vec<ScoredId> {
     let mut out: Vec<ScoredId> = Vec::new();
 
     // First pick: highest relevance (ties by id).
-    let first_idx = (0..remaining.len())
-        .max_by(|&i, &j| {
-            remaining[i]
-                .relevance
-                .is_finite()
-                .cmp(&remaining[j].relevance.is_finite())
-                .then_with(|| {
-                    finite_score(remaining[i].relevance)
-                        .partial_cmp(&finite_score(remaining[j].relevance))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| remaining[j].id.as_str().cmp(remaining[i].id.as_str()))
-        })
-        .unwrap();
+    // SAFETY: remaining is non-empty because items was non-empty and dedup keeps at least one
+    let Some(first_idx) = (0..remaining.len()).max_by(|&i, &j| {
+        remaining[i]
+            .relevance
+            .is_finite()
+            .cmp(&remaining[j].relevance.is_finite())
+            .then_with(|| {
+                finite_score(remaining[i].relevance)
+                    .partial_cmp(&finite_score(remaining[j].relevance))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| remaining[j].id.as_str().cmp(remaining[i].id.as_str()))
+    }) else {
+        return Vec::new();
+    };
     let first = remaining.remove(first_idx);
     out.push(ScoredId::new(
         first.id.clone(),

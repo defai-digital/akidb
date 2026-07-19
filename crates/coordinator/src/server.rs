@@ -1006,16 +1006,16 @@ async fn handle_metrics_request(
             Ok(HyperResponse::builder()
                 .header("Content-Type", "text/plain; charset=utf-8")
                 .body(Full::new(Bytes::from(metrics)))
-                .unwrap())
+                .expect("valid HTTP response"))
         }
         (&Method::GET, "/health") => Ok(HyperResponse::builder()
             .header("Content-Type", "application/json")
             .body(Full::new(Bytes::from(r#"{"status":"ok"}"#)))
-            .unwrap()),
+            .expect("valid HTTP response")),
         _ => Ok(HyperResponse::builder()
             .status(404)
             .body(Full::new(Bytes::from("Not Found")))
-            .unwrap()),
+            .expect("valid HTTP response")),
     }
 }
 

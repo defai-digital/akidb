@@ -244,7 +244,11 @@ impl BatchProcessor {
         reserve_pending_unbounded(&self.pending_requests);
 
         // Acquire permit for concurrent batch limiting
-        let _permit = self.concurrent_semaphore.acquire().await.unwrap();
+        let _permit = self
+            .concurrent_semaphore
+            .acquire()
+            .await
+            .expect("semaphore is never closed");
 
         let batch_size = items.len();
         let start = Instant::now();
@@ -288,7 +292,11 @@ impl BatchProcessor {
         reserve_pending_bounded(&self.pending_requests, self.config.max_pending_requests)?;
 
         // Acquire permit for concurrent batch limiting
-        let _permit = self.concurrent_semaphore.acquire().await.unwrap();
+        let _permit = self
+            .concurrent_semaphore
+            .acquire()
+            .await
+            .expect("semaphore is never closed");
 
         let batch_size = items.len();
         let start = Instant::now();

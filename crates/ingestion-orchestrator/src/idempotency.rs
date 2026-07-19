@@ -119,7 +119,8 @@ impl IdempotencyChecker {
     /// Check if content has already been processed
     pub fn is_duplicate(&self, content: &[u8]) -> bool {
         let hash = Self::hash_content(content);
-        let processed = self.processed.read().unwrap();
+        // Recover from poisoned lock to preserve idempotency state
+        let processed = self.processed.read().unwrap_or_else(|e| e.into_inner());
         processed.contains(&hash)
     }
 
@@ -127,7 +128,8 @@ impl IdempotencyChecker {
     pub fn mark_processed(&self, content: &[u8]) -> String {
         let hash = Self::hash_content(content);
 
-        let mut processed = self.processed.write().unwrap();
+        // Recover from poisoned lock to preserve idempotency state
+        let mut processed = self.processed.write().unwrap_or_else(|e| e.into_inner());
 
         // Evict oldest entries (from front of IndexSet) if at capacity
         while processed.len() >= self.max_entries {
@@ -173,7 +175,8 @@ impl IdempotencyChecker {
     pub fn check_and_mark(&self, content: &[u8]) -> (bool, String) {
         let hash = Self::hash_content(content);
 
-        let mut processed = self.processed.write().unwrap();
+        // Recover from poisoned lock to preserve idempotency state
+        let mut processed = self.processed.write().unwrap_or_else(|e| e.into_inner());
         let is_dup = processed.contains(&hash);
 
         if !is_dup {
@@ -220,7 +223,8 @@ impl IdempotencyChecker {
     /// This is used to roll back the in-flight idempotency mark when processing
     /// fails after `check_and_mark`, allowing the same content to be retried.
     pub fn unmark_hash(&self, hash: &str) -> Result<(), String> {
-        self.processed.write().unwrap().shift_remove(hash);
+        // Recover from poisoned lock to preserve idempotency state
+        self.processed.write().unwrap_or_else(|e| e.into_inner()).shift_remove(hash);
 
         if let Some(ref db) = self.db {
             let conn = db
@@ -235,7 +239,8 @@ impl IdempotencyChecker {
 
     /// Get number of tracked hashes
     pub fn len(&self) -> usize {
-        self.processed.read().unwrap().len()
+        // Recover from poisoned lock to preserve idempotency state
+        self.processed.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Check if empty
@@ -249,8 +254,8 @@ impl IdempotencyChecker {
     /// Previously, calling clear() and then restarting would reload the
     /// "cleared" hashes from SQLite, making clear() ineffective across restarts.
     pub fn clear(&self) -> Result<(), String> {
-        // Clear in-memory state
-        self.processed.write().unwrap().clear();
+        // Clear in-memory state (recover from poisoned lock)
+        self.processed.write().unwrap_or_else(|e| e.into_inner()).clear();
 
         // FIX BUG-H028: Also clear SQLite table
         if let Some(ref db) = self.db {

@@ -39,7 +39,11 @@ impl Ord for ScoredResult {
             (false, true) => Ordering::Greater, // other is NaN: self > other
             (false, false) => {
                 // Neither is NaN, safe to compare (reverse for min-heap)
-                let score_cmp = other.result.score.partial_cmp(&self.result.score).unwrap();
+                let score_cmp = other
+                    .result
+                    .score
+                    .partial_cmp(&self.result.score)
+                    .expect("scores are non-NaN per match arm");
                 // Tie-break by ID for deterministic ordering
                 if score_cmp == Ordering::Equal {
                     self.result.id.as_str().cmp(other.result.id.as_str())
@@ -183,10 +187,12 @@ impl ResultMerger {
                 || score > min.result.score
                 || (score == min.result.score && id_str.as_str() < min.result.id.as_str());
             if should_insert {
-                let evicted = self.heap.pop().unwrap();
-                self.best_scores.remove(&evicted.result.id.to_string());
-                self.best_scores.insert(id_str, score);
-                self.heap.push(ScoredResult { result });
+                // SAFETY: heap is non-empty because peek() returned Some above
+                if let Some(evicted) = self.heap.pop() {
+                    self.best_scores.remove(&evicted.result.id.to_string());
+                    self.best_scores.insert(id_str, score);
+                    self.heap.push(ScoredResult { result });
+                }
             }
         }
     }
@@ -205,7 +211,11 @@ impl ResultMerger {
 
         // Sort by score descending with tie-breaking by ID for deterministic ordering
         results.sort_by(|a, b| {
-            let score_cmp = b.score.partial_cmp(&a.score).unwrap(); // Safe: no NaN
+            // SAFETY: non-finite scores filtered out above
+            let score_cmp = b
+                .score
+                .partial_cmp(&a.score)
+                .expect("scores are finite per filter above");
             if score_cmp == Ordering::Equal {
                 a.id.as_str().cmp(b.id.as_str()) // Tie-break by ID (ascending)
             } else {
