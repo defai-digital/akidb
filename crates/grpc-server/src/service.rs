@@ -2327,13 +2327,14 @@ where
             let params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
             let params = self.attach_metadata_predicate(params, metadata_filter.clone());
 
-            // Drop non-positive dense scores before fusion so orthogonal
-            // zero-cosine hits cannot enter RRF ranks by index position alone.
+            // Drop only truly non-finite scores (NaN, inf, -inf) from the
+            // raw index output. Zero-score hits are kept here so dense-only
+            // and lexical-fusion paths can still surface them.
             let mut dense_hits = self
                 .index
                 .search(&query_vector, &params)
                 .map_err(Self::to_status)?;
-            dense_hits.retain(|r| r.score.is_finite() && r.score > 0.0);
+            dense_hits.retain(|r| r.score.is_finite());
             dense_hits
         } else {
             Vec::new()
@@ -2353,9 +2354,15 @@ where
 
         // Base ranked list: hybrid fusion (dense + lexical via RRF) or dense-only.
         // An empty lexical index degrades hybrid cleanly to dense ranking.
-        let mut ranked: Vec<ScoredId> = if use_dense && use_lexical {
+        let mut ranked: Vec<ScoredId> = if use_dense && use_lexical && !lexical.is_empty() {
+            // Only allow zero/non-positive dense scores into RRF when the same id
+            // also appears in the lexical results (proving a real non-dense signal).
+            // This prevents orthogonal dense hits with no lexical overlap from
+            // gaming fusion by index position alone.
+            let lexical_ids: HashSet<_> = lexical.iter().map(|s| s.id.clone()).collect();
             let dense_scored: Vec<ScoredId> = dense
                 .iter()
+                .filter(|r| r.score > 0.0 || lexical_ids.contains(&r.id))
                 .map(|r| ScoredId::new(r.id.clone(), r.score))
                 .collect();
             let fuser = HybridFuser::new().with_weights(
@@ -2363,7 +2370,7 @@ where
                 req.lexical_weight.unwrap_or(planner_trace.lexical_weight),
             );
             fuser.fuse(&dense_scored, &lexical, search_k)
-        } else if use_lexical {
+        } else if use_lexical && !lexical.is_empty() {
             lexical
         } else {
             dense

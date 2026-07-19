@@ -10,7 +10,7 @@ use crate::{
     tombstone::TombstoneBitset,
     validate_finite_vector_values, AkiDbError, InternalId, Result, SearchResult, VectorId,
 };
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tracing::{debug, warn};
@@ -155,6 +155,14 @@ pub struct HnswIndex {
     is_rebuilding: AtomicBool,
     /// ef_search parameter
     ef_search: usize,
+    /// Distance metric used for score conversion
+    metric: DistanceMetric,
+    /// Serializes ef_search mutations to prevent concurrent search corruption.
+    /// Only acquired when a search uses a non-default nprobe value.
+    ef_search_lock: Mutex<()>,
+    /// Prevents concurrent insert/delete operations during trigger_rebuild.
+    /// Searches do NOT acquire this lock (tombstone filtering remains correct).
+    rebuild_lock: Mutex<()>,
 }
 
 impl HnswIndex {
@@ -205,7 +213,24 @@ impl HnswIndex {
             is_ready: AtomicBool::new(true),
             is_rebuilding: AtomicBool::new(false),
             ef_search: config.ef_search,
+            metric: config.metric,
+            ef_search_lock: Mutex::new(()),
+            rebuild_lock: Mutex::new(()),
         })
+    }
+
+    /// Convert a usearch distance value to a similarity score based on the
+    /// configured distance metric.
+    ///
+    /// - Cosine: usearch returns `1 - cos_sim`, so `score = 1 - distance`
+    /// - L2 (squared Euclidean): maps [0, inf) to (0, 1] via `1 / (1 + d)`
+    /// - InnerProduct: usearch returns `1 - dot_product`, so `score = 1 - distance`
+    fn distance_to_score(&self, distance: f32) -> f32 {
+        match self.metric {
+            DistanceMetric::Cosine => 1.0 - distance,
+            DistanceMetric::L2 => 1.0 / (1.0 + distance),
+            DistanceMetric::InnerProduct => 1.0 - distance,
+        }
     }
 
     fn ensure_capacity_for(&self, required_capacity: usize) {
@@ -232,6 +257,9 @@ impl HnswIndex {
 
 impl VectorIndex for HnswIndex {
     fn insert(&self, id: &VectorId, vector: &[f32]) -> Result<InternalId> {
+        // Acquire rebuild_lock to prevent interleaving with trigger_rebuild
+        let _rebuild_guard = self.rebuild_lock.lock();
+
         if vector.len() != self.dimensions {
             return Err(AkiDbError::DimensionMismatch {
                 expected: self.dimensions,
@@ -307,15 +335,30 @@ impl VectorIndex for HnswIndex {
             params.top_k + tombstoned + params.top_k / 2
         };
 
-        // Update ef_search if nprobe differs from default
-        if params.nprobe as usize != self.ef_search {
+        // When nprobe differs from the default ef_search, we must mutate the
+        // shared usearch index expansion parameter. Hold ef_search_lock for the
+        // entire change-search-restore sequence to prevent concurrent searches
+        // from corrupting each other's expansion setting.
+        let needs_custom_ef = params.nprobe as usize != self.ef_search;
+        let _ef_guard = if needs_custom_ef {
+            let guard = self.ef_search_lock.lock();
             self.index.change_expansion_search(params.nprobe as usize);
-        }
+            Some(guard)
+        } else {
+            None
+        };
 
         let matches = self
             .index
             .search::<f32>(query, search_count)
             .map_err(|e| AkiDbError::InvalidParameter(format!("HNSW search failed: {}", e)))?;
+
+        // Restore default ef_search while still holding the lock
+        if needs_custom_ef {
+            self.index.change_expansion_search(self.ef_search);
+        }
+        // _ef_guard drops here, releasing the lock
+        drop(_ef_guard);
 
         let reverse = self.reverse_mapping.read();
         let mut results: Vec<SearchResult> = Vec::with_capacity(params.top_k);
@@ -337,20 +380,13 @@ impl VectorIndex for HnswIndex {
                     }
                 }
 
-                // usearch returns distance; for cosine metric, convert to similarity score
-                // Cosine distance = 1 - cosine_similarity, so score = 1 - distance
-                let score = 1.0 - distance;
+                let score = self.distance_to_score(*distance);
                 results.push(SearchResult::new(ext_id.clone(), score));
 
                 if results.len() >= params.top_k {
                     break;
                 }
             }
-        }
-
-        // Reset ef_search if we changed it
-        if params.nprobe as usize != self.ef_search {
-            self.index.change_expansion_search(self.ef_search);
         }
 
         Ok(results)
@@ -365,6 +401,8 @@ impl VectorIndex for HnswIndex {
     }
 
     fn delete(&self, internal_id: InternalId) -> Result<()> {
+        // Acquire rebuild_lock to prevent interleaving with trigger_rebuild
+        let _rebuild_guard = self.rebuild_lock.lock();
         self.tombstones.mark_deleted(internal_id)?;
         // Note: We don't remove from usearch immediately to avoid graph disruption.
         // Tombstoned vectors are filtered during search.
@@ -425,12 +463,16 @@ impl VectorIndex for HnswIndex {
     }
 
     fn trigger_rebuild(&self) -> Result<()> {
+        // Hold rebuild_lock for the entire rebuild to prevent concurrent
+        // insert/delete from interleaving with physical removal and mapping cleanup.
+        let _rebuild_guard = self.rebuild_lock.lock();
+
         self.is_rebuilding.store(true, Ordering::SeqCst);
 
         // Physically remove tombstoned vectors from the usearch index
         let reverse = self.reverse_mapping.read();
         let mut removed = 0u64;
-        for (&internal_id, _) in reverse.iter() {
+        for &internal_id in reverse.keys() {
             if self.tombstones.is_deleted(InternalId(internal_id)) {
                 if let Ok(count) = self.index.remove(internal_id as u64) {
                     removed += count as u64;
@@ -727,5 +769,123 @@ mod tests {
         let params = SearchParams::new(5).with_nprobe(128);
         let results = index.search(&v1, &params).unwrap();
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_hnsw_l2_score_conversion() {
+        let config = HnswConfig {
+            dimensions: 128,
+            capacity: 1000,
+            metric: DistanceMetric::L2,
+            ..create_test_config()
+        };
+        let index = HnswIndex::new(config).unwrap();
+
+        let v1 = create_random_vector(128, 1.0);
+        let v2 = create_random_vector(128, 2.0);
+        index.insert(&VectorId::new("vec-1"), &v1).unwrap();
+        index.insert(&VectorId::new("vec-2"), &v2).unwrap();
+
+        let results = index.search(&v1, &SearchParams::new(10)).unwrap();
+        assert!(!results.is_empty());
+
+        // L2 score = 1/(1+d), so all scores must be in (0, 1]
+        for result in &results {
+            assert!(
+                result.score > 0.0 && result.score <= 1.0,
+                "L2 score {} out of range (0, 1]",
+                result.score
+            );
+        }
+
+        // Self-match should have score close to 1.0 (distance ~0)
+        assert_eq!(results[0].id.as_str(), "vec-1");
+        assert!(results[0].score > 0.99);
+    }
+
+    #[test]
+    fn test_hnsw_ip_score_conversion() {
+        let config = HnswConfig {
+            dimensions: 128,
+            capacity: 1000,
+            metric: DistanceMetric::InnerProduct,
+            ..create_test_config()
+        };
+        let index = HnswIndex::new(config).unwrap();
+
+        // Use normalized vectors so dot product is in [-1, 1]
+        let mut v1 = create_random_vector(128, 1.0);
+        let norm: f32 = v1.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut v1 {
+            *x /= norm;
+        }
+
+        let mut v2 = create_random_vector(128, 2.0);
+        let norm: f32 = v2.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut v2 {
+            *x /= norm;
+        }
+
+        index.insert(&VectorId::new("vec-1"), &v1).unwrap();
+        index.insert(&VectorId::new("vec-2"), &v2).unwrap();
+
+        let results = index.search(&v1, &SearchParams::new(10)).unwrap();
+        assert!(!results.is_empty());
+
+        // IP score = 1 - distance = dot_product, for normalized vectors in [-1, 1]
+        for result in &results {
+            assert!(
+                result.score >= -1.01 && result.score <= 1.01,
+                "IP score {} out of expected range [-1, 1]",
+                result.score
+            );
+        }
+
+        // Self-match with normalized vector: dot product with itself = 1.0
+        assert_eq!(results[0].id.as_str(), "vec-1");
+        assert!(results[0].score > 0.99, "IP self-match score was {}", results[0].score);
+    }
+
+    #[test]
+    fn test_hnsw_concurrent_search_with_different_nprobe() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let config = create_test_config();
+        let index = Arc::new(HnswIndex::new(config).unwrap());
+
+        // Insert some vectors
+        for i in 0..20 {
+            let v = create_random_vector(128, i as f32);
+            index
+                .insert(&VectorId::new(format!("vec-{}", i)), &v)
+                .unwrap();
+        }
+
+        let query = create_random_vector(128, 0.5);
+        let mut handles = Vec::new();
+
+        // Spawn threads with different nprobe values to exercise ef_search_lock
+        for nprobe in [16u32, 32, 64, 128, 256] {
+            let idx = Arc::clone(&index);
+            let q = query.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..10 {
+                    let params = SearchParams::new(5).with_nprobe(nprobe);
+                    let results = idx.search(&q, &params).unwrap();
+                    // Results must be valid and non-empty (we have 20 vectors)
+                    assert!(!results.is_empty());
+                    assert!(results.len() <= 5);
+                    // All scores must be finite
+                    for r in &results {
+                        assert!(r.score.is_finite());
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("concurrent search thread panicked");
+        }
     }
 }
