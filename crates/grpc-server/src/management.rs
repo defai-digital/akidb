@@ -5,6 +5,7 @@
 //! arbitrary storage access methods. Ratatui and CLI clients are consumers of
 //! this server-enforced boundary, not authorization boundaries themselves.
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -225,7 +226,7 @@ impl ManagementService for ManagementServiceImpl {
         validate_operation_filters(&req)?;
         let mut operations = collect_operations(&self.state.admin, &ctx.workspace_id);
         operations.retain(|operation| operation_matches(operation, &req));
-        operations.sort_by(|left, right| right.updated_at_ms.cmp(&left.updated_at_ms));
+        operations.sort_by_key(|op| Reverse(op.updated_at_ms));
         let total_count = operations.len() as u32;
         let (operations, next_cursor) = paginate(operations, req.limit, &req.cursor)?;
 
@@ -300,7 +301,7 @@ impl ManagementService for ManagementServiceImpl {
                 }
             }
         }
-        snapshots.sort_by(|left, right| right.created_at_ms.cmp(&left.created_at_ms));
+        snapshots.sort_by_key(|s| Reverse(s.created_at_ms));
         let total_count = snapshots.len() as u32;
         let (snapshots, next_cursor) = paginate(snapshots, req.limit, &req.cursor)?;
 
@@ -551,7 +552,7 @@ impl ManagementService for ManagementServiceImpl {
             })
             .cloned()
             .collect();
-        events.sort_by(|left, right| right.occurred_at_ms.cmp(&left.occurred_at_ms));
+        events.sort_by_key(|e| Reverse(e.occurred_at_ms));
         let total_count = events.len() as u32;
         let (events, next_cursor) = paginate(events, req.limit, &req.cursor)?;
 

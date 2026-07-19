@@ -259,9 +259,9 @@ fn line_byte_range(source: &str, start_line: usize, end_line: usize) -> (usize, 
     let end_line = end_line.max(start_line);
     let mut start_byte = 0usize;
     let mut end_byte = source.len();
-    let mut line = 1usize;
     let mut pos = 0usize;
-    for part in source.split_inclusive('\n') {
+    for (idx, part) in source.split_inclusive('\n').enumerate() {
+        let line = idx + 1;
         if line == start_line {
             start_byte = pos;
         }
@@ -270,7 +270,6 @@ fn line_byte_range(source: &str, start_line: usize, end_line: usize) -> (usize, 
             break;
         }
         pos += part.len();
-        line += 1;
     }
     (start_byte, end_byte)
 }
@@ -1010,18 +1009,18 @@ fn js_symbol_start(trimmed: &str) -> Option<(SymbolKind, Option<String>)> {
         return Some((SymbolKind::Class, name));
     }
     // const foo = (...) => { or const foo = function
-    if t.starts_with("const ") || t.starts_with("let ") || t.starts_with("var ") {
-        if t.contains("=>") || t.contains("function") {
-            let after = t
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("")
-                .trim_end_matches('=')
-                .trim()
-                .to_string();
-            if !after.is_empty() {
-                return Some((SymbolKind::Function, Some(after)));
-            }
+    if (t.starts_with("const ") || t.starts_with("let ") || t.starts_with("var "))
+        && (t.contains("=>") || t.contains("function"))
+    {
+        let after = t
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("")
+            .trim_end_matches('=')
+            .trim()
+            .to_string();
+        if !after.is_empty() {
+            return Some((SymbolKind::Function, Some(after)));
         }
     }
     None

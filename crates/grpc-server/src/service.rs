@@ -3416,7 +3416,7 @@ mod tests {
             assert!(parents.insert(p), "duplicate parent in results: {:?}", response.results);
         }
         assert!(response.results.len() <= 2);
-        assert!(response.results.len() >= 1);
+        assert!(!response.results.is_empty());
     }
 
     #[tokio::test]

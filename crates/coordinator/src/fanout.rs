@@ -370,9 +370,7 @@ impl FanoutExecutor {
             let query_clone = query_vec.clone();
             let filter = filter.clone();
             let tag_filter = tag_filter.clone();
-            let score_threshold = score_threshold;
             let group_by = group_by.clone();
-            let group_size = group_size;
             let timeout = self.timeout;
             let shard_id = shard.id.clone();
             handle_shard_ids.push(shard_id.clone()); // Track shard ID outside async block

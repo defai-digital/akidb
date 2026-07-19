@@ -105,7 +105,7 @@ impl CoordinatorService {
         ));
         let consistency = Arc::new(ConsistencyTracker::new());
         let backpressure = Arc::new(BackpressureController::with_config(backpressure_config));
-        let local_id = format!("coord-{}", &local_address.replace([':', '.'], "-"));
+        let local_id = format!("coord-{}", local_address.replace([':', '.'], "-"));
 
         Self {
             fanout,

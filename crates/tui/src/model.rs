@@ -6,8 +6,9 @@
 
 use std::time::Instant;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum LoadState<T> {
+    #[default]
     NotLoaded,
     Loading {
         previous: Option<T>,
@@ -29,12 +30,6 @@ pub enum LoadState<T> {
         reason: String,
     },
     Failed(String),
-}
-
-impl<T> Default for LoadState<T> {
-    fn default() -> Self {
-        Self::NotLoaded
-    }
 }
 
 impl<T> LoadState<T> {

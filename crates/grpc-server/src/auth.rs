@@ -45,15 +45,11 @@ impl AuthRuntime {
             AuthMode::LoopbackOptional => !bind_is_loopback,
         };
 
-        if !bind_is_loopback
-            && matches!(config.mode, AuthMode::LoopbackOptional | AuthMode::Required)
-        {
-            if config.mode == AuthMode::LoopbackOptional {
-                info!(
-                    host = %bind_host,
-                    "non-loopback bind: bearer auth is required (auth.mode=loopback_optional)"
-                );
-            }
+        if !bind_is_loopback && config.mode == AuthMode::LoopbackOptional {
+            info!(
+                host = %bind_host,
+                "non-loopback bind: bearer auth is required (auth.mode=loopback_optional)"
+            );
         }
 
         let token = if matches!(config.mode, AuthMode::Disabled) {
