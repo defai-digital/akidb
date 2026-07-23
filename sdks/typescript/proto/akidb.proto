@@ -33,6 +33,62 @@ service Akidb {
 
   // Text search: embed text via ax-engine, then search for similar vectors
   rpc TextSearch(TextSearchRequest) returns (SearchResponse);
+
+  // Collection lifecycle (GAP-005)
+  rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse);
+  rpc GetCollection(GetCollectionRequest) returns (GetCollectionResponse);
+  rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse);
+  rpc DropCollection(DropCollectionRequest) returns (DropCollectionResponse);
+}
+
+// Collection management (v3.1 schema surface)
+message CreateCollectionRequest {
+  string name = 1;
+  uint32 dimensions = 2;
+  string metric = 3;               // cosine | l2 | ip
+  string embedding_model_id = 4;
+  string vector_precision = 5;     // f32 | f16
+  string chunk_strategy = 6;
+}
+
+message CreateCollectionResponse {
+  bool success = 1;
+  string name = 2;
+  string message = 3;
+}
+
+message GetCollectionRequest {
+  string name = 1;
+}
+
+message CollectionInfo {
+  string name = 1;
+  uint32 dimensions = 2;
+  string metric = 3;
+  string embedding_model_id = 4;
+  string vector_precision = 5;
+  string chunk_strategy = 6;
+  uint64 vector_count = 7;
+}
+
+message GetCollectionResponse {
+  bool found = 1;
+  CollectionInfo collection = 2;
+}
+
+message ListCollectionsRequest {}
+
+message ListCollectionsResponse {
+  repeated CollectionInfo collections = 1;
+}
+
+message DropCollectionRequest {
+  string name = 1;
+}
+
+message DropCollectionResponse {
+  bool success = 1;
+  string message = 2;
 }
 
 // Insert request
@@ -59,6 +115,11 @@ message SearchRequest {
   optional uint32 nprobe = 4;  // IVF probes, default 32
   bytes filter = 5;  // Optional metadata filter (legacy JSON)
   TagFilter tag_filter = 6;  // Optional typed tag filter
+  // Minimum score to keep (similarity; higher is better). Unset = no cut.
+  optional float score_threshold = 7;
+  // Group results by metadata key (e.g. parent_id, document_id); keep group_size per key.
+  string group_by = 8;
+  optional uint32 group_size = 9;  // default 1 when group_by set
 }
 
 message SearchResponse {
@@ -250,6 +311,9 @@ message TextSearchRequest {
   bytes filter = 13;  // Optional metadata filter (legacy JSON)
   TagFilter tag_filter = 14;  // Optional typed tag filter
   string retrieval_mode = 15;  // Optional planner override: auto/vector/bm25/hybrid/graph/graph_hybrid
+  optional float score_threshold = 16;
+  string group_by = 17;
+  optional uint32 group_size = 18;
 }
 
 // ============================================
@@ -428,6 +492,239 @@ message CategoryInfo {
 message ListCategoriesResponse {
   repeated CategoryInfo categories = 1;
   uint32 total_count = 2;
+}
+
+// ============================================
+// Management Service - Read/Plan-Only Operations Console
+// ============================================
+
+// Version 1 deliberately exposes no data, identity, snapshot, or recovery
+// execution methods. PlanImport validates a server-issued staged object but
+// never publishes ingestion work or writes database records.
+service ManagementService {
+  rpc GetManagementCapabilities(GetManagementCapabilitiesRequest) returns (GetManagementCapabilitiesResponse);
+  rpc ListManagementOperations(ListManagementOperationsRequest) returns (ListManagementOperationsResponse);
+  rpc GetManagementOperation(GetManagementOperationRequest) returns (ManagementOperation);
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+  rpc GetSnapshot(GetSnapshotRequest) returns (SnapshotOperationalInfo);
+  rpc PlanImport(PlanImportRequest) returns (ManagementPlan);
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
+}
+
+message GetManagementCapabilitiesRequest {}
+
+message ManagementCapability {
+  string name = 1;
+  bool supported = 2;
+  bool authorized = 3;
+  string unavailable_reason = 4;
+}
+
+message GetManagementCapabilitiesResponse {
+  string server_version = 1;
+  uint32 management_api_version = 2;
+  repeated ManagementCapability capabilities = 3;
+  string workspace_id = 4;
+  optional string agent_id = 5;
+  bool authenticated = 6;
+  bool tls_active = 7;
+  string auth_mode = 8;
+}
+
+enum ManagementOperationType {
+  MANAGEMENT_OPERATION_UNSPECIFIED = 0;
+  INGEST_DOCUMENTS = 1;
+  IMPORT_RECORDS = 2;
+  EXPORT_RECORDS = 3;
+  CREATE_SNAPSHOT = 4;
+  VERIFY_SNAPSHOT = 5;
+  RESTORE_SNAPSHOT = 6;
+  REBUILD_INDEX = 7;
+}
+
+enum ManagementOperationState {
+  OPERATION_STATE_UNSPECIFIED = 0;
+  OPERATION_QUEUED = 1;
+  OPERATION_RUNNING = 2;
+  OPERATION_SUCCEEDED = 3;
+  OPERATION_FAILED = 4;
+  OPERATION_CANCELLED = 5;
+}
+
+message OperationProblem {
+  string reason_code = 1;
+  string message = 2;
+  optional string item_ref = 3;
+  bool retryable = 4;
+}
+
+message ManagementOperation {
+  string operation_id = 1;
+  ManagementOperationType type = 2;
+  ManagementOperationState state = 3;
+  string target_type = 4;
+  string target_id = 5;
+  string workspace_id = 6;
+  string actor_id = 7;
+  int64 created_at_ms = 8;
+  optional int64 started_at_ms = 9;
+  int64 updated_at_ms = 10;
+  optional int64 completed_at_ms = 11;
+  optional float progress_percent = 12;
+  uint64 items_discovered = 13;
+  uint64 items_processed = 14;
+  uint64 items_skipped = 15;
+  uint64 items_failed = 16;
+  uint64 bytes_processed = 17;
+  bool cancellable = 18;
+  bool retryable = 19;
+  optional string plan_id = 20;
+  optional string plan_hash = 21;
+  repeated OperationProblem problems = 22;
+  uint32 total_problem_count = 23;
+}
+
+message ListManagementOperationsRequest {
+  optional ManagementOperationType type_filter = 1;
+  optional ManagementOperationState state_filter = 2;
+  optional string target_type = 3;
+  optional string target_id = 4;
+  optional int64 since_timestamp_ms = 5;
+  uint32 limit = 6;
+  string cursor = 7;
+}
+
+message ListManagementOperationsResponse {
+  repeated ManagementOperation operations = 1;
+  string next_cursor = 2;
+  uint32 total_count = 3;
+}
+
+message GetManagementOperationRequest {
+  string operation_id = 1;
+}
+
+enum VerificationState {
+  VERIFICATION_UNKNOWN = 0;
+  VERIFICATION_PENDING = 1;
+  VERIFICATION_VALID = 2;
+  VERIFICATION_INVALID = 3;
+}
+
+enum RestoreTestState {
+  RESTORE_TEST_NEVER = 0;
+  RESTORE_TEST_PASSED = 1;
+  RESTORE_TEST_FAILED = 2;
+}
+
+message SnapshotOperationalInfo {
+  string snapshot_id = 1;
+  string collection = 2;
+  optional string shard_id = 3;
+  int64 created_at_ms = 4;
+  uint64 size_bytes = 5;
+  string format_version = 6;
+  string akidb_version = 7;
+  bool manifest_present = 8;
+  VerificationState verification_state = 9;
+  optional int64 verified_at_ms = 10;
+  RestoreTestState restore_test_state = 11;
+  optional int64 restore_tested_at_ms = 12;
+  optional string restore_test_target = 13;
+  optional int64 expires_at_ms = 14;
+}
+
+message ListSnapshotsRequest {
+  optional string collection = 1;
+  uint32 limit = 2;
+  string cursor = 3;
+}
+
+message ListSnapshotsResponse {
+  repeated SnapshotOperationalInfo snapshots = 1;
+  string next_cursor = 2;
+  uint32 total_count = 3;
+}
+
+message GetSnapshotRequest {
+  string snapshot_id = 1;
+}
+
+message StagedObjectRef {
+  string staging_id = 1;
+  string object_id = 2;
+  string etag = 3;
+  uint64 size_bytes = 4;
+}
+
+enum PlanSeverity {
+  PLAN_INFO = 0;
+  PLAN_WARNING = 1;
+  PLAN_ERROR = 2;
+}
+
+message PlanFinding {
+  string code = 1;
+  PlanSeverity severity = 2;
+  string message = 3;
+  optional string item_ref = 4;
+}
+
+message PlanImportRequest {
+  StagedObjectRef source = 1;
+  string collection = 2;
+  string workspace_id = 3;
+  string duplicate_policy = 4;
+}
+
+message ManagementPlan {
+  string plan_id = 1;
+  string plan_hash = 2;
+  string kind = 3;
+  string target_type = 4;
+  string target_id = 5;
+  string workspace_id = 6;
+  string source_fingerprint = 7;
+  int64 created_at_ms = 8;
+  int64 expires_at_ms = 9;
+  bool executable = 10;
+  string required_execute_permission = 11;
+  uint64 source_bytes = 12;
+  optional uint64 estimated_expanded_bytes = 13;
+  optional uint64 estimated_documents = 14;
+  optional uint64 estimated_chunks = 15;
+  optional uint64 estimated_vectors = 16;
+  repeated PlanFinding findings = 17;
+}
+
+message AuditEvent {
+  string event_id = 1;
+  int64 occurred_at_ms = 2;
+  string actor_id = 3;
+  string workspace_id = 4;
+  string action = 5;
+  string target_type = 6;
+  string target_id = 7;
+  string outcome = 8;
+  string reason_code = 9;
+  string request_id = 10;
+  string source = 11;
+}
+
+message ListAuditEventsRequest {
+  optional string action = 1;
+  optional string outcome = 2;
+  optional int64 since_timestamp_ms = 3;
+  uint32 limit = 4;
+  string cursor = 5;
+}
+
+message ListAuditEventsResponse {
+  repeated AuditEvent events = 1;
+  string next_cursor = 2;
+  uint32 total_count = 3;
+  string retention_notice = 4;
+  string integrity_status = 5;
 }
 
 // ============================================

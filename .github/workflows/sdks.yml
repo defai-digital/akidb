@@ -5,12 +5,12 @@ on:
     branches: [main]
     paths:
       - 'sdks/**'
-      - 'crates/grpc-server/proto/**'
+      - 'crates/proto/proto/**'
       - '.github/workflows/sdks.yml'
   pull_request:
     paths:
       - 'sdks/**'
-      - 'crates/grpc-server/proto/**'
+      - 'crates/proto/proto/**'
       - '.github/workflows/sdks.yml'
 
 permissions:
