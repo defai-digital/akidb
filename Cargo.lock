@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-benchmark"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-proto",
  "clap",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-coordinator",
  "akidb-graph",
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-common"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-contracts"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "bincode",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-coordinator"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "akidb-embedding",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-embedding"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "parking_lot",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-faiss"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "akidb-invariants",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-graph"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "akidb-storage",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-grpc"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "akidb-faiss",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-ingestion"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "akidb-proto",
@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-invariants"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "proptest",
  "tracing",
@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-proto"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "prost 0.12.6",
  "prost-types 0.12.6",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-retrieval"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "akidb-faiss",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-server"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "akidb-embedding",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-sql"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "postgres",
  "rusqlite",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-storage"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "akidb-contracts",
@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "akidb-tui"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "akidb-common",
  "akidb-proto",

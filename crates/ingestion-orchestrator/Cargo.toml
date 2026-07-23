@@ -1,6 +1,6 @@
 [package]
 name = "akidb-ingestion"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "AkiDB Ingestion Orchestrator - Hybrid document processing pipeline"
 license = "Apache-2.0"
