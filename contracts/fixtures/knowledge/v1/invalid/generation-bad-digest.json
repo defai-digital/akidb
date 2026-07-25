@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "workspace_id": "workspace-a",
+  "collection": "knowledge",
+  "generation_id": "01900000-0000-7000-8000-000000000001",
+  "parent_generation_id": "01800000-0000-7000-8000-000000000001",
+  "created_at_ms": 1784995200000,
+  "embedding_model_id": "qwen3-embedding-4b@sha256:example",
+  "embedding_dimensions": 768,
+  "graph_schema_version": "ax.knowledge-graph.v1",
+  "bundle": {
+    "uri": "s3://ax-knowledge/generations/01900000-0000-7000-8000-000000000001/bundle.tar.zst",
+    "sha256": "ABC",
+    "size_bytes": 123456
+  },
+  "base_sequence": 100,
+  "target_sequence": 105,
+  "expected_vector_count": 900000,
+  "expected_edge_count": 2300000
+}

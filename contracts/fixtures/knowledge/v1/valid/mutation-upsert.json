@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "mutation_id": "mutation-101",
+  "workspace_id": "workspace-a",
+  "collection": "knowledge",
+  "generation_id": "01900000-0000-7000-8000-000000000001",
+  "sequence": 101,
+  "operation": "upsert",
+  "chunk_id": "chunk-101",
+  "payload": {
+    "uri": "s3://ax-knowledge/mutations/mutation-101.json",
+    "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "size_bytes": 4096
+  },
+  "created_at_ms": 1784995201000
+}

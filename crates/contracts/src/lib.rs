@@ -27,8 +27,13 @@
 
 pub mod collection_key;
 pub mod error;
+pub mod knowledge;
 pub mod wal;
 
 pub use collection_key::CollectionKey;
 pub use error::{ContractViolation, ContractViolationKind};
+pub use knowledge::{
+    ImmutableObjectReference, KnowledgeGenerationManifest, KnowledgeMutation, KnowledgeOperation,
+    KnowledgeScope, ReplicaCheckpoint, ReplicaState, KNOWLEDGE_SCHEMA_VERSION,
+};
 pub use wal::WalContract;

@@ -103,7 +103,9 @@ dependencies = [
  "bincode",
  "proptest",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
+ "url",
 ]
 
 [[package]]
@@ -339,6 +341,7 @@ dependencies = [
  "chrono",
  "hmac 0.12.1",
  "parking_lot",
+ "proptest",
  "reqwest",
  "roaring",
  "rocksdb",

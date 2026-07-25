@@ -33,3 +33,4 @@ urlencoding = "2.1"
 
 [dev-dependencies]
 tempfile.workspace = true
+proptest = "1.4"

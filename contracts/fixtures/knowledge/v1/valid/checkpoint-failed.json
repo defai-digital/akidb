@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "replica_id": "replica-amd64-02",
+  "workspace_id": "workspace-a",
+  "collection": "knowledge",
+  "generation_id": "01900000-0000-7000-8000-000000000001",
+  "manifest_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "applied_sequence": 103,
+  "state": "failed",
+  "last_error": "sequence gap: expected 104, received 105",
+  "updated_at_ms": 1784995211000
+}

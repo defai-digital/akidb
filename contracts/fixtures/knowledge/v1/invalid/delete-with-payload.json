@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "mutation_id": "mutation-102",
+  "workspace_id": "workspace-a",
+  "collection": "knowledge",
+  "generation_id": "01900000-0000-7000-8000-000000000001",
+  "sequence": 102,
+  "operation": "delete",
+  "chunk_id": "chunk-099",
+  "payload": {
+    "uri": "s3://ax-knowledge/mutations/mutation-102.json",
+    "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "size_bytes": 4096
+  },
+  "created_at_ms": 1784995202000
+}

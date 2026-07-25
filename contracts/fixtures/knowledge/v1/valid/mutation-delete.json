@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "mutation_id": "mutation-102",
+  "workspace_id": "workspace-a",
+  "collection": "knowledge",
+  "generation_id": "01900000-0000-7000-8000-000000000001",
+  "sequence": 102,
+  "operation": "delete",
+  "chunk_id": "chunk-099",
+  "created_at_ms": 1784995202000
+}

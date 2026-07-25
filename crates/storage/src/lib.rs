@@ -5,12 +5,17 @@
 
 mod backend;
 mod id_mapping;
+pub mod serving_state;
 pub mod snapshot;
 mod tag_index;
 mod wal;
 
 pub use backend::{BatchOperation, RocksDbBackend, StorageBackend};
 pub use id_mapping::{IdMapping, IdMappingEntry};
+pub use serving_state::{
+    ApplyMutationOutcome, GenerationServingState, LocalGenerationState, ServingStateError,
+    ServingStateRecord, ServingStateStore, StageGenerationOutcome, SERVING_STATE_SCHEMA_VERSION,
+};
 pub use snapshot::{
     // Backend types
     LocalSnapshotBackend, S3SnapshotBackend, SnapshotBackend, SnapshotFile, SnapshotManager,
