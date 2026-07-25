@@ -62,7 +62,16 @@ jobs:
           verify/bin/akidb-coordinator --version
           verify/bin/akidb-bench --version
           sudo -u nobody verify/bin/akidb-server --version
-          grep -F '"akidb_server_features": ["generation-s3"]' verify/manifest.json
+          python3 - <<'PY'
+          import json
+          import tomllib
+          from pathlib import Path
+
+          manifest = json.loads(Path("verify/manifest.json").read_text())
+          workspace = tomllib.loads(Path("../Cargo.toml").read_text())
+          assert manifest["version"] == workspace["workspace"]["package"]["version"]
+          assert manifest["akidb_server_features"] == ["generation-s3"]
+          PY
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2

@@ -35,7 +35,26 @@ for binary in akidb akidb-server akidb-coordinator akidb-bench; do
   install -m 0755 "target/release/$binary" "$staging_dir/bin/$binary"
 done
 
-cargo_version="$(sed -n 's/^version = \"\\([^\"]*\\)\"/\\1/p' Cargo.toml | head -n 1)"
+cargo_version="$(
+  awk '
+    $0 == "[workspace.package]" {
+      in_workspace_package = 1
+      next
+    }
+    /^\[/ {
+      in_workspace_package = 0
+    }
+    in_workspace_package && $1 == "version" {
+      gsub(/"/, "", $3)
+      print $3
+      exit
+    }
+  ' Cargo.toml
+)"
+if [[ -z "$cargo_version" ]]; then
+  echo "workspace package version is missing from Cargo.toml" >&2
+  exit 1
+fi
 source_epoch="${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}"
 archive_name="akidb-linux-amd64-${release_id}.tar.gz"
 archive_path="$output_dir/$archive_name"
