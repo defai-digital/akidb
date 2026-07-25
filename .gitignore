@@ -19,8 +19,8 @@ Thumbs.db
 .env.*.local
 
 # Local AI/agent tool configuration
-/AGENTS.md
-/CLAUDE.md
+AGENTS.md
+CLAUDE.md
 /ax-internal/
 /.ax-internal/
 /.internal/
@@ -61,7 +61,19 @@ minio-data/
 *.pem
 *.key
 *.crt
+*.ppk
 secrets/
+
+# SSH material (OpenSSH private keys commonly have no extension)
+.ssh/
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+id_*.pub
+authorized_keys
+known_hosts
+known_hosts.old
 
 # Temporary files
 /tmp/
@@ -74,9 +86,16 @@ secrets/
 dist/
 
 # Local Ansible deployment state and real inventories
-/deploy/ansible/inventories/lab/
+/deploy/ansible/inventories/*/
+!/deploy/ansible/inventories/example/
+!/deploy/ansible/inventories/example/**
+/deploy/ansible/host_vars/
+/deploy/ansible/group_vars/
 /deploy/ansible/.facts/
-/deploy/ansible/*.retry
+/deploy/ansible/**/*.retry
+/deploy/ansible/**/.vault_pass*
+/deploy/ansible/**/vault-password*
+/deploy/ansible/**/vault_password*
 
 # Local smoke venv
 .venv-smoke/

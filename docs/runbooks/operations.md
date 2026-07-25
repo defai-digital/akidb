@@ -2,14 +2,15 @@
 
 ## Supported Environment
 
-AkiDB is supported on macOS Apple Silicon only. Use CPU/portable features for
-all builds and tests. Thor, CUDA, NVIDIA GPU, Linux ARM, and Kubernetes
-deployment procedures are not supported in active operations.
+AkiDB is supported on macOS 26 Apple Silicon and Ubuntu 24.04+ on AMD64 and
+ARM64. Use the CPU-portable path for all builds and tests. Thor, CUDA, NVIDIA
+GPU, and Kubernetes production procedures are outside the active support
+scope. The checked-in Ansible cluster profile is qualified on Ubuntu AMD64;
+see `docs/platform/SUPPORT.md` for packaging-specific limits.
 
-## Local Build And Validation
+## Native Build And Validation
 
 ```bash
-./scripts/build-on-mac-arm64.sh
 cargo check --workspace
 cargo test --workspace
 cargo build --release -p akidb-cli
@@ -19,6 +20,9 @@ akidb tui \
   --coordinator 127.0.0.1:50050 \
   --management 127.0.0.1:50051
 ```
+
+On macOS 26 Apple Silicon, `./scripts/build-on-mac-arm64.sh` runs the complete
+native validation path.
 
 The Operations Console is read/plan-only. The same server state is available as
 JSON for automation:
@@ -95,7 +99,7 @@ snapshot in MinIO:
 mc ls local/akidb-snapshots/
 ```
 
-For local data recovery, stop traffic, restore the RocksDB/WAL/snapshot data,
+For local data recovery, stop traffic, restore the RocksDB and snapshot data,
 restart services, and run a health check plus a known-query validation.
 
 ## Capacity And Performance
@@ -105,8 +109,8 @@ Track:
 - Search P95/P99 latency.
 - Vectors per shard.
 - Tombstone ratio.
-- WAL and snapshot disk growth.
+- RocksDB and snapshot disk growth.
 - Ingestion queue depth and backpressure.
 
-If latency rises, reduce ingestion concurrency, compact tombstones, or split hot
-collections across the planned four-Mac cell topology.
+If latency rises, reduce ingestion concurrency, compact tombstones, or split
+hot collections across additional qualified shards.

@@ -1,7 +1,7 @@
 # AkiDB Python SDK
 
-A typed, production-grade Python client for [AkiDB](../../README.md) — a Mac-native
-retrieval memory engine for private AI agents.
+A typed Python client for [AkiDB](../../README.md), a portable retrieval
+database for private AI systems.
 
 ## Install
 

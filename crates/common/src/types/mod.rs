@@ -266,7 +266,7 @@ pub struct IndexConfig {
     pub nlist: u32,
     /// Number of probes for search (nprobe)
     pub nprobe: u32,
-    /// Use GPU acceleration. Unsupported in the active Mac-only build.
+    /// Use GPU acceleration. Unsupported in the active CPU-portable build.
     pub use_gpu: bool,
     /// GPU memory fraction (0.0 - 1.0)
     pub gpu_memory_fraction: f32,

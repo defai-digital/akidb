@@ -18,11 +18,15 @@ jobs:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # macOS Apple Silicon
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-26
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v4
@@ -32,12 +36,25 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install protoc
+      - name: Install native dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            libclang-dev \
+            libssl-dev \
+            pkg-config \
+            protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
         run: brew install protobuf
 
       - name: Build release binary
         run: |
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package binary
         run: |
@@ -46,13 +63,17 @@ jobs:
           cp target/${{ matrix.target }}/release/akidb-server dist/ 2>/dev/null || true
           cp target/${{ matrix.target }}/release/akidb-coordinator dist/ 2>/dev/null || true
           cp target/${{ matrix.target }}/release/akidb-tui dist/ 2>/dev/null || true
-          tar -czvf akidb-${{ matrix.target }}.tar.gz -C dist .
+          tar -czf akidb-${{ matrix.target }}.tar.gz -C dist .
+          shasum -a 256 akidb-${{ matrix.target }}.tar.gz \
+            > akidb-${{ matrix.target }}.tar.gz.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: akidb-${{ matrix.target }}
-          path: akidb-${{ matrix.target }}.tar.gz
+          path: |
+            akidb-${{ matrix.target }}.tar.gz
+            akidb-${{ matrix.target }}.tar.gz.sha256
 
   release:
     name: Create Release
@@ -69,5 +90,6 @@ jobs:
         with:
           files: |
             akidb-*/akidb-*.tar.gz
+            akidb-*/akidb-*.tar.gz.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true

@@ -2,8 +2,9 @@
 
 ## Supported Environment
 
-The ingestion pipeline is supported on macOS Apple Silicon and local portable
-Compose stacks. GPU, Thor, CUDA, and Linux ARM deployment steps are unsupported.
+The ingestion pipeline supports the portable runtime on macOS 26 Apple Silicon
+and Ubuntu 24.04+ AMD64 or ARM64. The published Compose images remain AMD64;
+GPU, Thor, and CUDA deployment steps are unsupported.
 
 ## Start The Stack
 

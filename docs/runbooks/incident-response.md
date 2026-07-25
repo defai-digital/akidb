@@ -2,9 +2,9 @@
 
 ## Scope
 
-This runbook covers supported macOS Apple Silicon deployments and local Compose
-stacks. GPU, CUDA, Thor, Linux ARM, and Kubernetes incidents are outside the
-active support scope.
+This runbook covers supported macOS 26 Apple Silicon and Ubuntu 24.04+ native
+deployments, plus local Compose stacks. GPU, CUDA, Thor, and Kubernetes
+incidents are outside the active support scope.
 
 ## Severity Levels
 

@@ -3,7 +3,7 @@
 # Refresh interval in milliseconds
 refresh_interval_ms = 500
 
-# GPU metrics are unsupported in the Mac-only build.
+# GPU metrics are unavailable in the supported CPU-portable build.
 show_gpu_metrics = false
 
 # Coordinator address (optional, can also use --coordinator CLI flag)

@@ -1,0 +1,6 @@
+{
+  "isolation": {
+    "mode": "full-access",
+    "network": true
+  }
+}

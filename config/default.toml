@@ -1,4 +1,4 @@
-# AkiDB macOS Apple Silicon - Default Configuration
+# AkiDB portable runtime - Default Configuration
 
 [server]
 # Secure appliance default: loopback only (ADR-0002.2). Use 0.0.0.0 only with auth.

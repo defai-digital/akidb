@@ -21,7 +21,7 @@ The product boundary is:
 - External graph formats may be supported for export or offline analysis, but
   are not a core runtime dependency.
 
-This preserves AkiDB's embedded Mac-first deployment model while adding the
+This preserves AkiDB's embedded, local-first deployment model while adding the
 relationship retrieval needed by private enterprise AI.
 
 ## Why this direction

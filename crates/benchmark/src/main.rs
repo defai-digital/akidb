@@ -1,6 +1,6 @@
 //! AkiDB Performance Benchmark
 //!
-//! This tool benchmarks the AkiDB vector database on the supported Mac-only path.
+//! This tool benchmarks the AkiDB vector database on the supported portable path.
 
 use akidb_proto::akidb_client::AkidbClient;
 use akidb_proto::{HealthRequest, InsertBatchRequest, InsertRequest, SearchRequest, Vector};
@@ -259,7 +259,7 @@ async fn check_health(
     println!("Healthy: {}", health.healthy);
     println!("Ready: {}", health.ready);
     println!(
-        "Using GPU: {} (unsupported in Mac-only builds)",
+        "Using GPU: {} (unsupported in CPU-portable builds)",
         health.using_gpu
     );
     println!("Total vectors: {}", health.total_vectors);

@@ -3,7 +3,7 @@
 **Version:** 1.1
 **Date:** 2026-07-05
 **Status:** Baseline Review (partial refresh)
-**Classification:** Internal
+**Classification:** Public baseline
 
 > **Notice:** This review was originally written in January 2026 when the vector
 > index was FAISS-based. The codebase has since migrated to HNSW (usearch) and
@@ -13,7 +13,11 @@
 
 ## Executive Summary
 
-This security review covers the Mac-only AkiDB deployment, including the core vector database, ingestion pipeline, and supporting infrastructure. The review identifies potential security risks and provides mitigation recommendations.
+This security review covers AkiDB's portable macOS and Ubuntu runtime,
+including the core vector database, ingestion pipeline, and supporting
+infrastructure. It identifies potential security risks and mitigation
+recommendations; the notice above takes precedence where this baseline has not
+yet been refreshed against current code.
 
 **Overall Risk Level:** Medium
 

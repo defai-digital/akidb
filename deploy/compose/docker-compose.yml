@@ -1,5 +1,5 @@
 # AkiDB Docker Compose
-# Portable local development stack for macOS-hosted development
+# Portable local development stack (published images currently target AMD64)
 
 version: "3.9"
 

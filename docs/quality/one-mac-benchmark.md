@@ -1,6 +1,7 @@
 # One-Mac Benchmark Runbook
 
-This runbook is the first evidence path for AkiDB's Mac-first product claim.
+This runbook is the reference evidence path for AkiDB's macOS single-node
+performance claim.
 It measures the current single-node standalone server on a clean local data
 directory and writes a JSON artifact suitable for benchmark reports.
 

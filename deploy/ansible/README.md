@@ -1,9 +1,10 @@
 # AkiDB Linux AMD64 Cluster Deployment
 
 This directory provides the reproducible qualification path for a four-node
-Ubuntu 24.04-or-newer AMD64 cluster. It does not change the currently
-supported macOS Apple Silicon product path; Linux AMD64 remains a
-qualification target until the test phases below pass.
+Ubuntu 24.04-or-newer AMD64 cluster. The native AkiDB runtime also supports
+macOS 26 Apple Silicon and Ubuntu 24.04+ ARM64, but this checksum-pinned
+cluster artifact and Ansible profile remain AMD64-specific until the test
+phases below pass on ARM64.
 
 ## Design decision
 
@@ -69,12 +70,15 @@ level replication, durable shard placement, or failover semantics.
 
 SSH uses each host's public IP. AkiDB uses a WireGuard full mesh:
 
+The public endpoints below use the RFC 5737 documentation range; real host
+addresses stay only in the gitignored lab inventory.
+
 ```text
-public SSH                     private AkiDB service network
-45.76.25.7       ────────>     10.77.0.11
-64.177.125.57    ────────>     10.77.0.12
-64.177.124.158   ────────>     10.77.0.13
-64.177.114.40    ────────>     10.77.0.14
+documentation SSH             private AkiDB service network
+192.0.2.11       ────────>     10.77.0.11
+192.0.2.12       ────────>     10.77.0.12
+192.0.2.13       ────────>     10.77.0.13
+192.0.2.14       ────────>     10.77.0.14
 ```
 
 UFW permits WireGuard UDP only from the other declared peer IPs. Shards bind
@@ -214,9 +218,9 @@ high-concurrency saturation, not a functional requirement.
 
 ### Phase 4 — platform matrix
 
-- Linux AMD64 release qualification
-- macOS ARM64 regression qualification
-- Linux ARM64 build and native-dependency qualification
+- Linux AMD64 cluster release qualification
+- macOS 26 ARM64 regression qualification
+- Linux ARM64 cluster artifact and automation qualification
 - mixed-client compatibility and artifact provenance checks
 
 Exit criterion: only passing combinations are described as supported.

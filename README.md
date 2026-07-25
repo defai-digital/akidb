@@ -1,138 +1,219 @@
 # AkiDB
 
-A Mac-first AI knowledge retrieval engine for private local RAG, Apple Silicon
-appliance deployments, and four-Mac Thunderbolt cells.
+**A portable retrieval database for private AI systems.**
 
-## Features
+AkiDB combines durable vector storage, hybrid search, graph-aware retrieval,
+and context assembly in one Rust service. It is designed for local and
+on-premises RAG, agent memory, code intelligence, and other workloads where
+source data should stay under the operator's control.
 
-- **One-Mac Appliance**: Production-capable single-node deployment on Apple Silicon
-- **Four-Mac Cell Design**: Thunderbolt-connected shard and replica placement for local scale-out
-- **Cell-Based Horizontal Scale**: Add four-Mac cells instead of growing an unbounded mesh
-- **Portable Backend First**: CPU/portable backend for Mac M2 or later ARM64 systems
-- **Sub-50ms Latency**: Optimized for real-time RAG applications
-- **Hybrid Retrieval**: Dense vector search plus BM25 lexical retrieval and RRF fusion
-- **Metadata Filtering**: Typed metadata/tag filters backed by RocksDB indexes
-- **Native Graph Foundation**: RocksDB-backed graph retrieval primitives for GraphRAG expansion
-- **Context Builder**: Source-grounded context packing with citation support
-- **Rust Performance**: Memory-safe, async-first implementation
+AkiDB v0.10.0 supports macOS 26 on Apple Silicon and Ubuntu 24.04 or newer on
+AMD64 and ARM64. The default runtime is CPU-portable; CUDA, NVIDIA GPU, and
+Thor-specific paths are not required.
+
+> **Project status:** the standalone database is the primary supported
+> deployment. The multi-shard coordinator, ingestion stack, and Ansible
+> cluster workflow are available for evaluation and qualification, but they do
+> not yet provide automatic replication, failover, or rebalancing.
+
+## Why AkiDB
+
+Most RAG systems assemble a vector index, keyword engine, metadata store, graph
+database, reranker, and context builder as separate services. AkiDB puts the
+core retrieval path behind one API and one operational boundary:
+
+- **Dense retrieval:** HNSW search with cosine, inner-product, or L2 distance
+  and `f32` or `f16` vector storage.
+- **Hybrid retrieval:** in-process BM25, dense search, Reciprocal Rank Fusion,
+  optional reranking, MMR diversity, and token-budgeted context packing.
+- **Native GraphRAG:** persisted graph nodes and edges, bounded traversal, and
+  graph-expanded chunk retrieval without an external graph service.
+- **Structured filtering:** typed metadata and tag filters, plus an optional
+  SQLite metadata index; PostgreSQL support is feature-gated.
+- **Durable local state:** RocksDB-backed vectors, metadata, graph state, ID
+  mappings, local snapshot inventory, and rebuild state.
+- **Agent-ready interfaces:** gRPC, Python and TypeScript SDKs, an MCP stdio
+  server, a terminal UI, and JSON-oriented operations commands.
+- **Local-first security:** loopback-first defaults, bearer-token and workspace
+  controls, redacted management output, and no cloud control plane.
+
+## Supported platforms
+
+| Operating system | Architecture | Runtime status | Delivery path |
+| --- | --- | --- | --- |
+| macOS 26 | Apple Silicon (`arm64`, M2 or newer) | Supported | Release archive or source build |
+| Ubuntu 24.04+ | AMD64 (`x86_64`) | Supported | Release archive, source build, Docker, and qualified Ansible artifact workflow |
+| Ubuntu 24.04+ | ARM64 (`aarch64`) | Supported | Release archive or source build |
+
+All supported targets use the portable HNSW backend. A homogeneous operating
+system and architecture is recommended within a shard group. macOS Intel,
+older Ubuntu releases, CUDA/NVIDIA acceleration, and other Linux
+distributions are outside the tested support matrix.
+
+The Ubuntu ARM64 runtime is supported for standalone servers, coordinators, and
+shards. The checksum-pinned Ansible cluster artifact workflow remains qualified
+on AMD64; see [Platform Support](docs/platform/SUPPORT.md) for the exact
+runtime, CI, container, and deployment matrix.
 
 ## Architecture
 
-```
-                 Client
-                   │
-                   ▼
-          Logical AkiDB Endpoint
-                   │
-         ┌─────────┴─────────┐
-         ▼                   ▼
-   One-Mac Appliance   Four-Mac Thunderbolt Cell
-                            │
-          ┌─────────────────┼─────────────────┐
-          ▼                 ▼                 ▼
-       Shards           Replicas          Snapshots
-```
+### Service boundary
 
-Retrieval is evolving toward an AI-native knowledge stack:
-
-```
-Text Query
-   │
-   ▼
-Query Planner
-   │
-   ├── Vector Search
-   ├── BM25 / Full Text
-   ├── Metadata Filters
-   ├── SQLite Metadata SQL
-   └── Native Graph Index
-           │
-        Fusion
-           │
-      Rerank / MMR
-           │
-    Context Builder
+```text
+Applications and agents
+  ├── gRPC
+  ├── Python / TypeScript SDKs
+  ├── MCP over stdio
+  └── CLI / TUI / operations API
+                 │
+                 ▼
+┌───────────────────────────────────────────────────────────┐
+│                         AkiDB                             │
+│  auth + workspaces + collections + management surface    │
+│                           │                               │
+│               deterministic query planner                │
+│        ┌──────────┬──────────┬──────────┬──────────┐      │
+│        │ HNSW     │ BM25     │ metadata │ graph    │      │
+│        │ vectors  │ lexical  │ / SQL    │ expand   │      │
+│        └──────────┴──────────┴──────────┴──────────┘      │
+│                           │                               │
+│             RRF → rerank → MMR → context pack            │
+│                           │                               │
+│     RocksDB + snapshot inventory + native graph state    │
+└───────────────────────────────────────────────────────────┘
+                 │ optional
+                 ▼
+       OpenAI-compatible embedding endpoint
 ```
 
-The default hot path stays self-contained on Apple Silicon. SQLite can be
-enabled as an optional metadata SQL adapter for exact structured filters.
-PostgreSQL is available as an optional metadata adapter. Graph retrieval uses
-the native RocksDB-backed graph index; external graph engines are not runtime
-dependencies.
+The server owns the storage and retrieval lifecycle. Vectors and metadata are
+persisted in RocksDB; the HNSW and lexical indexes are rebuilt from durable
+state at startup. The native graph index shares the storage boundary, so graph
+expansion does not require a second database. Text-to-vector conversion stays
+behind an OpenAI-compatible embedding interface and can be disabled when
+clients provide vectors directly.
 
-## Quick Start
+### Retrieval path
 
-### Mac M2 Or Later
+```text
+query
+  │
+  ▼
+planner ──► dense HNSW
+  │       ├► BM25 lexical
+  │       ├► metadata / SQL filters
+  │       └► bounded graph expansion
+  ▼
+rank fusion ──► optional rerank and diversity ──► context pack + citations
+```
+
+The planner selects dense, lexical, hybrid, graph, or graph-hybrid retrieval
+from explicit request controls and query signals. Metadata filters are applied
+through the same path, and packed context remains tied to the returned source
+chunks.
+
+### Deployment shapes
+
+| Shape | Components | Intended use |
+| --- | --- | --- |
+| Standalone | One `akidb` server and local storage | Primary supported path for local RAG, agent memory, development, and single-node deployments |
+| Multi-shard | Coordinator plus two or more shard servers | Fan-out search, capacity experiments, and qualified private-network clusters |
+| Ingestion stack | Upload gateway, parsers, NATS, MinIO, ingestion workers, embedding service, and AkiDB | Document-processing and integration workflows |
+
+The coordinator merges results across shards and applies backpressure, but it
+is not yet a replication layer. The current coordinator also does not forward
+bearer/workspace metadata to shards. The Ansible cluster profile therefore
+runs only on an isolated WireGuard service network and must not expose AkiDB
+ports publicly.
+
+## Quick start
+
+### Prerequisites
+
+- Rust stable via [rustup](https://rustup.rs/)
+- Protocol Buffers compiler (`protoc`)
+- C/C++ build tools, CMake, Clang, and `pkg-config`
+
+On macOS 26:
 
 ```bash
-# Clone the repository
+xcode-select --install
+brew install cmake protobuf
+```
+
+On Ubuntu 24.04 or newer, on either AMD64 or ARM64:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential clang cmake libclang-dev libssl-dev \
+  pkg-config protobuf-compiler
+```
+
+### Build
+
+```bash
 git clone https://github.com/defai-digital/akidb.git
 cd akidb
 
-# Build and validate the portable Apple Silicon path
+cargo build --release -p akidb-cli
+```
+
+Apple Silicon developers can run the full macOS validation path:
+
+```bash
 ./scripts/build-on-mac-arm64.sh
-
-# Or run Cargo directly
-cargo build
-cargo test
-
-# Run AkiDB through the single CLI entry point
-cargo run -p akidb-cli -- server --standalone --config config/default.toml
-cargo run -p akidb-cli -- coordinator --shards 127.0.0.1:50051
-cargo run -p akidb-cli -- tui \
-  --coordinator 127.0.0.1:50050 \
-  --management 127.0.0.1:50051
-
-# Format and lint
-cargo fmt
-cargo clippy
 ```
 
-### Roadmap
+### Run a standalone server
 
-Detailed product and architecture documents (PRD, ADRs, technical specification)
-are maintained internally and are not published in this repository.
-
-## Project Structure
-
-```
-akidb/
-├── crates/
-│   ├── common/          # Shared types, errors, config
-│   ├── proto/           # Generated protobuf and gRPC bindings
-│   ├── embedding/       # Embedding service abstraction and ax-engine client
-│   ├── faiss-wrapper/   # Vector index abstraction (usearch HNSW)
-│   ├── graph/           # Native GraphRAG graph index and traversal contract
-│   ├── retrieval/       # BM25, RRF, rerank, context packing
-│   ├── sql/             # Optional SQLite metadata SQL adapter
-│   ├── storage/         # RocksDB, WAL, ID mapping
-│   ├── grpc-server/     # gRPC API service
-│   ├── coordinator/     # Fan-out search coordination
-│   └── cli/             # Single akidb command entry point
-├── services/            # Python sidecar services
-├── config/              # Configuration files
-├── deploy/              # Deployment manifests
-├── docs/                # Product, architecture, runbooks, and archive
-├── scripts/             # Utility scripts
-└── samples/             # Sample documents and fixtures
+```bash
+./target/release/akidb server \
+  --standalone \
+  --config config/standalone.toml
 ```
 
-## Configuration
+In another terminal:
 
-See `config/default.toml` for all configuration options.
+```bash
+./target/release/akidb health \
+  --server 127.0.0.1:50051 \
+  --require-ready
+```
 
-Key settings:
-- `slo.reference.*`: SLO reference configuration
-- `index.nprobe`: Search accuracy vs speed for FAISS-compatible backends
-- `sql.*`: optional metadata SQL adapter for structured filters. SQLite is the default; PostgreSQL requires `akidb-server --features postgres`.
-- `embedding.*`: optional local text embedding sidecar for `TextSearch`
+The default configuration binds to loopback and does not require a token for
+loopback clients. To inspect available commands:
 
-### Local Text Embeddings
+```bash
+./target/release/akidb --help
+./target/release/akidb server --help
+```
 
-AkiDB uses a local OpenAI-compatible `/v1/embeddings` endpoint for `TextSearch`.
-For current `ax-engine`, run the included sidecar against local Qwen embedding
-native artifacts containing `model-manifest.json`; do not use
-`ax-engine serve <embedding-alias>`.
+### Connect a client
+
+- [Python SDK](sdks/python/README.md)
+- [TypeScript SDK](sdks/typescript/README.md)
+- Canonical gRPC API: [`crates/proto/proto/akidb.proto`](crates/proto/proto/akidb.proto)
+
+The SDKs cover vector CRUD, batch operations, collections, vector and text
+search, cluster state, health, and agent-memory calls. `TextSearch` requires an
+embedding endpoint; vector APIs do not.
+
+### Run as an MCP server
+
+```bash
+./target/release/akidb mcp \
+  --standalone \
+  --config config/standalone.toml
+```
+
+MCP uses newline-delimited JSON-RPC on stdio and logs only to stderr.
+
+## Text embeddings
+
+AkiDB calls an OpenAI-compatible `/v1/embeddings` endpoint when
+`embedding.enabled = true`. On macOS, the included sidecar can serve local
+Qwen native artifacts through `ax-engine`:
 
 ```bash
 python3 scripts/ax_engine_embedding_server.py \
@@ -144,192 +225,157 @@ AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-4B \
   ./scripts/validate-standalone.sh
 ```
 
-For `Qwen3-Embedding-0.6B`, set `AX_ENGINE_MODEL=Qwen/Qwen3-Embedding-0.6B`
-and `EMBEDDING_DIMENSIONS=1024` when running the validator.
+Linux deployments may point the same interface at any compatible local
+embedding service. Keep the configured embedding dimension aligned with the
+collection/index dimension.
 
-### Vector Quality QA
+## Configuration and security
 
-Run all available local quality gates. The vector gate always runs; the semantic
-`TextSearch` gate runs when `AX_ENGINE_MODEL_DIR` is configured.
+Start with [`config/standalone.toml`](config/standalone.toml) for a local
+server or [`config/default.toml`](config/default.toml) for the complete option
+reference.
+
+| Section | Purpose |
+| --- | --- |
+| `server` | Bind address, gRPC port, and transport settings |
+| `auth` / `auth.acl` | Loopback policy, bearer token source, default workspace, and workspace enforcement |
+| `index` | HNSW construction/search settings, metric, precision, filtering, and rebuild thresholds |
+| `storage` | RocksDB and snapshot-related paths; WAL settings are reserved for the not-yet-wired server WAL path |
+| `sql` | Optional SQLite or feature-gated PostgreSQL metadata index |
+| `embedding` | Optional text embedding endpoint, model identity, dimensions, and timeouts |
+| `observability` / `slo` | Logs, metrics, tracing, backpressure, and reference targets |
+
+Security defaults and requirements:
+
+- Keep `127.0.0.1` unless remote access is intentionally configured.
+- A non-loopback server bind requires bearer authentication unless
+  `auth.mode = "disabled"` is explicitly selected for an isolated network.
+- Pass tokens through `AKIDB_AUTH_TOKEN` or a mode-`0600` file referenced by
+  `AKIDB_AUTH_TOKEN_FILE`; never commit tokens or inventories.
+- Built-in server TLS is not wired in v0.10.0. Terminate TLS at a trusted local
+  proxy or use a private encrypted overlay for remote traffic.
+- Real Ansible inventories, vault-password files, SSH keys, and local agent
+  instructions are gitignored and rejected by the CI sensitive-file policy.
+
+See the [operations runbook](docs/runbooks/operations.md), [incident-response
+runbook](docs/runbooks/incident-response.md), and [security review
+baseline](docs/security/SECURITY_REVIEW.md) before exposing a deployment
+beyond one trusted host.
+
+## Validation
+
+Run the portable workspace checks on every supported platform:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets
+cargo check --workspace --no-default-features
+cargo test --workspace
+python3 scripts/check-sensitive-files.py
+```
+
+SDK and proto-drift checks:
+
+```bash
+./sdks/check-proto-drift.sh
+(cd sdks/python && pytest tests/ -v)
+(cd sdks/typescript && npm ci && npm test)
+```
+
+Retrieval quality:
 
 ```bash
 ./scripts/qa_all.sh --build
+python3 scripts/qa_vector_quality.py --build
 ```
 
-For release validation, require both gates:
+When a local embedding model is available:
 
 ```bash
-AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-0.6B-4bit-DWQ \
-AX_ENGINE_MODEL=mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ \
+AX_ENGINE_MODEL_DIR=/path/to/model \
+AX_ENGINE_MODEL=Qwen/Qwen3-Embedding-0.6B \
 EMBEDDING_DIMENSIONS=1024 \
 ./scripts/qa_all.sh --build --require-text
 ```
 
-Run the deterministic quality gate to compare AkiDB search results with exact
-brute-force cosine ground truth:
+## Performance evidence
 
-```bash
-python3 scripts/qa_vector_quality.py --build
+The checked-in one-node reference artifact uses an Apple M3 Max with 128 GB of
+memory and macOS 26.5.1. For 1,000,000 768-dimensional vectors and 5,000
+`topK=10` queries, it recorded 586 queries/second with P95/P99 search latency
+of 2.16/2.43 ms.
+
+That result is a reproducible reference point, not a universal latency claim.
+Dataset shape, dimensions, filters, HNSW settings, storage, concurrency, and
+hardware all affect performance. See the [one-node benchmark
+methodology](docs/quality/one-mac-benchmark.md) and [vector quality
+gates](docs/quality/vector-quality.md).
+
+## Project layout
+
+```text
+akidb/
+├── crates/
+│   ├── common/                 shared configuration, errors, metrics
+│   ├── proto/                  canonical protobuf and gRPC bindings
+│   ├── embedding/              embedding abstraction and client
+│   ├── contracts/              API and invariant contracts
+│   ├── invariants/             property-based safety checks
+│   ├── faiss-wrapper/          portable usearch HNSW index
+│   ├── graph/                  native persisted graph index
+│   ├── retrieval/              BM25, planning, fusion, rerank, context
+│   ├── sql/                    optional metadata SQL adapters
+│   ├── storage/                RocksDB, ID mapping, WAL, snapshots
+│   ├── grpc-server/            data and management services
+│   ├── coordinator/            multi-shard routing and result merge
+│   ├── server/                 shard/server composition
+│   ├── cli/                    unified `akidb` command
+│   ├── tui/                    terminal operations console
+│   ├── benchmark/              load and latency tooling
+│   └── ingestion-orchestrator/ document ingestion pipeline
+├── sdks/                       Python and TypeScript clients
+├── services/                   document parser and upload gateway
+├── config/                     example runtime configuration
+├── deploy/                     Docker and Ansible assets
+├── docs/                       support, quality, security, and runbooks
+└── scripts/                    build, validation, QA, and packaging tools
 ```
-
-Run semantic retrieval QA with local embedding artifacts:
-
-```bash
-AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-0.6B-4bit-DWQ \
-AX_ENGINE_MODEL=mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ \
-EMBEDDING_DIMENSIONS=1024 \
-python3 scripts/qa_text_retrieval.py
-```
-
-Quality gates report recall@k, nDCG, MRR, hit rate, and latency. See
-`docs/quality/vector-quality.md` for thresholds and release artifact rules.
-
-### One-Mac Benchmark
-
-Run the clean standalone synthetic benchmark and write a JSON artifact:
-
-```bash
-./scripts/benchmark-one-mac.sh
-```
-
-For the reference target shape:
-
-```bash
-./scripts/benchmark-one-mac-reference.sh
-```
-
-See `docs/quality/one-mac-benchmark.md` for artifact requirements and
-interpretation. The reference runner uses optimized release binaries by
-default.
-
-Current reference artifact:
-`docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json` on an Apple M3 Max
-Mac15,9 with 128GB memory. The run indexed 1,000,000 768-dimensional vectors,
-served 5,000 `topK=10` queries at 586 QPS, and measured P95/P99 search latency
-of 2.16ms/2.43ms.
-
-### Four-Mac Cell Validation
-
-Before any production claim for a four-Mac Thunderbolt cell, validate a
-machine-readable artifact:
-
-```bash
-python3 scripts/validate-four-mac-cell.py docs/reports/four-mac-cell-YYYYMMDD.json
-```
-
-Smoke-test the evidence pipeline without claiming hardware readiness:
-
-```bash
-./scripts/smoke-four-mac-validation.sh
-```
-
-Build an artifact from measured node, link, failure-test, and benchmark inputs:
-
-```bash
-python3 scripts/collect-four-mac-node.py \
-  --id mac-1 \
-  --role voter \
-  --output docs/reports/mac-1-node.json
-
-python3 scripts/collect-four-mac-link.py \
-  --from mac-1 \
-  --to mac-2 \
-  --latency-p95-us 120 \
-  --bandwidth-gbps 20 \
-  --packet-loss-percent 0 \
-  --output docs/reports/mac-1-mac-2-link.json
-
-python3 scripts/collect-four-mac-failure-test.py \
-  --kind node_loss \
-  --observed-status degraded \
-  --recovery-time-ms 500 \
-  --output docs/reports/node-loss-test.json
-
-python3 scripts/assemble-four-mac-input.py \
-  --node docs/reports/four-mac-nodes.json \
-  --link docs/reports/four-mac-links.json \
-  --failure-test docs/reports/four-mac-failure-tests.json \
-  --output docs/reports/four-mac-input.json
-
-OUTPUT=docs/reports/four-mac-benchmark-YYYYMMDD.json \
-SERVER=http://mac-1.local:50051 \
-./scripts/benchmark-four-mac-cell.sh
-
-python3 scripts/validate-four-mac-evidence.py \
-  --input docs/reports/four-mac-input.json \
-  --one-mac-artifact docs/reports/one-mac-768d-1000000v-c1-20260628T002236Z.json \
-  --cell-benchmark-artifact docs/reports/four-mac-benchmark-YYYYMMDD.json \
-  --output docs/reports/four-mac-cell-YYYYMMDD.json
-```
-
-See `docs/quality/four-mac-cell-validation.md` for the artifact schema and
-default gates. This validator does not replace the real four-Mac hardware run;
-it defines the evidence required to mark that validation complete.
-
-## Performance Targets
-
-| Metric | Target | Reference Config |
-|--------|--------|------------------|
-| One-Mac Search P95 | < 50ms | D=768, N=1M, topK=10 |
-| One-Mac Search P99 | < 100ms | D=768, N=1M, topK=10 |
-| Four-Mac Cell Throughput | >= 2.5x one Mac | Same dataset class |
-| Recall@10 | > 95% | Approximate backend reference config |
 
 ## Documentation
 
-- [Documentation Index](docs/README.md) - canonical docs and archive map
-- [Platform Support](docs/platform/SUPPORT.md) - macOS Apple Silicon support matrix
-- [One-Mac Benchmark](docs/quality/one-mac-benchmark.md) - reproducible benchmark artifact workflow
-- [Four-Mac Cell Validation](docs/quality/four-mac-cell-validation.md) - Thunderbolt cell validation artifact gate
-- [Four-Mac Evidence Manifest](docs/quality/four-mac-evidence-manifest.md) - required files for the real hardware run
-- [Vector Quality Gates](docs/quality/vector-quality.md) - recall and semantic retrieval QA
+- [Documentation index](docs/README.md)
+- [Platform support](docs/platform/SUPPORT.md)
+- [Operations runbook](docs/runbooks/operations.md)
+- [Ansible cluster deployment](deploy/ansible/README.md)
+- [Vector quality gates](docs/quality/vector-quality.md)
+- [One-node benchmark](docs/quality/one-mac-benchmark.md)
+- [Native GraphRAG plan and status](docs/development/native-graphrag-plan.md)
 
-Product requirements, architecture decisions, and the technical specification are
-maintained as internal documents and are not part of this public repository.
+## Current limitations
 
-## Development Status
-
-**Current Phase:** v2 Mac-first design reset
-
-- [x] Cargo workspace initialized
-- [x] CI/CD pipeline configured
-- [x] Security baseline (cargo-audit, deny.toml)
-- [x] Canonical PRD/ADR/technical specification
-- [x] Native graph retrieval crate initialized
-- [x] BM25 + RRF hybrid retrieval foundation
-- [x] Deterministic query planner scaffolding
-- [x] Graph-expanded context packing when a graph index is configured
-- [x] Best-effort graph indexing from `parent_id` and `related_ids` metadata
-- [x] MCP status reports graph stats when graph expansion is configured
-- [x] TextSearch metadata/tag filtering across hybrid and graph-expanded context
-- [x] Metadata-driven code graph edges for imports/calls/dependencies/owners/commits
-- [x] Planner-driven TextSearch vector/BM25/hybrid routing with explicit mode overrides
-- [x] Graph TextSearch expands file/symbol metadata seeds from relationship queries
-- [x] Graph-expanded chunks participate in TextSearch results when graph routing is enabled
-- [x] Server/MCP startup wires the native graph index by default
-- [x] Local graph inspect CLI for stats, neighbors, and related chunks
-- [x] Optional SQLite metadata SQL adapter design
-- [x] Planner-driven SQL metadata retrieval mode for scalar JSON filters
-- [x] Optional PostgreSQL metadata adapter behind `akidb-server/postgres`
-- [x] One-Mac benchmark artifact validator
-- [x] One-Mac reference benchmark runner
-- [x] Four-Mac cell validation artifact validator
-- [x] Four-Mac cell validation artifact builder
-- [x] One-Mac reference benchmark
-- [ ] Four-Mac Thunderbolt cell validation
-
-## License
-
-Apache License 2.0 - See LICENSE for details.
+- No automatic shard replication, failover, placement, or rebalancing.
+- Coordinator authentication/workspace propagation to shards is not complete.
+- Built-in gRPC TLS is not active in the server binary.
+- The storage crate includes WAL primitives, but the server write path does not
+  yet use the configured WAL.
+- The native BM25 index is rebuilt in memory from persisted records.
+- The Docker image and checksum-pinned Ansible artifact pipeline are currently
+  AMD64-only even though the native Ubuntu runtime supports ARM64.
+- Four-Mac Thunderbolt validation tooling defines an experimental evidence
+  path; it is not the primary product topology or a production-readiness claim.
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Run `cargo fmt` and `cargo clippy`
-4. Submit a pull request
+1. Fork the repository and create a focused branch.
+2. Add tests for behavior changes.
+3. Run the validation commands above.
+4. Open a pull request with a concise summary and the commands run.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
 
 ## Support
 
-- GitHub Issues: Bug reports and feature requests
-- Documentation: See `/docs` directory
+Use [GitHub Issues](https://github.com/defai-digital/akidb/issues) for bug
+reports, support questions, and feature requests.

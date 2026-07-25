@@ -18,8 +18,8 @@ permissions:
 
 jobs:
   sdks:
-    # Apple Silicon: the engine is Mac-first, so the server is built/run here.
-    runs-on: macos-14
+    # Exercise the live SDKs against the supported macOS 26 ARM64 server.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
