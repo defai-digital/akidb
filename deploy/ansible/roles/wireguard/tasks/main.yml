@@ -4,6 +4,8 @@
     that:
       - akidb_overlay_address is defined
       - akidb_overlay_address | length > 0
+      - akidb_overlay_cidr is defined
+      - akidb_overlay_cidr | length > 0
       - ansible_host is defined
       - groups['akidb_cluster'] | length >= 2
 
@@ -107,6 +109,54 @@
 
 - name: Apply pending WireGuard changes
   ansible.builtin.meta: flush_handlers
+
+- name: Allow shard traffic only through the trusted overlay
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - in
+      - "on"
+      - "{{ akidb_wireguard_interface }}"
+      - from
+      - "{{ akidb_overlay_cidr }}"
+      - to
+      - any
+      - port
+      - "{{ akidb_server_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - AkiDB shard overlay
+  register: akidb_ufw_shard_rule
+  changed_when: "'Rule added' in akidb_ufw_shard_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups['akidb_shards']
+
+- name: Allow coordinator traffic only through the trusted overlay
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - in
+      - "on"
+      - "{{ akidb_wireguard_interface }}"
+      - from
+      - "{{ akidb_overlay_cidr }}"
+      - to
+      - any
+      - port
+      - "{{ akidb_coordinator_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - AkiDB coordinator overlay
+  register: akidb_ufw_coordinator_rule
+  changed_when: "'Rule added' in akidb_ufw_coordinator_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups['akidb_coordinators']
 
 - name: Wait for every overlay peer
   ansible.builtin.command:
