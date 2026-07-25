@@ -19,6 +19,9 @@ pub struct AkiDbConfig {
     /// Read/plan-only operations console settings.
     #[serde(default)]
     pub management: ManagementConfig,
+    /// Immutable single-node generation serving preview. Disabled by default.
+    #[serde(default)]
+    pub generation_serving: GenerationServingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +153,98 @@ fn default_import_plan_expanded_bytes() -> u64 {
 
 fn default_import_plan_ttl_seconds() -> u64 {
     300
+}
+
+/// Phase 2 single-node immutable generation serving.
+///
+/// Enabling this replaces the mutable gRPC data path. It does not enable HA,
+/// sharding, PostgreSQL control-plane authority, or automatic failover.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationServingConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Stable identity of this local data volume. Required when enabled.
+    #[serde(default)]
+    pub replica_id: String,
+    #[serde(default = "default_generation_root")]
+    pub generation_root: String,
+    #[serde(default = "default_generation_control_path")]
+    pub control_rocksdb_path: String,
+    #[serde(default = "default_generation_download_path")]
+    pub download_path: String,
+    #[serde(default = "default_generation_collection")]
+    pub default_collection: String,
+    /// Empty means only `storage.minio.bucket`.
+    #[serde(default)]
+    pub allowed_buckets: Vec<String>,
+    #[serde(default = "default_s3_region")]
+    pub s3_region: String,
+    #[serde(default = "default_true")]
+    pub require_version_or_digest_key: bool,
+    #[serde(default = "default_max_bundle_size")]
+    pub max_bundle_size_bytes: u64,
+    #[serde(default = "default_generation_max_vectors")]
+    pub max_vectors: u64,
+    #[serde(default = "default_generation_max_nodes")]
+    pub max_graph_nodes: u64,
+    #[serde(default = "default_generation_max_edges")]
+    pub max_graph_edges: u64,
+}
+
+impl Default for GenerationServingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            replica_id: String::new(),
+            generation_root: default_generation_root(),
+            control_rocksdb_path: default_generation_control_path(),
+            download_path: default_generation_download_path(),
+            default_collection: default_generation_collection(),
+            allowed_buckets: Vec::new(),
+            s3_region: default_s3_region(),
+            require_version_or_digest_key: true,
+            max_bundle_size_bytes: default_max_bundle_size(),
+            max_vectors: default_generation_max_vectors(),
+            max_graph_nodes: default_generation_max_nodes(),
+            max_graph_edges: default_generation_max_edges(),
+        }
+    }
+}
+
+fn default_generation_root() -> String {
+    "./data/generations".to_string()
+}
+
+fn default_generation_control_path() -> String {
+    "./data/generation-control".to_string()
+}
+
+fn default_generation_download_path() -> String {
+    "./data/generation-downloads".to_string()
+}
+
+fn default_generation_collection() -> String {
+    "default".to_string()
+}
+
+fn default_s3_region() -> String {
+    "us-east-1".to_string()
+}
+
+fn default_max_bundle_size() -> u64 {
+    50 * 1024 * 1024 * 1024
+}
+
+fn default_generation_max_vectors() -> u64 {
+    10_000_000
+}
+
+fn default_generation_max_nodes() -> u64 {
+    20_000_000
+}
+
+fn default_generation_max_edges() -> u64 {
+    50_000_000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

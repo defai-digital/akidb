@@ -30,6 +30,26 @@ max_source_bytes = 104857600
 max_expanded_bytes = 536870912
 plan_ttl_seconds = 300
 
+# Phase 2 single-node immutable publication preview. This replaces the mutable
+# gRPC data path when enabled; it does not enable HA or multi-replica failover.
+[generation_serving]
+enabled = false
+# Required and stable for the lifetime of the local data volume when enabled.
+replica_id = ""
+generation_root = "./data/generations"
+control_rocksdb_path = "./data/generation-control"
+download_path = "./data/generation-downloads"
+default_collection = "default"
+# Empty restricts publication to storage.minio.bucket.
+allowed_buckets = []
+s3_region = "us-east-1"
+# Require ?versionId=... or a checksum-addressed S3 key.
+require_version_or_digest_key = true
+max_bundle_size_bytes = 53687091200
+max_vectors = 10000000
+max_graph_nodes = 20000000
+max_graph_edges = 50000000
+
 [index]
 index_type = "HNSW"
 hnsw_m = 16

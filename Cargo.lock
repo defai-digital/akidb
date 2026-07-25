@@ -200,10 +200,14 @@ dependencies = [
  "akidb-sql",
  "akidb-storage",
  "anyhow",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
  "dashmap",
  "hex",
  "hmac 0.12.1",
  "parking_lot",
+ "percent-encoding",
  "prometheus",
  "reqwest",
  "serde",
@@ -215,6 +219,7 @@ dependencies = [
  "tonic 0.11.0",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -299,6 +304,7 @@ name = "akidb-server"
 version = "0.10.0"
 dependencies = [
  "akidb-common",
+ "akidb-contracts",
  "akidb-embedding",
  "akidb-faiss",
  "akidb-graph",

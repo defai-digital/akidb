@@ -7,6 +7,8 @@
 use akidb_common::config::{AkiDbConfig, AuthMode};
 use akidb_common::scheduler::{ResourceGovernor, ResourceGovernorConfig, SimpleMetricsSource};
 use akidb_common::VectorId;
+#[cfg(feature = "generation-s3")]
+use akidb_contracts::KnowledgeScope;
 use akidb_embedding::ax_engine::AxEngineEmbedding;
 use akidb_faiss::{DistanceMetric, HnswConfig, HnswIndex, VectorIndex, VectorPrecision};
 use akidb_graph::NativeGraphIndex;
@@ -14,12 +16,24 @@ use akidb_grpc::{
     AdminState, AkiDbService, AuthInterceptor, AuthRuntime, EmbeddingProvider,
     ManagementServiceImpl, ManagementState, StagingRegistry,
 };
+#[cfg(feature = "generation-s3")]
+use akidb_grpc::{
+    CollectionRegistry, GenerationController, GenerationDataPlane, GenerationDataPlaneConfig,
+    GenerationManagementServiceImpl, GenerationMaterializer, GenerationMaterializerConfig,
+    S3GenerationBundleFetcher, S3GenerationBundleFetcherConfig,
+};
 use akidb_proto::akidb_server::AkidbServer;
+#[cfg(feature = "generation-s3")]
+use akidb_proto::generation_management_server::GenerationManagementServer;
 use akidb_proto::management_service_server::ManagementServiceServer;
 #[cfg(feature = "postgres")]
 use akidb_sql::PostgresMetadataIndex;
 use akidb_sql::{SqliteMetadataIndex, POSTGRES_BACKEND, SQLITE_BACKEND};
+#[cfg(feature = "generation-s3")]
+use akidb_storage::{GenerationStore, ServingStateStore};
 use akidb_storage::{IdMapping, LocalSnapshotBackend, RocksDbBackend, SnapshotManager};
+#[cfg(feature = "generation-s3")]
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -102,8 +116,6 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         AkiDbConfig::default()
     };
 
-    let service = build_service(&config)?;
-
     // Resolve listen address: CLI override, else config (secure loopback default).
     let listen = if args.listen.trim().is_empty() {
         format!("{}:{}", config.server.host, config.server.grpc_port)
@@ -121,6 +133,27 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let auth_runtime = AuthRuntime::bootstrap(config.auth.clone(), &bind_host)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    if config.generation_serving.enabled {
+        if args.standalone {
+            return Err(
+                "generation serving requires configured immutable S3/MinIO publication; it cannot run with --standalone"
+                    .into(),
+            );
+        }
+        #[cfg(feature = "generation-s3")]
+        {
+            return run_generation_server(&config, addr, auth_runtime).await;
+        }
+        #[cfg(not(feature = "generation-s3"))]
+        {
+            return Err(
+                "generation serving requires an akidb-server build with --features generation-s3"
+                    .into(),
+            );
+        }
+    }
+
+    let service = build_service(&config)?;
     let data_interceptor = AuthInterceptor::new(auth_runtime.clone());
 
     let collections = service.collection_registry();
@@ -174,6 +207,196 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(feature = "generation-s3")]
+async fn run_generation_server(
+    config: &AkiDbConfig,
+    addr: SocketAddr,
+    auth_runtime: AuthRuntime,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_generation_paths(config)?;
+    let generation = &config.generation_serving;
+    let generation_store = Arc::new(GenerationStore::open(&generation.generation_root)?);
+    let materializer = Arc::new(GenerationMaterializer::new(
+        generation_store,
+        GenerationMaterializerConfig {
+            max_vectors: generation.max_vectors,
+            max_graph_nodes: generation.max_graph_nodes,
+            max_graph_edges: generation.max_graph_edges,
+            hnsw_m: config.index.hnsw_m as usize,
+            hnsw_ef_construction: config.index.hnsw_ef_construction as usize,
+            hnsw_ef_search: config.index.hnsw_ef_search as usize,
+            vector_precision: VectorPrecision::parse(&config.index.vector_precision)?,
+            distance_metric: DistanceMetric::parse(&config.index.metric)?,
+            ..Default::default()
+        },
+    ));
+    let state_storage = Arc::new(RocksDbBackend::open(&generation.control_rocksdb_path)?);
+    let state = Arc::new(ServingStateStore::new(
+        state_storage,
+        generation.replica_id.clone(),
+    )?);
+    let controller = Arc::new(GenerationController::new(materializer, state));
+    let collections = Arc::new(CollectionRegistry::new());
+    let embedding_provider = build_optional_embedding_provider(config);
+    let data_plane = GenerationDataPlane::new(
+        controller,
+        GenerationDataPlaneConfig {
+            default_collection: generation.default_collection.clone(),
+            slo_threshold_us: config
+                .slo
+                .reference
+                .target_p95_ms
+                .saturating_mul(1_000)
+                .max(1),
+            acl: config.auth.acl.clone(),
+            filter_settings: config.index.filter.clone(),
+            collections: collections.clone(),
+            embedding_provider,
+        },
+    )?;
+    let default_scope = KnowledgeScope::new(
+        config.auth.acl.default_workspace.clone(),
+        generation.default_collection.clone(),
+    );
+    data_plane.restore_scope(&default_scope)?;
+
+    let allowed_buckets: HashSet<String> = if generation.allowed_buckets.is_empty() {
+        HashSet::from([config.storage.minio.bucket.clone()])
+    } else {
+        generation.allowed_buckets.iter().cloned().collect()
+    };
+    let fetcher = Arc::new(S3GenerationBundleFetcher::for_minio(
+        &config.storage.minio,
+        generation.s3_region.clone(),
+        S3GenerationBundleFetcherConfig {
+            allowed_buckets,
+            download_directory: PathBuf::from(&generation.download_path),
+            max_bundle_size_bytes: generation.max_bundle_size_bytes,
+            require_version_or_digest_key: generation.require_version_or_digest_key,
+        },
+    )?);
+    let generation_management =
+        GenerationManagementServiceImpl::new(Arc::new(data_plane.clone()), fetcher);
+
+    let metrics = Arc::new(SimpleMetricsSource::new());
+    let governor = Arc::new(ResourceGovernor::new(
+        ResourceGovernorConfig::default(),
+        metrics,
+    ));
+    let admin_state = Arc::new(AdminState::new(governor));
+    let auth_mode = auth_mode_name(config.auth.mode);
+    let management_state = Arc::new(ManagementState::new(
+        admin_state,
+        collections,
+        // Legacy mutable snapshots are not generation backups.
+        None,
+        Arc::new(StagingRegistry::default()),
+        config.management.import_plan.clone(),
+        config.management.audit_max_entries,
+        env!("CARGO_PKG_VERSION"),
+        auth_mode,
+        false,
+    ));
+    let management = ManagementServiceImpl::new(management_state);
+
+    info!(
+        %addr,
+        replica_id = %generation.replica_id,
+        "Starting immutable single-node generation serving preview"
+    );
+    Server::builder()
+        .add_service(AkidbServer::with_interceptor(
+            data_plane,
+            AuthInterceptor::new(auth_runtime.clone()),
+        ))
+        .add_service(GenerationManagementServer::with_interceptor(
+            generation_management,
+            AuthInterceptor::new(auth_runtime.clone()),
+        ))
+        .add_service(ManagementServiceServer::with_interceptor(
+            management,
+            AuthInterceptor::new(auth_runtime),
+        ))
+        .serve(addr)
+        .await?;
+    Ok(())
+}
+
+#[cfg(feature = "generation-s3")]
+fn auth_mode_name(mode: AuthMode) -> &'static str {
+    match mode {
+        AuthMode::LoopbackOptional => "loopback_optional",
+        AuthMode::Required => "required",
+        AuthMode::Disabled => "disabled",
+    }
+}
+
+#[cfg(feature = "generation-s3")]
+fn build_optional_embedding_provider(config: &AkiDbConfig) -> Option<Arc<dyn EmbeddingProvider>> {
+    if !config.embedding.enabled {
+        return None;
+    }
+    match tokio::task::block_in_place(|| AxEngineEmbedding::new(config.embedding.clone())) {
+        Ok(embedding) => {
+            info!(
+                "Embedding provider enabled: model={}, url={}",
+                config.embedding.model, config.embedding.url
+            );
+            Some(Arc::new(AxEngineProvider::new(embedding)))
+        }
+        Err(error) => {
+            warn!(
+                "Failed to create embedding provider: {}. TextSearch will be unavailable.",
+                error
+            );
+            None
+        }
+    }
+}
+
+#[cfg(any(feature = "generation-s3", test))]
+fn validate_generation_paths(config: &AkiDbConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let generation = &config.generation_serving;
+    if generation.replica_id.trim().is_empty() {
+        return Err("generation_serving.replica_id is required when enabled".into());
+    }
+    if generation.default_collection.trim().is_empty() {
+        return Err("generation_serving.default_collection must not be empty".into());
+    }
+    if generation.max_vectors == 0
+        || generation.max_graph_nodes == 0
+        || generation.max_graph_edges == 0
+    {
+        return Err("generation serving index limits must be greater than zero".into());
+    }
+
+    let configured = [
+        PathBuf::from(&generation.generation_root),
+        PathBuf::from(&generation.control_rocksdb_path),
+        PathBuf::from(&generation.download_path),
+    ];
+    for path in &configured {
+        std::fs::create_dir_all(path)?;
+    }
+    let canonical: Vec<PathBuf> = configured
+        .iter()
+        .map(std::fs::canonicalize)
+        .collect::<Result<_, _>>()?;
+    for (index, path) in canonical.iter().enumerate() {
+        for other in canonical.iter().skip(index + 1) {
+            if path.starts_with(other) || other.starts_with(path) {
+                return Err(format!(
+                    "generation data paths must be distinct and non-overlapping: {} and {}",
+                    path.display(),
+                    other.display()
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Run AkiDB as an MCP server over stdio (newline-delimited JSON-RPC), sharing
 /// the same storage, index, and embedding setup as the gRPC server.
 pub async fn run_mcp(args: Args) -> Result<(), Box<dyn std::error::Error>> {
@@ -196,6 +419,12 @@ pub async fn run_mcp(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         AkiDbConfig::default()
     };
+    if config.generation_serving.enabled {
+        return Err(
+            "generation serving is currently available only on the authenticated gRPC data plane; MCP startup is refused to prevent a mutable-path bypass"
+                .into(),
+        );
+    }
 
     let service = Arc::new(build_service(&config)?);
     info!("AkiDB MCP server ready on stdio");
@@ -413,5 +642,34 @@ mod tests {
         assert!(message.contains("HNSW dimensions must be > 0"));
 
         let _ = std::fs::remove_dir_all(rocksdb_path);
+    }
+
+    #[test]
+    fn generation_mode_requires_stable_replica_identity() {
+        let mut config = AkiDbConfig::default();
+        config.generation_serving.enabled = true;
+        config.generation_serving.replica_id.clear();
+
+        let error = validate_generation_paths(&config).unwrap_err();
+        assert!(error.to_string().contains("replica_id is required"));
+    }
+
+    #[test]
+    fn generation_data_paths_must_not_overlap() {
+        let base = unique_temp_path("generation-overlap");
+        let mut config = AkiDbConfig::default();
+        config.generation_serving.enabled = true;
+        config.generation_serving.replica_id = "replica-test".to_string();
+        config.generation_serving.generation_root = base.display().to_string();
+        config.generation_serving.control_rocksdb_path = base.join("control").display().to_string();
+        config.generation_serving.download_path = unique_temp_path("generation-download")
+            .display()
+            .to_string();
+
+        let error = validate_generation_paths(&config).unwrap_err();
+        assert!(error.to_string().contains("non-overlapping"));
+
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&config.generation_serving.download_path);
     }
 }

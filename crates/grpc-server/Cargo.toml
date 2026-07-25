@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = []
+generation-s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
+
 [dependencies]
 akidb-common = { path = "../common" }
 akidb-contracts = { path = "../contracts" }
@@ -35,6 +39,11 @@ uuid.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+async-trait.workspace = true
+url.workspace = true
+aws-sdk-s3 = { version = "1.137", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }
+aws-config = { version = "1.8", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }
+percent-encoding = "2.3"
 
 # HTTP client for webhooks
 reqwest.workspace = true

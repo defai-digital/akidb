@@ -11,6 +11,9 @@ mod collections;
 mod filter;
 pub mod generation;
 pub mod generation_control;
+pub mod generation_data_plane;
+pub mod generation_fetch;
+pub mod generation_management;
 mod ingestion;
 mod management;
 pub mod mcp;
@@ -29,6 +32,13 @@ pub use generation::{
 pub use generation_control::{
     ExpectedActiveGeneration, GenerationControlError, GenerationController, GenerationPublication,
 };
+pub use generation_data_plane::{GenerationDataPlane, GenerationDataPlaneConfig};
+pub use generation_fetch::{
+    FetchedGenerationBundle, GenerationBundleFetcher, GenerationFetchError,
+};
+#[cfg(feature = "generation-s3")]
+pub use generation_fetch::{S3GenerationBundleFetcher, S3GenerationBundleFetcherConfig};
+pub use generation_management::GenerationManagementServiceImpl;
 pub use ingestion::IngestionServiceImpl;
 pub use management::{ManagementServiceImpl, ManagementState, StagedObject, StagingRegistry};
 pub use metrics::{metrics, AkiDbMetrics};

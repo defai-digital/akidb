@@ -81,6 +81,7 @@ pub struct GenerationPublication {
 struct ScopeRuntimeSet {
     active: Option<Arc<ReadyGenerationRuntime>>,
     previous: Option<Arc<ReadyGenerationRuntime>>,
+    staged: Option<Arc<ReadyGenerationRuntime>>,
 }
 
 /// Coordinates crash-safe local generation transitions.
@@ -113,6 +114,10 @@ impl GenerationController {
         self.state.replica_id()
     }
 
+    pub fn materializer(&self) -> &Arc<GenerationMaterializer> {
+        &self.materializer
+    }
+
     /// Stage, checksum, materialize, seal, and mark one generation READY.
     ///
     /// The active runtime remains untouched throughout. Retrying exact content
@@ -139,18 +144,12 @@ impl GenerationController {
                 if matches!(
                     existing.state,
                     LocalGenerationState::Serving | LocalGenerationState::Ready
-                ) && record
-                    .staged
-                    .as_ref()
-                    .is_none_or(|staged| staged.manifest.generation_id != manifest.generation_id)
-                {
+                ) {
                     let ready = self
                         .materializer
                         .store()
                         .load_ready(&scope, &manifest.generation_id)?;
-                    if existing.state == LocalGenerationState::Serving {
-                        self.ensure_runtime_cache(&record)?;
-                    }
+                    self.ensure_runtime_cache(&record)?;
                     return Ok(GenerationPublication {
                         ready,
                         state: record,
@@ -225,10 +224,9 @@ impl GenerationController {
             }
         }
 
-        Ok(GenerationPublication {
-            ready,
-            state: self.required_state(&scope)?,
-        })
+        let state = self.required_state(&scope)?;
+        self.ensure_runtime_cache(&state)?;
+        Ok(GenerationPublication { ready, state })
     }
 
     /// Activate a READY staged generation and atomically switch local reads.
@@ -263,17 +261,31 @@ impl GenerationController {
         }
 
         self.ensure_runtime_cache(&before)?;
-        let next = Arc::new(self.materializer.open_ready(scope, generation_id)?);
 
         // Holding this write lock across the durable state commit creates the
         // local read barrier. Existing requests retain a complete Arc to the
         // old runtime; new requests cannot clone one until the swap completes.
         {
             let mut runtimes = self.runtimes.write();
+            let runtime_set = runtimes.get_mut(scope).ok_or_else(|| {
+                GenerationControlError::InconsistentState(
+                    "runtime cache disappeared during activation".to_string(),
+                )
+            })?;
+            let next = runtime_set.staged.clone().ok_or_else(|| {
+                GenerationControlError::InconsistentState(
+                    "READY staged runtime was not restored".to_string(),
+                )
+            })?;
+            if next.ready.manifest.generation_id != generation_id {
+                return Err(GenerationControlError::InconsistentState(
+                    "staged runtime identity differs from durable state".to_string(),
+                ));
+            }
             self.state.activate(scope, generation_id, updated_at_ms)?;
-            let runtime_set = runtimes.entry(scope.clone()).or_default();
             let former_active = runtime_set.active.replace(next);
             runtime_set.previous = former_active;
+            runtime_set.staged = None;
         }
 
         let after = self.required_state(scope)?;
@@ -373,6 +385,15 @@ impl GenerationController {
             .and_then(|runtime_set| runtime_set.active.clone())
     }
 
+    /// Clone any locally retained active, previous, or READY staged runtime.
+    pub fn ready_runtime(
+        &self,
+        scope: &KnowledgeScope,
+        generation_id: &str,
+    ) -> Option<Arc<ReadyGenerationRuntime>> {
+        self.cached_runtime(scope, generation_id)
+    }
+
     fn required_state(
         &self,
         scope: &KnowledgeScope,
@@ -392,9 +413,20 @@ impl GenerationController {
         let scope = record.scope();
         let active = self.runtime_for_state(&scope, record.active.as_ref())?;
         let previous = self.runtime_for_state(&scope, record.previous.as_ref())?;
-        self.runtimes
-            .write()
-            .insert(scope, ScopeRuntimeSet { active, previous });
+        let staged = match record.staged.as_ref() {
+            Some(generation) if generation.state == LocalGenerationState::Ready => {
+                self.runtime_for_state(&scope, Some(generation))?
+            }
+            _ => None,
+        };
+        self.runtimes.write().insert(
+            scope,
+            ScopeRuntimeSet {
+                active,
+                previous,
+                staged,
+            },
+        );
         Ok(())
     }
 
@@ -426,6 +458,7 @@ impl GenerationController {
             .active
             .iter()
             .chain(runtime_set.previous.iter())
+            .chain(runtime_set.staged.iter())
             .find(|runtime| runtime.ready.manifest.generation_id == generation_id)
             .cloned()
     }

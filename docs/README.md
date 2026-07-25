@@ -12,6 +12,7 @@ Supporting documents:
 
 - [Development Notes](development/AGENT_CONFIGS.md)
 - [Native GraphRAG Productization Plan](development/native-graphrag-plan.md)
+- [Immutable Generation Serving Preview](development/generation-serving-preview.md)
 - [One-Mac Benchmark](quality/one-mac-benchmark.md)
 - [Four-Mac Cell Validation](quality/four-mac-cell-validation.md)
 - [Four-Mac Evidence Manifest](quality/four-mac-evidence-manifest.md)

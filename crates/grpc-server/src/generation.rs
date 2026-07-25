@@ -108,6 +108,10 @@ impl GenerationMaterializer {
         &self.store
     }
 
+    pub fn config(&self) -> &GenerationMaterializerConfig {
+        &self.config
+    }
+
     /// Reopen a READY generation and rebuild its in-memory HNSW index from the
     /// immutable durable payload store. The local bundle checksum, READY seal,
     /// payload/text counts, graph counts, and internal ID order are rechecked.

@@ -12,9 +12,11 @@ path = "src/main.rs"
 [features]
 default = []
 postgres = ["akidb-sql/postgres"]
+generation-s3 = ["akidb-grpc/generation-s3", "dep:akidb-contracts"]
 
 [dependencies]
 akidb-common = { path = "../common" }
+akidb-contracts = { path = "../contracts", optional = true }
 akidb-embedding = { path = "../embedding" }
 akidb-faiss = { path = "../faiss-wrapper" }
 akidb-graph = { path = "../graph" }

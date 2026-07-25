@@ -975,6 +975,230 @@ class IngestionService:
             _registered_method=True)
 
 
+class GenerationManagementStub:
+    """============================================
+    Generation Management - Privileged Immutable Publication
+    ============================================
+
+    This surface is intentionally separate from the read/plan-only Operations
+    Console service. Every request requires an authenticated, workspace-scoped
+    control-plane identity.
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.StageGeneration = channel.unary_unary(
+                '/akidb.v1.GenerationManagement/StageGeneration',
+                request_serializer=akidb__pb2.StageGenerationRequest.SerializeToString,
+                response_deserializer=akidb__pb2.GenerationReplicaStatus.FromString,
+                _registered_method=True)
+        self.GetGenerationStatus = channel.unary_unary(
+                '/akidb.v1.GenerationManagement/GetGenerationStatus',
+                request_serializer=akidb__pb2.GetGenerationStatusRequest.SerializeToString,
+                response_deserializer=akidb__pb2.GenerationReplicaStatus.FromString,
+                _registered_method=True)
+        self.ActivateGeneration = channel.unary_unary(
+                '/akidb.v1.GenerationManagement/ActivateGeneration',
+                request_serializer=akidb__pb2.ActivateGenerationRequest.SerializeToString,
+                response_deserializer=akidb__pb2.GenerationReplicaStatus.FromString,
+                _registered_method=True)
+        self.RollbackGeneration = channel.unary_unary(
+                '/akidb.v1.GenerationManagement/RollbackGeneration',
+                request_serializer=akidb__pb2.RollbackGenerationRequest.SerializeToString,
+                response_deserializer=akidb__pb2.GenerationReplicaStatus.FromString,
+                _registered_method=True)
+
+
+class GenerationManagementServicer:
+    """============================================
+    Generation Management - Privileged Immutable Publication
+    ============================================
+
+    This surface is intentionally separate from the read/plan-only Operations
+    Console service. Every request requires an authenticated, workspace-scoped
+    control-plane identity.
+    """
+
+    def StageGeneration(self, request, context):
+        """Synchronously fetch, checksum, materialize, and seal one shadow
+        generation. It never changes the active generation.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetGenerationStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ActivateGeneration(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RollbackGeneration(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_GenerationManagementServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'StageGeneration': grpc.unary_unary_rpc_method_handler(
+                    servicer.StageGeneration,
+                    request_deserializer=akidb__pb2.StageGenerationRequest.FromString,
+                    response_serializer=akidb__pb2.GenerationReplicaStatus.SerializeToString,
+            ),
+            'GetGenerationStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetGenerationStatus,
+                    request_deserializer=akidb__pb2.GetGenerationStatusRequest.FromString,
+                    response_serializer=akidb__pb2.GenerationReplicaStatus.SerializeToString,
+            ),
+            'ActivateGeneration': grpc.unary_unary_rpc_method_handler(
+                    servicer.ActivateGeneration,
+                    request_deserializer=akidb__pb2.ActivateGenerationRequest.FromString,
+                    response_serializer=akidb__pb2.GenerationReplicaStatus.SerializeToString,
+            ),
+            'RollbackGeneration': grpc.unary_unary_rpc_method_handler(
+                    servicer.RollbackGeneration,
+                    request_deserializer=akidb__pb2.RollbackGenerationRequest.FromString,
+                    response_serializer=akidb__pb2.GenerationReplicaStatus.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'akidb.v1.GenerationManagement', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('akidb.v1.GenerationManagement', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class GenerationManagement:
+    """============================================
+    Generation Management - Privileged Immutable Publication
+    ============================================
+
+    This surface is intentionally separate from the read/plan-only Operations
+    Console service. Every request requires an authenticated, workspace-scoped
+    control-plane identity.
+    """
+
+    @staticmethod
+    def StageGeneration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.GenerationManagement/StageGeneration',
+            akidb__pb2.StageGenerationRequest.SerializeToString,
+            akidb__pb2.GenerationReplicaStatus.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetGenerationStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.GenerationManagement/GetGenerationStatus',
+            akidb__pb2.GetGenerationStatusRequest.SerializeToString,
+            akidb__pb2.GenerationReplicaStatus.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ActivateGeneration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.GenerationManagement/ActivateGeneration',
+            akidb__pb2.ActivateGenerationRequest.SerializeToString,
+            akidb__pb2.GenerationReplicaStatus.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RollbackGeneration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.GenerationManagement/RollbackGeneration',
+            akidb__pb2.RollbackGenerationRequest.SerializeToString,
+            akidb__pb2.GenerationReplicaStatus.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
 class ManagementServiceStub:
     """============================================
     Management Service - Read/Plan-Only Operations Console

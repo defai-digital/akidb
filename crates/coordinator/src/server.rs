@@ -448,6 +448,7 @@ impl Akidb for CoordinatorService {
             within_slo: latency_us < 10_000, // 10ms SLO
             degraded_mode: partial,
             context_pack: String::new(),
+            serving_generation: None,
         }))
     }
 
@@ -605,6 +606,7 @@ impl Akidb for CoordinatorService {
             total_vectors: 0, // Would need to aggregate from shards
             active_vectors: 0,
             using_gpu: false,
+            serving_generation: None,
         }))
     }
 
@@ -842,6 +844,7 @@ impl Akidb for CoordinatorService {
             leader_id: Some(self.local_id.clone()),
             local_peer_id: self.local_id.clone(),
             metrics: cluster_metrics,
+            serving_generation: None,
         }))
     }
 

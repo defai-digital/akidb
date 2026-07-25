@@ -131,6 +131,7 @@ message SearchResponse {
   bool within_slo = 6;
   bool degraded_mode = 7;
   string context_pack = 8;  // Optional assembled context pack (TextSearch pack=true)
+  ServingGenerationEvidence serving_generation = 9;
 }
 
 message SearchResult {
@@ -195,6 +196,7 @@ message GetResponse {
   repeated float vector = 2;
   string metadata = 3;
   bool found = 4;
+  ServingGenerationEvidence serving_generation = 5;
 }
 
 // Health check
@@ -207,6 +209,17 @@ message HealthResponse {
   uint64 total_vectors = 4;
   uint64 active_vectors = 5;
   bool using_gpu = 6;
+  ServingGenerationEvidence serving_generation = 7;
+}
+
+// Exact immutable projection that served a response. This is populated by
+// generation mode and omitted by the legacy mutable data path.
+message ServingGenerationEvidence {
+  string workspace_id = 1;
+  string collection = 2;
+  string generation_id = 3;
+  string manifest_sha256 = 4;
+  uint64 applied_sequence = 5;
 }
 
 // Cluster state request
@@ -219,6 +232,7 @@ message GetClusterStateResponse {
   optional string leader_id = 3;
   string local_peer_id = 4;
   ClusterMetrics metrics = 5;
+  ServingGenerationEvidence serving_generation = 6;
 }
 
 // Coordinator node information
@@ -492,6 +506,78 @@ message CategoryInfo {
 message ListCategoriesResponse {
   repeated CategoryInfo categories = 1;
   uint32 total_count = 2;
+}
+
+// ============================================
+// Generation Management - Privileged Immutable Publication
+// ============================================
+
+// This surface is intentionally separate from the read/plan-only Operations
+// Console service. Every request requires an authenticated, workspace-scoped
+// control-plane identity.
+service GenerationManagement {
+  // Synchronously fetch, checksum, materialize, and seal one shadow
+  // generation. It never changes the active generation.
+  rpc StageGeneration(StageGenerationRequest) returns (GenerationReplicaStatus);
+  rpc GetGenerationStatus(GetGenerationStatusRequest) returns (GenerationReplicaStatus);
+  rpc ActivateGeneration(ActivateGenerationRequest) returns (GenerationReplicaStatus);
+  rpc RollbackGeneration(RollbackGenerationRequest) returns (GenerationReplicaStatus);
+}
+
+message StageGenerationRequest {
+  // Exact canonical JSON bytes; the digest is calculated over these bytes.
+  bytes manifest_json = 1;
+  string manifest_sha256 = 2;
+}
+
+message GetGenerationStatusRequest {
+  string workspace_id = 1;
+  string collection = 2;
+}
+
+message ActiveGenerationPrecondition {
+  oneof condition {
+    // Must be true; asserts this is the first activation.
+    bool no_active = 1;
+    // Asserts the exact currently active generation.
+    string generation_id = 2;
+  }
+}
+
+message ActivateGenerationRequest {
+  string workspace_id = 1;
+  string collection = 2;
+  string generation_id = 3;
+  ActiveGenerationPrecondition expected_active = 4;
+}
+
+message RollbackGenerationRequest {
+  string workspace_id = 1;
+  string collection = 2;
+  string target_generation_id = 3;
+  ActiveGenerationPrecondition expected_active = 4;
+}
+
+message LocalGenerationInfo {
+  string generation_id = 1;
+  string manifest_sha256 = 2;
+  string bundle_sha256 = 3;
+  uint64 base_sequence = 4;
+  uint64 target_sequence = 5;
+  uint64 applied_sequence = 6;
+  string state = 7;
+  optional string last_error = 8;
+}
+
+message GenerationReplicaStatus {
+  uint32 schema_version = 1;
+  string replica_id = 2;
+  string workspace_id = 3;
+  string collection = 4;
+  LocalGenerationInfo active = 5;
+  LocalGenerationInfo previous = 6;
+  LocalGenerationInfo staged = 7;
+  uint64 updated_at_ms = 8;
 }
 
 // ============================================

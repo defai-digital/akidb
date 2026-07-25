@@ -1120,6 +1120,7 @@ where
             within_slo: latency_us < self.slo_threshold_us,
             degraded_mode: false,
             context_pack,
+            serving_generation: None,
         }))
     }
 
@@ -2113,6 +2114,7 @@ where
             within_slo: latency_us < self.slo_threshold_us,
             degraded_mode: false,
             context_pack: String::new(),
+            serving_generation: None,
         }))
     }
 
@@ -2294,6 +2296,7 @@ where
             vector,
             metadata,
             found: true,
+            serving_generation: None,
         }))
     }
 
@@ -2317,6 +2320,7 @@ where
             total_vectors: stats.total_vectors,
             active_vectors: stats.active_vectors,
             using_gpu: stats.using_gpu,
+            serving_generation: None,
         }))
     }
 
@@ -2538,6 +2542,7 @@ where
                 within_slo: latency_us < self.slo_threshold_us,
                 degraded_mode: false,
                 context_pack: String::new(),
+                serving_generation: None,
             });
         }
 
@@ -2963,6 +2968,7 @@ where
             within_slo: latency_us < self.slo_threshold_us,
             degraded_mode: false,
             context_pack,
+            serving_generation: None,
         }))
     }
 }
