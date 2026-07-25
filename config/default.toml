@@ -40,6 +40,10 @@ generation_root = "./data/generations"
 control_rocksdb_path = "./data/generation-control"
 download_path = "./data/generation-downloads"
 default_collection = "default"
+# Always required by GenerationManagement and intentionally separate from the
+# read data-plane token. AKIDB_GENERATION_CONTROL_TOKEN overrides this file.
+control_token_file = "./data/generation-control.token"
+# control_token = "set-explicitly-or-use-AKIDB_GENERATION_CONTROL_TOKEN"
 # Empty restricts publication to storage.minio.bucket.
 allowed_buckets = []
 s3_region = "us-east-1"

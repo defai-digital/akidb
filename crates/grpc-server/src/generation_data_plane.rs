@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 use tonic::{Request, Response, Status};
 
 use crate::auth::auth_context;
-use crate::collections::{CollectionRegistry, SharedCollectionRegistry};
+use crate::collections::CollectionRegistry;
 use crate::proto::akidb_server::Akidb;
 use crate::proto::{
     CreateCollectionRequest, CreateCollectionResponse, DeleteRequest, DeleteResponse,
@@ -39,7 +39,6 @@ pub struct GenerationDataPlaneConfig {
     pub slo_threshold_us: u64,
     pub acl: AclConfig,
     pub filter_settings: FilterSettings,
-    pub collections: SharedCollectionRegistry,
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
@@ -50,7 +49,6 @@ impl Default for GenerationDataPlaneConfig {
             slo_threshold_us: 50_000,
             acl: AclConfig::default(),
             filter_settings: FilterSettings::default(),
-            collections: Arc::new(CollectionRegistry::new()),
             embedding_provider: None,
         }
     }
@@ -205,7 +203,10 @@ impl GenerationDataPlane {
         )
         .with_acl(self.config.acl.clone())
         .with_filter_settings(self.config.filter_settings.clone())
-        .with_collections(self.config.collections.clone())
+        // Collection metadata belongs to this immutable runtime. Sharing the
+        // registry across workspaces or generations could expose stale schema
+        // information after activation.
+        .with_collections(Arc::new(CollectionRegistry::new()))
         .with_embedding_model_id(manifest.embedding_model_id.clone())
         .with_graph_index(runtime.graph.clone());
         if let Some(provider) = &self.config.embedding_provider {
@@ -448,15 +449,21 @@ mod tests {
         format!("{:x}", Sha256::digest(bytes))
     }
 
-    fn generation(generation_id: &str) -> (Vec<u8>, KnowledgeGenerationManifest, Vec<u8>) {
+    fn generation_with_model(
+        generation_id: &str,
+        embedding_model_id: &str,
+    ) -> (Vec<u8>, KnowledgeGenerationManifest, Vec<u8>) {
         let mut manifest: KnowledgeGenerationManifest = serde_json::from_str(MANIFEST).unwrap();
         manifest.generation_id = generation_id.to_string();
+        manifest.embedding_model_id = embedding_model_id.to_string();
         let mut entries: Vec<Value> = BUNDLE
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).unwrap())
             .collect();
         entries[0]["header"]["generation_id"] = Value::String(generation_id.to_string());
+        entries[0]["header"]["embedding_model_id"] = Value::String(embedding_model_id.to_string());
+        entries[1]["record"]["embedding_model_id"] = Value::String(embedding_model_id.to_string());
         let mut bundle = Vec::new();
         for entry in entries {
             bundle.extend(serde_json::to_vec(&entry).unwrap());
@@ -466,6 +473,10 @@ mod tests {
         manifest.bundle.size_bytes = bundle.len() as u64;
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
         (manifest_bytes, manifest, bundle)
+    }
+
+    fn generation(generation_id: &str) -> (Vec<u8>, KnowledgeGenerationManifest, Vec<u8>) {
+        generation_with_model(generation_id, "model@revision")
     }
 
     fn harness() -> (
@@ -600,5 +611,43 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), tonic::Code::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn collection_schema_is_replaced_with_the_active_generation() {
+        let (_temporary, controller, plane, scope) = harness();
+        let (manifest_bytes, manifest, bundle) =
+            generation_with_model("generation-b", "model@next-revision");
+        controller
+            .publish_from_reader(
+                &manifest_bytes,
+                &digest(&manifest_bytes),
+                bundle.as_slice(),
+                3,
+            )
+            .unwrap();
+        plane
+            .activate(
+                &scope,
+                &manifest.generation_id,
+                &ExpectedActiveGeneration::Generation("generation-a".to_string()),
+                4,
+            )
+            .unwrap();
+
+        let response = plane
+            .get_collection(authorized(
+                GetCollectionRequest {
+                    name: scope.collection,
+                },
+                &scope.workspace_id,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            response.collection.unwrap().embedding_model_id,
+            "model@next-revision"
+        );
     }
 }

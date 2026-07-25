@@ -174,6 +174,14 @@ pub struct GenerationServingConfig {
     pub download_path: String,
     #[serde(default = "default_generation_collection")]
     pub default_collection: String,
+    /// Path to the publication-control bearer token. This credential is
+    /// intentionally separate from the read data-plane token.
+    #[serde(default = "default_generation_control_token_file")]
+    pub control_token_file: String,
+    /// Optional explicit publication-control token. Prefer env/file in
+    /// production.
+    #[serde(default)]
+    pub control_token: Option<String>,
     /// Empty means only `storage.minio.bucket`.
     #[serde(default)]
     pub allowed_buckets: Vec<String>,
@@ -200,6 +208,8 @@ impl Default for GenerationServingConfig {
             control_rocksdb_path: default_generation_control_path(),
             download_path: default_generation_download_path(),
             default_collection: default_generation_collection(),
+            control_token_file: default_generation_control_token_file(),
+            control_token: None,
             allowed_buckets: Vec::new(),
             s3_region: default_s3_region(),
             require_version_or_digest_key: true,
@@ -225,6 +235,10 @@ fn default_generation_download_path() -> String {
 
 fn default_generation_collection() -> String {
     "default".to_string()
+}
+
+fn default_generation_control_token_file() -> String {
+    "./data/generation-control.token".to_string()
 }
 
 fn default_s3_region() -> String {

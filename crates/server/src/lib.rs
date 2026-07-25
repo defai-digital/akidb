@@ -215,6 +215,19 @@ async fn run_generation_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_generation_paths(config)?;
     let generation = &config.generation_serving;
+    let control_auth_runtime = AuthRuntime::bootstrap_generation_control(
+        akidb_common::config::AuthConfig {
+            mode: AuthMode::Required,
+            token_file: generation.control_token_file.clone(),
+            token: generation.control_token.clone(),
+            acl: config.auth.acl.clone(),
+        },
+        &addr.ip().to_string(),
+    )
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    if auth_runtime.token.is_some() && auth_runtime.token == control_auth_runtime.token {
+        return Err("generation-control token must differ from the read data-plane token".into());
+    }
     let generation_store = Arc::new(GenerationStore::open(&generation.generation_root)?);
     let materializer = Arc::new(GenerationMaterializer::new(
         generation_store,
@@ -250,7 +263,6 @@ async fn run_generation_server(
                 .max(1),
             acl: config.auth.acl.clone(),
             filter_settings: config.index.filter.clone(),
-            collections: collections.clone(),
             embedding_provider,
         },
     )?;
@@ -311,7 +323,7 @@ async fn run_generation_server(
         ))
         .add_service(GenerationManagementServer::with_interceptor(
             generation_management,
-            AuthInterceptor::new(auth_runtime.clone()),
+            AuthInterceptor::new(control_auth_runtime),
         ))
         .add_service(ManagementServiceServer::with_interceptor(
             management,

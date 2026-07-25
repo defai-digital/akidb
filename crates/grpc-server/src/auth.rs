@@ -38,6 +38,30 @@ pub struct AuthRuntime {
 impl AuthRuntime {
     /// Load or create a token according to config and bind address policy.
     pub fn bootstrap(config: AuthConfig, bind_host: &str) -> Result<Self, String> {
+        Self::bootstrap_with_source(config, bind_host, "AKIDB_AUTH_TOKEN", "AkiDB auth token")
+    }
+
+    /// Bootstrap the always-authenticated generation publication boundary
+    /// from a credential that is separate from the read data plane.
+    pub fn bootstrap_generation_control(
+        mut config: AuthConfig,
+        bind_host: &str,
+    ) -> Result<Self, String> {
+        config.mode = AuthMode::Required;
+        Self::bootstrap_with_source(
+            config,
+            bind_host,
+            "AKIDB_GENERATION_CONTROL_TOKEN",
+            "AkiDB generation-control token",
+        )
+    }
+
+    fn bootstrap_with_source(
+        config: AuthConfig,
+        bind_host: &str,
+        token_env: &str,
+        token_label: &str,
+    ) -> Result<Self, String> {
         let bind_is_loopback = is_loopback_host(bind_host);
         let required = match config.mode {
             AuthMode::Disabled => false,
@@ -55,7 +79,7 @@ impl AuthRuntime {
         let token = if matches!(config.mode, AuthMode::Disabled) {
             None
         } else {
-            Some(resolve_or_create_token(&config)?)
+            Some(resolve_or_create_token(&config, token_env, token_label)?)
         };
 
         if required && token.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
@@ -186,13 +210,17 @@ fn extract_bearer(metadata: &MetadataMap) -> Option<String> {
     }
 }
 
-fn resolve_or_create_token(config: &AuthConfig) -> Result<String, String> {
+fn resolve_or_create_token(
+    config: &AuthConfig,
+    token_env: &str,
+    token_label: &str,
+) -> Result<String, String> {
     if let Some(token) = config.token.as_ref().map(|t| t.trim().to_string()) {
         if !token.is_empty() {
             return Ok(token);
         }
     }
-    if let Ok(env) = std::env::var("AKIDB_AUTH_TOKEN") {
+    if let Ok(env) = std::env::var(token_env) {
         let env = env.trim().to_string();
         if !env.is_empty() {
             return Ok(env);
@@ -215,10 +243,11 @@ fn resolve_or_create_token(config: &AuthConfig) -> Result<String, String> {
     write_token_file(&path, &token)?;
     info!(
         path = %path.display(),
-        "generated new auth token file (store securely; also available as AKIDB_AUTH_TOKEN)"
+        env = token_env,
+        "generated new auth token file (store securely)"
     );
     // Print once for operator bootstrap (MCP/gRPC clients).
-    eprintln!("AkiDB auth token (save this): {token}");
+    eprintln!("{token_label} (save this): {token}");
     Ok(token)
 }
 
@@ -315,6 +344,22 @@ mod tests {
         let mut meta = MetadataMap::new();
         meta.insert(AUTH_HEADER, MetadataValue::from_static("Bearer wrong"));
         assert!(rt.authorize(&meta).is_err());
+    }
+
+    #[test]
+    fn generation_control_bootstrap_is_always_authenticated() {
+        let config = AuthConfig {
+            mode: AuthMode::Disabled,
+            token_file: "./unused-generation-control.token".into(),
+            token: Some("control-secret".to_string()),
+            acl: AclConfig::default(),
+        };
+        let runtime = AuthRuntime::bootstrap_generation_control(config, "127.0.0.1").unwrap();
+        assert!(runtime.token_required());
+        assert_eq!(
+            runtime.authorize(&MetadataMap::new()).unwrap_err().code(),
+            tonic::Code::Unauthenticated
+        );
     }
 
     #[test]
