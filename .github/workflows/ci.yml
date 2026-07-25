@@ -58,7 +58,7 @@ jobs:
       - name: Check (no default features)
         run: cargo check --workspace --no-default-features
 
-  # Unit tests on every supported operating-system and architecture target.
+  # Unit tests on the established Mac ARM64 path and Ubuntu AMD64 target.
   test:
     name: Test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
@@ -68,8 +68,6 @@ jobs:
         include:
           - name: Ubuntu 24.04 AMD64
             os: ubuntu-24.04
-          - name: Ubuntu 24.04 ARM64
-            os: ubuntu-24.04-arm
           - name: macOS 26 ARM64
             os: macos-26
     steps:

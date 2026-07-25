@@ -1,40 +1,35 @@
 # Platform Support
 
-AkiDB v0.10.0 supports a CPU-portable runtime on macOS 26 and Ubuntu 24.04 or
-newer. Platform support refers to the native Rust server, coordinator, CLI,
-TUI, and SDK interoperability. Container images and deployment automation have
-a narrower qualification matrix, documented separately below.
+AkiDB v0.10.0 supports a CPU-portable runtime on macOS 26 Apple Silicon.
+Ubuntu 24.04 or newer on AMD64 is an active qualification target. Passing CI
+or producing an artifact does not yet make it a production support claim.
 
 ## Runtime matrix
 
 | Operating system | Architecture | Rust target | Status | Notes |
 | --- | --- | --- | --- | --- |
 | macOS 26 | Apple Silicon ARM64 | `aarch64-apple-darwin` | Supported | M2 or newer. Primary local-development and private single-node path. |
-| Ubuntu 24.04+ | AMD64 | `x86_64-unknown-linux-gnu` | Supported | Native standalone, shard, coordinator, release archive, and qualified Ansible artifact path. |
-| Ubuntu 24.04+ | ARM64 | `aarch64-unknown-linux-gnu` | Supported | Native standalone, shard, and coordinator. Build from source or use the matching release archive. |
+| Ubuntu 24.04+ | AMD64 | `x86_64-unknown-linux-gnu` | Qualification preview | Native standalone, shard, coordinator, generation preview, and Ansible test path. |
 
-All three targets use the portable HNSW backend. CUDA, NVIDIA GPU,
+Both active paths use the portable HNSW backend. Linux ARM64, CUDA, NVIDIA GPU,
 Thor-specific acceleration, macOS Intel, Ubuntu older than 24.04, and other
-Linux distributions are outside the tested support matrix.
+Linux distributions are outside the active support matrix.
 
 ## Delivery and deployment matrix
 
-| Path | macOS 26 ARM64 | Ubuntu 24.04+ AMD64 | Ubuntu 24.04+ ARM64 |
-| --- | --- | --- | --- |
-| Source build and workspace tests | Supported | Supported | Supported |
-| GitHub release archive | Supported | Supported | Supported |
-| Standalone server | Supported | Supported | Supported |
-| Shard and coordinator binaries | Supported | Supported | Supported |
-| Immutable generation serving | Single-node preview | Single-node qualification preview | Not currently qualified |
-| Docker images | Development use only | Supported image architecture | Not currently published |
-| Checksum-pinned Ansible cluster artifact | Not applicable | Qualified | Not yet qualified |
-| Four-Mac Thunderbolt evidence tooling | Experimental | Not applicable | Not applicable |
+| Path | macOS 26 ARM64 | Ubuntu 24.04+ AMD64 |
+| --- | --- | --- |
+| Source build and workspace tests | Supported | Qualification gate |
+| GitHub release archive | Supported | Qualification artifact |
+| Standalone server | Supported | Qualification preview |
+| Shard and coordinator binaries | Evaluation | Evaluation |
+| Immutable generation serving | Single-node preview | Single-node qualification preview |
+| Docker images | Development use only | Qualification image architecture |
+| Checksum-pinned Ansible cluster artifact | Not applicable | Qualification only |
+| Four-Mac Thunderbolt evidence tooling | Experimental | Not applicable |
 
-The runtime being supported does not imply that every packaging, cluster, or
-preview path is supported on the same architecture. The current Docker,
-immutable Ansible artifact, and generation-serving qualification pipelines are
-AMD64-only. These preview and cluster rows do not claim replication, automatic
-failover, or production HA.
+The AMD64 rows are evidence-producing paths, not a statement that replication,
+automatic failover, or Linux production support is complete.
 
 ## macOS 26 on Apple Silicon
 
@@ -50,7 +45,7 @@ builds the unified `akidb` CLI. Optional local text embeddings can use
 `scripts/ax_engine_embedding_server.py` with native `ax-engine` model
 artifacts.
 
-## Ubuntu 24.04+ on AMD64 or ARM64
+## Ubuntu 24.04+ on AMD64
 
 Install the native build dependencies:
 
@@ -69,8 +64,8 @@ cargo test --workspace
 cargo build --release -p akidb-cli
 ```
 
-The same commands apply to `x86_64` and `aarch64` hosts. Use an
-OpenAI-compatible local embedding endpoint when `TextSearch` is enabled.
+Use an OpenAI-compatible local embedding endpoint when `TextSearch` is
+enabled. These commands are qualification steps until the AMD64 gates pass.
 
 ## Cluster qualification
 
@@ -87,18 +82,16 @@ The checked-in Ansible profile is therefore a qualification environment:
 - no public AkiDB bind;
 - `auth.mode=disabled` only inside the explicitly trusted overlay.
 
-See [`deploy/ansible/README.md`](../../deploy/ansible/README.md). ARM64 cluster
-automation remains unqualified even though the ARM64 server, shard, and
-coordinator runtime is supported.
+See [`deploy/ansible/README.md`](../../deploy/ansible/README.md).
 
 ## CI coverage
 
 GitHub Actions exercises:
 
 - workspace tests on macOS 26 ARM64;
-- workspace tests on Ubuntu 24.04 AMD64 and ARM64;
+- workspace tests on Ubuntu 24.04 AMD64;
 - the Apple Silicon build script on macOS 26;
-- release builds for all three native target triples;
+- release builds for macOS ARM64 and Ubuntu AMD64;
 - the immutable Linux cluster artifact on Ubuntu 24.04 AMD64;
 - the real-MinIO immutable generation-serving gate on Ubuntu 24.04 AMD64.
 
