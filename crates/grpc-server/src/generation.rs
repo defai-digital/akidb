@@ -21,9 +21,9 @@ use akidb_graph::{
 };
 use akidb_retrieval::Bm25Index;
 use akidb_storage::{
-    consume_knowledge_bundle_with_limits, GenerationLayoutError, GenerationStore, IdMapping,
-    KnowledgeBundleReadError, KnowledgeBundleReadLimits, PreparedGeneration, ReadyGeneration,
-    RocksDbBackend, StorageBackend,
+    consume_knowledge_bundle_with_limits, GenerationLayoutError, GenerationPrepareOutcome,
+    GenerationStore, IdMapping, KnowledgeBundleReadError, KnowledgeBundleReadLimits,
+    PreparedGeneration, ReadyGeneration, RocksDbBackend, StorageBackend,
 };
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -221,6 +221,17 @@ impl GenerationMaterializer {
         updated_at_ms: u64,
     ) -> Result<ReadyGeneration, GenerationMaterializerError> {
         self.validate_preconditions(prepared)?;
+        if prepared.outcome() == GenerationPrepareOutcome::AlreadyReady {
+            let ready = self.store.load_ready(
+                &prepared.manifest().scope(),
+                &prepared.manifest().generation_id,
+            )?;
+            // A READY marker is necessary but not sufficient for recovery.
+            // Reopen every durable projection before treating this retry as
+            // successful, then immediately release the verification runtime.
+            self.open_ready_generation(ready.clone())?;
+            return Ok(ready);
+        }
         self.store.mark_materializing(prepared, updated_at_ms)?;
         let result = self.materialize_inner(prepared, updated_at_ms);
         if let Err(error) = &result {
@@ -870,6 +881,28 @@ mod tests {
         assert_eq!(edge.properties["predicate"], "mentions_product");
         assert_eq!(edge.properties["assertion_state"], "extracted");
         assert_eq!(edge.properties["evidence_chunk_ids"][0], "chunk-a");
+    }
+
+    #[test]
+    fn ready_generation_retry_revalidates_without_rebuilding() {
+        let (_temporary, store, prepared) = prepare(MANIFEST.as_bytes());
+        let materializer =
+            GenerationMaterializer::new(store.clone(), GenerationMaterializerConfig::default());
+        let first = materializer
+            .install_and_materialize(&prepared, BUNDLE, 2)
+            .unwrap();
+
+        let retried = store
+            .prepare(MANIFEST.as_bytes(), &digest(MANIFEST.as_bytes()), 3)
+            .unwrap();
+        assert_eq!(retried.outcome(), GenerationPrepareOutcome::AlreadyReady);
+        let second = materializer
+            .install_and_materialize(&retried, std::io::empty(), 4)
+            .unwrap();
+
+        assert_eq!(second.marker, first.marker);
+        assert!(!retried.building_dir().exists());
+        assert!(retried.ready_dir().exists());
     }
 
     #[test]

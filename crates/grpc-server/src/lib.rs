@@ -10,6 +10,7 @@ pub mod auth;
 mod collections;
 mod filter;
 pub mod generation;
+pub mod generation_control;
 mod ingestion;
 mod management;
 pub mod mcp;
@@ -24,6 +25,9 @@ pub use collections::{CollectionMeta, CollectionRegistry, SharedCollectionRegist
 pub use generation::{
     GenerationMaterializer, GenerationMaterializerConfig, GenerationMaterializerError,
     ReadyGenerationRuntime,
+};
+pub use generation_control::{
+    ExpectedActiveGeneration, GenerationControlError, GenerationController, GenerationPublication,
 };
 pub use ingestion::IngestionServiceImpl;
 pub use management::{ManagementServiceImpl, ManagementState, StagedObject, StagingRegistry};
