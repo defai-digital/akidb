@@ -7,9 +7,9 @@ and context assembly in one Rust service. It is designed for local and
 on-premises RAG, agent memory, code intelligence, and other workloads where
 source data should stay under the operator's control.
 
-AkiDB v0.10.0 supports macOS 26 on Apple Silicon and Ubuntu 24.04 or newer on
-AMD64 and ARM64. The default runtime is CPU-portable; CUDA, NVIDIA GPU, and
-Thor-specific paths are not required.
+AkiDB v0.10.0 supports macOS 26 on Apple Silicon. Ubuntu 24.04 or newer on
+AMD64 is the active cloud qualification target, not yet a production support
+claim. Linux ARM64, CUDA, NVIDIA GPU, and Thor-specific paths are unsupported.
 
 > **Project status:** the standalone database is the primary supported
 > deployment. The multi-shard coordinator, ingestion stack, and Ansible
@@ -42,18 +42,13 @@ core retrieval path behind one API and one operational boundary:
 | Operating system | Architecture | Runtime status | Delivery path |
 | --- | --- | --- | --- |
 | macOS 26 | Apple Silicon (`arm64`, M2 or newer) | Supported | Release archive or source build |
-| Ubuntu 24.04+ | AMD64 (`x86_64`) | Supported | Release archive, source build, Docker, and qualified Ansible artifact workflow |
-| Ubuntu 24.04+ | ARM64 (`aarch64`) | Supported | Release archive or source build |
+| Ubuntu 24.04+ | AMD64 (`x86_64`) | Qualification preview | CI artifact, source build, Docker, and Ansible qualification workflow |
 
-All supported targets use the portable HNSW backend. A homogeneous operating
-system and architecture is recommended within a shard group. macOS Intel,
-older Ubuntu releases, CUDA/NVIDIA acceleration, and other Linux
-distributions are outside the tested support matrix.
-
-The Ubuntu ARM64 runtime is supported for standalone servers, coordinators, and
-shards. The checksum-pinned Ansible cluster artifact workflow remains qualified
-on AMD64; see [Platform Support](docs/platform/SUPPORT.md) for the exact
-runtime, CI, container, and deployment matrix.
+Both paths use the portable HNSW backend. macOS Intel, Linux ARM64, Ubuntu
+older than 24.04, CUDA/NVIDIA acceleration, and other Linux distributions are
+outside the active support matrix. See
+[Platform Support](docs/platform/SUPPORT.md) for the exact runtime, CI,
+container, and deployment gates.
 
 ## Architecture
 
@@ -141,7 +136,7 @@ xcode-select --install
 brew install cmake protobuf
 ```
 
-On Ubuntu 24.04 or newer, on either AMD64 or ARM64:
+For the Ubuntu 24.04-or-newer AMD64 qualification path:
 
 ```bash
 sudo apt-get update
@@ -359,8 +354,9 @@ akidb/
 - The storage crate includes WAL primitives, but the server write path does not
   yet use the configured WAL.
 - The native BM25 index is rebuilt in memory from persisted records.
-- The Docker image and checksum-pinned Ansible artifact pipeline are currently
-  AMD64-only even though the native Ubuntu runtime supports ARM64.
+- Ubuntu AMD64 release, Docker, and checksum-pinned Ansible artifacts remain
+  qualification paths until the documented platform and failure gates pass.
+- Linux ARM64, NVIDIA Thor, and CUDA builds are unsupported.
 - Four-Mac Thunderbolt validation tooling defines an experimental evidence
   path; it is not the primary product topology or a production-readiness claim.
 

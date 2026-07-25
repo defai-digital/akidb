@@ -41,6 +41,7 @@ generation_root = "/var/lib/akidb/generations"
 control_rocksdb_path = "/var/lib/akidb/generation-control"
 download_path = "/var/lib/akidb/generation-downloads"
 default_collection = "knowledge"
+control_token_file = "/etc/akidb/generation-control.token"
 allowed_buckets = ["ax-knowledge"]
 require_version_or_digest_key = true
 ```
@@ -53,6 +54,9 @@ The three local paths must be distinct and non-overlapping. Configure
 `storage.minio` for the fixed S3/MinIO endpoint and credentials. Use TLS for
 MinIO. Because this binary does not yet terminate gRPC TLS, expose its gRPC
 listener only through the existing private/WireGuard deployment boundary.
+`GenerationManagement` always requires its own bearer token from
+`AKIDB_GENERATION_CONTROL_TOKEN` or `control_token_file`; startup rejects reuse
+of the read data-plane token.
 
 ## Publication flow
 
@@ -86,7 +90,10 @@ cargo test -p akidb-grpc --lib
 cargo test -p akidb-server --lib
 cargo clippy -p akidb-grpc -p akidb-server --all-targets -- -D warnings
 cargo check --workspace
+./scripts/test-generation-serving-minio.sh
 ```
 
-An external MinIO test and kill/restart publication test are required before
-the single-node preview can be promoted.
+The final command starts an isolated pinned MinIO container, publishes two
+checksum-addressed bundles, verifies concurrent atomic cutover, restarts the
+real server process, checks generation evidence, rolls back, and compares the
+original results and citation context exactly.

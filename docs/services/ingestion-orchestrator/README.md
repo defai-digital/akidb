@@ -1,9 +1,10 @@
 # AkiDB Ingestion Orchestrator
 
 The Ingestion Orchestrator is a hybrid Rust/Python document-processing pipeline
-for AkiDB on macOS 26 Apple Silicon and Ubuntu 24.04+ AMD64 or ARM64. It
-processes documents uploaded to MinIO, extracts text, generates embeddings, and
-stores vectors in AkiDB.
+for AkiDB on macOS 26 Apple Silicon, with Ubuntu 24.04+ AMD64 as a
+qualification target. Linux ARM64 is unsupported. It processes documents
+uploaded to MinIO, extracts text, generates embeddings, and stores vectors in
+AkiDB.
 
 ## Architecture Overview
 

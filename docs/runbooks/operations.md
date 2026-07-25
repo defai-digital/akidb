@@ -2,11 +2,11 @@
 
 ## Supported Environment
 
-AkiDB is supported on macOS 26 Apple Silicon and Ubuntu 24.04+ on AMD64 and
-ARM64. Use the CPU-portable path for all builds and tests. Thor, CUDA, NVIDIA
-GPU, and Kubernetes production procedures are outside the active support
-scope. The checked-in Ansible cluster profile is qualified on Ubuntu AMD64;
-see `docs/platform/SUPPORT.md` for packaging-specific limits.
+AkiDB is supported on macOS 26 Apple Silicon. Ubuntu 24.04+ AMD64 is the active
+qualification target; it is not yet a production support claim. Linux ARM64,
+Thor, CUDA, NVIDIA GPU, and Kubernetes production procedures are outside the
+active support scope. The checked-in Ansible profile is an AMD64 qualification
+environment; see `docs/platform/SUPPORT.md` for the release gates.
 
 ## Native Build And Validation
 

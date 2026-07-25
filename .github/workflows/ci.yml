@@ -58,7 +58,7 @@ jobs:
       - name: Check (no default features)
         run: cargo check --workspace --no-default-features
 
-  # Unit tests on Mac and Linux
+  # Unit tests on the established Mac ARM64 path and Ubuntu AMD64 target.
   test:
     name: Test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
@@ -68,8 +68,6 @@ jobs:
         include:
           - name: Ubuntu 24.04 AMD64
             os: ubuntu-24.04
-          - name: Ubuntu 24.04 ARM64
-            os: ubuntu-24.04-arm
           - name: macOS 26 ARM64
             os: macos-26
     steps:
@@ -131,6 +129,44 @@ jobs:
 
       - name: Run Apple Silicon build script
         run: ./scripts/build-on-mac-arm64.sh
+
+  # Opt-in cloud path: real S3 protocol, immutable generation publication,
+  # atomic cutover, process restart, and rollback on Ubuntu 24.04 AMD64.
+  generation-serving-preview:
+    name: Generation Serving Preview (Ubuntu 24.04 AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            libclang-dev \
+            libssl-dev \
+            pkg-config \
+            protobuf-compiler
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python gRPC runtime
+        working-directory: sdks/python
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e .
+
+      - name: Run real MinIO generation gate
+        env:
+          CARGO_TARGET_DIR: target
+        run: ./scripts/test-generation-serving-minio.sh
 
   # Security audit
   security:

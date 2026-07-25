@@ -1,10 +1,10 @@
 # AkiDB Linux AMD64 Cluster Deployment
 
 This directory provides the reproducible qualification path for a four-node
-Ubuntu 24.04-or-newer AMD64 cluster. The native AkiDB runtime also supports
-macOS 26 Apple Silicon and Ubuntu 24.04+ ARM64, but this checksum-pinned
-cluster artifact and Ansible profile remain AMD64-specific until the test
-phases below pass on ARM64.
+Ubuntu 24.04-or-newer AMD64 cluster. macOS 26 Apple Silicon remains the
+supported runtime; Linux ARM64 is unsupported. This checksum-pinned cluster
+artifact and Ansible profile produce AMD64 qualification evidence and are not
+an HA or production-support claim.
 
 ## Design decision
 
@@ -220,7 +220,6 @@ high-concurrency saturation, not a functional requirement.
 
 - Linux AMD64 cluster release qualification
 - macOS 26 ARM64 regression qualification
-- Linux ARM64 cluster artifact and automation qualification
 - mixed-client compatibility and artifact provenance checks
 
 Exit criterion: only passing combinations are described as supported.
