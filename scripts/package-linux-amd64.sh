@@ -18,6 +18,7 @@ mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
 staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/akidb-package.XXXXXXXX")"
 trap 'rm -rf "$staging_dir"' EXIT
+chmod 0755 "$staging_dir"
 
 if [[ "${AKIDB_SKIP_BUILD:-0}" != "1" ]]; then
   cargo build --locked --release \

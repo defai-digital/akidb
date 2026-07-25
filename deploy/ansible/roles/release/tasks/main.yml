@@ -60,6 +60,14 @@
     group: root
   when: not akidb_release_marker.stat.exists
 
+- name: Enforce traversable immutable release directory
+  ansible.builtin.file:
+    path: "{{ akidb_install_root }}/releases/{{ akidb_release_id }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Inspect required release binaries
   ansible.builtin.stat:
     path: "{{ akidb_install_root }}/releases/{{ akidb_release_id }}/bin/{{ item }}"
@@ -75,6 +83,7 @@
     that:
       - item.stat.exists
       - item.stat.executable
+    quiet: true
   loop: "{{ akidb_release_binaries.results }}"
   loop_control:
     label: "{{ item.item }}"

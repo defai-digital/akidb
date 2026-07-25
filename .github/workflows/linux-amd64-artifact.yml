@@ -56,10 +56,12 @@ jobs:
           tar -tzf "akidb-linux-amd64-${GITHUB_SHA}.tar.gz"
           mkdir verify
           tar -xzf "akidb-linux-amd64-${GITHUB_SHA}.tar.gz" -C verify
+          test "$(stat -c '%a' verify)" = "755"
           verify/bin/akidb --version
           verify/bin/akidb-server --version
           verify/bin/akidb-coordinator --version
           verify/bin/akidb-bench --version
+          sudo -u nobody verify/bin/akidb-server --version
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
