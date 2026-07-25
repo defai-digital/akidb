@@ -5,6 +5,7 @@
 
 mod backend;
 pub mod generation_bundle;
+pub mod generation_layout;
 mod id_mapping;
 pub mod serving_state;
 pub mod snapshot;
@@ -15,6 +16,12 @@ pub use backend::{BatchOperation, RocksDbBackend, StorageBackend};
 pub use generation_bundle::{
     consume_knowledge_bundle, consume_knowledge_bundle_with_limits, KnowledgeBundleReadError,
     KnowledgeBundleReadLimits, KnowledgeBundleSummary,
+};
+pub use generation_layout::{
+    BundleInstallOutcome, GenerationBuildJournal, GenerationBuildPhase, GenerationLayoutError,
+    GenerationPointer, GenerationPointerSet, GenerationPrepareOutcome, GenerationStore,
+    MaterializationEvidence, PreparedGeneration, ReadyGeneration, ReadyGenerationMarker,
+    GENERATION_LAYOUT_SCHEMA_VERSION,
 };
 pub use id_mapping::{IdMapping, IdMappingEntry};
 pub use serving_state::{
