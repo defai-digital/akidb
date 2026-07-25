@@ -6,7 +6,7 @@
 //! enter the generation state machine.
 
 use crate::error::{ContractResult, ContractViolation, ContractViolationKind};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 
 /// Initial agentic-knowledge contract version.
@@ -79,7 +79,11 @@ pub struct KnowledgeGenerationManifest {
     pub workspace_id: String,
     pub collection: String,
     pub generation_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_value"
+    )]
     pub parent_generation_id: Option<String>,
     pub created_at_ms: u64,
     pub embedding_model_id: String,
@@ -165,7 +169,11 @@ pub struct KnowledgeMutation {
     pub sequence: u64,
     pub operation: KnowledgeOperation,
     pub chunk_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_value"
+    )]
     pub payload: Option<ImmutableObjectReference>,
     pub created_at_ms: u64,
 }
@@ -235,7 +243,11 @@ pub struct ReplicaCheckpoint {
     pub manifest_sha256: String,
     pub applied_sequence: u64,
     pub state: ReplicaState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_value"
+    )]
     pub last_error: Option<String>,
     pub updated_at_ms: u64,
 }
@@ -339,6 +351,13 @@ fn validate_sha256(field: &'static str, digest: &str) -> ContractResult<()> {
 
 fn validate_uri(uri: &str) -> ContractResult<()> {
     validate_nonempty_text("uri", uri, MAX_URI_BYTES)?;
+    if uri.chars().any(char::is_control) {
+        return Err(violation(
+            "uri",
+            "uri must not contain control characters",
+            ContractViolationKind::InvalidFormat,
+        ));
+    }
     let parsed = Url::parse(uri).map_err(|_| {
         violation(
             "uri",
@@ -364,6 +383,13 @@ fn validate_uri(uri: &str) -> ContractResult<()> {
         return Err(violation(
             "uri",
             "uri must not embed credentials",
+            ContractViolationKind::InvalidFormat,
+        ));
+    }
+    if parsed.fragment().is_some() {
+        return Err(violation(
+            "uri",
+            "uri must not include a fragment",
             ContractViolationKind::InvalidFormat,
         ));
     }
@@ -399,6 +425,14 @@ fn violation(
     kind: ContractViolationKind,
 ) -> ContractViolation {
     ContractViolation::new(field, message, kind)
+}
+
+fn deserialize_present_value<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 #[cfg(test)]
@@ -495,6 +529,22 @@ mod tests {
     }
 
     #[test]
+    fn explicit_null_optional_fields_are_rejected() {
+        let mut manifest: serde_json::Value = serde_json::from_str(VALID_MANIFEST).unwrap();
+        manifest["parent_generation_id"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<KnowledgeGenerationManifest>(manifest).is_err());
+
+        let mut mutation: serde_json::Value = serde_json::from_str(VALID_DELETE).unwrap();
+        mutation["payload"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<KnowledgeMutation>(mutation).is_err());
+
+        let mut checkpoint: serde_json::Value =
+            serde_json::from_str(VALID_READY_CHECKPOINT).unwrap();
+        checkpoint["last_error"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ReplicaCheckpoint>(checkpoint).is_err());
+    }
+
+    #[test]
     fn every_documented_manifest_boundary_is_enforced() {
         let valid: KnowledgeGenerationManifest = serde_json::from_str(VALID_MANIFEST).unwrap();
 
@@ -541,6 +591,10 @@ mod tests {
 
         let mut manifest = valid.clone();
         manifest.bundle.uri = "http://minio.internal/object".to_string();
+        assert_eq!(manifest.validate().unwrap_err().field, "uri");
+
+        let mut manifest = valid.clone();
+        manifest.bundle.uri = "https://example.com/object#fragment".to_string();
         assert_eq!(manifest.validate().unwrap_err().field, "uri");
 
         let mut manifest = valid;
