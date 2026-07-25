@@ -12,6 +12,10 @@ use url::Url;
 /// Initial agentic-knowledge contract version.
 pub const KNOWLEDGE_SCHEMA_VERSION: u32 = 1;
 
+/// Largest integer that all JSON consumers, including JavaScript, preserve
+/// without precision loss.
+pub const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
+
 const MAX_SCOPE_BYTES: usize = 255;
 const MAX_ID_BYTES: usize = 1_024;
 const MAX_MODEL_ID_BYTES: usize = 512;
@@ -62,6 +66,7 @@ impl ImmutableObjectReference {
                 ContractViolationKind::BelowMinimum,
             ));
         }
+        validate_safe_json_integer("size_bytes", self.size_bytes)?;
         Ok(())
     }
 }
@@ -125,6 +130,10 @@ impl KnowledgeGenerationManifest {
             MAX_GRAPH_SCHEMA_BYTES,
         )?;
         self.bundle.validate()?;
+        validate_safe_json_integer("base_sequence", self.base_sequence)?;
+        validate_safe_json_integer("target_sequence", self.target_sequence)?;
+        validate_safe_json_integer("expected_vector_count", self.expected_vector_count)?;
+        validate_safe_json_integer("expected_edge_count", self.expected_edge_count)?;
         if self.target_sequence < self.base_sequence {
             return Err(violation(
                 "target_sequence",
@@ -179,6 +188,7 @@ impl KnowledgeMutation {
                 ContractViolationKind::BelowMinimum,
             ));
         }
+        validate_safe_json_integer("sequence", self.sequence)?;
         validate_timestamp("created_at_ms", self.created_at_ms)?;
 
         match (self.operation, &self.payload) {
@@ -241,6 +251,7 @@ impl ReplicaCheckpoint {
         validate_identifier("replica_id", &self.replica_id, MAX_ID_BYTES)?;
         validate_identifier("generation_id", &self.generation_id, MAX_ID_BYTES)?;
         validate_sha256("manifest_sha256", &self.manifest_sha256)?;
+        validate_safe_json_integer("applied_sequence", self.applied_sequence)?;
         validate_timestamp("updated_at_ms", self.updated_at_ms)?;
 
         match (&self.state, &self.last_error) {
@@ -367,6 +378,18 @@ fn validate_timestamp(field: &'static str, timestamp_ms: u64) -> ContractResult<
             ContractViolationKind::BelowMinimum,
         ));
     }
+    validate_safe_json_integer(field, timestamp_ms)?;
+    Ok(())
+}
+
+fn validate_safe_json_integer(field: &'static str, value: u64) -> ContractResult<()> {
+    if value > MAX_SAFE_JSON_INTEGER {
+        return Err(violation(
+            field,
+            format!("{field} must not exceed the JSON safe integer maximum"),
+            ContractViolationKind::ExceedsMaximum,
+        ));
+    }
     Ok(())
 }
 
@@ -434,6 +457,12 @@ mod tests {
         ))
         .unwrap();
         assert!(reversed_range.validate().is_err());
+
+        let unsafe_integer: KnowledgeGenerationManifest = serde_json::from_str(include_str!(
+            "../../../contracts/fixtures/knowledge/v1/invalid/generation-unsafe-integer.json"
+        ))
+        .unwrap();
+        assert!(unsafe_integer.validate().is_err());
 
         let missing_payload: KnowledgeMutation = serde_json::from_str(include_str!(
             "../../../contracts/fixtures/knowledge/v1/invalid/upsert-missing-payload.json"
@@ -517,6 +546,11 @@ mod tests {
         let mut manifest = valid;
         manifest.bundle.size_bytes = 0;
         assert_eq!(manifest.validate().unwrap_err().field, "size_bytes");
+
+        let mut manifest: KnowledgeGenerationManifest =
+            serde_json::from_str(VALID_MANIFEST).unwrap();
+        manifest.target_sequence = MAX_SAFE_JSON_INTEGER + 1;
+        assert_eq!(manifest.validate().unwrap_err().field, "target_sequence");
     }
 
     #[test]
@@ -539,6 +573,11 @@ mod tests {
             serde_json::from_str(VALID_READY_CHECKPOINT).unwrap();
         checkpoint.updated_at_ms = 0;
         assert_eq!(checkpoint.validate().unwrap_err().field, "updated_at_ms");
+
+        let mut checkpoint: ReplicaCheckpoint =
+            serde_json::from_str(VALID_READY_CHECKPOINT).unwrap();
+        checkpoint.applied_sequence = MAX_SAFE_JSON_INTEGER + 1;
+        assert_eq!(checkpoint.validate().unwrap_err().field, "applied_sequence");
     }
 
     fn assert_json_round_trip<T>(value: &T, source: &str)
@@ -583,6 +622,18 @@ mod proptests {
             manifest.base_sequence = base;
             manifest.target_sequence = target;
             prop_assert!(manifest.validate().is_err());
+        }
+
+        #[test]
+        fn json_integer_boundaries_are_portable(value in 0u64..=MAX_SAFE_JSON_INTEGER) {
+            prop_assert!(validate_safe_json_integer("value", value).is_ok());
+        }
+
+        #[test]
+        fn nonportable_json_integers_are_rejected(
+            value in (MAX_SAFE_JSON_INTEGER + 1)..=u64::MAX,
+        ) {
+            prop_assert!(validate_safe_json_integer("value", value).is_err());
         }
     }
 }

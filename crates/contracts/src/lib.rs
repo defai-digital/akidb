@@ -35,5 +35,6 @@ pub use error::{ContractViolation, ContractViolationKind};
 pub use knowledge::{
     ImmutableObjectReference, KnowledgeGenerationManifest, KnowledgeMutation, KnowledgeOperation,
     KnowledgeScope, ReplicaCheckpoint, ReplicaState, KNOWLEDGE_SCHEMA_VERSION,
+    MAX_SAFE_JSON_INTEGER,
 };
 pub use wal::WalContract;

@@ -7,7 +7,7 @@
 use crate::{AkiDbError, BatchOperation, StorageBackend};
 use akidb_contracts::{
     ContractViolation, KnowledgeGenerationManifest, KnowledgeMutation, KnowledgeScope,
-    ReplicaCheckpoint, ReplicaState, KNOWLEDGE_SCHEMA_VERSION,
+    ReplicaCheckpoint, ReplicaState, KNOWLEDGE_SCHEMA_VERSION, MAX_SAFE_JSON_INTEGER,
 };
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -102,6 +102,9 @@ pub enum ServingStateError {
 
     #[error("{field} must be greater than zero")]
     InvalidTimestamp { field: &'static str },
+
+    #[error("{field} must not exceed the JSON safe integer maximum")]
+    NonPortableInteger { field: &'static str },
 
     #[error("no serving state exists for {workspace_id}/{collection}")]
     StateNotFound {
@@ -891,6 +894,9 @@ where
 fn validate_timestamp(field: &'static str, value: u64) -> ServingStateResult<()> {
     if value == 0 {
         return Err(ServingStateError::InvalidTimestamp { field });
+    }
+    if value > MAX_SAFE_JSON_INTEGER {
+        return Err(ServingStateError::NonPortableInteger { field });
     }
     Ok(())
 }
