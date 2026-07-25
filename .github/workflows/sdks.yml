@@ -40,6 +40,14 @@ jobs:
       - name: Proto drift check
         run: ./sdks/check-proto-drift.sh
 
+      - name: Python generated binding drift check
+        run: |
+          python -m venv "$RUNNER_TEMP/akidb-proto-codegen"
+          "$RUNNER_TEMP/akidb-proto-codegen/bin/pip" install \
+            -r sdks/python/codegen-requirements.txt
+          AKIDB_PROTO_PYTHON="$RUNNER_TEMP/akidb-proto-codegen/bin/python" \
+            ./sdks/python/generate-proto.sh --check
+
       - name: Build server
         run: cargo build -p akidb-cli
 

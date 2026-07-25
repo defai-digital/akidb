@@ -80,12 +80,15 @@ constructor options on both `AkiDBClient` and `AsyncAkiDBClient`.
 ## Regenerating gRPC stubs / proto drift
 
 The committed `akidb/akidb_pb2*.py` are generated from the vendored
-`proto/akidb.proto` (a copy of `crates/proto/proto/akidb.proto`):
+`proto/akidb.proto` (a copy of `crates/proto/proto/akidb.proto`). Use the
+isolated, pinned codegen toolchain so generated files do not accidentally raise
+the SDK's runtime minimum:
 
 ```bash
-python -m grpc_tools.protoc -I proto \
-  --python_out=akidb --grpc_python_out=akidb proto/akidb.proto
-# then make the grpc import relative: `from . import akidb_pb2 as akidb__pb2`
+python -m venv .codegen-venv
+.codegen-venv/bin/pip install -r codegen-requirements.txt
+AKIDB_PROTO_PYTHON=.codegen-venv/bin/python ./generate-proto.sh
+AKIDB_PROTO_PYTHON=.codegen-venv/bin/python ./generate-proto.sh --check
 ```
 
 `../check-proto-drift.sh` (and `test_proto_drift.py`) fail if the vendored proto

@@ -1,0 +1,4 @@
+# Deliberately isolated from the SDK runtime dependencies. This pinned
+# toolchain emits bindings compatible with grpcio>=1.62 and protobuf>=5.29.
+grpcio-tools==1.62.3
+protobuf==4.25.9
