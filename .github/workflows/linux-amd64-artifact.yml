@@ -62,6 +62,7 @@ jobs:
           verify/bin/akidb-coordinator --version
           verify/bin/akidb-bench --version
           sudo -u nobody verify/bin/akidb-server --version
+          grep -F '"akidb_server_features": ["generation-s3"]' verify/manifest.json
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2

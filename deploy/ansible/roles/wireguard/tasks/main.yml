@@ -17,6 +17,14 @@
     update_cache: true
     cache_valid_time: 3600
 
+- name: Install UFW
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: akidb_manage_ufw | bool
+
 - name: Create WireGuard configuration directory
   ansible.builtin.file:
     path: /etc/wireguard
@@ -70,6 +78,43 @@
 - name: Publish WireGuard public key to peer hostvars
   ansible.builtin.set_fact:
     akidb_wireguard_public_key: "{{ akidb_wireguard_public_key_result.stdout | trim }}"
+
+- name: Allow SSH before enabling UFW
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - "{{ akidb_ssh_port | string }}/tcp"
+      - comment
+      - AkiDB administration
+  register: akidb_ufw_ssh_rule
+  changed_when: "'Rule added' in akidb_ufw_ssh_rule.stdout"
+  when: akidb_manage_ufw | bool
+
+- name: Read firewall policy before reconciliation
+  ansible.builtin.command:
+    argv: [ufw, status, verbose]
+  changed_when: false
+  register: akidb_ufw_status_before
+  when: akidb_manage_ufw | bool
+
+- name: Set default incoming firewall policy
+  ansible.builtin.command:
+    argv: [ufw, default, deny, incoming]
+  register: akidb_ufw_default_incoming
+  changed_when: true
+  when:
+    - akidb_manage_ufw | bool
+    - "'Default: deny (incoming)' not in akidb_ufw_status_before.stdout"
+
+- name: Set default outgoing firewall policy
+  ansible.builtin.command:
+    argv: [ufw, default, allow, outgoing]
+  register: akidb_ufw_default_outgoing
+  changed_when: true
+  when:
+    - akidb_manage_ufw | bool
+    - "'allow (outgoing)' not in akidb_ufw_status_before.stdout"
 
 - name: Allow WireGuard only from declared peers
   ansible.builtin.command:
@@ -157,6 +202,23 @@
   when:
     - akidb_manage_ufw | bool
     - inventory_hostname in groups['akidb_coordinators']
+
+- name: Enable UFW after administration and overlay rules exist
+  ansible.builtin.command:
+    argv: [ufw, --force, enable]
+  register: akidb_ufw_enable
+  changed_when: true
+  when:
+    - akidb_manage_ufw | bool
+    - "'Status: active' not in akidb_ufw_status_before.stdout"
+
+- name: Require an active firewall
+  ansible.builtin.command:
+    argv: [ufw, status]
+  changed_when: false
+  register: akidb_ufw_status
+  failed_when: "'Status: active' not in akidb_ufw_status.stdout"
+  when: akidb_manage_ufw | bool
 
 - name: Wait for every overlay peer
   ansible.builtin.command:

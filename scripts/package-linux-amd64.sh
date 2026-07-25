@@ -22,10 +22,12 @@ chmod 0755 "$staging_dir"
 
 if [[ "${AKIDB_SKIP_BUILD:-0}" != "1" ]]; then
   cargo build --locked --release \
-    -p akidb-server \
     -p akidb-coordinator \
     -p akidb-cli \
     -p akidb-benchmark
+  cargo build --locked --release \
+    -p akidb-server \
+    --features generation-s3
 fi
 
 install -d "$staging_dir/bin"
@@ -43,6 +45,7 @@ printf '%s\n' \
   "  \"release_id\": \"$release_id\"," \
   "  \"version\": \"$cargo_version\"," \
   '  "target": "x86_64-unknown-linux-gnu",' \
+  '  "akidb_server_features": ["generation-s3"],' \
   "  \"source_date_epoch\": $source_epoch" \
   '}' >"$staging_dir/manifest.json"
 

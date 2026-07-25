@@ -32,6 +32,7 @@ akidb_wireguard_interface: wg0
 akidb_wireguard_port: 51820
 akidb_manage_wireguard: true
 akidb_manage_ufw: true
+akidb_ssh_port: 22
 
 akidb_index_type: HNSW
 akidb_hnsw_m: 16

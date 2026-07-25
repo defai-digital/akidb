@@ -26,7 +26,7 @@ use hyper::{Method, Request as HyperRequest, Response as HyperResponse};
 use hyper_util::rt::TokioIo;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
@@ -61,6 +61,10 @@ pub struct Args {
     /// Metrics HTTP port (0 to disable)
     #[arg(short = 'm', long, default_value = "9090")]
     pub metrics_port: u16,
+
+    /// Metrics HTTP bind address
+    #[arg(long, default_value = "127.0.0.1")]
+    pub metrics_host: IpAddr,
 
     /// Maximum concurrent requests (backpressure)
     #[arg(long, default_value = "1000")]
@@ -980,7 +984,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Start metrics HTTP server if enabled
     if args.metrics_port > 0 {
-        let metrics_addr: SocketAddr = format!("0.0.0.0:{}", args.metrics_port).parse()?;
+        let metrics_addr = SocketAddr::new(args.metrics_host, args.metrics_port);
         info!("Starting metrics server on {}", metrics_addr);
 
         tokio::spawn(async move {

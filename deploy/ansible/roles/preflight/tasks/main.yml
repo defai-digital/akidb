@@ -59,22 +59,3 @@
       - akidb_auth_mode == 'disabled' or akidb_auth_token | length >= 24
     fail_msg: "Provide AKIDB_AUTH_TOKEN (at least 24 characters)."
   no_log: "{{ akidb_auth_mode != 'disabled' }}"
-
-- name: Read WireGuard interface
-  ansible.builtin.command:
-    argv:
-      - ip
-      - -4
-      - address
-      - show
-      - dev
-      - "{{ akidb_wireguard_interface }}"
-  changed_when: false
-  register: akidb_wireguard_address
-  when: akidb_manage_wireguard | bool
-
-- name: Require expected overlay address
-  ansible.builtin.assert:
-    that:
-      - akidb_overlay_address in akidb_wireguard_address.stdout
-  when: akidb_manage_wireguard | bool

@@ -1,10 +1,10 @@
 # AkiDB Linux AMD64 Cluster Deployment
 
 This directory provides the reproducible qualification path for a four-node
-Ubuntu 24.04-or-newer AMD64 cluster. The native AkiDB runtime also supports
-macOS 26 Apple Silicon and Ubuntu 24.04+ ARM64, but this checksum-pinned
-cluster artifact and Ansible profile remain AMD64-specific. They produce
-qualification evidence and are not an HA or production-support claim.
+Ubuntu 24.04-or-newer AMD64 cluster. macOS 26 Apple Silicon remains the
+supported runtime; Linux ARM64 is unsupported. This checksum-pinned cluster
+artifact and Ansible profile produce AMD64 qualification evidence and are not
+an HA or production-support claim.
 
 ## Design decision
 
@@ -97,7 +97,10 @@ akidb-linux-amd64-<git-sha>.tar.gz.sha256
 ```
 
 The archive contains `akidb`, `akidb-server`, `akidb-coordinator`,
-`akidb-bench`, and a build manifest. GitHub attaches a provenance attestation.
+`akidb-bench`, and a build manifest. The Linux AMD64 server is compiled with
+the optional `generation-s3` control surface; it remains disabled at runtime
+unless generation serving is explicitly configured. GitHub attaches a
+provenance attestation.
 
 Download a completed CI artifact:
 
@@ -123,16 +126,16 @@ committed inventory.
 
 Run from `deploy/ansible`.
 
-Bootstrap or reconcile the private overlay:
-
-```bash
-ansible-playbook playbooks/network.yml
-```
-
-Run non-mutating capacity and security gates:
+Run the non-mutating host capacity and security gates first:
 
 ```bash
 ansible-playbook playbooks/preflight.yml
+```
+
+Bootstrap or reconcile the private overlay only after preflight passes:
+
+```bash
+ansible-playbook playbooks/network.yml
 ```
 
 Stage one artifact everywhere and perform a rolling deployment:
@@ -219,7 +222,6 @@ high-concurrency saturation, not a functional requirement.
 ### Phase 4 — platform matrix
 
 - Linux AMD64 cluster release qualification
-- Linux ARM64 cluster artifact and automation qualification
 - macOS 26 ARM64 regression qualification
 - mixed-client compatibility and artifact provenance checks
 
