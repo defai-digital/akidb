@@ -995,7 +995,10 @@ fn push_component(key: &mut Vec<u8>, value: &[u8]) {
 mod tests {
     use super::*;
     use crate::{Result as StorageResult, RocksDbBackend};
-    use akidb_contracts::{ImmutableObjectReference, KnowledgeOperation};
+    use akidb_contracts::{
+        ImmutableObjectReference, KnowledgeBundleCompression, KnowledgeBundleFormat,
+        KnowledgeOperation,
+    };
     use proptest::prelude::*;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1096,8 +1099,10 @@ mod tests {
             embedding_model_id: "model@revision".to_string(),
             embedding_dimensions: 768,
             graph_schema_version: "ax.knowledge-graph.v1".to_string(),
+            bundle_format: KnowledgeBundleFormat::NdjsonV1,
+            bundle_compression: KnowledgeBundleCompression::None,
             bundle: ImmutableObjectReference {
-                uri: format!("s3://knowledge/generations/{generation_id}/bundle.tar.zst"),
+                uri: format!("s3://knowledge/generations/{generation_id}/bundle.ndjson"),
                 sha256: DIGEST_A.to_string(),
                 size_bytes: 4_096,
             },

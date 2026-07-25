@@ -16,13 +16,13 @@ pub const KNOWLEDGE_SCHEMA_VERSION: u32 = 1;
 /// without precision loss.
 pub const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
-const MAX_SCOPE_BYTES: usize = 255;
-const MAX_ID_BYTES: usize = 1_024;
-const MAX_MODEL_ID_BYTES: usize = 512;
-const MAX_GRAPH_SCHEMA_BYTES: usize = 512;
+pub(crate) const MAX_SCOPE_BYTES: usize = 255;
+pub(crate) const MAX_ID_BYTES: usize = 1_024;
+pub(crate) const MAX_MODEL_ID_BYTES: usize = 512;
+pub(crate) const MAX_GRAPH_SCHEMA_BYTES: usize = 512;
 const MAX_URI_BYTES: usize = 4_096;
 const MAX_FAILURE_BYTES: usize = 16_384;
-const MAX_EMBEDDING_DIMENSIONS: u32 = 16_384;
+pub(crate) const MAX_EMBEDDING_DIMENSIONS: u32 = 16_384;
 
 /// A workspace/collection stream is the unit of ordering and activation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -71,6 +71,24 @@ impl ImmutableObjectReference {
     }
 }
 
+/// Logical wire format of a rebuildable generation bundle.
+///
+/// The format contains records and graph projections, never engine-specific
+/// RocksDB or HNSW files. Each replica rebuilds its local indexes from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeBundleFormat {
+    NdjsonV1,
+}
+
+/// Optional whole-stream compression for a generation bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeBundleCompression {
+    None,
+    Zstd,
+}
+
 /// Immutable description of one rebuildable knowledge generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +107,8 @@ pub struct KnowledgeGenerationManifest {
     pub embedding_model_id: String,
     pub embedding_dimensions: u32,
     pub graph_schema_version: String,
+    pub bundle_format: KnowledgeBundleFormat,
+    pub bundle_compression: KnowledgeBundleCompression,
     pub bundle: ImmutableObjectReference,
     pub base_sequence: u64,
     pub target_sequence: u64,
@@ -290,7 +310,7 @@ impl ReplicaCheckpoint {
     }
 }
 
-fn validate_schema_version(version: u32) -> ContractResult<()> {
+pub(crate) fn validate_schema_version(version: u32) -> ContractResult<()> {
     if version != KNOWLEDGE_SCHEMA_VERSION {
         return Err(violation(
             "schema_version",
@@ -301,7 +321,11 @@ fn validate_schema_version(version: u32) -> ContractResult<()> {
     Ok(())
 }
 
-fn validate_identifier(field: &'static str, value: &str, maximum: usize) -> ContractResult<()> {
+pub(crate) fn validate_identifier(
+    field: &'static str,
+    value: &str,
+    maximum: usize,
+) -> ContractResult<()> {
     validate_nonempty_text(field, value, maximum)?;
     if value.chars().any(char::is_control) {
         return Err(violation(
@@ -313,7 +337,11 @@ fn validate_identifier(field: &'static str, value: &str, maximum: usize) -> Cont
     Ok(())
 }
 
-fn validate_nonempty_text(field: &'static str, value: &str, maximum: usize) -> ContractResult<()> {
+pub(crate) fn validate_nonempty_text(
+    field: &'static str,
+    value: &str,
+    maximum: usize,
+) -> ContractResult<()> {
     if value.trim().is_empty() {
         return Err(ContractViolation::empty(field));
     }
@@ -334,7 +362,7 @@ fn validate_nonempty_text(field: &'static str, value: &str, maximum: usize) -> C
     Ok(())
 }
 
-fn validate_sha256(field: &'static str, digest: &str) -> ContractResult<()> {
+pub(crate) fn validate_sha256(field: &'static str, digest: &str) -> ContractResult<()> {
     if digest.len() != 64
         || !digest
             .bytes()
@@ -396,7 +424,7 @@ fn validate_uri(uri: &str) -> ContractResult<()> {
     Ok(())
 }
 
-fn validate_timestamp(field: &'static str, timestamp_ms: u64) -> ContractResult<()> {
+pub(crate) fn validate_timestamp(field: &'static str, timestamp_ms: u64) -> ContractResult<()> {
     if timestamp_ms == 0 {
         return Err(violation(
             field,
@@ -408,7 +436,7 @@ fn validate_timestamp(field: &'static str, timestamp_ms: u64) -> ContractResult<
     Ok(())
 }
 
-fn validate_safe_json_integer(field: &'static str, value: u64) -> ContractResult<()> {
+pub(crate) fn validate_safe_json_integer(field: &'static str, value: u64) -> ContractResult<()> {
     if value > MAX_SAFE_JSON_INTEGER {
         return Err(violation(
             field,
@@ -419,7 +447,7 @@ fn validate_safe_json_integer(field: &'static str, value: u64) -> ContractResult
     Ok(())
 }
 
-fn violation(
+pub(crate) fn violation(
     field: &'static str,
     message: impl Into<String>,
     kind: ContractViolationKind,
@@ -427,7 +455,7 @@ fn violation(
     ContractViolation::new(field, message, kind)
 }
 
-fn deserialize_present_value<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn deserialize_present_value<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,

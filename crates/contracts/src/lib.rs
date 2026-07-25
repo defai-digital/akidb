@@ -28,13 +28,18 @@
 pub mod collection_key;
 pub mod error;
 pub mod knowledge;
+pub mod knowledge_bundle;
 pub mod wal;
 
 pub use collection_key::CollectionKey;
 pub use error::{ContractViolation, ContractViolationKind};
 pub use knowledge::{
-    ImmutableObjectReference, KnowledgeGenerationManifest, KnowledgeMutation, KnowledgeOperation,
-    KnowledgeScope, ReplicaCheckpoint, ReplicaState, KNOWLEDGE_SCHEMA_VERSION,
-    MAX_SAFE_JSON_INTEGER,
+    ImmutableObjectReference, KnowledgeBundleCompression, KnowledgeBundleFormat,
+    KnowledgeGenerationManifest, KnowledgeMutation, KnowledgeOperation, KnowledgeScope,
+    ReplicaCheckpoint, ReplicaState, KNOWLEDGE_SCHEMA_VERSION, MAX_SAFE_JSON_INTEGER,
+};
+pub use knowledge_bundle::{
+    KnowledgeAssertionState, KnowledgeBundleEdge, KnowledgeBundleEntry, KnowledgeBundleHeader,
+    KnowledgeBundleNode, KnowledgeBundleRecord, KnowledgeEdgeKind, KnowledgeNodeKind,
 };
 pub use wal::WalContract;

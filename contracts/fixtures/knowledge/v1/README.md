@@ -1,12 +1,18 @@
 # Agentic Knowledge Contract Fixtures
 
-These JSON documents are the portable, versioned contract examples for
-generation publication, ordered mutation replay, and replica checkpoints.
+These JSON and NDJSON documents are the portable, versioned contract examples
+for generation publication, ordered mutation replay, replica checkpoints, and
+logical generation bundles.
 
 - `valid/` fixtures must deserialize, validate, and round-trip without semantic
   changes.
 - `invalid/` fixtures deserialize successfully but must fail contract
   validation.
+
+`valid/bundle.ndjson` is the byte-stable logical bundle fixture. Its first line
+is a header, followed by strictly ID-sorted records, nodes, and edges. The
+matching `bundle-manifest.json` pins its byte length and SHA-256. Bundles never
+contain engine-specific RocksDB or HNSW directories.
 
 Changing an existing fixture is a compatibility change. Add a new version
 directory when a future schema is not backward compatible.

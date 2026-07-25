@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "workspace_id": "workspace-a",
+  "collection": "knowledge",
+  "generation_id": "generation-bundle-fixture",
+  "created_at_ms": 1784995200000,
+  "embedding_model_id": "model@revision",
+  "embedding_dimensions": 3,
+  "graph_schema_version": "ax.knowledge-graph.v1",
+  "bundle_format": "ndjson_v1",
+  "bundle_compression": "none",
+  "bundle": {
+    "uri": "s3://knowledge/generations/generation-bundle-fixture/bundle.ndjson",
+    "sha256": "eca7eb8d89d211cc96705fb76aa29d83de7cc49fb2029b65d495738061e42988",
+    "size_bytes": 1323
+  },
+  "base_sequence": 10,
+  "target_sequence": 10,
+  "expected_vector_count": 1,
+  "expected_edge_count": 1
+}
