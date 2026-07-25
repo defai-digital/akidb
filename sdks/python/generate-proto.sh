@@ -14,8 +14,8 @@ fi
 from importlib.metadata import version
 
 expected = {
-    "grpcio-tools": "1.62.3",
-    "protobuf": "4.25.9",
+    "grpcio-tools": "1.68.1",
+    "protobuf": "5.29.6",
 }
 actual = {package: version(package) for package in expected}
 if actual != expected:
