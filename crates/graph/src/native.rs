@@ -544,18 +544,9 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
 
     fn stats(&self) -> GraphResult<GraphStats> {
         Ok(GraphStats {
-            nodes: self
-                .storage
-                .scan_prefix_limited(keys::node_prefix(), None)?
-                .len() as u64,
-            edges: self
-                .storage
-                .scan_prefix_limited(keys::edge_prefix(), None)?
-                .len() as u64,
-            chunk_links: self
-                .storage
-                .scan_prefix_limited(keys::chunk_all_prefix(), None)?
-                .len() as u64,
+            nodes: self.storage.count_prefix(keys::node_prefix())?,
+            edges: self.storage.count_prefix(keys::edge_prefix())?,
+            chunk_links: self.storage.count_prefix(keys::chunk_all_prefix())?,
         })
     }
 }

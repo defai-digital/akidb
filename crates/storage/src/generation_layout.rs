@@ -222,6 +222,16 @@ impl PreparedGeneration {
     pub fn ready_dir(&self) -> &Path {
         &self.paths.ready_dir
     }
+
+    /// Verified immutable object installed for this shadow build.
+    pub fn bundle_path(&self) -> PathBuf {
+        self.paths.building_dir.join(BUNDLE_FILE)
+    }
+
+    /// Generation-local RocksDB used for payload, text, and graph projections.
+    pub fn rocksdb_dir(&self) -> PathBuf {
+        self.paths.building_dir.join("rocksdb")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -229,6 +239,16 @@ pub struct ReadyGeneration {
     pub manifest: KnowledgeGenerationManifest,
     pub marker: ReadyGenerationMarker,
     pub directory: PathBuf,
+}
+
+impl ReadyGeneration {
+    pub fn bundle_path(&self) -> PathBuf {
+        self.directory.join(BUNDLE_FILE)
+    }
+
+    pub fn rocksdb_dir(&self) -> PathBuf {
+        self.directory.join("rocksdb")
+    }
 }
 
 /// Serializes physical transitions within one process. Multi-replica ordering

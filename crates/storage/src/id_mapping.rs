@@ -243,6 +243,18 @@ impl<S: StorageBackend> IdMapping<S> {
         Ok(out)
     }
 
+    /// Count durable vector payload entries without loading their values.
+    pub fn stored_vector_count(&self) -> Result<u64> {
+        self.storage
+            .count_prefix(&self.make_collection_prefix(VECTOR_PREFIX))
+    }
+
+    /// Count durable source-text entries without loading their values.
+    pub fn stored_text_count(&self) -> Result<u64> {
+        self.storage
+            .count_prefix(&self.make_collection_prefix(TEXT_PREFIX))
+    }
+
     fn serialize_mapping(entry: &IdMappingEntry) -> Result<Vec<u8>> {
         bincode::serialize(entry).map_err(|e| AkiDbError::SerializationError(e.to_string()))
     }
@@ -590,19 +602,26 @@ mod tests {
         let storage = create_test_storage();
         let mapping = IdMapping::new(storage, "test_collection");
 
-        mapping.store_text(&VectorId::new("a"), "the quick brown fox").unwrap();
+        mapping
+            .store_text(&VectorId::new("a"), "the quick brown fox")
+            .unwrap();
         mapping.store_text(&VectorId::new("b"), "lazy dog").unwrap();
 
         let mut texts = mapping.load_all_texts().unwrap();
         texts.sort_by(|x, y| x.0.as_str().cmp(y.0.as_str()));
         assert_eq!(texts.len(), 2);
-        assert_eq!(texts[0], (VectorId::new("a"), "the quick brown fox".to_string()));
+        assert_eq!(mapping.stored_text_count().unwrap(), 2);
+        assert_eq!(
+            texts[0],
+            (VectorId::new("a"), "the quick brown fox".to_string())
+        );
         assert_eq!(texts[1], (VectorId::new("b"), "lazy dog".to_string()));
 
         // Delete removes it from the loaded set.
         mapping.delete_text(&VectorId::new("a")).unwrap();
         let after = mapping.load_all_texts().unwrap();
         assert_eq!(after, vec![(VectorId::new("b"), "lazy dog".to_string())]);
+        assert_eq!(mapping.stored_text_count().unwrap(), 1);
     }
 
     #[test]
@@ -612,8 +631,14 @@ mod tests {
         let c2 = IdMapping::new(storage, "c2");
         c1.store_text(&VectorId::new("x"), "in c1").unwrap();
         c2.store_text(&VectorId::new("x"), "in c2").unwrap();
-        assert_eq!(c1.load_all_texts().unwrap(), vec![(VectorId::new("x"), "in c1".to_string())]);
-        assert_eq!(c2.load_all_texts().unwrap(), vec![(VectorId::new("x"), "in c2".to_string())]);
+        assert_eq!(
+            c1.load_all_texts().unwrap(),
+            vec![(VectorId::new("x"), "in c1".to_string())]
+        );
+        assert_eq!(
+            c2.load_all_texts().unwrap(),
+            vec![(VectorId::new("x"), "in c2".to_string())]
+        );
     }
 
     #[test]

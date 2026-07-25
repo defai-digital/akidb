@@ -192,6 +192,7 @@ name = "akidb-grpc"
 version = "0.9.0"
 dependencies = [
  "akidb-common",
+ "akidb-contracts",
  "akidb-faiss",
  "akidb-graph",
  "akidb-proto",

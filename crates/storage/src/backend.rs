@@ -1,7 +1,7 @@
 //! Storage backend trait and implementations
 
 use crate::{AkiDbError, Result};
-use rocksdb::{DB, Options, WriteBatch};
+use rocksdb::{Options, WriteBatch, DB};
 use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
@@ -33,7 +33,11 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// FIX BUG-061: Prevents unbounded memory usage on large prefix scans
     /// - limit: Maximum number of results to return (None = unlimited)
-    fn scan_prefix_limited(&self, prefix: &[u8], limit: Option<usize>) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    fn scan_prefix_limited(
+        &self,
+        prefix: &[u8],
+        limit: Option<usize>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         // Default implementation delegates to scan_prefix and truncates
         // Implementations should override for efficiency
         let results = self.scan_prefix(prefix)?;
@@ -41,6 +45,14 @@ pub trait StorageBackend: Send + Sync {
             Some(n) => Ok(results.into_iter().take(n).collect()),
             None => Ok(results),
         }
+    }
+
+    /// Count keys with a prefix without requiring callers to retain values.
+    ///
+    /// Backends should override this to stream over their native iterator.
+    fn count_prefix(&self, prefix: &[u8]) -> Result<u64> {
+        u64::try_from(self.scan_prefix_limited(prefix, None)?.len())
+            .map_err(|_| AkiDbError::StorageError("prefix key count cannot fit in u64".to_string()))
     }
 
     /// Flush to disk
@@ -75,9 +87,8 @@ impl RocksDbBackend {
         opts.set_max_write_buffer_number(3);
         opts.set_target_file_size_base(64 * 1024 * 1024);
 
-        let db = DB::open(&opts, path).map_err(|e| {
-            AkiDbError::StorageError(format!("Failed to open RocksDB: {}", e))
-        })?;
+        let db = DB::open(&opts, path)
+            .map_err(|e| AkiDbError::StorageError(format!("Failed to open RocksDB: {}", e)))?;
 
         Ok(Self { db: Arc::new(db) })
     }
@@ -136,7 +147,11 @@ impl StorageBackend for RocksDbBackend {
         self.scan_prefix_limited(prefix, Some(100_000))
     }
 
-    fn scan_prefix_limited(&self, prefix: &[u8], limit: Option<usize>) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    fn scan_prefix_limited(
+        &self,
+        prefix: &[u8],
+        limit: Option<usize>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         // FIX BUG-061: Efficient implementation that stops early when limit is reached
         let mut results = Vec::new();
         let iter = self.db.prefix_iterator(prefix);
@@ -167,6 +182,26 @@ impl StorageBackend for RocksDbBackend {
         }
 
         Ok(results)
+    }
+
+    fn count_prefix(&self, prefix: &[u8]) -> Result<u64> {
+        let mut count = 0_u64;
+        for item in self.db.prefix_iterator(prefix) {
+            match item {
+                Ok((key, _)) if key.starts_with(prefix) => {
+                    count = count.checked_add(1).ok_or_else(|| {
+                        AkiDbError::StorageError("prefix key count overflowed u64".to_string())
+                    })?;
+                }
+                Ok(_) => break,
+                Err(error) => {
+                    return Err(AkiDbError::StorageError(format!(
+                        "RocksDB prefix count error: {error}"
+                    )));
+                }
+            }
+        }
+        Ok(count)
     }
 
     fn flush(&self) -> Result<()> {
@@ -234,5 +269,7 @@ mod tests {
 
         let results = backend.scan_prefix(b"prefix:").unwrap();
         assert_eq!(results.len(), 3);
+        assert_eq!(backend.count_prefix(b"prefix:").unwrap(), 3);
+        assert_eq!(backend.count_prefix(b"missing:").unwrap(), 0);
     }
 }

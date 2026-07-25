@@ -9,6 +9,7 @@ mod admin;
 pub mod auth;
 mod collections;
 mod filter;
+pub mod generation;
 mod ingestion;
 mod management;
 pub mod mcp;
@@ -20,6 +21,10 @@ mod webhook;
 pub use admin::{AdminServiceImpl, AdminState, RegisteredTask};
 pub use auth::{AuthContext, AuthInterceptor, AuthRuntime};
 pub use collections::{CollectionMeta, CollectionRegistry, SharedCollectionRegistry};
+pub use generation::{
+    GenerationMaterializer, GenerationMaterializerConfig, GenerationMaterializerError,
+    ReadyGenerationRuntime,
+};
 pub use ingestion::IngestionServiceImpl;
 pub use management::{ManagementServiceImpl, ManagementState, StagedObject, StagingRegistry};
 pub use metrics::{metrics, AkiDbMetrics};
