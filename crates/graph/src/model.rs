@@ -16,9 +16,57 @@ impl GraphNodeId {
         &self.0
     }
 
-    /// Convert a conventional `chunk:<vector_id>` node to a vector id.
+    /// Build a workspace-scoped graph id.
+    ///
+    /// The length-prefixed workspace component avoids delimiter ambiguity while
+    /// keeping the local id human-readable for graph inspection.
+    pub fn scoped(workspace_id: &str, local_id: &str) -> Self {
+        Self(format!(
+            "workspace:{}:{}:{}",
+            workspace_id.len(),
+            workspace_id,
+            local_id
+        ))
+    }
+
+    /// Return the workspace component of a scoped id.
+    pub fn workspace_id(&self) -> Option<&str> {
+        self.scoped_parts().map(|(workspace_id, _)| workspace_id)
+    }
+
+    /// Return the local component of a scoped id, or the complete id when it is
+    /// not workspace-scoped.
+    pub fn local_id(&self) -> &str {
+        self.scoped_parts()
+            .map(|(_, local_id)| local_id)
+            .unwrap_or(&self.0)
+    }
+
+    /// Whether two node ids belong to the same graph workspace namespace.
+    ///
+    /// Legacy unscoped ids form the default namespace and never match an
+    /// explicitly scoped id.
+    pub fn is_same_workspace(&self, other: &Self) -> bool {
+        self.workspace_id() == other.workspace_id()
+    }
+
+    /// Convert a conventional `chunk:<vector_id>` node, scoped or unscoped, to
+    /// a vector id.
     pub fn as_chunk_vector_id(&self) -> Option<VectorId> {
-        self.0.strip_prefix("chunk:").map(VectorId::new)
+        self.local_id().strip_prefix("chunk:").map(VectorId::new)
+    }
+
+    fn scoped_parts(&self) -> Option<(&str, &str)> {
+        let rest = self.0.strip_prefix("workspace:")?;
+        let (workspace_len, rest) = rest.split_once(':')?;
+        let workspace_len = workspace_len.parse::<usize>().ok()?;
+        if rest.len() <= workspace_len
+            || !rest.is_char_boundary(workspace_len)
+            || rest.as_bytes().get(workspace_len) != Some(&b':')
+        {
+            return None;
+        }
+        Some((&rest[..workspace_len], &rest[workspace_len + 1..]))
     }
 }
 
@@ -260,9 +308,94 @@ pub struct DeleteNodeResult {
     pub edges_deleted: usize,
 }
 
-fn current_timestamp_ms() -> u64 {
+/// One atomic graph projection unit.
+#[derive(Debug, Clone, Default)]
+pub struct GraphMutationBatch {
+    pub delete_edges: Vec<GraphEdgeId>,
+    pub replace_nodes: Vec<GraphNodeId>,
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+impl GraphMutationBatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_node(mut self, node: GraphNode) -> Self {
+        self.nodes.push(node);
+        self
+    }
+
+    /// Add an authoritative node value whose properties replace the stored
+    /// property map. Other nodes in a batch use patch/merge semantics so
+    /// relationship placeholders cannot erase richer node data.
+    pub fn with_replaced_node(mut self, node: GraphNode) -> Self {
+        self.replace_nodes.push(node.id.clone());
+        self.nodes.push(node);
+        self
+    }
+
+    pub fn with_deleted_edge(mut self, edge_id: impl Into<GraphEdgeId>) -> Self {
+        self.delete_edges.push(edge_id.into());
+        self
+    }
+
+    pub fn with_edge(mut self, edge: GraphEdge) -> Self {
+        self.edges.push(edge);
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.delete_edges.is_empty()
+            && self.replace_nodes.is_empty()
+            && self.nodes.is_empty()
+            && self.edges.is_empty()
+    }
+}
+
+pub(crate) fn current_timestamp_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scoped_node_id_round_trips_workspace_and_chunk() {
+        let id = GraphNodeId::scoped("客戶-a", "chunk:vector:1");
+
+        assert_eq!(id.workspace_id(), Some("客戶-a"));
+        assert_eq!(id.local_id(), "chunk:vector:1");
+        assert_eq!(
+            id.as_chunk_vector_id().as_ref().map(VectorId::as_str),
+            Some("vector:1")
+        );
+    }
+
+    #[test]
+    fn malformed_scoped_node_id_remains_an_unscoped_id() {
+        let id = GraphNodeId::new("workspace:99:short:chunk:v1");
+
+        assert_eq!(id.workspace_id(), None);
+        assert_eq!(id.local_id(), id.as_str());
+        assert_eq!(id.as_chunk_vector_id(), None);
+    }
+
+    #[test]
+    fn scoped_node_ids_only_match_the_same_workspace() {
+        let a = GraphNodeId::scoped("a", "chunk:1");
+        let same = GraphNodeId::scoped("a", "entity:1");
+        let b = GraphNodeId::scoped("b", "chunk:1");
+        let legacy = GraphNodeId::new("chunk:1");
+
+        assert!(a.is_same_workspace(&same));
+        assert!(!a.is_same_workspace(&b));
+        assert!(!a.is_same_workspace(&legacy));
+        assert!(legacy.is_same_workspace(&GraphNodeId::new("entity:1")));
+    }
 }

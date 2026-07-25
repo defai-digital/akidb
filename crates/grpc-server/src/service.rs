@@ -18,12 +18,13 @@ use akidb_common::config::{AclConfig, FilterMode, FilterSettings};
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
 use akidb_graph::{
-    EdgeKind, GraphEdge, GraphEdgeId, GraphIndex, GraphNode, GraphNodeId, GraphStats, NodeKind,
+    EdgeKind, GraphEdge, GraphEdgeId, GraphIndex, GraphMutationBatch, GraphNode, GraphNodeId,
+    GraphStats, NodeKind, RelatedChunksRequest,
 };
 use akidb_retrieval::{
-    expand_to_parents, mmr, pack, plan_query, Bm25Index, HybridFuser, LexicalOverlapReranker,
-    MatchedChunk, MmrItem, PackerConfig, PlannerInput, RerankItem, Reranker, RetrievalMode,
-    ScoredId,
+    expand_to_parents, mmr, pack, plan_query, Bm25Index, Citation, HybridFuser,
+    LexicalOverlapReranker, MatchedChunk, MmrItem, PackerConfig, PlannerInput, RerankItem,
+    Reranker, RetrievalMode, ScoredId,
 };
 use akidb_sql::{MetadataQuery, MetadataSqlIndex, SqlMetadataRecord};
 use akidb_storage::{IdMapping, StorageBackend};
@@ -36,6 +37,8 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, info, instrument, warn};
 
 const MAX_PACK_TOKEN_BUDGET: u32 = 100_000;
+const MAX_SQL_POSTFILTER_CANDIDATES: usize = 100_000;
+const GRAPH_PROJECTION_EDGE_IDS: &str = "_projection_edge_ids";
 
 const FILE_REFERENCE_SUFFIXES: &[&str] = &[
     ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".toml", ".yaml", ".yml", ".proto",
@@ -54,14 +57,16 @@ pub trait EmbeddingProvider: Send + Sync {
     fn embedding_dimensions(&self) -> usize;
 }
 
-/// FIX BUG-059: RAII guard for update locks to ensure release on panic
-/// This guard automatically removes the lock when dropped, even during panic unwinding
-struct UpdateLockGuard<'a> {
+/// Per-vector mutation guard.
+///
+/// Ownership checks and the corresponding write/delete must share this guard
+/// so a concurrent request cannot change a vector's workspace between them.
+struct MutationLockGuard<'a> {
     locks: &'a DashSet<String>,
     id: String,
 }
 
-impl<'a> UpdateLockGuard<'a> {
+impl<'a> MutationLockGuard<'a> {
     /// Try to acquire the lock, returns None if already locked
     fn try_acquire(locks: &'a DashSet<String>, id: String) -> Option<Self> {
         if locks.insert(id.clone()) {
@@ -72,7 +77,7 @@ impl<'a> UpdateLockGuard<'a> {
     }
 }
 
-impl Drop for UpdateLockGuard<'_> {
+impl Drop for MutationLockGuard<'_> {
     fn drop(&mut self) {
         self.locks.remove(&self.id);
     }
@@ -87,9 +92,8 @@ where
     index: Arc<I>,
     id_mapping: Arc<IdMapping<S>>,
     collection: String,
-    /// FIX BUG-052: Per-key lock set to prevent concurrent update races
-    /// When a key is in this set, an update operation is in progress for that ID
-    update_locks: DashSet<String>,
+    /// Per-key lock set used by every vector mutation.
+    mutation_locks: DashSet<String>,
     /// FIX BUG-HUNT-202: Configurable SLO threshold in microseconds
     /// Previously hardcoded to 50_000us, now configurable via constructor
     slo_threshold_us: u64,
@@ -163,7 +167,7 @@ where
             index,
             id_mapping,
             collection,
-            update_locks: DashSet::new(),
+            mutation_locks: DashSet::new(),
             slo_threshold_us,
             embedding_provider: None,
             lexical: Arc::new(RwLock::new(Bm25Index::new())),
@@ -346,6 +350,36 @@ where
         count
     }
 
+    /// Rebuild metadata-derived graph projections from durable active vectors.
+    ///
+    /// Chunk nodes are removed in a first pass so stale projection edges cannot
+    /// survive an interrupted vector/graph write. All active chunks are then
+    /// projected again. Domain nodes that are not owned by a chunk are kept.
+    pub fn rebuild_graph_index(&self) -> Result<usize, akidb_graph::GraphError> {
+        let Some(graph) = &self.graph_index else {
+            return Ok(0);
+        };
+        let stored_vectors = self.id_mapping.load_active_vectors()?;
+
+        for stored in &stored_vectors {
+            let vector_id = VectorId::new(&stored.external_id);
+            let metadata = String::from_utf8_lossy(&stored.metadata);
+            let workspace_id = Self::workspace_id_from_metadata(&metadata);
+            graph.delete_node(&Self::chunk_node_id(&workspace_id, &vector_id))?;
+        }
+
+        for stored in &stored_vectors {
+            self.index_graph_chunk(&VectorId::new(&stored.external_id), &stored.metadata, None)?;
+        }
+        if !stored_vectors.is_empty() {
+            info!(
+                chunks = stored_vectors.len(),
+                "rebuilt native graph projections from persisted vectors"
+            );
+        }
+        Ok(stored_vectors.len())
+    }
+
     /// Create a new service instance from SloConfig
     ///
     /// FIX BUG-HUNT-202: Convenience constructor that extracts threshold from config
@@ -478,6 +512,58 @@ where
 
     fn request_auth_context<T>(&self, request: &Request<T>) -> AuthContext {
         auth::auth_context(request)
+    }
+
+    fn metadata_in_auth_workspace(&self, metadata: &[u8], ctx: &AuthContext) -> bool {
+        !self.acl.enforce_workspace
+            || acl::metadata_in_workspace(
+                &Self::metadata_value_from_bytes(metadata),
+                &ctx.workspace_id,
+            )
+    }
+
+    fn existing_vector_metadata(&self, vector_id: &VectorId) -> Result<Option<Vec<u8>>, Status> {
+        self.id_mapping
+            .get_vector_including_deleted(vector_id)
+            .map_err(Self::to_status)
+            .map(|entry| entry.map(|entry| entry.metadata))
+    }
+
+    fn ensure_existing_vector_access(
+        &self,
+        vector_id: &VectorId,
+        ctx: &AuthContext,
+    ) -> Result<Option<Vec<u8>>, Status> {
+        let metadata = self.existing_vector_metadata(vector_id)?;
+        if metadata
+            .as_deref()
+            .is_some_and(|metadata| !self.metadata_in_auth_workspace(metadata, ctx))
+        {
+            // Do not disclose whether an id exists in another workspace.
+            return Err(Status::not_found(format!(
+                "Vector not found: {}",
+                vector_id
+            )));
+        }
+        Ok(metadata)
+    }
+
+    fn ensure_insert_does_not_cross_workspace(
+        &self,
+        vector_id: &VectorId,
+        ctx: &AuthContext,
+    ) -> Result<Option<Vec<u8>>, Status> {
+        let metadata = self.existing_vector_metadata(vector_id)?;
+        if metadata
+            .as_deref()
+            .is_some_and(|metadata| !self.metadata_in_auth_workspace(metadata, ctx))
+        {
+            return Err(Status::already_exists(format!(
+                "Vector id already exists: {}",
+                vector_id
+            )));
+        }
+        Ok(metadata)
     }
 
     /// Build metadata filter from request inputs + workspace ACL scope.
@@ -683,6 +769,40 @@ where
             .is_some_and(|metadata| filter.matches(&metadata))
     }
 
+    fn citation_for_vector(&self, id: &VectorId) -> Citation {
+        let Some(metadata) = self.load_metadata_value(id) else {
+            return Citation::new(id.as_str());
+        };
+        let source_uri = ["source_uri", "document_key", "file"]
+            .iter()
+            .find_map(|key| metadata.get(key).and_then(serde_json::Value::as_str))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| id.as_str());
+        let mut citation = Citation::new(source_uri);
+
+        if let Some(version) = ["source_version", "content_hash"]
+            .iter()
+            .find_map(|key| metadata.get(key).and_then(serde_json::Value::as_str))
+            .filter(|value| !value.is_empty())
+        {
+            citation = citation.with_version(version);
+        }
+
+        let offset = |key: &str| {
+            metadata.get(key).and_then(|value| match value {
+                serde_json::Value::Number(number) => number
+                    .as_u64()
+                    .and_then(|value| usize::try_from(value).ok()),
+                serde_json::Value::String(value) => value.parse::<usize>().ok(),
+                _ => None,
+            })
+        };
+        if let (Some(start), Some(end)) = (offset("start_offset"), offset("end_offset")) {
+            citation = citation.with_span(start, end);
+        }
+        citation
+    }
+
     fn metadata_value_from_bytes(metadata: &[u8]) -> serde_json::Value {
         if metadata.is_empty() {
             serde_json::Value::Null
@@ -877,7 +997,8 @@ where
 
         if let Some(graph) = &self.graph_index {
             for result in response_results {
-                let seed = GraphNodeId::new(format!("chunk:{}", result.id));
+                let workspace_id = Self::workspace_id_from_metadata(&result.metadata);
+                let seed = Self::chunk_node_id(&workspace_id, &VectorId::new(&result.id));
                 match graph.related_chunks(&seed, top_k.saturating_mul(2).max(1)) {
                     Ok(chunks) => {
                         for chunk in chunks {
@@ -916,6 +1037,9 @@ where
         let mut passages =
             expand_to_parents(&matched, |pid| docs.get(&VectorId::new(pid)).cloned());
         passages.retain(|p| !p.text.is_empty());
+        for passage in &mut passages {
+            passage.citation = self.citation_for_vector(&passage.id);
+        }
         pack(&passages, &PackerConfig::new(budget)).text
     }
 
@@ -923,6 +1047,8 @@ where
         &self,
         req: &TextSearchRequest,
         started_at: Instant,
+        scoped_filter: Option<&MetadataFilter>,
+        ctx: &AuthContext,
     ) -> Result<Response<SearchResponse>, Status> {
         let Some(sql_index) = &self.metadata_sql_index else {
             return Err(Status::unavailable(
@@ -935,34 +1061,32 @@ where
             .as_ref()
             .and_then(|tag| tag.filter_type.as_ref())
             .is_some();
-        let has_legacy_filter = !req.filter.is_empty();
-        let full_filter = if has_tag_filter || has_legacy_filter {
-            MetadataFilter::build(&req.filter, req.tag_filter.clone())
-                .map_err(Status::invalid_argument)?
-        } else {
-            None
-        };
-        let needs_legacy_post_filter = Self::legacy_filter_needs_post_filter(&req.filter)?;
-        let post_filter = if has_tag_filter || needs_legacy_post_filter {
-            full_filter.as_ref()
-        } else {
-            None
-        };
-        let sql_limit = if post_filter.is_some() {
-            usize::MAX
+        let workspace_pushdown = self.acl.enforce_workspace && ctx.workspace_id != "default";
+        let needs_post_filter = has_tag_filter
+            || Self::legacy_filter_needs_post_filter(&req.filter)?
+            || (self.acl.enforce_workspace && !workspace_pushdown);
+        let sql_limit = if needs_post_filter {
+            (req.top_k as usize)
+                .saturating_mul(self.filter_settings.postfilter_overfetch_factor.max(1) as usize)
+                .clamp(1_000, MAX_SQL_POSTFILTER_CANDIDATES)
         } else {
             req.top_k as usize
         };
-        let query = Self::sql_query_from_legacy_filter(&self.collection, &req.filter, sql_limit)?;
+        let mut query =
+            Self::sql_query_from_legacy_filter(&self.collection, &req.filter, sql_limit)?;
+        if workspace_pushdown {
+            query = query.with_eq(acl::WORKSPACE_KEY, serde_json::json!(ctx.workspace_id));
+        }
         let ids = sql_index
             .query_ids(&query)
             .map_err(|e| Status::internal(format!("SQL metadata retrieval failed: {e}")))?;
+        let candidate_cap_reached = needs_post_filter && ids.len() == sql_limit;
 
         let results: Vec<SearchResult> = ids
             .into_iter()
             .filter_map(|id| {
                 let vector_id = VectorId::new(&id);
-                if let Some(filter) = post_filter {
+                if let Some(filter) = scoped_filter {
                     if !self.metadata_matches_filter(&vector_id, filter) {
                         return None;
                     }
@@ -978,7 +1102,7 @@ where
         let context_pack = if req.pack {
             self.build_context_pack(
                 &results,
-                full_filter.as_ref(),
+                scoped_filter,
                 req.top_k as usize,
                 req.pack_token_budget.unwrap_or(1024) as usize,
             )
@@ -989,9 +1113,9 @@ where
 
         Ok(Response::new(SearchResponse {
             results,
-            partial: false,
+            partial: candidate_cap_reached,
             missing_shards: vec![],
-            coverage: 1.0,
+            coverage: if candidate_cap_reached { 0.0 } else { 1.0 },
             latency_us,
             within_slo: latency_us < self.slo_threshold_us,
             degraded_mode: false,
@@ -1037,11 +1161,19 @@ where
             })
     }
 
-    fn chunk_node_id(vector_id: &VectorId) -> GraphNodeId {
-        GraphNodeId::new(format!("chunk:{}", vector_id.as_str()))
+    fn scoped_graph_node_id(workspace_id: &str, local_id: String) -> GraphNodeId {
+        if workspace_id == "default" {
+            GraphNodeId::new(local_id)
+        } else {
+            GraphNodeId::scoped(workspace_id, &local_id)
+        }
     }
 
-    fn graph_seed_nodes_from_query(query: &str) -> Vec<GraphNodeId> {
+    fn chunk_node_id(workspace_id: &str, vector_id: &VectorId) -> GraphNodeId {
+        Self::scoped_graph_node_id(workspace_id, format!("chunk:{}", vector_id.as_str()))
+    }
+
+    fn graph_seed_nodes_from_query(query: &str, workspace_id: &str) -> Vec<GraphNodeId> {
         let mut seeds = Vec::new();
         let mut seen = HashSet::new();
         for raw in query.split_whitespace() {
@@ -1051,11 +1183,17 @@ where
             }
             if Self::looks_like_file_reference(&token) {
                 let file = Self::normalize_file_reference(&token);
-                Self::push_graph_seed(&mut seeds, &mut seen, NodeKind::File, &file);
+                Self::push_graph_seed(&mut seeds, &mut seen, workspace_id, NodeKind::File, &file);
             }
             if Self::looks_like_symbol_reference(&token) {
                 let symbol = token.trim_end_matches("()");
-                Self::push_graph_seed(&mut seeds, &mut seen, NodeKind::Function, symbol);
+                Self::push_graph_seed(
+                    &mut seeds,
+                    &mut seen,
+                    workspace_id,
+                    NodeKind::Function,
+                    symbol,
+                );
             }
         }
         seeds
@@ -1064,10 +1202,11 @@ where
     fn push_graph_seed(
         seeds: &mut Vec<GraphNodeId>,
         seen: &mut HashSet<String>,
+        workspace_id: &str,
         kind: NodeKind,
         raw_id: &str,
     ) {
-        let node_id = Self::graph_node_id(kind, raw_id);
+        let node_id = Self::graph_node_id(workspace_id, kind, raw_id);
         if seen.insert(node_id.as_str().to_string()) {
             seeds.push(node_id);
         }
@@ -1176,134 +1315,269 @@ where
         }
     }
 
-    fn graph_node_id(kind: NodeKind, id: &str) -> GraphNodeId {
-        GraphNodeId::new(format!("{}:{}", kind.as_key(), id))
+    fn workspace_id_from_metadata_value(metadata: Option<&serde_json::Value>) -> &str {
+        metadata
+            .and_then(|metadata| metadata.get(acl::WORKSPACE_KEY))
+            .and_then(serde_json::Value::as_str)
+            .filter(|workspace_id| !workspace_id.is_empty())
+            .unwrap_or("default")
+    }
+
+    fn workspace_id_from_metadata(metadata: &str) -> String {
+        let metadata = serde_json::from_str::<serde_json::Value>(metadata).ok();
+        Self::workspace_id_from_metadata_value(metadata.as_ref()).to_string()
+    }
+
+    fn graph_node_id(workspace_id: &str, kind: NodeKind, id: &str) -> GraphNodeId {
+        Self::scoped_graph_node_id(workspace_id, format!("{}:{}", kind.as_key(), id))
     }
 
     fn graph_edge_id(kind: EdgeKind, from: &GraphNodeId, to: &GraphNodeId) -> String {
         format!("auto:{}:{}:{}", kind.as_key(), from.as_str(), to.as_str())
     }
 
-    fn upsert_graph_node(
-        graph: &dyn GraphIndex,
+    fn scoped_legacy_edge_id(workspace_id: &str, edge_id: String) -> String {
+        if workspace_id == "default" {
+            edge_id
+        } else {
+            format!(
+                "workspace:{}:{}:{}",
+                workspace_id.len(),
+                workspace_id,
+                edge_id
+            )
+        }
+    }
+
+    fn graph_node(
+        workspace_id: &str,
         node_id: GraphNodeId,
         kind: NodeKind,
         raw_id: &str,
-    ) -> bool {
-        graph
-            .upsert_node(
-                GraphNode::new(node_id, kind).with_property("id", serde_json::json!(raw_id)),
-            )
-            .is_ok()
+    ) -> GraphNode {
+        GraphNode::new(node_id, kind)
+            .with_property("id", serde_json::json!(raw_id))
+            .with_property(acl::WORKSPACE_KEY, serde_json::json!(workspace_id))
     }
 
-    fn upsert_graph_edge(
-        graph: &dyn GraphIndex,
+    fn graph_edge(
+        workspace_id: &str,
         from: &GraphNodeId,
         to: &GraphNodeId,
         kind: EdgeKind,
-    ) -> Result<(), akidb_graph::GraphError> {
-        graph.upsert_edge(GraphEdge::new(
+        evidence_chunk_id: &VectorId,
+        metadata: Option<&serde_json::Value>,
+    ) -> GraphEdge {
+        let mut edge = GraphEdge::new(
             Self::graph_edge_id(kind, from, to),
             from.clone(),
             to.clone(),
             kind,
-        ))
+        )
+        .with_property(acl::WORKSPACE_KEY, serde_json::json!(workspace_id))
+        .with_property(
+            "evidence_chunk_id",
+            serde_json::json!(evidence_chunk_id.as_str()),
+        );
+        for key in [
+            "source_uri",
+            "source_version",
+            "extraction_method",
+            "pipeline_version",
+        ] {
+            if let Some(value) = metadata.and_then(|metadata| metadata.get(key)) {
+                edge = edge.with_property(key, value.clone());
+            }
+        }
+        edge
     }
 
-    fn index_graph_chunk(&self, vector_id: &VectorId, metadata: &[u8]) {
+    fn stored_graph_projection_edge_ids(
+        graph: &dyn GraphIndex,
+        chunk_node_id: &GraphNodeId,
+        vector_id: &VectorId,
+    ) -> Result<Option<Vec<GraphEdgeId>>, akidb_graph::GraphError> {
+        let Some(node) = graph.get_node(chunk_node_id)? else {
+            return Ok(None);
+        };
+        let Some(edge_ids) = node
+            .properties
+            .get(GRAPH_PROJECTION_EDGE_IDS)
+            .and_then(serde_json::Value::as_array)
+        else {
+            return Ok(None);
+        };
+
+        let mut owned_edge_ids = Vec::with_capacity(edge_ids.len());
+        for edge_id in edge_ids.iter().filter_map(serde_json::Value::as_str) {
+            let edge_id = GraphEdgeId::new(edge_id);
+            let Some(edge) = graph.get_edge(&edge_id)? else {
+                continue;
+            };
+            let is_owned_by_projection = edge
+                .properties
+                .get("evidence_chunk_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(vector_id.as_str());
+            if is_owned_by_projection {
+                owned_edge_ids.push(edge_id);
+            }
+        }
+        Ok(Some(owned_edge_ids))
+    }
+
+    fn index_graph_chunk(
+        &self,
+        vector_id: &VectorId,
+        metadata: &[u8],
+        previous_metadata: Option<&[u8]>,
+    ) -> Result<(), akidb_graph::GraphError> {
         let Some(graph) = &self.graph_index else {
-            return;
+            return Ok(());
         };
 
         let metadata = String::from_utf8_lossy(metadata);
         let metadata_json = serde_json::from_str::<serde_json::Value>(&metadata).ok();
-        let chunk_node_id = Self::chunk_node_id(vector_id);
-        let chunk_node = GraphNode::new(chunk_node_id.clone(), NodeKind::Chunk)
-            .with_property("vector_id", serde_json::json!(vector_id.as_str()));
-
-        if let Err(e) = graph.upsert_node(chunk_node) {
-            warn!(vector_id = %vector_id, error = %e, "failed to index graph chunk node");
-            return;
+        let workspace_id = Self::workspace_id_from_metadata_value(metadata_json.as_ref());
+        let chunk_node_id = Self::chunk_node_id(workspace_id, vector_id);
+        let mut chunk_node = Self::graph_node(
+            workspace_id,
+            chunk_node_id.clone(),
+            NodeKind::Chunk,
+            vector_id.as_str(),
+        )
+        .with_property("vector_id", serde_json::json!(vector_id.as_str()));
+        for key in [
+            "source_uri",
+            "source_object_id",
+            "source_version",
+            "document_id",
+            "chunk_index",
+            "start_offset",
+            "end_offset",
+            "extraction_method",
+            "pipeline_version",
+        ] {
+            if let Some(value) = metadata_json
+                .as_ref()
+                .and_then(|metadata| metadata.get(key))
+            {
+                chunk_node = chunk_node.with_property(key, value.clone());
+            }
+        }
+        let mut batch = GraphMutationBatch::new().with_replaced_node(chunk_node);
+        match Self::stored_graph_projection_edge_ids(graph.as_ref(), &chunk_node_id, vector_id)? {
+            Some(edge_ids) => batch.delete_edges.extend(edge_ids),
+            None => {
+                if let Some(previous_metadata) = previous_metadata {
+                    batch
+                        .delete_edges
+                        .extend(Self::graph_edge_ids_from_metadata(
+                            vector_id,
+                            previous_metadata,
+                        ));
+                }
+            }
         }
 
         if let Some(parent_id) = Self::parent_id_from_metadata(&metadata) {
             let parent_vector_id = VectorId::new(parent_id);
-            let parent_node_id = Self::chunk_node_id(&parent_vector_id);
-            if let Err(e) = graph.upsert_node(
-                GraphNode::new(parent_node_id.clone(), NodeKind::Chunk)
-                    .with_property("vector_id", serde_json::json!(parent_vector_id.as_str())),
-            ) {
-                warn!(vector_id = %vector_id, parent = %parent_vector_id, error = %e, "failed to index graph parent node");
-            } else {
-                let parent_edge_id = format!(
+            let parent_node_id = Self::chunk_node_id(workspace_id, &parent_vector_id);
+            batch.nodes.push(
+                Self::graph_node(
+                    workspace_id,
+                    parent_node_id.clone(),
+                    NodeKind::Chunk,
+                    parent_vector_id.as_str(),
+                )
+                .with_property("vector_id", serde_json::json!(parent_vector_id.as_str())),
+            );
+
+            let mut parent_edge = Self::graph_edge(
+                workspace_id,
+                &parent_node_id,
+                &chunk_node_id,
+                EdgeKind::ParentOf,
+                vector_id,
+                metadata_json.as_ref(),
+            );
+            parent_edge.id = GraphEdgeId::new(Self::scoped_legacy_edge_id(
+                workspace_id,
+                format!(
                     "auto:parent_of:{}:{}",
                     parent_vector_id.as_str(),
                     vector_id.as_str()
-                );
-                if let Err(e) = graph.upsert_edge(GraphEdge::new(
-                    parent_edge_id,
-                    parent_node_id.clone(),
-                    chunk_node_id.clone(),
-                    EdgeKind::ParentOf,
-                )) {
-                    warn!(vector_id = %vector_id, parent = %parent_vector_id, error = %e, "failed to index graph parent edge");
-                }
+                ),
+            ));
+            batch.edges.push(parent_edge);
 
-                let child_edge_id = format!(
+            let mut child_edge = Self::graph_edge(
+                workspace_id,
+                &chunk_node_id,
+                &parent_node_id,
+                EdgeKind::ChildOf,
+                vector_id,
+                metadata_json.as_ref(),
+            );
+            child_edge.id = GraphEdgeId::new(Self::scoped_legacy_edge_id(
+                workspace_id,
+                format!(
                     "auto:child_of:{}:{}",
                     vector_id.as_str(),
                     parent_vector_id.as_str()
-                );
-                if let Err(e) = graph.upsert_edge(GraphEdge::new(
-                    child_edge_id,
-                    chunk_node_id.clone(),
-                    parent_node_id,
-                    EdgeKind::ChildOf,
-                )) {
-                    warn!(vector_id = %vector_id, parent = %parent_vector_id, error = %e, "failed to index graph child edge");
-                }
-            }
+                ),
+            ));
+            batch.edges.push(child_edge);
         }
 
         for related_id in Self::related_ids_from_metadata(&metadata) {
             let related_vector_id = VectorId::new(related_id);
-            let related_node_id = Self::chunk_node_id(&related_vector_id);
-            if let Err(e) = graph.upsert_node(
-                GraphNode::new(related_node_id.clone(), NodeKind::Chunk)
-                    .with_property("vector_id", serde_json::json!(related_vector_id.as_str())),
-            ) {
-                warn!(vector_id = %vector_id, related = %related_vector_id, error = %e, "failed to index graph related node");
-                continue;
-            }
-
-            let forward_edge_id = format!(
-                "auto:related_to:{}:{}",
-                vector_id.as_str(),
-                related_vector_id.as_str()
+            let related_node_id = Self::chunk_node_id(workspace_id, &related_vector_id);
+            batch.nodes.push(
+                Self::graph_node(
+                    workspace_id,
+                    related_node_id.clone(),
+                    NodeKind::Chunk,
+                    related_vector_id.as_str(),
+                )
+                .with_property("vector_id", serde_json::json!(related_vector_id.as_str())),
             );
-            if let Err(e) = graph.upsert_edge(GraphEdge::new(
-                forward_edge_id,
-                chunk_node_id.clone(),
-                related_node_id.clone(),
-                EdgeKind::RelatedTo,
-            )) {
-                warn!(vector_id = %vector_id, related = %related_vector_id, error = %e, "failed to index graph related edge");
-            }
 
-            let reverse_edge_id = format!(
-                "auto:related_to:{}:{}",
-                related_vector_id.as_str(),
-                vector_id.as_str()
-            );
-            if let Err(e) = graph.upsert_edge(GraphEdge::new(
-                reverse_edge_id,
-                related_node_id,
-                chunk_node_id.clone(),
+            let mut forward_edge = Self::graph_edge(
+                workspace_id,
+                &chunk_node_id,
+                &related_node_id,
                 EdgeKind::RelatedTo,
-            )) {
-                warn!(vector_id = %vector_id, related = %related_vector_id, error = %e, "failed to index graph reverse related edge");
-            }
+                vector_id,
+                metadata_json.as_ref(),
+            );
+            forward_edge.id = GraphEdgeId::new(Self::scoped_legacy_edge_id(
+                workspace_id,
+                format!(
+                    "auto:related_to:{}:{}",
+                    vector_id.as_str(),
+                    related_vector_id.as_str()
+                ),
+            ));
+            batch.edges.push(forward_edge);
+
+            let mut reverse_edge = Self::graph_edge(
+                workspace_id,
+                &related_node_id,
+                &chunk_node_id,
+                EdgeKind::RelatedTo,
+                vector_id,
+                metadata_json.as_ref(),
+            );
+            reverse_edge.id = GraphEdgeId::new(Self::scoped_legacy_edge_id(
+                workspace_id,
+                format!(
+                    "auto:related_to:{}:{}",
+                    related_vector_id.as_str(),
+                    vector_id.as_str()
+                ),
+            ));
+            batch.edges.push(reverse_edge);
         }
 
         let chunk_edge_fields = [
@@ -1316,140 +1590,176 @@ where
         for (field, edge_kind) in chunk_edge_fields {
             for target_id in Self::metadata_string_values(metadata_json.as_ref(), field) {
                 let target_vector_id = VectorId::new(target_id);
-                let target_node_id = Self::chunk_node_id(&target_vector_id);
-                if let Err(e) = graph.upsert_node(
-                    GraphNode::new(target_node_id.clone(), NodeKind::Chunk)
-                        .with_property("vector_id", serde_json::json!(target_vector_id.as_str())),
-                ) {
-                    warn!(vector_id = %vector_id, target = %target_vector_id, field, error = %e, "failed to index graph code target node");
-                    continue;
-                }
-                if let Err(e) = Self::upsert_graph_edge(
-                    graph.as_ref(),
+                let target_node_id = Self::chunk_node_id(workspace_id, &target_vector_id);
+                batch.nodes.push(
+                    Self::graph_node(
+                        workspace_id,
+                        target_node_id.clone(),
+                        NodeKind::Chunk,
+                        target_vector_id.as_str(),
+                    )
+                    .with_property("vector_id", serde_json::json!(target_vector_id.as_str())),
+                );
+                batch.edges.push(Self::graph_edge(
+                    workspace_id,
                     &chunk_node_id,
                     &target_node_id,
                     edge_kind,
-                ) {
-                    warn!(vector_id = %vector_id, target = %target_vector_id, field, error = %e, "failed to index graph code edge");
-                }
+                    vector_id,
+                    metadata_json.as_ref(),
+                ));
             }
         }
 
         for owner in Self::metadata_string_values(metadata_json.as_ref(), "owned_by") {
-            let owner_node_id = Self::graph_node_id(NodeKind::Person, &owner);
-            if Self::upsert_graph_node(
-                graph.as_ref(),
+            let owner_node_id = Self::graph_node_id(workspace_id, NodeKind::Person, &owner);
+            batch.nodes.push(Self::graph_node(
+                workspace_id,
                 owner_node_id.clone(),
                 NodeKind::Person,
                 &owner,
-            ) {
-                if let Err(e) = Self::upsert_graph_edge(
-                    graph.as_ref(),
-                    &chunk_node_id,
-                    &owner_node_id,
-                    EdgeKind::OwnedBy,
-                ) {
-                    warn!(vector_id = %vector_id, owner, error = %e, "failed to index graph owner edge");
-                }
-            }
+            ));
+            batch.edges.push(Self::graph_edge(
+                workspace_id,
+                &chunk_node_id,
+                &owner_node_id,
+                EdgeKind::OwnedBy,
+                vector_id,
+                metadata_json.as_ref(),
+            ));
         }
 
         for commit in Self::metadata_string_values(metadata_json.as_ref(), "changed_by") {
-            let commit_node_id = Self::graph_node_id(NodeKind::Commit, &commit);
-            if Self::upsert_graph_node(
-                graph.as_ref(),
+            let commit_node_id = Self::graph_node_id(workspace_id, NodeKind::Commit, &commit);
+            batch.nodes.push(Self::graph_node(
+                workspace_id,
                 commit_node_id.clone(),
                 NodeKind::Commit,
                 &commit,
-            ) {
-                if let Err(e) = Self::upsert_graph_edge(
-                    graph.as_ref(),
-                    &chunk_node_id,
-                    &commit_node_id,
-                    EdgeKind::ChangedBy,
-                ) {
-                    warn!(vector_id = %vector_id, commit, error = %e, "failed to index graph changed_by edge");
+            ));
+            batch.edges.push(Self::graph_edge(
+                workspace_id,
+                &chunk_node_id,
+                &commit_node_id,
+                EdgeKind::ChangedBy,
+                vector_id,
+                metadata_json.as_ref(),
+            ));
+        }
+
+        for (field, node_kind) in [
+            ("document_id", NodeKind::Document),
+            ("section_id", NodeKind::Section),
+        ] {
+            for structural_id in Self::metadata_string_values(metadata_json.as_ref(), field) {
+                let structural_node_id =
+                    Self::graph_node_id(workspace_id, node_kind, &structural_id);
+                let mut structural_node = Self::graph_node(
+                    workspace_id,
+                    structural_node_id.clone(),
+                    node_kind,
+                    &structural_id,
+                );
+                for key in ["source_uri", "source_version", "source_object_id"] {
+                    if let Some(value) = metadata_json
+                        .as_ref()
+                        .and_then(|metadata| metadata.get(key))
+                    {
+                        structural_node = structural_node.with_property(key, value.clone());
+                    }
                 }
+                batch.nodes.push(structural_node);
+                batch.edges.push(Self::graph_edge(
+                    workspace_id,
+                    &structural_node_id,
+                    &chunk_node_id,
+                    EdgeKind::Contains,
+                    vector_id,
+                    metadata_json.as_ref(),
+                ));
             }
         }
 
         for file in Self::metadata_string_values(metadata_json.as_ref(), "file") {
-            let file_node_id = Self::graph_node_id(NodeKind::File, &file);
-            if Self::upsert_graph_node(graph.as_ref(), file_node_id.clone(), NodeKind::File, &file)
-            {
-                if let Err(e) = Self::upsert_graph_edge(
-                    graph.as_ref(),
-                    &file_node_id,
-                    &chunk_node_id,
-                    EdgeKind::Contains,
-                ) {
-                    warn!(vector_id = %vector_id, file, error = %e, "failed to index graph file edge");
-                }
-            }
+            let file_node_id = Self::graph_node_id(workspace_id, NodeKind::File, &file);
+            batch.nodes.push(Self::graph_node(
+                workspace_id,
+                file_node_id.clone(),
+                NodeKind::File,
+                &file,
+            ));
+            batch.edges.push(Self::graph_edge(
+                workspace_id,
+                &file_node_id,
+                &chunk_node_id,
+                EdgeKind::Contains,
+                vector_id,
+                metadata_json.as_ref(),
+            ));
         }
 
         for symbol in Self::metadata_string_values(metadata_json.as_ref(), "symbol") {
-            let symbol_node_id = Self::graph_node_id(NodeKind::Function, &symbol);
-            if Self::upsert_graph_node(
-                graph.as_ref(),
+            let symbol_node_id = Self::graph_node_id(workspace_id, NodeKind::Function, &symbol);
+            batch.nodes.push(Self::graph_node(
+                workspace_id,
                 symbol_node_id.clone(),
                 NodeKind::Function,
                 &symbol,
-            ) {
-                if let Err(e) = Self::upsert_graph_edge(
-                    graph.as_ref(),
-                    &symbol_node_id,
-                    &chunk_node_id,
-                    EdgeKind::Contains,
-                ) {
-                    warn!(vector_id = %vector_id, symbol, error = %e, "failed to index graph symbol edge");
-                }
-            }
+            ));
+            batch.edges.push(Self::graph_edge(
+                workspace_id,
+                &symbol_node_id,
+                &chunk_node_id,
+                EdgeKind::Contains,
+                vector_id,
+                metadata_json.as_ref(),
+            ));
         }
+
+        let mut projection_edge_ids: Vec<String> = batch
+            .edges
+            .iter()
+            .map(|edge| edge.id.as_str().to_string())
+            .collect();
+        projection_edge_ids.sort();
+        projection_edge_ids.dedup();
+        if let Some(chunk_node) = batch.nodes.iter_mut().find(|node| node.id == chunk_node_id) {
+            chunk_node.properties.insert(
+                GRAPH_PROJECTION_EDGE_IDS.to_string(),
+                serde_json::json!(projection_edge_ids),
+            );
+        }
+
+        graph.upsert_batch(batch)
     }
 
-    fn delete_graph_edge_id(&self, edge_id: String) {
-        let Some(graph) = &self.graph_index else {
-            return;
-        };
-        if let Err(e) = graph.delete_edge(&GraphEdgeId::new(edge_id.clone())) {
-            warn!(edge_id, error = %e, "failed to delete stale graph edge");
-        }
-    }
-
-    fn delete_graph_edges_from_metadata(&self, vector_id: &VectorId, metadata: &[u8]) {
-        if self.graph_index.is_none() {
-            return;
-        }
-
+    fn graph_edge_ids_from_metadata(vector_id: &VectorId, metadata: &[u8]) -> Vec<GraphEdgeId> {
         let metadata = String::from_utf8_lossy(metadata);
         let metadata_json = serde_json::from_str::<serde_json::Value>(&metadata).ok();
-        let chunk_node_id = Self::chunk_node_id(vector_id);
+        let workspace_id = Self::workspace_id_from_metadata_value(metadata_json.as_ref());
+        let chunk_node_id = Self::chunk_node_id(workspace_id, vector_id);
+        let mut edge_ids = Vec::new();
 
         if let Some(parent_id) = Self::parent_id_from_metadata(&metadata) {
-            self.delete_graph_edge_id(format!(
-                "auto:parent_of:{}:{}",
-                parent_id,
-                vector_id.as_str()
-            ));
-            self.delete_graph_edge_id(format!(
-                "auto:child_of:{}:{}",
-                vector_id.as_str(),
-                parent_id
-            ));
+            edge_ids.push(GraphEdgeId::new(Self::scoped_legacy_edge_id(
+                workspace_id,
+                format!("auto:parent_of:{}:{}", parent_id, vector_id.as_str()),
+            )));
+            edge_ids.push(GraphEdgeId::new(Self::scoped_legacy_edge_id(
+                workspace_id,
+                format!("auto:child_of:{}:{}", vector_id.as_str(), parent_id),
+            )));
         }
 
         for related_id in Self::related_ids_from_metadata(&metadata) {
-            self.delete_graph_edge_id(format!(
-                "auto:related_to:{}:{}",
-                vector_id.as_str(),
-                related_id
-            ));
-            self.delete_graph_edge_id(format!(
-                "auto:related_to:{}:{}",
-                related_id,
-                vector_id.as_str()
-            ));
+            edge_ids.push(GraphEdgeId::new(Self::scoped_legacy_edge_id(
+                workspace_id,
+                format!("auto:related_to:{}:{}", vector_id.as_str(), related_id),
+            )));
+            edge_ids.push(GraphEdgeId::new(Self::scoped_legacy_edge_id(
+                workspace_id,
+                format!("auto:related_to:{}:{}", related_id, vector_id.as_str()),
+            )));
         }
 
         let chunk_edge_fields = [
@@ -1461,60 +1771,81 @@ where
         ];
         for (field, edge_kind) in chunk_edge_fields {
             for target_id in Self::metadata_string_values(metadata_json.as_ref(), field) {
-                let target_node_id = Self::chunk_node_id(&VectorId::new(target_id));
-                self.delete_graph_edge_id(Self::graph_edge_id(
+                let target_node_id = Self::chunk_node_id(workspace_id, &VectorId::new(target_id));
+                edge_ids.push(GraphEdgeId::new(Self::graph_edge_id(
                     edge_kind,
                     &chunk_node_id,
                     &target_node_id,
-                ));
+                )));
             }
         }
 
         for owner in Self::metadata_string_values(metadata_json.as_ref(), "owned_by") {
-            let owner_node_id = Self::graph_node_id(NodeKind::Person, &owner);
-            self.delete_graph_edge_id(Self::graph_edge_id(
+            let owner_node_id = Self::graph_node_id(workspace_id, NodeKind::Person, &owner);
+            edge_ids.push(GraphEdgeId::new(Self::graph_edge_id(
                 EdgeKind::OwnedBy,
                 &chunk_node_id,
                 &owner_node_id,
-            ));
+            )));
         }
 
         for commit in Self::metadata_string_values(metadata_json.as_ref(), "changed_by") {
-            let commit_node_id = Self::graph_node_id(NodeKind::Commit, &commit);
-            self.delete_graph_edge_id(Self::graph_edge_id(
+            let commit_node_id = Self::graph_node_id(workspace_id, NodeKind::Commit, &commit);
+            edge_ids.push(GraphEdgeId::new(Self::graph_edge_id(
                 EdgeKind::ChangedBy,
                 &chunk_node_id,
                 &commit_node_id,
-            ));
+            )));
+        }
+
+        for (field, node_kind) in [
+            ("document_id", NodeKind::Document),
+            ("section_id", NodeKind::Section),
+        ] {
+            for structural_id in Self::metadata_string_values(metadata_json.as_ref(), field) {
+                let structural_node_id =
+                    Self::graph_node_id(workspace_id, node_kind, &structural_id);
+                edge_ids.push(GraphEdgeId::new(Self::graph_edge_id(
+                    EdgeKind::Contains,
+                    &structural_node_id,
+                    &chunk_node_id,
+                )));
+            }
         }
 
         for file in Self::metadata_string_values(metadata_json.as_ref(), "file") {
-            let file_node_id = Self::graph_node_id(NodeKind::File, &file);
-            self.delete_graph_edge_id(Self::graph_edge_id(
+            let file_node_id = Self::graph_node_id(workspace_id, NodeKind::File, &file);
+            edge_ids.push(GraphEdgeId::new(Self::graph_edge_id(
                 EdgeKind::Contains,
                 &file_node_id,
                 &chunk_node_id,
-            ));
+            )));
         }
 
         for symbol in Self::metadata_string_values(metadata_json.as_ref(), "symbol") {
-            let symbol_node_id = Self::graph_node_id(NodeKind::Function, &symbol);
-            self.delete_graph_edge_id(Self::graph_edge_id(
+            let symbol_node_id = Self::graph_node_id(workspace_id, NodeKind::Function, &symbol);
+            edge_ids.push(GraphEdgeId::new(Self::graph_edge_id(
                 EdgeKind::Contains,
                 &symbol_node_id,
                 &chunk_node_id,
-            ));
+            )));
         }
+        edge_ids
     }
 
-    fn delete_graph_chunk(&self, vector_id: &VectorId) {
+    fn delete_graph_chunk(
+        &self,
+        vector_id: &VectorId,
+        metadata: Option<&[u8]>,
+    ) -> Result<(), akidb_graph::GraphError> {
         let Some(graph) = &self.graph_index else {
-            return;
+            return Ok(());
         };
-        let node_id = Self::chunk_node_id(vector_id);
-        if let Err(e) = graph.delete_node(&node_id) {
-            warn!(vector_id = %vector_id, error = %e, "failed to delete graph chunk node");
-        }
+        let metadata = metadata.map(String::from_utf8_lossy).unwrap_or_default();
+        let workspace_id = Self::workspace_id_from_metadata(&metadata);
+        let node_id = Self::chunk_node_id(&workspace_id, vector_id);
+        graph.delete_node(&node_id)?;
+        Ok(())
     }
 
     /// FIX BUG-052: Internal update implementation called while holding the per-key lock
@@ -1584,11 +1915,9 @@ where
             }
         }
 
-        if let Some(metadata) = old_metadata {
-            self.delete_graph_edges_from_metadata(vector_id, &metadata);
-        }
         self.index_sql_metadata(vector_id, new_internal_id.0, metadata);
-        self.index_graph_chunk(vector_id, metadata);
+        self.index_graph_chunk(vector_id, metadata, old_metadata.as_deref())
+            .map_err(|e| Status::internal(format!("graph projection failed: {e}")))?;
 
         let elapsed = start.elapsed();
         info!(
@@ -1644,12 +1973,19 @@ where
 
         let vector_id = VectorId::new(&req.id);
         let vector: Vec<f32> = req.vector;
+        let _mutation_guard = MutationLockGuard::try_acquire(&self.mutation_locks, req.id.clone())
+            .ok_or_else(|| {
+                Status::aborted(format!(
+                    "Concurrent mutation in progress for ID: {}",
+                    req.id
+                ))
+            })?;
 
-        let old_metadata = self
+        let old_metadata = self.ensure_insert_does_not_cross_workspace(&vector_id, &ctx)?;
+        let old_internal_id = self
             .id_mapping
-            .get_vector(&vector_id)
-            .map_err(Self::to_status)?
-            .map(|entry| entry.metadata);
+            .get_internal_id(&vector_id)
+            .map_err(Self::to_status)?;
 
         // Insert into index
         let internal_id = self
@@ -1676,14 +2012,22 @@ where
             }
             return Err(Self::to_status(e));
         }
+        if let Some(old_id) = old_internal_id.filter(|old_id| *old_id != internal_id) {
+            if let Err(e) = self.index.delete(old_id) {
+                warn!(
+                    vector_id = %vector_id,
+                    old_internal_id = old_id.0,
+                    error = %e,
+                    "failed to remove replaced vector during insert upsert"
+                );
+            }
+        }
 
         // Keep BM25, context packing, and persisted source text aligned with
         // upsert semantics. Empty text clears any previous source text.
         self.sync_source_text(&vector_id, &req.text);
-        if let Some(metadata) = old_metadata {
-            self.delete_graph_edges_from_metadata(&vector_id, &metadata);
-        }
-        self.index_graph_chunk(&vector_id, &stamped_metadata);
+        self.index_graph_chunk(&vector_id, &stamped_metadata, old_metadata.as_deref())
+            .map_err(|e| Status::internal(format!("graph projection failed: {e}")))?;
         self.index_sql_metadata(&vector_id, internal_id.0, &stamped_metadata);
 
         let elapsed = start.elapsed();
@@ -1778,6 +2122,7 @@ where
         request: Request<DeleteRequest>,
     ) -> Result<Response<DeleteResponse>, Status> {
         let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
         let req = request.into_inner();
 
         debug!("Delete request for ID: {}", req.id);
@@ -1787,6 +2132,18 @@ where
         }
 
         let vector_id = VectorId::new(&req.id);
+        let _mutation_guard = MutationLockGuard::try_acquire(&self.mutation_locks, req.id.clone())
+            .ok_or_else(|| {
+                Status::aborted(format!(
+                    "Concurrent mutation in progress for ID: {}",
+                    req.id
+                ))
+            })?;
+        let existing_metadata = self.ensure_existing_vector_access(&vector_id, &ctx)?;
+        if existing_metadata.is_some() {
+            self.delete_graph_chunk(&vector_id, existing_metadata.as_deref())
+                .map_err(|e| Status::internal(format!("graph deletion failed: {e}")))?;
+        }
 
         // Get internal ID and mark deleted
         let status = match self
@@ -1803,7 +2160,6 @@ where
                 if let Err(e) = self.id_mapping.delete_text(&vector_id) {
                     warn!(vector_id = %vector_id, error = %e, "failed to delete persisted text");
                 }
-                self.delete_graph_chunk(&vector_id);
                 self.delete_sql_metadata(&vector_id);
                 DeleteStatus::Deleted
             }
@@ -1877,13 +2233,14 @@ where
         .map_err(Status::invalid_argument)?;
 
         let vector_id = VectorId::new(&req.id);
-
-        // FIX BUG-052 + BUG-059: Use RAII guard for panic-safe per-key locking
-        // The guard automatically releases the lock when dropped, even on panic
-        let _lock_guard = UpdateLockGuard::try_acquire(&self.update_locks, req.id.clone())
+        let _mutation_guard = MutationLockGuard::try_acquire(&self.mutation_locks, req.id.clone())
             .ok_or_else(|| {
-                Status::aborted(format!("Concurrent update in progress for ID: {}", req.id))
+                Status::aborted(format!(
+                    "Concurrent mutation in progress for ID: {}",
+                    req.id
+                ))
             })?;
+        self.ensure_existing_vector_access(&vector_id, &ctx)?;
 
         // Perform the update operation - lock is held by guard
         // Guard will release lock automatically when this function returns (or panics)
@@ -1892,6 +2249,7 @@ where
 
     #[instrument(skip(self, request))]
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
+        let ctx = self.request_auth_context(&request);
         let req = request.into_inner();
         self.validate_request_collection(&req.collection)?;
         if let Err(message) = Self::validate_vector_id(&req.id) {
@@ -1899,6 +2257,7 @@ where
         }
 
         let vector_id = VectorId::new(&req.id);
+        self.ensure_existing_vector_access(&vector_id, &ctx)?;
 
         // Get internal ID
         let internal_id = self
@@ -1967,6 +2326,7 @@ where
         request: Request<InsertBatchRequest>,
     ) -> Result<Response<InsertBatchResponse>, Status> {
         let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
         let req = request.into_inner();
 
         debug!("Insert batch request for {} vectors", req.vectors.len());
@@ -1976,7 +2336,7 @@ where
         let mut inserted_count = 0u32;
         let mut failed_ids = Vec::new();
 
-        for vector in req.vectors {
+        for mut vector in req.vectors {
             if let Err(message) = Self::validate_vector_payload(&vector.id, &vector.embedding) {
                 warn!(
                     "Batch insert: ID {} failed validation: {}",
@@ -1994,12 +2354,50 @@ where
                 continue;
             }
 
+            vector.metadata = match stamp_write_metadata(
+                &vector.metadata,
+                &ctx,
+                &self.acl,
+                self.embedding_model_id.as_deref(),
+            ) {
+                Ok(metadata) => metadata,
+                Err(message) => {
+                    warn!(
+                        "Batch insert: ID {} failed workspace metadata validation: {}",
+                        vector.id, message
+                    );
+                    failed_ids.push(vector.id);
+                    continue;
+                }
+            };
+
             let vector_id = VectorId::new(&vector.id);
-            let old_metadata = match self.id_mapping.get_vector(&vector_id) {
-                Ok(entry) => entry.map(|entry| entry.metadata),
+            let Some(_mutation_guard) =
+                MutationLockGuard::try_acquire(&self.mutation_locks, vector.id.clone())
+            else {
+                warn!(
+                    "Batch insert: ID {} has a concurrent mutation in progress",
+                    vector.id
+                );
+                failed_ids.push(vector.id);
+                continue;
+            };
+            let old_metadata = match self.ensure_insert_does_not_cross_workspace(&vector_id, &ctx) {
+                Ok(metadata) => metadata,
                 Err(e) => {
                     warn!(
-                        "Batch insert: ID {} failed during existing metadata lookup: {}",
+                        "Batch insert: ID {} failed workspace ownership check: {}",
+                        vector.id, e
+                    );
+                    failed_ids.push(vector.id);
+                    continue;
+                }
+            };
+            let old_internal_id = match self.id_mapping.get_internal_id(&vector_id) {
+                Ok(internal_id) => internal_id,
+                Err(e) => {
+                    warn!(
+                        "Batch insert: ID {} failed internal id lookup: {}",
                         vector.id, e
                     );
                     failed_ids.push(vector.id);
@@ -2016,13 +2414,34 @@ where
                         &vector.metadata,
                     ) {
                         Ok(_) => {
-                            inserted_count += 1;
-                            self.sync_source_text(&vector_id, &vector.text);
-                            if let Some(metadata) = old_metadata {
-                                self.delete_graph_edges_from_metadata(&vector_id, &metadata);
+                            if let Some(old_id) =
+                                old_internal_id.filter(|old_id| *old_id != internal_id)
+                            {
+                                if let Err(e) = self.index.delete(old_id) {
+                                    warn!(
+                                        vector_id = %vector.id,
+                                        old_internal_id = old_id.0,
+                                        error = %e,
+                                        "Batch insert: failed to remove replaced vector"
+                                    );
+                                }
                             }
-                            self.index_graph_chunk(&vector_id, &vector.metadata);
+                            self.sync_source_text(&vector_id, &vector.text);
+                            if let Err(e) = self.index_graph_chunk(
+                                &vector_id,
+                                &vector.metadata,
+                                old_metadata.as_deref(),
+                            ) {
+                                warn!(
+                                    vector_id = %vector.id,
+                                    error = %e,
+                                    "Batch insert: graph projection failed"
+                                );
+                                failed_ids.push(vector.id);
+                                continue;
+                            }
                             self.index_sql_metadata(&vector_id, internal_id.0, &vector.metadata);
+                            inserted_count += 1;
                         }
                         Err(e) => {
                             // FIX BUG-046, BUG-HUNT-601: Rollback and log failures
@@ -2075,6 +2494,7 @@ where
         request: Request<SearchBatchRequest>,
     ) -> Result<Response<SearchBatchResponse>, Status> {
         let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
         let req = request.into_inner();
 
         debug!("Search batch request for {} queries", req.queries.len());
@@ -2082,7 +2502,9 @@ where
         self.validate_request_collection(&req.collection)?;
         Self::validate_search_controls(req.top_k, req.nprobe)?;
 
+        let metadata_filter = self.compile_search_filter(&[], None, &ctx)?.map(Arc::new);
         let params = SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
+        let params = self.attach_metadata_predicate(params, metadata_filter);
 
         let mut results = Vec::with_capacity(req.queries.len());
 
@@ -2284,7 +2706,7 @@ where
         }
         let planner_trace = plan_query(&planner_input);
         if matches!(planner_trace.mode, RetrievalMode::StructuredSql) {
-            return self.sql_metadata_text_search(&req, start);
+            return self.sql_metadata_text_search(&req, start, metadata_filter.as_deref(), &ctx);
         }
         debug!(
             mode = ?planner_trace.mode,
@@ -2389,8 +2811,12 @@ where
                 let graph_limit = top_k.saturating_mul(2).max(1);
                 let graph_seed_score = ranked.first().map(|s| s.score + 0.0001).unwrap_or(1.0);
 
-                for seed_node in Self::graph_seed_nodes_from_query(&req.text) {
-                    match graph.related_chunks(&seed_node, graph_limit) {
+                for seed_node in Self::graph_seed_nodes_from_query(&req.text, &ctx.workspace_id) {
+                    let graph_request = RelatedChunksRequest::new(seed_node.clone())
+                        .with_max_depth(planner_trace.graph_depth.max(1))
+                        .with_per_hop_limit(graph_limit.saturating_mul(8))
+                        .with_limit(graph_limit);
+                    match graph.related_chunks_with_depth(graph_request) {
                         Ok(chunks) => {
                             for chunk in chunks {
                                 let id = chunk.vector_id;
@@ -2416,8 +2842,12 @@ where
 
                 let seeds = ranked.clone();
                 for seed in seeds {
-                    let seed_node = Self::chunk_node_id(&seed.id);
-                    match graph.related_chunks(&seed_node, graph_limit) {
+                    let seed_node = Self::chunk_node_id(&ctx.workspace_id, &seed.id);
+                    let graph_request = RelatedChunksRequest::new(seed_node.clone())
+                        .with_max_depth(planner_trace.graph_depth.max(1))
+                        .with_per_hop_limit(graph_limit.saturating_mul(8))
+                        .with_limit(graph_limit);
+                    match graph.related_chunks_with_depth(graph_request) {
                         Ok(chunks) => {
                             for chunk in chunks {
                                 let id = chunk.vector_id;
@@ -2542,6 +2972,7 @@ mod tests {
     use super::*;
     use crate::proto::Query;
     use akidb_faiss::MockIndex;
+    use akidb_sql::SqliteMetadataIndex;
     use akidb_storage::RocksDbBackend;
     use tempfile::TempDir;
     use tonic::Code;
@@ -2642,9 +3073,9 @@ mod tests {
                 nprobe: None,
                 filter: vec![],
                 tag_filter: None,
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+                score_threshold: None,
+                group_by: String::new(),
+                group_size: None,
             }))
             .await
             .unwrap()
@@ -2749,9 +3180,9 @@ mod tests {
                 nprobe: None,
                 filter: vec![],
                 tag_filter: None,
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+                score_threshold: None,
+                group_by: String::new(),
+                group_size: None,
             }))
             .await
             .unwrap()
@@ -2778,9 +3209,9 @@ mod tests {
                 nprobe: Some(0),
                 filter: vec![],
                 tag_filter: None,
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+                score_threshold: None,
+                group_by: String::new(),
+                group_size: None,
             }))
             .await;
 
@@ -2800,9 +3231,9 @@ mod tests {
                 nprobe: None,
                 filter: vec![],
                 tag_filter: None,
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+                score_threshold: None,
+                group_by: String::new(),
+                group_size: None,
             }))
             .await;
 
@@ -3012,9 +3443,9 @@ mod tests {
                     nprobe: None,
                     filter: vec![],
                     tag_filter: None,
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+                    score_threshold: None,
+                    group_by: String::new(),
+                    group_size: None,
                 }))
                 .await
                 .expect_err("search should reject wrong collection"),
@@ -3050,9 +3481,9 @@ mod tests {
                     filter: vec![],
                     tag_filter: None,
                     retrieval_mode: "bm25".to_string(),
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+                    score_threshold: None,
+                    group_by: String::new(),
+                    group_size: None,
                 }))
                 .await
                 .expect_err("text_search should reject wrong collection"),
@@ -3314,12 +3745,7 @@ mod tests {
             group_size: None,
         });
         search_a.extensions_mut().insert(with_workspace("ws-a"));
-        let hits_a = service
-            .search(search_a)
-            .await
-            .unwrap()
-            .into_inner()
-            .results;
+        let hits_a = service.search(search_a).await.unwrap().into_inner().results;
         assert!(hits_a.iter().any(|h| h.id == "a1"));
         assert!(!hits_a.iter().any(|h| h.id == "b1"));
 
@@ -3335,14 +3761,225 @@ mod tests {
             group_size: None,
         });
         search_b.extensions_mut().insert(with_workspace("ws-b"));
-        let hits_b = service
-            .search(search_b)
+        let hits_b = service.search(search_b).await.unwrap().into_inner().results;
+        assert!(hits_b.iter().any(|h| h.id == "b1"));
+        assert!(!hits_b.iter().any(|h| h.id == "a1"));
+    }
+
+    #[tokio::test]
+    async fn test_workspace_acl_hides_and_protects_point_mutations() {
+        let (service, _dir) = test_service();
+        let mut insert_a = Request::new(InsertRequest {
+            collection: "test".to_string(),
+            id: "private-a".to_string(),
+            vector: vec![1.0, 0.0],
+            metadata: br#"{"title":"workspace a"}"#.to_vec(),
+            text: "workspace a evidence".to_string(),
+        });
+        insert_a.extensions_mut().insert(with_workspace("ws-a"));
+        service.insert(insert_a).await.unwrap();
+
+        let mut get_b = Request::new(GetRequest {
+            collection: "test".to_string(),
+            id: "private-a".to_string(),
+        });
+        get_b.extensions_mut().insert(with_workspace("ws-b"));
+        assert_eq!(service.get(get_b).await.unwrap_err().code(), Code::NotFound);
+
+        let mut update_b = Request::new(UpdateRequest {
+            collection: "test".to_string(),
+            id: "private-a".to_string(),
+            vector: vec![0.0, 1.0],
+            metadata: br#"{"title":"workspace b overwrite"}"#.to_vec(),
+        });
+        update_b.extensions_mut().insert(with_workspace("ws-b"));
+        assert_eq!(
+            service.update(update_b).await.unwrap_err().code(),
+            Code::NotFound
+        );
+
+        let mut delete_b = Request::new(DeleteRequest {
+            collection: "test".to_string(),
+            id: "private-a".to_string(),
+        });
+        delete_b.extensions_mut().insert(with_workspace("ws-b"));
+        assert_eq!(
+            service.delete(delete_b).await.unwrap_err().code(),
+            Code::NotFound
+        );
+
+        let mut insert_b = Request::new(InsertRequest {
+            collection: "test".to_string(),
+            id: "private-a".to_string(),
+            vector: vec![0.0, 1.0],
+            metadata: br#"{"title":"workspace b collision"}"#.to_vec(),
+            text: String::new(),
+        });
+        insert_b.extensions_mut().insert(with_workspace("ws-b"));
+        assert_eq!(
+            service.insert(insert_b).await.unwrap_err().code(),
+            Code::AlreadyExists
+        );
+
+        let mut get_a = Request::new(GetRequest {
+            collection: "test".to_string(),
+            id: "private-a".to_string(),
+        });
+        get_a.extensions_mut().insert(with_workspace("ws-a"));
+        let stored = service.get(get_a).await.unwrap().into_inner();
+        assert_eq!(stored.vector, vec![1.0, 0.0]);
+        assert!(stored.metadata.contains("workspace a"));
+
+        let mut delete_a = Request::new(DeleteRequest {
+            collection: "test".to_string(),
+            id: "private-a".to_string(),
+        });
+        delete_a.extensions_mut().insert(with_workspace("ws-a"));
+        assert_eq!(
+            service.delete(delete_a).await.unwrap().into_inner().status,
+            DeleteStatus::Deleted as i32
+        );
+
+        let mut tombstone_delete_b = Request::new(DeleteRequest {
+            collection: "test".to_string(),
+            id: "private-a".to_string(),
+        });
+        tombstone_delete_b
+            .extensions_mut()
+            .insert(with_workspace("ws-b"));
+        assert_eq!(
+            service.delete(tombstone_delete_b).await.unwrap_err().code(),
+            Code::NotFound
+        );
+
+        let mut tombstone_insert_b = Request::new(InsertRequest {
+            collection: "test".to_string(),
+            id: "private-a".to_string(),
+            vector: vec![0.0, 1.0],
+            metadata: br#"{"title":"workspace b tombstone collision"}"#.to_vec(),
+            text: String::new(),
+        });
+        tombstone_insert_b
+            .extensions_mut()
+            .insert(with_workspace("ws-b"));
+        assert_eq!(
+            service.insert(tombstone_insert_b).await.unwrap_err().code(),
+            Code::AlreadyExists
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_write_and_search_are_workspace_scoped() {
+        let (service, _dir) = test_service();
+        for (workspace, id, vector) in [
+            ("ws-a", "batch-a", vec![1.0, 0.0]),
+            ("ws-b", "batch-b", vec![0.99, 0.01]),
+        ] {
+            let mut request = Request::new(InsertBatchRequest {
+                collection: "test".to_string(),
+                vectors: vec![Vector {
+                    id: id.to_string(),
+                    embedding: vector,
+                    metadata: br#"{"kind":"batch"}"#.to_vec(),
+                    text: format!("{workspace} batch text"),
+                }],
+            });
+            request.extensions_mut().insert(with_workspace(workspace));
+            let response = service.insert_batch(request).await.unwrap().into_inner();
+            assert!(response.success);
+            assert_eq!(response.inserted_count, 1);
+        }
+
+        let mut request = Request::new(SearchBatchRequest {
+            collection: "test".to_string(),
+            queries: vec![Query {
+                vector: vec![1.0, 0.0],
+            }],
+            top_k: 10,
+            nprobe: None,
+        });
+        request.extensions_mut().insert(with_workspace("ws-a"));
+        let hits = service
+            .search_batch(request)
+            .await
+            .unwrap()
+            .into_inner()
+            .results
+            .remove(0)
+            .results;
+        assert!(hits.iter().any(|hit| hit.id == "batch-a"));
+        assert!(!hits.iter().any(|hit| hit.id == "batch-b"));
+        let metadata: serde_json::Value = serde_json::from_str(&hits[0].metadata).unwrap();
+        assert_eq!(metadata[acl::WORKSPACE_KEY], "ws-a");
+    }
+
+    #[tokio::test]
+    async fn test_structured_sql_results_are_workspace_scoped() {
+        let dir = TempDir::new().unwrap();
+        let storage = Arc::new(RocksDbBackend::open(dir.path()).unwrap());
+        let id_mapping = Arc::new(IdMapping::new(storage, "test"));
+        let index = Arc::new(MockIndex::new(2, 16));
+        let sql = Arc::new(SqliteMetadataIndex::in_memory().unwrap());
+        let service = AkiDbService::new(index, id_mapping, "test").with_metadata_sql_index(sql);
+
+        for (workspace, id) in [("ws-a", "sql-a"), ("ws-b", "sql-b")] {
+            let mut request = Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: id.to_string(),
+                vector: vec![1.0, 0.0],
+                metadata: br#"{"status":"open"}"#.to_vec(),
+                text: String::new(),
+            });
+            request.extensions_mut().insert(with_workspace(workspace));
+            service.insert(request).await.unwrap();
+        }
+
+        let mut query = bm25_text_search_request("all open records", 10);
+        query.retrieval_mode = "structured_sql".to_string();
+        query.filter = br#"{"status":"open"}"#.to_vec();
+        let mut request = Request::new(query);
+        request.extensions_mut().insert(with_workspace("ws-a"));
+        let hits = service
+            .text_search(request)
             .await
             .unwrap()
             .into_inner()
             .results;
-        assert!(hits_b.iter().any(|h| h.id == "b1"));
-        assert!(!hits_b.iter().any(|h| h.id == "a1"));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "sql-a");
+    }
+
+    #[tokio::test]
+    async fn test_context_pack_uses_provenance_citation() {
+        let (service, _dir) = test_service();
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: "citation-chunk".to_string(),
+                vector: vec![1.0, 0.0],
+                metadata: br#"{
+                    "source_uri":"s3://docs/contracts/acme.pdf",
+                    "source_version":"sha256:abc",
+                    "start_offset":"10",
+                    "end_offset":42
+                }"#
+                .to_vec(),
+                text: "citation_marker_unique contract evidence".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let mut query = bm25_text_search_request("citation_marker_unique", 1);
+        query.pack = true;
+        query.pack_token_budget = Some(64);
+        let response = service
+            .text_search(Request::new(query))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(response
+            .context_pack
+            .contains("[s3://docs/contracts/acme.pdf@sha256:abc#10:42]"));
     }
 
     #[tokio::test]
@@ -3413,7 +4050,11 @@ mod tests {
         for r in &response.results {
             let v: serde_json::Value = serde_json::from_str(&r.metadata).unwrap();
             let p = v["parent_id"].as_str().unwrap().to_string();
-            assert!(parents.insert(p), "duplicate parent in results: {:?}", response.results);
+            assert!(
+                parents.insert(p),
+                "duplicate parent in results: {:?}",
+                response.results
+            );
         }
         assert!(response.results.len() <= 2);
         assert!(!response.results.is_empty());
@@ -3577,6 +4218,140 @@ mod tests {
             graph_only_hits.iter().any(|r| r.id == "fn_hidden"),
             "graph mode must expand calls edge to fn_hidden, got {:?}",
             graph_only_hits.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_graph_projection_is_workspace_scoped_replaced_and_rebuildable() {
+        let dir = TempDir::new().unwrap();
+        let storage = Arc::new(RocksDbBackend::open(dir.path()).unwrap());
+        let id_mapping = Arc::new(IdMapping::new(storage.clone(), "test"));
+        let index = Arc::new(MockIndex::new(2, 16));
+        let graph = Arc::new(akidb_graph::NativeGraphIndex::new(storage));
+        let service = AkiDbService::new(index, id_mapping, "test").with_graph_index(graph.clone());
+
+        for (workspace, id) in [("ws-a", "chunk-a"), ("ws-b", "chunk-b")] {
+            let mut request = Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: id.to_string(),
+                vector: vec![1.0, 0.0],
+                metadata: format!(
+                    r#"{{
+                        "document_id":"shared-document",
+                        "file":"shared.pdf",
+                        "source_uri":"s3://docs/{workspace}/shared.pdf",
+                        "source_version":"v1",
+                        "extraction_method":"deterministic",
+                        "pipeline_version":"test"
+                    }}"#
+                )
+                .into_bytes(),
+                text: format!("{workspace} evidence"),
+            });
+            request.extensions_mut().insert(with_workspace(workspace));
+            service.insert(request).await.unwrap();
+        }
+
+        let document_a = GraphNodeId::scoped("ws-a", "document:shared-document");
+        let document_b = GraphNodeId::scoped("ws-b", "document:shared-document");
+        let related_a = graph.related_chunks(&document_a, 10).unwrap();
+        let related_b = graph.related_chunks(&document_b, 10).unwrap();
+        assert_eq!(related_a.len(), 1);
+        assert_eq!(related_a[0].vector_id.as_str(), "chunk-a");
+        assert_eq!(related_b.len(), 1);
+        assert_eq!(related_b[0].vector_id.as_str(), "chunk-b");
+
+        let evidence_edge = graph
+            .neighbors(
+                akidb_graph::NeighborRequest::new(document_a.clone())
+                    .with_direction(akidb_graph::Direction::Out),
+            )
+            .unwrap()
+            .remove(0)
+            .edge;
+        assert_eq!(evidence_edge.properties["workspace_id"], "ws-a");
+        assert_eq!(evidence_edge.properties["evidence_chunk_id"], "chunk-a");
+        assert_eq!(
+            evidence_edge.properties["extraction_method"],
+            "deterministic"
+        );
+
+        let retry_document = GraphNodeId::scoped("ws-a", "document:retry-document");
+        service
+            .index_graph_chunk(
+                &VectorId::new("chunk-a"),
+                br#"{
+                    "workspace_id":"ws-a",
+                    "document_id":"retry-document",
+                    "file":"shared.pdf",
+                    "source_uri":"s3://docs/ws-a/shared.pdf",
+                    "source_version":"retry",
+                    "extraction_method":"deterministic",
+                    "pipeline_version":"test"
+                }"#,
+                None,
+            )
+            .unwrap();
+        assert!(graph.related_chunks(&document_a, 10).unwrap().is_empty());
+        assert_eq!(
+            graph.related_chunks(&retry_document, 10).unwrap()[0]
+                .vector_id
+                .as_str(),
+            "chunk-a"
+        );
+
+        let mut update = Request::new(UpdateRequest {
+            collection: "test".to_string(),
+            id: "chunk-a".to_string(),
+            vector: vec![0.9, 0.1],
+            metadata: br#"{
+                "document_id":"replacement-document",
+                "file":"shared.pdf",
+                "source_uri":"s3://docs/ws-a/shared.pdf",
+                "source_version":"v2",
+                "extraction_method":"deterministic",
+                "pipeline_version":"test"
+            }"#
+            .to_vec(),
+        });
+        update.extensions_mut().insert(with_workspace("ws-a"));
+        service.update(update).await.unwrap();
+
+        assert!(graph.related_chunks(&document_a, 10).unwrap().is_empty());
+        assert!(graph
+            .related_chunks(&retry_document, 10)
+            .unwrap()
+            .is_empty());
+        let replacement = GraphNodeId::scoped("ws-a", "document:replacement-document");
+        assert_eq!(
+            graph.related_chunks(&replacement, 10).unwrap()[0]
+                .vector_id
+                .as_str(),
+            "chunk-a"
+        );
+        assert_eq!(
+            graph.related_chunks(&document_b, 10).unwrap()[0]
+                .vector_id
+                .as_str(),
+            "chunk-b"
+        );
+
+        graph
+            .delete_node(&GraphNodeId::scoped("ws-a", "chunk:chunk-a"))
+            .unwrap();
+        assert!(graph.related_chunks(&replacement, 10).unwrap().is_empty());
+        assert_eq!(service.rebuild_graph_index().unwrap(), 2);
+        assert_eq!(
+            graph.related_chunks(&replacement, 10).unwrap()[0]
+                .vector_id
+                .as_str(),
+            "chunk-a"
+        );
+        assert_eq!(
+            graph.related_chunks(&document_b, 10).unwrap()[0]
+                .vector_id
+                .as_str(),
+            "chunk-b"
         );
     }
 }

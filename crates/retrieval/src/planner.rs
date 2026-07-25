@@ -112,7 +112,7 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
             " depends on",
         ],
     );
-    let relationship = where_relationship
+    let code_relationship = where_relationship
         || does_relationship
         || starts_with_any(
             &lower,
@@ -209,6 +209,70 @@ pub fn plan_query(input: &PlannerInput) -> PlannerTrace {
                 " responsible for",
             ],
         );
+    let enterprise_relationship = (starts_with_any(
+        &lower,
+        &[
+            "which email",
+            "what email",
+            "who sent",
+            "who received",
+            "which ticket",
+            "what ticket",
+            "which contract",
+            "what contract",
+            "which invoice",
+            "what invoice",
+        ],
+    ) && contains_any(
+        &lower,
+        &[
+            " attach",
+            " thread",
+            " sent",
+            " create",
+            " resolve",
+            " assign",
+            " reference",
+            " belong",
+            " correspond",
+            " relate",
+        ],
+    )) || contains_any(
+        &lower,
+        &[
+            " attached to ",
+            " part of the thread",
+            " part of thread",
+            " sent by ",
+            " sent to ",
+            " created from ",
+            " resolved by ",
+            " assigned to ",
+            " supersedes ",
+            " evidence for ",
+        ],
+    );
+    let cjk_relationship = contains_any(
+        q,
+        &[
+            "哪封 Email 附帶",
+            "哪一封 Email 附帶",
+            "哪份 PDF 是",
+            "哪一份 PDF 是",
+            "屬於哪個 thread",
+            "屬於哪一個 thread",
+            "由誰寄出",
+            "寄給誰",
+            "由誰解決",
+            "由誰負責",
+            "對應哪份合約",
+            "對應哪一份合約",
+            "被哪些 ticket 引用",
+            "由哪封 Email 建立",
+            "由哪一封 Email 建立",
+        ],
+    );
+    let relationship = code_relationship || enterprise_relationship || cjk_relationship;
     let explanatory = starts_with_any(
         &lower,
         &[
@@ -437,6 +501,34 @@ mod tests {
             "owner of draft_model::decode",
             "who maintains kv_cache.rs",
             "which team is responsible for ax-engine",
+        ] {
+            let trace = plan_query(&PlannerInput::new(query));
+            assert_eq!(trace.mode, RetrievalMode::GraphHybrid, "{query}");
+            assert!(trace.graph_enabled, "{query}");
+        }
+    }
+
+    #[test]
+    fn test_enterprise_relationship_queries_enable_graph() {
+        for query in [
+            "which email is this invoice attached to",
+            "who sent the email that created ticket 88",
+            "what contract does invoice INV-1892 correspond to",
+            "which ticket was resolved by Akira",
+        ] {
+            let trace = plan_query(&PlannerInput::new(query));
+            assert_eq!(trace.mode, RetrievalMode::GraphHybrid, "{query}");
+            assert!(trace.graph_enabled, "{query}");
+        }
+    }
+
+    #[test]
+    fn test_chinese_relationship_queries_enable_graph() {
+        for query in [
+            "這封 Email 屬於哪一個 thread？",
+            "哪一份 PDF 是這封 Email 的附件？",
+            "這項問題最後由誰解決？",
+            "哪一張 invoice 對應哪份合約？",
         ] {
             let trace = plan_query(&PlannerInput::new(query));
             assert_eq!(trace.mode, RetrievalMode::GraphHybrid, "{query}");

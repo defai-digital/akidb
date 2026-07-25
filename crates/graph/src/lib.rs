@@ -12,8 +12,10 @@ pub mod query;
 
 pub use error::{GraphError, GraphResult};
 pub use model::{
-    DeleteNodeResult, Direction, EdgeKind, GraphEdge, GraphEdgeId, GraphNeighbor, GraphNode,
-    GraphNodeId, GraphPath, GraphStats, NodeKind, RelatedChunk,
+    DeleteNodeResult, Direction, EdgeKind, GraphEdge, GraphEdgeId, GraphMutationBatch,
+    GraphNeighbor, GraphNode, GraphNodeId, GraphPath, GraphStats, NodeKind, RelatedChunk,
 };
 pub use native::NativeGraphIndex;
-pub use query::{GraphIndex, NeighborRequest, PathExistsRequest, TwoHopRequest};
+pub use query::{
+    GraphIndex, NeighborRequest, PathExistsRequest, RelatedChunksRequest, TwoHopRequest,
+};

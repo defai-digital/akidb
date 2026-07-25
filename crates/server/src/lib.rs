@@ -360,6 +360,21 @@ fn build_service(
 
     // Rebuild the lexical index / document store from persisted source text so
     // hybrid retrieval and context packing work after a restart.
+    // Bootstrap a newly enabled/empty graph from durable vectors. A full
+    // rebuild remains an explicit repair operation because replaying every
+    // projection on each start would make large-index startup unbounded.
+    let graph_chunks = if service.graph_stats().is_some_and(|stats| stats.nodes == 0) {
+        service.rebuild_graph_index()?
+    } else {
+        0
+    };
+    if graph_chunks > 0 {
+        info!(
+            "Rebuilt native graph projections from {} persisted vectors",
+            graph_chunks
+        );
+    }
+
     let loaded = service.rebuild_lexical_index();
     if loaded > 0 {
         info!("Rebuilt lexical index from {} persisted documents", loaded);

@@ -434,10 +434,23 @@ fn build_vector_metadata(
     chunk_index: usize,
 ) -> std::collections::HashMap<String, String> {
     let mut metadata = std::collections::HashMap::new();
+    let source_uri = format!("s3://{}/{}", event.bucket, event.key);
     metadata.insert("document_key".to_string(), event.key.clone());
+    metadata.insert("document_id".to_string(), source_uri.clone());
+    metadata.insert("file".to_string(), event.key.clone());
     metadata.insert("bucket".to_string(), event.bucket.clone());
     metadata.insert("chunk_index".to_string(), chunk_index.to_string());
     metadata.insert("content_hash".to_string(), content_hash.to_string());
+    metadata.insert("source_uri".to_string(), source_uri.clone());
+    metadata.insert("source_object_id".to_string(), source_uri);
+    metadata.insert("source_version".to_string(), content_hash.to_string());
+    metadata.insert("source_system".to_string(), "minio".to_string());
+    metadata.insert("source_observed_at".to_string(), event.timestamp.clone());
+    metadata.insert("extraction_method".to_string(), "deterministic".to_string());
+    metadata.insert(
+        "pipeline_version".to_string(),
+        env!("CARGO_PKG_VERSION").to_string(),
+    );
     metadata.insert("start_offset".to_string(), chunk.start_offset.to_string());
     metadata.insert("end_offset".to_string(), chunk.end_offset.to_string());
     metadata.insert("token_count".to_string(), chunk.token_count.to_string());
@@ -644,8 +657,17 @@ mod tests {
         );
 
         assert_eq!(metadata["document_key"], "reports/annual.pdf");
+        assert_eq!(metadata["document_id"], "s3://docs/reports/annual.pdf");
+        assert_eq!(metadata["file"], "reports/annual.pdf");
         assert_eq!(metadata["bucket"], "docs");
         assert_eq!(metadata["content_hash"], "hash123");
+        assert_eq!(metadata["source_uri"], "s3://docs/reports/annual.pdf");
+        assert_eq!(metadata["source_object_id"], "s3://docs/reports/annual.pdf");
+        assert_eq!(metadata["source_version"], "hash123");
+        assert_eq!(metadata["source_system"], "minio");
+        assert_eq!(metadata["source_observed_at"], "2026-06-28T08:00:00Z");
+        assert_eq!(metadata["extraction_method"], "deterministic");
+        assert_eq!(metadata["pipeline_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(metadata["document_format"], "pdf");
         assert_eq!(metadata["title"], "Annual Report");
         assert_eq!(metadata["author"], "Finance");

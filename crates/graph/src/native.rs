@@ -1,26 +1,36 @@
 //! Native storage-backed graph index.
 
-use std::collections::{HashSet, VecDeque};
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use akidb_storage::{BatchOperation, StorageBackend};
 
 use crate::error::{GraphError, GraphResult};
 use crate::keys;
 use crate::model::{
-    DeleteNodeResult, Direction, DirectionOnEdge, EdgeKind, GraphEdge, GraphEdgeId, GraphNeighbor,
-    GraphNode, GraphNodeId, GraphPath, GraphStats, RelatedChunk,
+    DeleteNodeResult, Direction, DirectionOnEdge, EdgeKind, GraphEdge, GraphEdgeId,
+    GraphMutationBatch, GraphNeighbor, GraphNode, GraphNodeId, GraphPath, GraphStats, RelatedChunk,
 };
 use crate::query::{GraphIndex, NeighborRequest, PathExistsRequest, TwoHopRequest};
 
 /// RocksDB-compatible native graph index.
 pub struct NativeGraphIndex<S: StorageBackend> {
     storage: Arc<S>,
+    mutation_lock: Mutex<()>,
 }
 
 impl<S: StorageBackend> NativeGraphIndex<S> {
     pub fn new(storage: Arc<S>) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            mutation_lock: Mutex::new(()),
+        }
+    }
+
+    fn mutation_guard(&self) -> MutexGuard<'_, ()> {
+        self.mutation_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn serialize<T: serde::Serialize>(value: &T) -> GraphResult<Vec<u8>> {
@@ -93,6 +103,9 @@ impl<S: StorageBackend> NativeGraphIndex<S> {
         let Some(node) = self.get_node(neighbor_id)? else {
             return Ok(None);
         };
+        if !source.is_same_workspace(&node.id) {
+            return Ok(None);
+        }
         Ok(Some(GraphNeighbor {
             node,
             edge,
@@ -111,6 +124,9 @@ impl<S: StorageBackend> NativeGraphIndex<S> {
         let mut chunks = Vec::with_capacity(entries.len());
         for (_, value) in entries {
             let node_id = Self::deserialize::<GraphNodeId>(&value)?;
+            if !entity_id.is_same_workspace(&node_id) {
+                continue;
+            }
             if let Some(vector_id) = node_id.as_chunk_vector_id() {
                 chunks.push(RelatedChunk {
                     vector_id,
@@ -139,11 +155,28 @@ impl<S: StorageBackend> NativeGraphIndex<S> {
                     | EdgeKind::Tests
             )
     }
-}
 
-impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
-    fn upsert_node(&self, node: GraphNode) -> GraphResult<()> {
-        let operations = vec![
+    fn node_upsert_operations(
+        &self,
+        mut node: GraphNode,
+        merge_existing_properties: bool,
+    ) -> GraphResult<Vec<BatchOperation>> {
+        let mut operations = Vec::new();
+        if let Some(existing) = self.get_node(&node.id)? {
+            if merge_existing_properties {
+                let mut properties = existing.properties.clone();
+                properties.extend(node.properties);
+                node.properties = properties;
+            }
+            node.created_at_ms = existing.created_at_ms;
+            node.updated_at_ms = crate::model::current_timestamp_ms();
+            if existing.kind != node.kind {
+                operations.push(BatchOperation::Delete {
+                    key: keys::kind_key(existing.kind, &node.id),
+                });
+            }
+        }
+        operations.extend([
             BatchOperation::Put {
                 key: keys::node_key(&node.id),
                 value: Self::serialize(&node)?,
@@ -152,24 +185,51 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
                 key: keys::kind_key(node.kind, &node.id),
                 value: Vec::new(),
             },
-        ];
-        self.storage.write_batch(operations)?;
-        Ok(())
+        ]);
+        Ok(operations)
     }
 
-    fn upsert_edge(&self, edge: GraphEdge) -> GraphResult<()> {
+    fn edge_delete_operations(edge: &GraphEdge) -> Vec<BatchOperation> {
+        let mut operations = vec![
+            BatchOperation::Delete {
+                key: keys::edge_key(&edge.id),
+            },
+            BatchOperation::Delete {
+                key: keys::adjacency_key_out(&edge.from, edge.kind, &edge.id),
+            },
+            BatchOperation::Delete {
+                key: keys::adjacency_key_in(&edge.to, edge.kind, &edge.id),
+            },
+        ];
+        if Self::should_link_chunk(edge) {
+            operations.push(BatchOperation::Delete {
+                key: keys::chunk_key(&edge.from, &edge.to),
+            });
+        }
+        operations
+    }
+
+    fn edge_upsert_operations(&self, mut edge: GraphEdge) -> GraphResult<Vec<BatchOperation>> {
         if !edge.weight.is_finite() {
             return Err(GraphError::InvalidRequest(format!(
                 "edge {} has non-finite weight",
                 edge.id
             )));
         }
-
-        if self.get_edge(&edge.id)?.is_some() {
-            self.delete_edge(&edge.id)?;
+        if !edge.from.is_same_workspace(&edge.to) {
+            return Err(GraphError::InvalidRequest(format!(
+                "edge {} crosses graph workspace namespaces",
+                edge.id
+            )));
         }
 
-        let mut operations = vec![
+        let mut operations = Vec::new();
+        if let Some(existing) = self.get_edge(&edge.id)? {
+            edge.created_at_ms = existing.created_at_ms;
+            edge.updated_at_ms = crate::model::current_timestamp_ms();
+            operations.extend(Self::edge_delete_operations(&existing));
+        }
+        operations.extend([
             BatchOperation::Put {
                 key: keys::edge_key(&edge.id),
                 value: Self::serialize(&edge)?,
@@ -182,15 +242,74 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
                 key: keys::adjacency_key_in(&edge.to, edge.kind, &edge.id),
                 value: Self::serialize(&edge.id)?,
             },
-        ];
-
+        ]);
         if Self::should_link_chunk(&edge) {
             operations.push(BatchOperation::Put {
                 key: keys::chunk_key(&edge.from, &edge.to),
                 value: Self::serialize(&edge.to)?,
             });
         }
+        Ok(operations)
+    }
+}
 
+impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
+    fn upsert_node(&self, node: GraphNode) -> GraphResult<()> {
+        self.upsert_batch(GraphMutationBatch::new().with_replaced_node(node))
+    }
+
+    fn upsert_edge(&self, edge: GraphEdge) -> GraphResult<()> {
+        self.upsert_batch(GraphMutationBatch::new().with_edge(edge))
+    }
+
+    fn upsert_batch(&self, batch: GraphMutationBatch) -> GraphResult<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let _mutation_guard = self.mutation_guard();
+
+        // Merge duplicate nodes inside one projection unit. Later values win
+        // for the same property, but richer properties from an earlier
+        // projection are retained.
+        let replace_nodes: HashSet<GraphNodeId> = batch.replace_nodes.into_iter().collect();
+        let mut nodes = BTreeMap::<GraphNodeId, GraphNode>::new();
+        for node in batch.nodes {
+            match nodes.entry(node.id.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(node);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let merged = entry.get_mut();
+                    merged.kind = node.kind;
+                    merged.properties.extend(node.properties);
+                    merged.created_at_ms = merged.created_at_ms.min(node.created_at_ms);
+                    merged.updated_at_ms = merged.updated_at_ms.max(node.updated_at_ms);
+                }
+            }
+        }
+        let edges: BTreeMap<GraphEdgeId, GraphEdge> = batch
+            .edges
+            .into_iter()
+            .map(|edge| (edge.id.clone(), edge))
+            .collect();
+
+        let mut operations = Vec::new();
+        for edge_id in batch
+            .delete_edges
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            if let Some(edge) = self.get_edge(&edge_id)? {
+                operations.extend(Self::edge_delete_operations(&edge));
+            }
+        }
+        for node in nodes.into_values() {
+            let merge_existing_properties = !replace_nodes.contains(&node.id);
+            operations.extend(self.node_upsert_operations(node, merge_existing_properties)?);
+        }
+        for edge in edges.into_values() {
+            operations.extend(self.edge_upsert_operations(edge)?);
+        }
         self.storage.write_batch(operations)?;
         Ok(())
     }
@@ -210,6 +329,7 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
     }
 
     fn delete_node(&self, node_id: &GraphNodeId) -> GraphResult<DeleteNodeResult> {
+        let _mutation_guard = self.mutation_guard();
         let Some(node) = self.get_node(node_id)? else {
             return Ok(DeleteNodeResult::default());
         };
@@ -219,21 +339,24 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
             edge_ids.insert(edge_id);
         }
 
+        let mut operations = Vec::new();
         let mut edges_deleted = 0usize;
         for edge_id in &edge_ids {
-            if self.delete_edge(edge_id)? {
+            if let Some(edge) = self.get_edge(edge_id)? {
+                operations.extend(Self::edge_delete_operations(&edge));
                 edges_deleted += 1;
             }
         }
 
-        self.storage.write_batch(vec![
+        operations.extend([
             BatchOperation::Delete {
                 key: keys::node_key(node_id),
             },
             BatchOperation::Delete {
                 key: keys::kind_key(node.kind, node_id),
             },
-        ])?;
+        ]);
+        self.storage.write_batch(operations)?;
 
         Ok(DeleteNodeResult {
             deleted: true,
@@ -242,29 +365,12 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
     }
 
     fn delete_edge(&self, edge_id: &GraphEdgeId) -> GraphResult<bool> {
+        let _mutation_guard = self.mutation_guard();
         let Some(edge) = self.get_edge(edge_id)? else {
             return Ok(false);
         };
-
-        let mut operations = vec![
-            BatchOperation::Delete {
-                key: keys::edge_key(edge_id),
-            },
-            BatchOperation::Delete {
-                key: keys::adjacency_key_out(&edge.from, edge.kind, edge_id),
-            },
-            BatchOperation::Delete {
-                key: keys::adjacency_key_in(&edge.to, edge.kind, edge_id),
-            },
-        ];
-
-        if Self::should_link_chunk(&edge) {
-            operations.push(BatchOperation::Delete {
-                key: keys::chunk_key(&edge.from, &edge.to),
-            });
-        }
-
-        self.storage.write_batch(operations)?;
+        self.storage
+            .write_batch(Self::edge_delete_operations(&edge))?;
         Ok(true)
     }
 
@@ -464,6 +570,7 @@ mod tests {
 
     use super::*;
     use crate::model::NodeKind;
+    use crate::query::RelatedChunksRequest;
 
     fn index() -> (tempfile::TempDir, NativeGraphIndex<RocksDbBackend>) {
         let dir = tempdir().unwrap();
@@ -490,6 +597,202 @@ mod tests {
             .get_node(&GraphNodeId::from("file:src/main.rs"))
             .unwrap();
         assert_eq!(got.unwrap().properties["path"], json!("src/main.rs"));
+    }
+
+    #[test]
+    fn test_batch_merges_duplicate_node_properties() {
+        let (_dir, graph) = index();
+        let mut first =
+            node("entity:invoice", NodeKind::Entity).with_property("canonical_id", json!("INV-1"));
+        first.created_at_ms = 7;
+        first.updated_at_ms = 7;
+        let second =
+            node("entity:invoice", NodeKind::Entity).with_property("tenant_id", json!("tenant-a"));
+
+        graph
+            .upsert_batch(GraphMutationBatch::new().with_node(first).with_node(second))
+            .unwrap();
+
+        let stored = graph
+            .get_node(&GraphNodeId::from("entity:invoice"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.properties["canonical_id"], json!("INV-1"));
+        assert_eq!(stored.properties["tenant_id"], json!("tenant-a"));
+        assert_eq!(stored.created_at_ms, 7);
+    }
+
+    #[test]
+    fn test_placeholder_merge_preserves_data_but_authoritative_upsert_replaces_it() {
+        let (_dir, graph) = index();
+        graph
+            .upsert_node(
+                node("chunk:evidence", NodeKind::Chunk)
+                    .with_property("source_uri", json!("s3://docs/evidence.pdf")),
+            )
+            .unwrap();
+        graph
+            .upsert_batch(
+                GraphMutationBatch::new().with_node(
+                    node("chunk:evidence", NodeKind::Chunk)
+                        .with_property("vector_id", json!("evidence")),
+                ),
+            )
+            .unwrap();
+
+        let merged = graph
+            .get_node(&GraphNodeId::from("chunk:evidence"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            merged.properties["source_uri"],
+            json!("s3://docs/evidence.pdf")
+        );
+        assert_eq!(merged.properties["vector_id"], json!("evidence"));
+
+        graph
+            .upsert_node(
+                node("chunk:evidence", NodeKind::Chunk)
+                    .with_property("source_uri", json!("s3://docs/replacement.pdf")),
+            )
+            .unwrap();
+        let replaced = graph
+            .get_node(&GraphNodeId::from("chunk:evidence"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            replaced.properties["source_uri"],
+            json!("s3://docs/replacement.pdf")
+        );
+        assert!(!replaced.properties.contains_key("vector_id"));
+    }
+
+    #[test]
+    fn test_invalid_batch_is_not_partially_committed() {
+        let (_dir, graph) = index();
+        let batch = GraphMutationBatch::new()
+            .with_node(node("entity:a", NodeKind::Entity))
+            .with_node(node("chunk:a", NodeKind::Chunk))
+            .with_edge(edge(
+                "invalid",
+                "entity:a",
+                "chunk:a",
+                EdgeKind::Mentions,
+                f32::NAN,
+            ));
+
+        assert!(matches!(
+            graph.upsert_batch(batch),
+            Err(GraphError::InvalidRequest(_))
+        ));
+        assert_eq!(graph.stats().unwrap(), GraphStats::default());
+    }
+
+    #[test]
+    fn test_cross_workspace_edge_is_rejected_without_partial_state() {
+        let (_dir, graph) = index();
+        let a = GraphNodeId::scoped("workspace-a", "entity:customer");
+        let b = GraphNodeId::scoped("workspace-b", "chunk:evidence");
+        let batch = GraphMutationBatch::new()
+            .with_node(GraphNode::new(a.clone(), NodeKind::Entity))
+            .with_node(GraphNode::new(b.clone(), NodeKind::Chunk))
+            .with_edge(GraphEdge::new("cross-workspace", a, b, EdgeKind::Mentions));
+
+        assert!(matches!(
+            graph.upsert_batch(batch),
+            Err(GraphError::InvalidRequest(message))
+                if message.contains("crosses graph workspace")
+        ));
+        assert_eq!(graph.stats().unwrap(), GraphStats::default());
+    }
+
+    #[test]
+    fn test_batch_atomically_replaces_projection_edges() {
+        let (_dir, graph) = index();
+        graph
+            .upsert_batch(
+                GraphMutationBatch::new()
+                    .with_node(node("entity:invoice", NodeKind::Entity))
+                    .with_node(node("chunk:old", NodeKind::Chunk))
+                    .with_edge(edge(
+                        "old-evidence",
+                        "entity:invoice",
+                        "chunk:old",
+                        EdgeKind::Mentions,
+                        1.0,
+                    )),
+            )
+            .unwrap();
+
+        graph
+            .upsert_batch(
+                GraphMutationBatch::new()
+                    .with_deleted_edge("old-evidence")
+                    .with_node(node("chunk:new", NodeKind::Chunk))
+                    .with_edge(edge(
+                        "new-evidence",
+                        "entity:invoice",
+                        "chunk:new",
+                        EdgeKind::Mentions,
+                        1.0,
+                    )),
+            )
+            .unwrap();
+
+        let related = graph
+            .related_chunks(&GraphNodeId::from("entity:invoice"), 10)
+            .unwrap();
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].vector_id.as_str(), "new");
+        assert!(graph
+            .get_edge(&GraphEdgeId::from("old-evidence"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_related_chunks_with_depth_reaches_two_hop_chunk() {
+        let (_dir, graph) = index();
+        graph
+            .upsert_batch(
+                GraphMutationBatch::new()
+                    .with_node(node("entity:customer", NodeKind::Entity))
+                    .with_node(node("entity:ticket", NodeKind::Entity))
+                    .with_node(node("chunk:evidence", NodeKind::Chunk))
+                    .with_edge(edge(
+                        "customer-ticket",
+                        "entity:customer",
+                        "entity:ticket",
+                        EdgeKind::RelatedTo,
+                        1.0,
+                    ))
+                    .with_edge(edge(
+                        "ticket-evidence",
+                        "entity:ticket",
+                        "chunk:evidence",
+                        EdgeKind::Mentions,
+                        1.0,
+                    )),
+            )
+            .unwrap();
+
+        assert!(graph
+            .related_chunks_with_depth(
+                RelatedChunksRequest::new("entity:customer")
+                    .with_max_depth(1)
+                    .with_limit(10),
+            )
+            .unwrap()
+            .is_empty());
+        let related = graph
+            .related_chunks_with_depth(
+                RelatedChunksRequest::new("entity:customer")
+                    .with_max_depth(2)
+                    .with_limit(10),
+            )
+            .unwrap();
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].vector_id.as_str(), "evidence");
     }
 
     #[test]

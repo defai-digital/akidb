@@ -508,6 +508,24 @@ impl<S: StorageBackend> IdMapping<S> {
         }
     }
 
+    /// Load the durable vector payload even when it is tombstoned.
+    ///
+    /// Authorization layers use this to enforce the original workspace owner
+    /// without disclosing or allowing reuse of an ID after deletion.
+    pub fn get_vector_including_deleted(
+        &self,
+        external_id: &VectorId,
+    ) -> Result<Option<StoredVectorEntry>> {
+        let key = self.make_vector_key(external_id);
+        self.storage
+            .get(&key)?
+            .map(|data| {
+                bincode::deserialize(&data)
+                    .map_err(|e| AkiDbError::SerializationError(e.to_string()))
+            })
+            .transpose()
+    }
+
     /// Load all active durable vector payloads for this collection.
     pub fn load_active_vectors(&self) -> Result<Vec<StoredVectorEntry>> {
         let prefix = self.make_collection_prefix(VECTOR_PREFIX);
@@ -716,6 +734,12 @@ mod tests {
         mapping.mark_deleted(&ext_id).unwrap();
 
         assert!(mapping.get_vector(&ext_id).unwrap().is_none());
+        let tombstone = mapping
+            .get_vector_including_deleted(&ext_id)
+            .unwrap()
+            .unwrap();
+        assert!(tombstone.deleted);
+        assert_eq!(tombstone.external_id, "vec-1");
         assert!(mapping.load_active_vectors().unwrap().is_empty());
     }
 }
