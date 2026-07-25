@@ -26,6 +26,42 @@
 - name: Apply pending coordinator restart
   ansible.builtin.meta: flush_handlers
 
+- name: Read running coordinator process id
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - --property=MainPID
+      - --value
+      - akidb-coordinator.service
+  changed_when: false
+  register: akidb_coordinator_main_pid
+
+- name: Require a running coordinator process
+  ansible.builtin.assert:
+    that:
+      - akidb_coordinator_main_pid.stdout | trim | int > 0
+
+- name: Resolve the running coordinator executable
+  ansible.builtin.command:
+    argv:
+      - readlink
+      - -f
+      - "/proc/{{ akidb_coordinator_main_pid.stdout | trim }}/exe"
+  changed_when: false
+  register: akidb_coordinator_running_executable
+
+- name: Restart coordinator when the running release is stale
+  ansible.builtin.systemd_service:
+    name: akidb-coordinator
+    state: restarted
+    enabled: true
+    daemon_reload: true
+  when: >-
+    akidb_coordinator_running_executable.stdout | trim !=
+    akidb_install_root ~ '/releases/' ~ akidb_release_id ~
+    '/bin/akidb-coordinator'
+
 - name: Gate coordinator rollout on gRPC readiness
   ansible.builtin.command:
     argv:

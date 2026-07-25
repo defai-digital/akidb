@@ -33,6 +33,45 @@
           - "'0.0.0.0:' ~ (akidb_server_port | string) not in akidb_listening_sockets.stdout"
           - "'[::]:' ~ (akidb_server_port | string) not in akidb_listening_sockets.stdout"
 
+    - name: Read running shard process id
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - --property=MainPID
+          - --value
+          - akidb-server.service
+      changed_when: false
+      register: akidb_shard_main_pid
+
+    - name: Require a running shard process
+      ansible.builtin.assert:
+        that:
+          - akidb_shard_main_pid.stdout | trim | int > 0
+
+    - name: Resolve the active shard binary
+      ansible.builtin.command:
+        argv:
+          - readlink
+          - -f
+          - "{{ akidb_install_root }}/current/bin/akidb-server"
+      changed_when: false
+      register: akidb_active_shard_executable
+
+    - name: Resolve the running shard executable
+      ansible.builtin.command:
+        argv:
+          - readlink
+          - -f
+          - "/proc/{{ akidb_shard_main_pid.stdout | trim }}/exe"
+      changed_when: false
+      register: akidb_running_shard_executable
+
+    - name: Require the shard to run the active immutable release
+      ansible.builtin.assert:
+        that:
+          - akidb_running_shard_executable.stdout | trim == akidb_active_shard_executable.stdout | trim
+
 - name: Verify coordinator-to-shard paths and coordinator readiness
   hosts: akidb_coordinators
   become: true
@@ -75,6 +114,45 @@
       retries: 10
       delay: 2
       until: akidb_coordinator_http_health.status == 200
+
+    - name: Read running coordinator process id
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - --property=MainPID
+          - --value
+          - akidb-coordinator.service
+      changed_when: false
+      register: akidb_coordinator_main_pid
+
+    - name: Require a running coordinator process
+      ansible.builtin.assert:
+        that:
+          - akidb_coordinator_main_pid.stdout | trim | int > 0
+
+    - name: Resolve the active coordinator binary
+      ansible.builtin.command:
+        argv:
+          - readlink
+          - -f
+          - "{{ akidb_install_root }}/current/bin/akidb-coordinator"
+      changed_when: false
+      register: akidb_active_coordinator_executable
+
+    - name: Resolve the running coordinator executable
+      ansible.builtin.command:
+        argv:
+          - readlink
+          - -f
+          - "/proc/{{ akidb_coordinator_main_pid.stdout | trim }}/exe"
+      changed_when: false
+      register: akidb_running_coordinator_executable
+
+    - name: Require the coordinator to run the active immutable release
+      ansible.builtin.assert:
+        that:
+          - akidb_running_coordinator_executable.stdout | trim == akidb_active_coordinator_executable.stdout | trim
 
     - name: Confirm deployed release
       ansible.builtin.debug:
