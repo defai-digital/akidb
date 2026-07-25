@@ -1,9 +1,9 @@
 # AkiDB Linux AMD64 Cluster Deployment
 
 This directory provides the reproducible qualification path for a four-node
-Linux AMD64 cluster. It does not change the currently supported macOS Apple
-Silicon product path; Linux AMD64 remains a qualification target until the
-test phases below pass.
+Ubuntu 24.04-or-newer AMD64 cluster. It does not change the currently
+supported macOS Apple Silicon product path; Linux AMD64 remains a
+qualification target until the test phases below pass.
 
 ## Design decision
 
@@ -84,7 +84,7 @@ WireGuard private keys are generated and retained on their respective hosts.
 
 ## Artifact flow
 
-`.github/workflows/linux-amd64-artifact.yml` builds on the Ubuntu 22.04 glibc
+`.github/workflows/linux-amd64-artifact.yml` builds on the Ubuntu 24.04 glibc
 baseline and emits:
 
 ```text
@@ -170,6 +170,8 @@ activation pointer. Persistent RocksDB, WAL, and snapshots stay under
 - SSH and host inventory
 - restricted WireGuard overlay
 - OpenTofu design for VPC, VM, disk, firewall, load balancer, and backup target
+- Ubuntu 24.04+ AMD64 operating-system baseline; older distributions are
+  rejected rather than treated as best-effort targets
 - hardware, OS, disk, systemd, and bind-policy preflight
 - immutable artifacts, checksums, provenance, rolling activation, rollback
 
