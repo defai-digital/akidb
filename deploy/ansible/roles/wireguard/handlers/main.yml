@@ -1,0 +1,6 @@
+---
+- name: Restart AkiDB WireGuard
+  ansible.builtin.systemd_service:
+    name: "wg-quick@{{ akidb_wireguard_interface }}"
+    state: restarted
+    enabled: true

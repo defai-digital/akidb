@@ -63,6 +63,7 @@ version = "0.9.0"
 dependencies = [
  "akidb-coordinator",
  "akidb-graph",
+ "akidb-proto",
  "akidb-server",
  "akidb-storage",
  "akidb-tui",
@@ -70,6 +71,7 @@ dependencies = [
  "clap",
  "serde_json",
  "tokio",
+ "tonic 0.11.0",
 ]
 
 [[package]]

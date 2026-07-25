@@ -1,0 +1,79 @@
+---
+- name: Validate supported operating system and architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['architecture'] in ['x86_64', 'amd64']
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: >-
+      This lab deployment currently supports systemd-based Debian-family
+      Linux on AMD64 only.
+
+- name: Validate minimum host capacity
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['processor_vcpus'] | int >= akidb_min_vcpus | int
+      - ansible_facts['memtotal_mb'] | int >= akidb_min_memory_mb | int
+    fail_msg: >-
+      Host does not meet the functional floor of {{ akidb_min_vcpus }} vCPU
+      and {{ akidb_min_memory_mb }} MiB RAM.
+
+- name: Locate the root filesystem fact
+  ansible.builtin.set_fact:
+    akidb_root_mount: >-
+      {{ (ansible_facts['mounts'] | selectattr('mount', 'equalto', '/') | list | first) }}
+
+- name: Validate available disk
+  ansible.builtin.assert:
+    that:
+      - akidb_root_mount.size_available | int >= (akidb_min_available_disk_mb | int * 1024 * 1024)
+    fail_msg: >-
+      Root filesystem needs at least {{ akidb_min_available_disk_mb }} MiB
+      available for this qualification profile.
+
+- name: Validate isolated cluster-network policy
+  ansible.builtin.assert:
+    that:
+      - akidb_cluster_network_trusted | bool
+      - akidb_overlay_address is defined
+      - akidb_overlay_address | length > 0
+      - akidb_overlay_address != ansible_host
+      - akidb_auth_mode != 'disabled' or akidb_cluster_network_trusted | bool
+    fail_msg: >-
+      Cluster mode must use an explicit trusted service network distinct from
+      the public SSH address.
+
+- name: Prevent unsupported authenticated coordinator topology
+  ansible.builtin.assert:
+    that:
+      - akidb_auth_mode == 'disabled' or groups['akidb_coordinators'] | length == 0
+    fail_msg: >-
+      The current coordinator does not propagate shard bearer/workspace
+      metadata. Use auth.mode=disabled only on the isolated overlay until that
+      product gap is implemented.
+
+- name: Require an explicit token when authentication is enabled
+  ansible.builtin.assert:
+    that:
+      - akidb_auth_mode == 'disabled' or akidb_auth_token | length >= 24
+    fail_msg: "Provide AKIDB_AUTH_TOKEN (at least 24 characters)."
+  no_log: "{{ akidb_auth_mode != 'disabled' }}"
+
+- name: Read WireGuard interface
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -4
+      - address
+      - show
+      - dev
+      - "{{ akidb_wireguard_interface }}"
+  changed_when: false
+  register: akidb_wireguard_address
+  when: akidb_manage_wireguard | bool
+
+- name: Require expected overlay address
+  ansible.builtin.assert:
+    that:
+      - akidb_overlay_address in akidb_wireguard_address.stdout
+  when: akidb_manage_wireguard | bool

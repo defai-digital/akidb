@@ -1,12 +1,18 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use akidb_graph::{
     Direction, EdgeKind, GraphIndex, GraphNodeId, NativeGraphIndex, NeighborRequest,
 };
+use akidb_proto::akidb_client::AkidbClient;
+use akidb_proto::HealthRequest;
 use akidb_storage::RocksDbBackend;
 use serde_json::json;
+use tonic::metadata::{Ascii, MetadataValue};
+use tonic::transport::Endpoint;
+use tonic::Request;
 
 /// AkiDB command line interface.
 #[derive(Parser, Debug)]
@@ -34,8 +40,26 @@ enum Command {
     /// Query the read/plan-only management API without a TUI.
     Ops(OpsArgs),
 
+    /// Check gRPC health and exit non-zero when the service is unhealthy.
+    Health(HealthArgs),
+
     /// Inspect the local native graph index stored in RocksDB.
     Graph(GraphArgs),
+}
+
+#[derive(Parser, Debug)]
+struct HealthArgs {
+    /// Shard or coordinator gRPC endpoint.
+    #[arg(long, default_value = "127.0.0.1:50051")]
+    server: String,
+
+    /// Require both healthy=true and ready=true.
+    #[arg(long, default_value_t = false)]
+    require_ready: bool,
+
+    /// Connection and RPC timeout.
+    #[arg(long, default_value_t = 5)]
+    timeout_seconds: u64,
 }
 
 #[derive(Parser, Debug)]
@@ -137,8 +161,85 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("{e}")),
         Command::Tui(args) => akidb_tui::run(args).await,
         Command::Ops(args) => run_ops(args).await,
+        Command::Health(args) => run_health(args).await,
         Command::Graph(args) => run_graph(args),
     }
+}
+
+async fn run_health(args: HealthArgs) -> anyhow::Result<()> {
+    let endpoint = if args.server.starts_with("http://") || args.server.starts_with("https://") {
+        args.server.clone()
+    } else {
+        format!("http://{}", args.server)
+    };
+    let timeout = Duration::from_secs(args.timeout_seconds);
+    let channel = Endpoint::from_shared(endpoint)?
+        .connect_timeout(timeout)
+        .timeout(timeout)
+        .connect()
+        .await?;
+    let mut client = AkidbClient::new(channel);
+    let mut request = Request::new(HealthRequest {});
+    attach_health_credentials(&mut request)?;
+
+    let health = client.health(request).await?.into_inner();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "healthy": health.healthy,
+            "ready": health.ready,
+            "message": health.message,
+            "total_vectors": health.total_vectors,
+            "active_vectors": health.active_vectors,
+            "using_gpu": health.using_gpu,
+        }))?
+    );
+
+    if !health.healthy {
+        anyhow::bail!("AkiDB service reported healthy=false");
+    }
+    if args.require_ready && !health.ready {
+        anyhow::bail!("AkiDB service reported ready=false");
+    }
+    Ok(())
+}
+
+fn attach_health_credentials(request: &mut Request<HealthRequest>) -> anyhow::Result<()> {
+    if let Some(token) = health_token() {
+        let value: MetadataValue<Ascii> = format!("Bearer {token}").parse()?;
+        request.metadata_mut().insert("authorization", value);
+    }
+    if let Ok(workspace) = std::env::var("AKIDB_WORKSPACE") {
+        if !workspace.trim().is_empty() {
+            request
+                .metadata_mut()
+                .insert("x-akidb-workspace", workspace.trim().parse()?);
+        }
+    }
+    if let Ok(agent) = std::env::var("AKIDB_AGENT") {
+        if !agent.trim().is_empty() {
+            request
+                .metadata_mut()
+                .insert("x-akidb-agent", agent.trim().parse()?);
+        }
+    }
+    Ok(())
+}
+
+fn health_token() -> Option<String> {
+    if let Ok(token) = std::env::var("AKIDB_AUTH_TOKEN") {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return Some(token);
+        }
+    }
+    let path = std::env::var("AKIDB_AUTH_TOKEN_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("./data/auth.token"));
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }
 
 async fn run_ops(args: OpsArgs) -> anyhow::Result<()> {

@@ -1,0 +1,58 @@
+---
+- name: Validate the immutable artifact on the controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Validate release inputs
+      ansible.builtin.assert:
+        that:
+          - akidb_release_id | length >= 7
+          - akidb_release_id | length <= 64
+          - akidb_release_id is match('^[A-Za-z0-9._-]+$')
+          - akidb_artifact_path | length > 0
+          - akidb_artifact_sha256 is match('^[a-fA-F0-9]{64}$')
+        fail_msg: >-
+          Set AKIDB_RELEASE_ID, AKIDB_ARTIFACT_PATH, and
+          AKIDB_ARTIFACT_SHA256 from one CI artifact.
+
+    - name: Inspect local artifact
+      ansible.builtin.stat:
+        path: "{{ akidb_artifact_path }}"
+        checksum_algorithm: sha256
+      register: akidb_local_artifact
+
+    - name: Verify local artifact checksum
+      ansible.builtin.assert:
+        that:
+          - akidb_local_artifact.stat.exists
+          - akidb_local_artifact.stat.isreg
+          - akidb_local_artifact.stat.checksum == akidb_artifact_sha256 | lower
+        fail_msg: "Artifact is missing or its SHA-256 does not match."
+
+- name: Stage the same release on every cluster host
+  hosts: akidb_cluster
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: common
+    - role: release
+
+- name: Roll the shard release one node at a time
+  hosts: akidb_shards
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: shard
+
+- name: Roll the coordinator after every shard is ready
+  hosts: akidb_coordinators
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: coordinator

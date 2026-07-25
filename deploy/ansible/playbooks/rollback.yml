@@ -1,0 +1,102 @@
+---
+- name: Validate rollback target on every cluster host
+  hosts: akidb_cluster
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    akidb_rollback_release_id: "{{ lookup('env', 'AKIDB_ROLLBACK_RELEASE_ID') }}"
+  tasks:
+    - name: Validate rollback release id
+      ansible.builtin.assert:
+        that:
+          - akidb_rollback_release_id | length >= 7
+          - akidb_rollback_release_id | length <= 64
+          - akidb_rollback_release_id is match('^[A-Za-z0-9._-]+$')
+        fail_msg: "Set AKIDB_ROLLBACK_RELEASE_ID to an installed release."
+
+    - name: Inspect rollback server binary
+      ansible.builtin.stat:
+        path: "{{ akidb_install_root }}/releases/{{ akidb_rollback_release_id }}/bin/akidb-server"
+      register: akidb_rollback_binary
+
+    - name: Require the rollback release on every host
+      ansible.builtin.assert:
+        that:
+          - akidb_rollback_binary.stat.exists
+          - akidb_rollback_binary.stat.executable
+
+- name: Roll back shards one node at a time
+  hosts: akidb_shards
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    akidb_rollback_release_id: "{{ lookup('env', 'AKIDB_ROLLBACK_RELEASE_ID') }}"
+  tasks:
+    - name: Point current release at rollback target
+      ansible.builtin.file:
+        src: "{{ akidb_install_root }}/releases/{{ akidb_rollback_release_id }}"
+        dest: "{{ akidb_install_root }}/current"
+        state: link
+        force: true
+
+    - name: Inspect versioned rollback configuration
+      ansible.builtin.stat:
+        path: "{{ akidb_config_root }}/releases/{{ akidb_rollback_release_id }}/akidb.toml"
+      register: akidb_rollback_config
+
+    - name: Point shard configuration at rollback target
+      ansible.builtin.file:
+        src: "{{ akidb_config_root }}/releases/{{ akidb_rollback_release_id }}/akidb.toml"
+        dest: "{{ akidb_config_root }}/akidb.toml"
+        state: link
+        force: true
+      when: akidb_rollback_config.stat.exists
+
+    - name: Restart shard on rollback release
+      ansible.builtin.systemd_service:
+        name: akidb-server
+        state: restarted
+
+    - name: Gate rollback on shard readiness
+      ansible.builtin.command:
+        argv:
+          - "{{ akidb_install_root }}/current/bin/akidb"
+          - health
+          - --server
+          - "{{ akidb_overlay_address }}:{{ akidb_server_port }}"
+          - --require-ready
+      environment:
+        AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/auth.token"
+      changed_when: false
+      register: akidb_rollback_health
+      retries: 10
+      delay: 2
+      until: akidb_rollback_health.rc == 0
+
+- name: Roll back coordinator after shards
+  hosts: akidb_coordinators
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    akidb_rollback_release_id: "{{ lookup('env', 'AKIDB_ROLLBACK_RELEASE_ID') }}"
+  tasks:
+    - name: Point current release at rollback target
+      ansible.builtin.file:
+        src: "{{ akidb_install_root }}/releases/{{ akidb_rollback_release_id }}"
+        dest: "{{ akidb_install_root }}/current"
+        state: link
+        force: true
+
+    - name: Restart coordinator on rollback release
+      ansible.builtin.systemd_service:
+        name: akidb-coordinator
+        state: restarted
+
+- import_playbook: verify.yml
+  vars:
+    akidb_release_id: "{{ lookup('env', 'AKIDB_ROLLBACK_RELEASE_ID') }}"

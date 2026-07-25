@@ -1,0 +1,60 @@
+---
+- name: Install AkiDB runtime dependencies
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create AkiDB service group
+  ansible.builtin.group:
+    name: "{{ akidb_group }}"
+    system: true
+    state: present
+
+- name: Create AkiDB service user
+  ansible.builtin.user:
+    name: "{{ akidb_user }}"
+    group: "{{ akidb_group }}"
+    home: "{{ akidb_data_root }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+    state: present
+
+- name: Create root-owned release directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ akidb_install_root }}"
+    - "{{ akidb_install_root }}/releases"
+    - "{{ akidb_install_root }}/.artifacts"
+
+- name: Create protected configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0750"
+  loop:
+    - "{{ akidb_config_root }}"
+    - "{{ akidb_config_root }}/releases"
+
+- name: Create persistent data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ akidb_user }}"
+    group: "{{ akidb_group }}"
+    mode: "0750"
+  loop:
+    - "{{ akidb_data_root }}"
+    - "{{ akidb_data_root }}/rocksdb"
+    - "{{ akidb_data_root }}/wal"
+    - "{{ akidb_data_root }}/snapshots"

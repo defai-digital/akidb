@@ -1,0 +1,90 @@
+[server]
+host = "{{ akidb_overlay_address }}"
+port = 8080
+grpc_port = {{ akidb_server_port }}
+tls_enabled = false
+
+[auth]
+mode = "{{ akidb_auth_mode }}"
+token_file = "{{ akidb_config_root }}/auth.token"
+
+[auth.acl]
+default_workspace = "{{ akidb_default_workspace }}"
+enforce_workspace = true
+
+[management]
+audit_max_entries = 1000
+
+[management.import_plan]
+enabled = false
+max_source_bytes = 104857600
+max_expanded_bytes = 536870912
+plan_ttl_seconds = 300
+
+[index]
+index_type = "{{ akidb_index_type }}"
+hnsw_m = {{ akidb_hnsw_m }}
+hnsw_ef_construction = {{ akidb_hnsw_ef_construction }}
+hnsw_ef_search = {{ akidb_hnsw_ef_search }}
+vector_precision = "{{ akidb_vector_precision }}"
+metric = "{{ akidb_metric }}"
+
+[index.filter]
+mode = "adaptive"
+postfilter_overfetch_factor = 5
+adaptive_pre_selectivity = 0.20
+
+[index.rebuild]
+tombstone_ratio_trigger = 0.10
+max_duration_seconds = 300
+preferred_hours = [2, 3, 4]
+
+[index.tombstone]
+max_count = 100000
+
+[storage]
+rocksdb_path = "{{ akidb_data_root }}/rocksdb"
+wal_enabled = true
+wal_path = "{{ akidb_data_root }}/wal"
+
+[storage.minio]
+endpoint = "127.0.0.1:9000"
+bucket = "akidb-snapshots"
+access_key = "unused-in-standalone-mode"
+secret_key = "unused-in-standalone-mode"
+use_ssl = false
+
+[sql]
+enabled = false
+backend = "sqlite"
+sqlite_path = "{{ akidb_data_root }}/akidb-metadata.sqlite"
+
+[observability]
+tracing_enabled = false
+otlp_endpoint = "http://127.0.0.1:4317"
+metrics_enabled = true
+metrics_port = 9090
+log_level = "{{ akidb_log_level }}"
+log_format = "json"
+
+[slo]
+[slo.reference]
+dimensions = {{ akidb_dimensions }}
+vectors_per_shard = {{ akidb_vectors_per_shard }}
+top_k = 10
+nprobe = 32
+batch_size = 1
+target_p95_ms = 50
+
+[slo.backpressure]
+soft_breach_ms = 50
+hard_breach_ms = 75
+degraded_mode_enabled = true
+
+[embedding]
+enabled = {{ akidb_embedding_enabled | bool | lower }}
+url = "{{ akidb_embedding_url }}"
+model = "{{ akidb_embedding_model }}"
+dimensions = {{ akidb_embedding_dimensions }}
+timeout_ms = 10000
+max_batch_size = 32

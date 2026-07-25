@@ -1,0 +1,7 @@
+---
+- name: Restart AkiDB coordinator
+  ansible.builtin.systemd_service:
+    name: akidb-coordinator
+    state: restarted
+    enabled: true
+    daemon_reload: true

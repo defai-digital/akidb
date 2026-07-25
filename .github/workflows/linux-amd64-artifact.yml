@@ -1,0 +1,77 @@
+name: Linux AMD64 Artifact
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'scripts/package-linux-amd64.sh'
+      - '.github/workflows/linux-amd64-artifact.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build immutable Linux AMD64 artifact
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            libclang-dev \
+            libssl-dev \
+            pkg-config \
+            protobuf-compiler
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build and package
+        run: ./scripts/package-linux-amd64.sh "${GITHUB_SHA}" dist
+
+      - name: Verify checksum and contents
+        run: |
+          cd dist
+          sha256sum --check "akidb-linux-amd64-${GITHUB_SHA}.tar.gz.sha256"
+          tar -tzf "akidb-linux-amd64-${GITHUB_SHA}.tar.gz"
+          mkdir verify
+          tar -xzf "akidb-linux-amd64-${GITHUB_SHA}.tar.gz" -C verify
+          verify/bin/akidb --version
+          verify/bin/akidb-server --version
+          verify/bin/akidb-coordinator --version
+          verify/bin/akidb-bench --version
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/akidb-linux-amd64-${{ github.sha }}.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: akidb-linux-amd64-${{ github.sha }}
+          path: |
+            dist/akidb-linux-amd64-${{ github.sha }}.tar.gz
+            dist/akidb-linux-amd64-${{ github.sha }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30

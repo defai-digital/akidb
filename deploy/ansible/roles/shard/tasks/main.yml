@@ -1,0 +1,79 @@
+---
+- name: Create versioned shard configuration directory
+  ansible.builtin.file:
+    path: "{{ akidb_config_root }}/releases/{{ akidb_release_id }}"
+    state: directory
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0750"
+
+- name: Render versioned shard configuration
+  ansible.builtin.template:
+    src: akidb.toml.j2
+    dest: "{{ akidb_config_root }}/releases/{{ akidb_release_id }}/akidb.toml"
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0640"
+  notify: Restart AkiDB shard
+
+- name: Install AkiDB bearer token
+  ansible.builtin.copy:
+    content: "{{ akidb_auth_token | trim }}\n"
+    dest: "{{ akidb_config_root }}/auth.token"
+    owner: "{{ akidb_user }}"
+    group: "{{ akidb_group }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart AkiDB shard
+  when: akidb_auth_mode != 'disabled'
+
+- name: Activate versioned shard configuration
+  ansible.builtin.file:
+    src: "{{ akidb_config_root }}/releases/{{ akidb_release_id }}/akidb.toml"
+    dest: "{{ akidb_config_root }}/akidb.toml"
+    state: link
+    force: true
+  notify: Restart AkiDB shard
+
+- name: Activate immutable release
+  ansible.builtin.file:
+    src: "{{ akidb_install_root }}/releases/{{ akidb_release_id }}"
+    dest: "{{ akidb_install_root }}/current"
+    state: link
+    force: true
+  notify: Restart AkiDB shard
+
+- name: Install shard systemd unit
+  ansible.builtin.template:
+    src: akidb-server.service.j2
+    dest: /etc/systemd/system/akidb-server.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart AkiDB shard
+
+- name: Start shard service
+  ansible.builtin.systemd_service:
+    name: akidb-server
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Apply pending shard restart
+  ansible.builtin.meta: flush_handlers
+
+- name: Gate rolling deployment on shard readiness
+  ansible.builtin.command:
+    argv:
+      - "{{ akidb_install_root }}/current/bin/akidb"
+      - health
+      - --server
+      - "{{ akidb_overlay_address }}:{{ akidb_server_port }}"
+      - --require-ready
+  environment:
+    AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/auth.token"
+  changed_when: false
+  register: akidb_shard_rollout_health
+  retries: 15
+  delay: 2
+  until: akidb_shard_rollout_health.rc == 0

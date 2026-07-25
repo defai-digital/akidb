@@ -1,0 +1,84 @@
+---
+- name: Verify every shard locally
+  hosts: akidb_shards
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Check shard gRPC readiness
+      ansible.builtin.command:
+        argv:
+          - "{{ akidb_install_root }}/current/bin/akidb"
+          - health
+          - --server
+          - "{{ akidb_overlay_address }}:{{ akidb_server_port }}"
+          - --require-ready
+      environment:
+        AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/auth.token"
+      changed_when: false
+      register: akidb_shard_health
+      retries: 10
+      delay: 2
+      until: akidb_shard_health.rc == 0
+
+    - name: Read listening TCP sockets
+      ansible.builtin.command:
+        argv: [ss, -H, -lnt]
+      changed_when: false
+      register: akidb_listening_sockets
+
+    - name: Ensure the shard is not bound to every public interface
+      ansible.builtin.assert:
+        that:
+          - "'0.0.0.0:' ~ (akidb_server_port | string) not in akidb_listening_sockets.stdout"
+          - "'[::]:' ~ (akidb_server_port | string) not in akidb_listening_sockets.stdout"
+
+- name: Verify coordinator-to-shard paths and coordinator readiness
+  hosts: akidb_coordinators
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Check every shard from the coordinator host
+      ansible.builtin.command:
+        argv:
+          - "{{ akidb_install_root }}/current/bin/akidb"
+          - health
+          - --server
+          - "{{ hostvars[item].akidb_overlay_address }}:{{ akidb_server_port }}"
+          - --require-ready
+      environment:
+        AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/auth.token"
+      loop: "{{ groups['akidb_shards'] }}"
+      changed_when: false
+
+    - name: Check coordinator gRPC readiness
+      ansible.builtin.command:
+        argv:
+          - "{{ akidb_install_root }}/current/bin/akidb"
+          - health
+          - --server
+          - "{{ akidb_overlay_address }}:{{ akidb_coordinator_port }}"
+          - --require-ready
+      changed_when: false
+      register: akidb_coordinator_health
+      retries: 10
+      delay: 2
+      until: akidb_coordinator_health.rc == 0
+
+    - name: Check coordinator HTTP health
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ akidb_coordinator_metrics_port }}/health"
+        return_content: true
+        status_code: 200
+      register: akidb_coordinator_http_health
+      retries: 10
+      delay: 2
+      until: akidb_coordinator_http_health.status == 200
+
+    - name: Confirm deployed release
+      ansible.builtin.debug:
+        msg: >-
+          AkiDB {{ akidb_release_id }} is ready through
+          {{ akidb_overlay_address }}:{{ akidb_coordinator_port }} with
+          {{ groups['akidb_shards'] | length }} shards.

@@ -1,0 +1,24 @@
+[Unit]
+Description=AkiDB query coordinator
+After=network-online.target wg-quick@{{ akidb_wireguard_interface }}.service akidb-server.service
+Wants=network-online.target
+Requires=wg-quick@{{ akidb_wireguard_interface }}.service
+
+[Service]
+Type=simple
+User={{ akidb_user }}
+Group={{ akidb_group }}
+UMask=0027
+ExecStart={{ akidb_install_root }}/current/bin/akidb-coordinator --listen {{ akidb_overlay_address }}:{{ akidb_coordinator_port }} --shards {% for host in groups['akidb_shards'] %}{{ hostvars[host].akidb_overlay_address }}:{{ akidb_server_port }}{% if not loop.last %},{% endif %}{% endfor %} --timeout {{ akidb_coordinator_timeout_ms }} --pool-size {{ akidb_coordinator_pool_size }} --metrics-port {{ akidb_coordinator_metrics_port }} --max-concurrent {{ akidb_coordinator_max_concurrent }} --rate-limit {{ akidb_coordinator_rate_limit }} --max-queue-depth {{ akidb_coordinator_max_queue_depth }} --log-level {{ akidb_log_level }}
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=60
+TimeoutStopSec=60
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

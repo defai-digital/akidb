@@ -1,0 +1,54 @@
+---
+# Immutable artifact inputs. CI emits the archive and checksum; operators pass
+# these values as environment variables or --extra-vars.
+akidb_release_id: "{{ lookup('env', 'AKIDB_RELEASE_ID') }}"
+akidb_artifact_path: "{{ lookup('env', 'AKIDB_ARTIFACT_PATH') }}"
+akidb_artifact_sha256: "{{ lookup('env', 'AKIDB_ARTIFACT_SHA256') }}"
+
+akidb_user: akidb
+akidb_group: akidb
+akidb_install_root: /opt/akidb
+akidb_config_root: /etc/akidb
+akidb_data_root: /var/lib/akidb
+akidb_server_port: 50051
+akidb_coordinator_port: 50050
+akidb_coordinator_metrics_port: 9090
+akidb_log_level: info
+
+# Four nodes do not need 16 vCPU each for qualification. These gates are the
+# functional floor; benchmark profiles can set higher values in inventory.
+akidb_min_vcpus: 4
+akidb_min_memory_mb: 8192
+akidb_min_available_disk_mb: 20480
+
+# The current coordinator does not propagate bearer/workspace metadata to
+# shards. Cluster mode is therefore allowed only on an isolated service
+# network. The WireGuard role creates that network for public-cloud lab hosts.
+akidb_auth_mode: disabled
+akidb_auth_token: "{{ lookup('env', 'AKIDB_AUTH_TOKEN') }}"
+akidb_default_workspace: cluster-test
+
+akidb_wireguard_interface: wg0
+akidb_wireguard_port: 51820
+akidb_manage_wireguard: true
+akidb_manage_ufw: true
+
+akidb_index_type: HNSW
+akidb_hnsw_m: 16
+akidb_hnsw_ef_construction: 128
+akidb_hnsw_ef_search: 64
+akidb_vector_precision: f32
+akidb_metric: cosine
+akidb_dimensions: 768
+akidb_vectors_per_shard: 1000000
+
+akidb_embedding_enabled: false
+akidb_embedding_url: http://127.0.0.1:8081/v1/embeddings
+akidb_embedding_model: Qwen/Qwen3-Embedding-4B
+akidb_embedding_dimensions: 2560
+
+akidb_coordinator_timeout_ms: 5000
+akidb_coordinator_pool_size: 4
+akidb_coordinator_max_concurrent: 1000
+akidb_coordinator_rate_limit: 0
+akidb_coordinator_max_queue_depth: 5000

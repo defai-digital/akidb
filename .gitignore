@@ -73,5 +73,10 @@ secrets/
 *.zip
 dist/
 
+# Local Ansible deployment state and real inventories
+/deploy/ansible/inventories/lab/
+/deploy/ansible/.facts/
+/deploy/ansible/*.retry
+
 # Local smoke venv
 .venv-smoke/
