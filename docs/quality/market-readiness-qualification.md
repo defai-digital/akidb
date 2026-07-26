@@ -44,6 +44,20 @@ and the [Milvus index guidance](https://milvus.io/docs/index-explained.md):
 Vendor-published numbers are context, not parity evidence. AkiDB, Milvus, and
 Weaviate must be rerun by us on the same isolated qualification hosts.
 
+The pinned comparison set was reviewed on 2026-07-26:
+
+- Milvus server `v2.6.21` with `pymilvus==2.6.17`;
+- Weaviate server `1.38.6` with `weaviate-client==4.22.0`; and
+- VectorDBBench `v1.0.22` methodology at commit
+  `191b7106a08a3e6f9f9ffe9bf5604d8f5daa8270`.
+
+The release evidence records resolved container `RepoDigest` values; tags alone
+are not immutable evidence. `scripts/competitor_ann_bench.py` uses the public
+SIFT files directly so all three products receive exactly the same 1,000,000
+vectors and 10,000 queries. VectorDBBench remains a methodology reference
+because its built-in SIFT capacity does not match this exact SIFT1M release
+matrix.
+
 The graph lane is intentionally narrower. AkiDB provides a bounded retrieval
 graph, not a general Cypher/GQL database. It applies known-answer, persistence,
 concurrency, mutation-integrity, and percentile-latency principles from the
@@ -417,6 +431,30 @@ akidb-ann-bench \
 The mutable standalone shard currently has one physical active collection,
 named `default`. Creating a registry entry does not create another physical
 index; market qualification therefore uses `--collection default`.
+
+After the immutable AkiDB SIFT1M matrix passes, run both competitors
+sequentially on the same isolated server and driver:
+
+```bash
+AKIDB_COMPETITOR_RUN_ID=<unique-run-id> \
+AKIDB_COMPETITOR_SERVER=akidb-amd64-3 \
+AKIDB_COMPETITOR_DRIVER=akidb-amd64-4 \
+AKIDB_COMPETITOR_DATASET_DIR=/var/tmp/akidb-market-data/sift1m-fvecs \
+AKIDB_COMPETITOR_OUTPUT_DIR=/qualification/evidence/competitors \
+AKIDB_COMPETITOR_CONFIRM=yes-run-isolated-market-competitors \
+AKIDB_COMPETITOR_MINIO_ACCESS_KEY=<ephemeral-lab-access-key> \
+AKIDB_COMPETITOR_MINIO_SECRET_KEY=<ephemeral-lab-secret> \
+AKIDB_PARITY_AKI_EVIDENCE_DIR=/qualification/evidence/akidb \
+AKIDB_PARITY_AKI_RUN_ID=<passed-akidb-run-id> \
+ansible-playbook playbooks/knowledge-market-competitors.yml
+```
+
+The playbook installs a qualification-only Docker runtime, binds database
+ports only to the WireGuard address, runs one database at a time, captures
+resolved image digests and resource/storage evidence, removes every container,
+and restores exact-generation AkiDB readiness in an unconditional recovery
+block. Anonymous database access is accepted only inside this isolated
+comparison network and is recorded in the evidence.
 
 Run the native graph G1 gate:
 

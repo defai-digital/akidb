@@ -283,6 +283,16 @@ jobs:
           AKIDB_MARKET_SERVER: knowledge-3
           AKIDB_MARKET_DRIVER: knowledge-4
           AKIDB_GRAPH_SERVER: knowledge-3
+          AKIDB_COMPETITOR_RUN_ID: syntax-run-001
+          AKIDB_COMPETITOR_SERVER: knowledge-3
+          AKIDB_COMPETITOR_DRIVER: knowledge-4
+          AKIDB_COMPETITOR_DATASET_DIR: /var/tmp/akidb-market-data/sift1m
+          AKIDB_COMPETITOR_OUTPUT_DIR: /tmp/akidb-competitor-syntax
+          AKIDB_COMPETITOR_CONFIRM: yes-run-isolated-market-competitors
+          AKIDB_COMPETITOR_MINIO_ACCESS_KEY: qualification
+          AKIDB_COMPETITOR_MINIO_SECRET_KEY: qualification-only-secret
+          AKIDB_PARITY_AKI_EVIDENCE_DIR: /tmp/akidb-ann-syntax
+          AKIDB_PARITY_AKI_RUN_ID: sift1m-syntax-run
         run: |
           ansible-playbook \
             -i inventories/example/knowledge-hosts.yml \
@@ -299,6 +309,10 @@ jobs:
           ansible-playbook \
             -i inventories/example/knowledge-hosts.yml \
             playbooks/knowledge-market-graph.yml \
+            --syntax-check
+          ansible-playbook \
+            -i inventories/example/knowledge-hosts.yml \
+            playbooks/knowledge-market-competitors.yml \
             --syntax-check
 
   # Python service tests

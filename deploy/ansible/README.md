@@ -165,6 +165,16 @@ The complete, safely rerunnable path is:
 ansible-playbook playbooks/site.yml
 ```
 
+Market qualification is deliberately separate from production reconciliation.
+`knowledge-market-ann.yml` isolates one AkiDB replica for the public SIFT1M
+matrix. Once that run passes, `knowledge-market-competitors.yml` uses the same
+server and driver for pinned Milvus and Weaviate images, one at a time. The
+competitor playbook is qualification-only: it records resolved image digests,
+keeps ports on WireGuard, removes its containers, and always restores the
+AkiDB replica. See
+[`docs/quality/market-readiness-qualification.md`](../../docs/quality/market-readiness-qualification.md)
+for the required environment variables and parity gates.
+
 Rollback requires an already installed release and still rolls one shard at a
 time:
 

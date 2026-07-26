@@ -1,0 +1,934 @@
+---
+- name: Validate competitor-parity qualification inputs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    competitor_run_id: "{{ lookup('env', 'AKIDB_COMPETITOR_RUN_ID') }}"
+    competitor_server: "{{ lookup('env', 'AKIDB_COMPETITOR_SERVER') }}"
+    competitor_driver: "{{ lookup('env', 'AKIDB_COMPETITOR_DRIVER') }}"
+    competitor_dataset_dir: "{{ lookup('env', 'AKIDB_COMPETITOR_DATASET_DIR') }}"
+    competitor_output_dir: "{{ lookup('env', 'AKIDB_COMPETITOR_OUTPUT_DIR') }}"
+    competitor_confirm: "{{ lookup('env', 'AKIDB_COMPETITOR_CONFIRM') }}"
+    parity_aki_evidence_dir: >-
+      {{ lookup('env', 'AKIDB_PARITY_AKI_EVIDENCE_DIR') }}
+    parity_aki_run_id: "{{ lookup('env', 'AKIDB_PARITY_AKI_RUN_ID') }}"
+    competitor_milvus_image: >-
+      {{
+        lookup('env', 'AKIDB_COMPETITOR_MILVUS_IMAGE')
+        | default('milvusdb/milvus:v2.6.21', true)
+      }}
+    competitor_weaviate_image: >-
+      {{
+        lookup('env', 'AKIDB_COMPETITOR_WEAVIATE_IMAGE')
+        | default(
+          'cr.weaviate.io/semitechnologies/weaviate:1.38.6',
+          true
+        )
+      }}
+  tasks:
+    - name: Require explicit isolation authorization and bounded inputs
+      ansible.builtin.assert:
+        that:
+          - competitor_confirm == 'yes-run-isolated-market-competitors'
+          - competitor_run_id is match('^[A-Za-z0-9._-]{7,64}$')
+          - competitor_server in groups['akidb_knowledge_replicas']
+          - competitor_driver in groups['akidb_knowledge_dependencies']
+          - competitor_server != competitor_driver
+          - competitor_dataset_dir.startswith('/var/tmp/akidb-market-data/')
+          - competitor_output_dir | length > 0
+          - parity_aki_evidence_dir | length > 0
+          - parity_aki_run_id is match('^[A-Za-z0-9._-]{7,96}$')
+          - competitor_milvus_image == 'milvusdb/milvus:v2.6.21'
+          - >-
+            competitor_weaviate_image
+            == 'cr.weaviate.io/semitechnologies/weaviate:1.38.6'
+          - lookup('env', 'AKIDB_COMPETITOR_MINIO_ACCESS_KEY') | length >= 8
+          - lookup('env', 'AKIDB_COMPETITOR_MINIO_SECRET_KEY') | length >= 16
+
+    - name: Inspect the exact competitor driver
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../../scripts/competitor_ann_bench.py"
+        checksum_algorithm: sha256
+      register: competitor_driver_source
+
+    - name: Require the competitor driver
+      ansible.builtin.assert:
+        that:
+          - competitor_driver_source.stat.isreg | default(false)
+          - >-
+            competitor_driver_source.stat.checksum
+            is match('^[0-9a-f]{64}$')
+
+    - name: Create protected controller evidence directory
+      ansible.builtin.file:
+        path: "{{ competitor_output_dir }}"
+        state: directory
+        mode: "0750"
+
+- name: Prepare the immutable dataset and Python client driver
+  hosts: "{{ lookup('env', 'AKIDB_COMPETITOR_DRIVER') }}"
+  become: true
+  gather_facts: true
+  vars:
+    competitor_run_id: "{{ lookup('env', 'AKIDB_COMPETITOR_RUN_ID') }}"
+    competitor_dataset_dir: "{{ lookup('env', 'AKIDB_COMPETITOR_DATASET_DIR') }}"
+    competitor_remote_evidence_dir: >-
+      /var/tmp/akidb-market-evidence/{{ competitor_run_id }}
+    competitor_driver_root: /opt/akidb-market-competitor
+  tasks:
+    - name: Install Python virtual-environment support
+      ansible.builtin.apt:
+        name:
+          - python3-venv
+          - python3-pip
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create the root-owned competitor driver directory
+      ansible.builtin.file:
+        path: "{{ competitor_driver_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install pinned competitor clients in an isolated environment
+      ansible.builtin.pip:
+        name:
+          - numpy==2.2.6
+          - pymilvus==2.6.17
+          - weaviate-client==4.22.0
+        state: present
+        virtualenv: "{{ competitor_driver_root }}/venv"
+        virtualenv_command: python3 -m venv
+
+    - name: Install the exact competitor driver
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../../scripts/competitor_ann_bench.py"
+        dest: "{{ competitor_driver_root }}/competitor_ann_bench.py"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Read converted dataset manifest
+      ansible.builtin.slurp:
+        src: "{{ competitor_dataset_dir }}/dataset-manifest.json"
+      register: competitor_dataset_manifest_source
+
+    - name: Parse converted dataset manifest
+      ansible.builtin.set_fact:
+        competitor_dataset_manifest: >-
+          {{ competitor_dataset_manifest_source.content | b64decode | from_json }}
+
+    - name: Inspect converted dataset files
+      ansible.builtin.stat:
+        path: "{{ competitor_dataset_dir }}/{{ item.file }}"
+        checksum_algorithm: sha256
+      loop:
+        - key: train
+          file: train.fvecs
+        - key: test
+          file: test.fvecs
+        - key: neighbors
+          file: neighbors.ivecs
+      register: competitor_dataset_files
+
+    - name: Require exact SIFT1M file identities
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - >-
+            item.stat.checksum
+            == competitor_dataset_manifest.files[item.item.key].sha256
+          - >-
+            item.stat.size
+            == competitor_dataset_manifest.files[item.item.key].bytes
+          - competitor_dataset_manifest.files.train.rows == 1000000
+          - competitor_dataset_manifest.files.train.dimensions == 128
+          - competitor_dataset_manifest.files.test.rows == 10000
+          - competitor_dataset_manifest.files.test.dimensions == 128
+          - competitor_dataset_manifest.files.neighbors.rows == 10000
+          - competitor_dataset_manifest.files.neighbors.dimensions >= 100
+      loop: "{{ competitor_dataset_files.results }}"
+      loop_control:
+        label: "{{ item.item.file }}"
+
+    - name: Create protected remote evidence directory
+      ansible.builtin.file:
+        path: "{{ competitor_remote_evidence_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+- name: Run current Milvus and Weaviate releases one at a time
+  hosts: "{{ lookup('env', 'AKIDB_COMPETITOR_SERVER') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    competitor_run_id: "{{ lookup('env', 'AKIDB_COMPETITOR_RUN_ID') }}"
+    competitor_driver: "{{ lookup('env', 'AKIDB_COMPETITOR_DRIVER') }}"
+    competitor_dataset_dir: "{{ lookup('env', 'AKIDB_COMPETITOR_DATASET_DIR') }}"
+    competitor_output_dir: "{{ lookup('env', 'AKIDB_COMPETITOR_OUTPUT_DIR') }}"
+    competitor_remote_evidence_dir: >-
+      /var/tmp/akidb-market-evidence/{{ competitor_run_id }}
+    competitor_driver_root: /opt/akidb-market-competitor
+    competitor_data_root: >-
+      /var/lib/akidb-market/competitors/{{ competitor_run_id }}
+    competitor_milvus_image: milvusdb/milvus:v2.6.21
+    competitor_etcd_image: quay.io/coreos/etcd:v3.5.25
+    competitor_minio_image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    competitor_weaviate_image: >-
+      cr.weaviate.io/semitechnologies/weaviate:1.38.6
+    competitor_milvus_port: 19530
+    competitor_milvus_health_port: 9091
+    competitor_weaviate_http_port: 18080
+    competitor_weaviate_grpc_port: 50052
+  tasks:
+    - name: Install the qualification-only container runtime
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Start the qualification-only container runtime
+      ansible.builtin.systemd_service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Inspect fresh competitor data root
+      ansible.builtin.stat:
+        path: "{{ competitor_data_root }}"
+      register: competitor_data_root_state
+
+    - name: Require a fresh bounded competitor data root
+      ansible.builtin.assert:
+        that:
+          - not (competitor_data_root_state.stat.exists | default(false))
+          - competitor_data_root.startswith(
+              '/var/lib/akidb-market/competitors/'
+            )
+
+    - name: Inspect reserved qualification container names
+      ansible.builtin.command:
+        argv:
+          - docker
+          - ps
+          - --all
+          - --quiet
+          - --filter
+          - >-
+            name=^/akidb-market-(milvus|etcd|minio|weaviate)$
+      register: competitor_existing_containers
+      changed_when: false
+
+    - name: Require no stale qualification containers
+      ansible.builtin.assert:
+        that:
+          - competitor_existing_containers.stdout | trim == ''
+
+    - name: Create bounded competitor data directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+      loop:
+        - "{{ competitor_data_root }}"
+        - "{{ competitor_data_root }}/milvus"
+        - "{{ competitor_data_root }}/milvus/etcd"
+        - "{{ competitor_data_root }}/milvus/minio"
+        - "{{ competitor_data_root }}/milvus/data"
+        - "{{ competitor_data_root }}/weaviate"
+
+    - name: Pull exact qualification images
+      ansible.builtin.command:
+        argv: [docker, image, pull, "{{ item }}"]
+      loop:
+        - "{{ competitor_milvus_image }}"
+        - "{{ competitor_etcd_image }}"
+        - "{{ competitor_minio_image }}"
+        - "{{ competitor_weaviate_image }}"
+      register: competitor_image_pulls
+      changed_when: true
+
+    - name: Execute both competitor runs with unconditional recovery
+      block:
+        - name: Stop the AkiDB replica selected for competitor isolation
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: stopped
+
+        - name: Ensure the AkiDB isolated benchmark is stopped
+          ansible.builtin.systemd_service:
+            name: akidb-market-benchmark
+            state: stopped
+          failed_when: false
+
+        - name: Create the isolated Milvus container network
+          ansible.builtin.command:
+            argv: [docker, network, create, akidb-market-milvus]
+          changed_when: true
+
+        - name: Start the pinned etcd dependency
+          ansible.builtin.command:
+            argv:
+              - docker
+              - run
+              - --detach
+              - --name
+              - akidb-market-etcd
+              - --network
+              - akidb-market-milvus
+              - --volume
+              - "{{ competitor_data_root }}/milvus/etcd:/etcd"
+              - --env
+              - ETCD_AUTO_COMPACTION_MODE=revision
+              - --env
+              - ETCD_AUTO_COMPACTION_RETENTION=1000
+              - --env
+              - ETCD_QUOTA_BACKEND_BYTES=4294967296
+              - --env
+              - ETCD_SNAPSHOT_COUNT=50000
+              - "{{ competitor_etcd_image }}"
+              - etcd
+              - --advertise-client-urls=http://akidb-market-etcd:2379
+              - --listen-client-urls=http://0.0.0.0:2379
+              - --data-dir=/etcd
+          changed_when: true
+
+        - name: Start the pinned private MinIO dependency
+          ansible.builtin.command:
+            argv:
+              - docker
+              - run
+              - --detach
+              - --name
+              - akidb-market-minio
+              - --network
+              - akidb-market-milvus
+              - --volume
+              - "{{ competitor_data_root }}/milvus/minio:/minio_data"
+              - --env
+              - >-
+                MINIO_ACCESS_KEY={{
+                  lookup('env', 'AKIDB_COMPETITOR_MINIO_ACCESS_KEY')
+                }}
+              - --env
+              - >-
+                MINIO_SECRET_KEY={{
+                  lookup('env', 'AKIDB_COMPETITOR_MINIO_SECRET_KEY')
+                }}
+              - "{{ competitor_minio_image }}"
+              - minio
+              - server
+              - /minio_data
+          changed_when: true
+          no_log: true
+
+        - name: Start the pinned Milvus standalone server
+          ansible.builtin.command:
+            argv:
+              - docker
+              - run
+              - --detach
+              - --name
+              - akidb-market-milvus
+              - --network
+              - akidb-market-milvus
+              - --security-opt
+              - seccomp=unconfined
+              - --publish
+              - >-
+                {{ akidb_overlay_address }}:{{
+                  competitor_milvus_port
+                }}:19530
+              - --publish
+              - >-
+                {{ akidb_overlay_address }}:{{
+                  competitor_milvus_health_port
+                }}:9091
+              - --volume
+              - "{{ competitor_data_root }}/milvus/data:/var/lib/milvus"
+              - --env
+              - ETCD_ENDPOINTS=akidb-market-etcd:2379
+              - --env
+              - MINIO_ADDRESS=akidb-market-minio:9000
+              - --env
+              - MINIO_REGION=us-east-1
+              - --env
+              - >-
+                MINIO_ACCESS_KEY_ID={{
+                  lookup('env', 'AKIDB_COMPETITOR_MINIO_ACCESS_KEY')
+                }}
+              - --env
+              - >-
+                MINIO_SECRET_ACCESS_KEY={{
+                  lookup('env', 'AKIDB_COMPETITOR_MINIO_SECRET_KEY')
+                }}
+              - "{{ competitor_milvus_image }}"
+              - milvus
+              - run
+              - standalone
+          changed_when: true
+          no_log: true
+
+        - name: Wait for Milvus standalone health
+          ansible.builtin.uri:
+            url: >-
+              http://{{ akidb_overlay_address }}:{{
+                competitor_milvus_health_port
+              }}/healthz
+            status_code: 200
+          register: competitor_milvus_health
+          retries: 90
+          delay: 2
+          until: competitor_milvus_health.status == 200
+
+        - name: Require Milvus not to bind its public server address
+          ansible.builtin.wait_for:
+            host: "{{ hostvars[inventory_hostname].ansible_host }}"
+            port: "{{ competitor_milvus_port }}"
+            state: stopped
+            connect_timeout: 1
+            timeout: 2
+          delegate_to: "{{ competitor_driver }}"
+
+        - name: Run the exact-ground-truth Milvus matrix
+          ansible.builtin.command:
+            argv:
+              - "{{ competitor_driver_root }}/venv/bin/python"
+              - "{{ competitor_driver_root }}/competitor_ann_bench.py"
+              - --engine
+              - milvus
+              - --host
+              - "{{ akidb_overlay_address }}"
+              - --grpc-port
+              - "{{ competitor_milvus_port | string }}"
+              - --collection
+              - sift1m_parity
+              - --dataset-name
+              - sift-128-euclidean
+              - --train-fvecs
+              - "{{ competitor_dataset_dir }}/train.fvecs"
+              - --query-fvecs
+              - "{{ competitor_dataset_dir }}/test.fvecs"
+              - --neighbors-ivecs
+              - "{{ competitor_dataset_dir }}/neighbors.ivecs"
+              - --batch-size
+              - "256"
+              - --concurrency
+              - "8"
+              - --warmup-queries
+              - "1000"
+              - --measurement-rounds
+              - "3"
+              - --search-efs
+              - "32,64,128,256"
+              - --post-load-settle-seconds
+              - "60"
+              - --include-filters
+              - --output-json
+              - "{{ competitor_remote_evidence_dir }}/milvus.json"
+          delegate_to: "{{ competitor_driver }}"
+          register: competitor_milvus_process
+          changed_when: false
+          failed_when: false
+
+        - name: Record bounded Milvus process evidence
+          ansible.builtin.copy:
+            content: >-
+              {{
+                {
+                  'engine': 'milvus',
+                  'rc': competitor_milvus_process.rc,
+                  'stdout': competitor_milvus_process.stdout[-4096:],
+                  'stderr': competitor_milvus_process.stderr[-4096:]
+                } | to_nice_json
+              }}
+            dest: "{{ competitor_remote_evidence_dir }}/milvus-process.json"
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ competitor_driver }}"
+
+        - name: Fetch bounded Milvus process evidence
+          ansible.builtin.fetch:
+            src: "{{ competitor_remote_evidence_dir }}/milvus-process.json"
+            dest: >-
+              {{ competitor_output_dir }}/{{ competitor_run_id
+              }}-milvus-process.json
+            flat: true
+          delegate_to: "{{ competitor_driver }}"
+
+        - name: Inspect Milvus report
+          ansible.builtin.stat:
+            path: "{{ competitor_remote_evidence_dir }}/milvus.json"
+            checksum_algorithm: sha256
+          delegate_to: "{{ competitor_driver }}"
+          register: competitor_milvus_report
+
+        - name: Require successful Milvus benchmark evidence
+          ansible.builtin.assert:
+            that:
+              - competitor_milvus_process.rc == 0
+              - competitor_milvus_report.stat.isreg | default(false)
+
+        - name: Measure Milvus persistent bytes
+          ansible.builtin.command:
+            argv:
+              - du
+              - --bytes
+              - --summarize
+              - "{{ competitor_data_root }}/milvus"
+          register: competitor_milvus_size
+          changed_when: false
+
+        - name: Read Milvus image identity
+          ansible.builtin.command:
+            argv: [docker, image, inspect, "{{ competitor_milvus_image }}"]
+          register: competitor_milvus_image_inspect
+          changed_when: false
+
+        - name: Read Milvus dependency image identities
+          ansible.builtin.command:
+            argv:
+              - docker
+              - image
+              - inspect
+              - "{{ competitor_etcd_image }}"
+              - "{{ competitor_minio_image }}"
+          register: competitor_milvus_dependency_inspect
+          changed_when: false
+
+        - name: Read Milvus resource accounting
+          ansible.builtin.command:
+            argv:
+              - docker
+              - stats
+              - --no-stream
+              - --format
+              - json
+              - akidb-market-milvus
+          register: competitor_milvus_resources
+          changed_when: false
+
+        - name: Record immutable Milvus environment evidence
+          ansible.builtin.copy:
+            content: >-
+              {{
+                {
+                  'schema_version': 1,
+                  'report_type': 'competitor-ann-environment.v1',
+                  'run_id': competitor_run_id,
+                  'engine': 'milvus',
+                  'server_host': inventory_hostname,
+                  'driver_host': competitor_driver,
+                  'distribution': ansible_distribution,
+                  'distribution_version': ansible_distribution_version,
+                  'architecture': ansible_architecture,
+                  'kernel': ansible_kernel,
+                  'processor_vcpus': ansible_processor_vcpus,
+                  'memory_mb': ansible_memtotal_mb,
+                  'image_ref': competitor_milvus_image,
+                  'image_id': (
+                    competitor_milvus_image_inspect.stdout
+                    | from_json
+                  )[0].Id,
+                  'repo_digests': (
+                    competitor_milvus_image_inspect.stdout
+                    | from_json
+                  )[0].RepoDigests,
+                  'dependency_images': (
+                    competitor_milvus_dependency_inspect.stdout
+                    | from_json
+                  ),
+                  'driver_sha256': hostvars['localhost']
+                    .competitor_driver_source.stat.checksum,
+                  'report_sha256': competitor_milvus_report.stat.checksum,
+                  'index_bytes': competitor_milvus_size.stdout.split()[0] | int,
+                  'resource_accounting': (
+                    competitor_milvus_resources.stdout | from_json
+                  ),
+                  'network_scope': 'WireGuard overlay only',
+                  'anonymous_access': true
+                } | to_nice_json
+              }}
+            dest: "{{ competitor_remote_evidence_dir }}/milvus-environment.json"
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ competitor_driver }}"
+
+        - name: Fetch Milvus report and environment evidence
+          ansible.builtin.fetch:
+            src: "{{ competitor_remote_evidence_dir }}/{{ item.source }}"
+            dest: >-
+              {{ competitor_output_dir }}/{{ competitor_run_id }}-{{
+                item.destination
+              }}
+            flat: true
+          delegate_to: "{{ competitor_driver }}"
+          loop:
+            - source: milvus.json
+              destination: milvus.json
+            - source: milvus-environment.json
+              destination: milvus-environment.json
+
+        - name: Stop and remove Milvus qualification containers
+          ansible.builtin.command:
+            argv:
+              - docker
+              - rm
+              - --force
+              - "{{ item }}"
+          loop:
+            - akidb-market-milvus
+            - akidb-market-minio
+            - akidb-market-etcd
+          changed_when: true
+
+        - name: Remove the isolated Milvus network
+          ansible.builtin.command:
+            argv: [docker, network, rm, akidb-market-milvus]
+          changed_when: true
+
+        - name: Start the pinned Weaviate server
+          ansible.builtin.command:
+            argv:
+              - docker
+              - run
+              - --detach
+              - --name
+              - akidb-market-weaviate
+              - --publish
+              - >-
+                {{ akidb_overlay_address }}:{{
+                  competitor_weaviate_http_port
+                }}:8080
+              - --publish
+              - >-
+                {{ akidb_overlay_address }}:{{
+                  competitor_weaviate_grpc_port
+                }}:50051
+              - --volume
+              - "{{ competitor_data_root }}/weaviate:/var/lib/weaviate"
+              - --env
+              - QUERY_DEFAULTS_LIMIT=100
+              - --env
+              - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+              - --env
+              - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+              - --env
+              - DEFAULT_VECTORIZER_MODULE=none
+              - --env
+              - CLUSTER_HOSTNAME=qualification-node
+              - --env
+              - DISABLE_TELEMETRY=true
+              - "{{ competitor_weaviate_image }}"
+              - --host
+              - 0.0.0.0
+              - --port
+              - "8080"
+              - --scheme
+              - http
+          changed_when: true
+
+        - name: Wait for Weaviate metadata readiness
+          ansible.builtin.uri:
+            url: >-
+              http://{{ akidb_overlay_address }}:{{
+                competitor_weaviate_http_port
+              }}/v1/meta
+            status_code: 200
+          register: competitor_weaviate_health
+          retries: 90
+          delay: 2
+          until: competitor_weaviate_health.status == 200
+
+        - name: Require Weaviate not to bind its public server address
+          ansible.builtin.wait_for:
+            host: "{{ hostvars[inventory_hostname].ansible_host }}"
+            port: "{{ competitor_weaviate_http_port }}"
+            state: stopped
+            connect_timeout: 1
+            timeout: 2
+          delegate_to: "{{ competitor_driver }}"
+
+        - name: Run the exact-ground-truth Weaviate matrix
+          ansible.builtin.command:
+            argv:
+              - "{{ competitor_driver_root }}/venv/bin/python"
+              - "{{ competitor_driver_root }}/competitor_ann_bench.py"
+              - --engine
+              - weaviate
+              - --host
+              - "{{ akidb_overlay_address }}"
+              - --http-port
+              - "{{ competitor_weaviate_http_port | string }}"
+              - --grpc-port
+              - "{{ competitor_weaviate_grpc_port | string }}"
+              - --collection
+              - Sift1mParity
+              - --dataset-name
+              - sift-128-euclidean
+              - --train-fvecs
+              - "{{ competitor_dataset_dir }}/train.fvecs"
+              - --query-fvecs
+              - "{{ competitor_dataset_dir }}/test.fvecs"
+              - --neighbors-ivecs
+              - "{{ competitor_dataset_dir }}/neighbors.ivecs"
+              - --batch-size
+              - "256"
+              - --concurrency
+              - "8"
+              - --warmup-queries
+              - "1000"
+              - --measurement-rounds
+              - "3"
+              - --search-efs
+              - "32,64,128,256"
+              - --post-load-settle-seconds
+              - "60"
+              - --include-filters
+              - --output-json
+              - "{{ competitor_remote_evidence_dir }}/weaviate.json"
+          delegate_to: "{{ competitor_driver }}"
+          register: competitor_weaviate_process
+          changed_when: false
+          failed_when: false
+
+        - name: Record bounded Weaviate process evidence
+          ansible.builtin.copy:
+            content: >-
+              {{
+                {
+                  'engine': 'weaviate',
+                  'rc': competitor_weaviate_process.rc,
+                  'stdout': competitor_weaviate_process.stdout[-4096:],
+                  'stderr': competitor_weaviate_process.stderr[-4096:]
+                } | to_nice_json
+              }}
+            dest: >-
+              {{ competitor_remote_evidence_dir }}/weaviate-process.json
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ competitor_driver }}"
+
+        - name: Fetch bounded Weaviate process evidence
+          ansible.builtin.fetch:
+            src: "{{ competitor_remote_evidence_dir }}/weaviate-process.json"
+            dest: >-
+              {{ competitor_output_dir }}/{{ competitor_run_id
+              }}-weaviate-process.json
+            flat: true
+          delegate_to: "{{ competitor_driver }}"
+
+        - name: Inspect Weaviate report
+          ansible.builtin.stat:
+            path: "{{ competitor_remote_evidence_dir }}/weaviate.json"
+            checksum_algorithm: sha256
+          delegate_to: "{{ competitor_driver }}"
+          register: competitor_weaviate_report
+
+        - name: Require successful Weaviate benchmark evidence
+          ansible.builtin.assert:
+            that:
+              - competitor_weaviate_process.rc == 0
+              - competitor_weaviate_report.stat.isreg | default(false)
+
+        - name: Measure Weaviate persistent bytes
+          ansible.builtin.command:
+            argv:
+              - du
+              - --bytes
+              - --summarize
+              - "{{ competitor_data_root }}/weaviate"
+          register: competitor_weaviate_size
+          changed_when: false
+
+        - name: Read Weaviate image identity
+          ansible.builtin.command:
+            argv: [docker, image, inspect, "{{ competitor_weaviate_image }}"]
+          register: competitor_weaviate_image_inspect
+          changed_when: false
+
+        - name: Read Weaviate resource accounting
+          ansible.builtin.command:
+            argv:
+              - docker
+              - stats
+              - --no-stream
+              - --format
+              - json
+              - akidb-market-weaviate
+          register: competitor_weaviate_resources
+          changed_when: false
+
+        - name: Record immutable Weaviate environment evidence
+          ansible.builtin.copy:
+            content: >-
+              {{
+                {
+                  'schema_version': 1,
+                  'report_type': 'competitor-ann-environment.v1',
+                  'run_id': competitor_run_id,
+                  'engine': 'weaviate',
+                  'server_host': inventory_hostname,
+                  'driver_host': competitor_driver,
+                  'distribution': ansible_distribution,
+                  'distribution_version': ansible_distribution_version,
+                  'architecture': ansible_architecture,
+                  'kernel': ansible_kernel,
+                  'processor_vcpus': ansible_processor_vcpus,
+                  'memory_mb': ansible_memtotal_mb,
+                  'image_ref': competitor_weaviate_image,
+                  'image_id': (
+                    competitor_weaviate_image_inspect.stdout
+                    | from_json
+                  )[0].Id,
+                  'repo_digests': (
+                    competitor_weaviate_image_inspect.stdout
+                    | from_json
+                  )[0].RepoDigests,
+                  'driver_sha256': hostvars['localhost']
+                    .competitor_driver_source.stat.checksum,
+                  'report_sha256': competitor_weaviate_report.stat.checksum,
+                  'index_bytes': (
+                    competitor_weaviate_size.stdout.split()[0] | int
+                  ),
+                  'resource_accounting': (
+                    competitor_weaviate_resources.stdout | from_json
+                  ),
+                  'network_scope': 'WireGuard overlay only',
+                  'anonymous_access': true
+                } | to_nice_json
+              }}
+            dest: >-
+              {{ competitor_remote_evidence_dir
+              }}/weaviate-environment.json
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ competitor_driver }}"
+
+        - name: Fetch Weaviate report and environment evidence
+          ansible.builtin.fetch:
+            src: "{{ competitor_remote_evidence_dir }}/{{ item.source }}"
+            dest: >-
+              {{ competitor_output_dir }}/{{ competitor_run_id }}-{{
+                item.destination
+              }}
+            flat: true
+          delegate_to: "{{ competitor_driver }}"
+          loop:
+            - source: weaviate.json
+              destination: weaviate.json
+            - source: weaviate-environment.json
+              destination: weaviate-environment.json
+      always:
+        - name: Stop and remove all qualification containers
+          ansible.builtin.command:
+            argv:
+              - docker
+              - rm
+              - --force
+              - "{{ item }}"
+          loop:
+            - akidb-market-weaviate
+            - akidb-market-milvus
+            - akidb-market-minio
+            - akidb-market-etcd
+          changed_when: true
+          failed_when: false
+
+        - name: Remove the qualification Milvus network
+          ansible.builtin.command:
+            argv: [docker, network, rm, akidb-market-milvus]
+          changed_when: true
+          failed_when: false
+
+        - name: Restore the AkiDB knowledge replica
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: started
+
+        - name: Wait for restored exact-generation readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/current/bin/akidb"
+              - health
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: >-
+              {{ akidb_config_root }}/knowledge-read.token
+            AKIDB_WORKSPACE: "{{ akidb_knowledge_workspace }}"
+          changed_when: false
+          register: competitor_restored_replica
+          retries: 30
+          delay: 2
+          until: competitor_restored_replica.rc == 0
+
+- name: Produce the fail-closed three-engine parity verdict
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    competitor_run_id: "{{ lookup('env', 'AKIDB_COMPETITOR_RUN_ID') }}"
+    competitor_output_dir: "{{ lookup('env', 'AKIDB_COMPETITOR_OUTPUT_DIR') }}"
+    parity_aki_evidence_dir: >-
+      {{ lookup('env', 'AKIDB_PARITY_AKI_EVIDENCE_DIR') }}
+    parity_aki_run_id: "{{ lookup('env', 'AKIDB_PARITY_AKI_RUN_ID') }}"
+  tasks:
+    - name: Build exact-recall market parity summary
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../../scripts/summarize_market_parity.py"
+          - --aki-evidence-dir
+          - "{{ parity_aki_evidence_dir }}"
+          - --aki-run-id
+          - "{{ parity_aki_run_id }}"
+          - --milvus-report
+          - >-
+            {{ competitor_output_dir }}/{{ competitor_run_id }}-milvus.json
+          - --milvus-environment
+          - >-
+            {{ competitor_output_dir }}/{{ competitor_run_id
+            }}-milvus-environment.json
+          - --weaviate-report
+          - >-
+            {{ competitor_output_dir }}/{{ competitor_run_id }}-weaviate.json
+          - --weaviate-environment
+          - >-
+            {{ competitor_output_dir }}/{{ competitor_run_id
+            }}-weaviate-environment.json
+          - --min-recall
+          - "0.95"
+          - --min-qps-ratio
+          - "0.70"
+          - --max-p99-ratio
+          - "1.50"
+          - --max-build-ratio
+          - "2.00"
+          - --max-storage-ratio
+          - "2.00"
+          - --output
+          - >-
+            {{ competitor_output_dir }}/{{ competitor_run_id
+            }}-parity-summary.json
+      changed_when: false
