@@ -16,13 +16,16 @@
     competitor_milvus_image: >-
       {{
         lookup('env', 'AKIDB_COMPETITOR_MILVUS_IMAGE')
-        | default('milvusdb/milvus:v2.6.21', true)
+        | default(
+          'milvusdb/milvus@sha256:d88d0548f9d69748a5ea42bdbc246411398615e2360fe4667505c863b4445f6a',
+          true
+        )
       }}
     competitor_weaviate_image: >-
       {{
         lookup('env', 'AKIDB_COMPETITOR_WEAVIATE_IMAGE')
         | default(
-          'cr.weaviate.io/semitechnologies/weaviate:1.38.6',
+          'cr.weaviate.io/semitechnologies/weaviate@sha256:6ea713f8085dd0ba5c7714271d85f6c7d5ba951ac4b1a9d97ba735918cca3450',
           true
         )
       }}
@@ -39,10 +42,12 @@
           - competitor_output_dir | length > 0
           - parity_aki_evidence_dir | length > 0
           - parity_aki_run_id is match('^[A-Za-z0-9._-]{7,96}$')
-          - competitor_milvus_image == 'milvusdb/milvus:v2.6.21'
+          - >-
+            competitor_milvus_image
+            == 'milvusdb/milvus@sha256:d88d0548f9d69748a5ea42bdbc246411398615e2360fe4667505c863b4445f6a'
           - >-
             competitor_weaviate_image
-            == 'cr.weaviate.io/semitechnologies/weaviate:1.38.6'
+            == 'cr.weaviate.io/semitechnologies/weaviate@sha256:6ea713f8085dd0ba5c7714271d85f6c7d5ba951ac4b1a9d97ba735918cca3450'
           - lookup('env', 'AKIDB_COMPETITOR_MINIO_ACCESS_KEY') | length >= 8
           - lookup('env', 'AKIDB_COMPETITOR_MINIO_SECRET_KEY') | length >= 16
 
@@ -178,11 +183,14 @@
     competitor_driver_root: /opt/akidb-market-competitor
     competitor_data_root: >-
       /var/lib/akidb-market/competitors/{{ competitor_run_id }}
-    competitor_milvus_image: milvusdb/milvus:v2.6.21
-    competitor_etcd_image: quay.io/coreos/etcd:v3.5.25
-    competitor_minio_image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    competitor_milvus_image: >-
+      milvusdb/milvus@sha256:d88d0548f9d69748a5ea42bdbc246411398615e2360fe4667505c863b4445f6a
+    competitor_etcd_image: >-
+      quay.io/coreos/etcd@sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366
+    competitor_minio_image: >-
+      minio/minio@sha256:391d1d45fdbe79944cb6de9337b073864bb9ee38c4c24280bfb39572e925af08
     competitor_weaviate_image: >-
-      cr.weaviate.io/semitechnologies/weaviate:1.38.6
+      cr.weaviate.io/semitechnologies/weaviate@sha256:6ea713f8085dd0ba5c7714271d85f6c7d5ba951ac4b1a9d97ba735918cca3450
     competitor_milvus_port: 19530
     competitor_milvus_health_port: 9091
     competitor_weaviate_http_port: 18080
