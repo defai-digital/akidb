@@ -267,11 +267,34 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Ansible syntax validator
+        run: pip install ansible-core==2.21.2
+
       - name: Four-Mac evidence pipeline smoke
         run: ./scripts/smoke-four-mac-validation.sh
 
       - name: Knowledge gateway load-driver tests
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+
+      - name: Knowledge qualification playbook syntax
+        working-directory: deploy/ansible
+        env:
+          AKIDB_READINESS_FAULT_REPLICA: knowledge-1
+          AKIDB_MARKET_SERVER: knowledge-3
+          AKIDB_MARKET_DRIVER: knowledge-4
+        run: |
+          ansible-playbook \
+            -i inventories/example/knowledge-hosts.yml \
+            playbooks/knowledge-load-test.yml \
+            --syntax-check
+          ansible-playbook \
+            -i inventories/example/knowledge-hosts.yml \
+            playbooks/knowledge-failure-under-load.yml \
+            --syntax-check
+          ansible-playbook \
+            -i inventories/example/knowledge-hosts.yml \
+            playbooks/knowledge-market-ann.yml \
+            --syntax-check
 
   # Python service tests
   python-test:

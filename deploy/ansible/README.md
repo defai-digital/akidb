@@ -103,12 +103,12 @@ akidb-linux-amd64-<git-sha>.tar.gz.sha256
 ```
 
 The archive contains `akidb`, `akidb-server`, `akidb-coordinator`,
-`akidb-bench`, and a build manifest. The Linux AMD64 server is compiled with
-the optional `generation-postgres` control surface; it remains disabled at
-runtime unless generation serving is explicitly configured. The package
-script defaults to the Ubuntu LTS GCC/G++ toolchain and allows explicit
-`CC`/`CXX` overrides for separate compiler qualification. GitHub attaches a
-provenance attestation.
+`akidb-bench`, `akidb-ann-bench`, `akidb-graph-bench`, and a build manifest.
+The Linux AMD64 server is compiled with the optional `generation-postgres`
+control surface; it remains disabled at runtime unless generation serving is
+explicitly configured. The package script defaults to the Ubuntu LTS GCC/G++
+toolchain and allows explicit `CC`/`CXX` overrides for separate compiler
+qualification. GitHub attaches a provenance attestation.
 
 Download a completed CI artifact:
 

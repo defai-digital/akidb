@@ -1,0 +1,30 @@
+[Unit]
+Description=AkiDB isolated market ANN qualification
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+Requires=wg-quick@wg0.service
+Conflicts=akidb-knowledge-replica.service
+
+[Service]
+Type=simple
+User={{ akidb_user }}
+Group={{ akidb_group }}
+UMask=0027
+ExecStart={{ akidb_install_root }}/releases/{{ akidb_release_id }}/bin/akidb-server --config {{ akidb_market_config_path }} --listen {{ akidb_overlay_address }}:{{ akidb_knowledge_server_port }} --log-level info
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=120
+TimeoutStopSec=120
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths={{ akidb_market_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

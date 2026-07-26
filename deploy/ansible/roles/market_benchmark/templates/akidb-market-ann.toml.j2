@@ -1,0 +1,82 @@
+[server]
+host = "{{ akidb_overlay_address }}"
+port = 8180
+grpc_port = {{ akidb_knowledge_server_port }}
+tls_enabled = true
+tls_cert_path = "{{ akidb_config_root }}/tls/server.crt"
+tls_key_path = "{{ akidb_config_root }}/tls/server.key"
+
+[auth]
+mode = "required"
+token_file = "{{ akidb_config_root }}/knowledge-read.token"
+
+[auth.acl]
+default_workspace = "{{ akidb_market_workspace }}"
+enforce_workspace = true
+
+[index]
+index_type = "HNSW"
+hnsw_m = {{ akidb_market_hnsw_m }}
+hnsw_ef_construction = {{ akidb_market_hnsw_ef_construction }}
+hnsw_ef_search = {{ akidb_market_hnsw_ef_search }}
+vector_precision = "f32"
+metric = "{{ akidb_market_metric }}"
+
+[index.filter]
+mode = "adaptive"
+postfilter_overfetch_factor = 5
+adaptive_pre_selectivity = 0.20
+
+[index.rebuild]
+tombstone_ratio_trigger = 0.10
+max_duration_seconds = 3600
+preferred_hours = [2, 3, 4]
+
+[index.tombstone]
+max_count = 1000000
+
+[storage]
+rocksdb_path = "{{ akidb_market_data_dir }}/rocksdb"
+wal_enabled = true
+wal_path = "{{ akidb_market_data_dir }}/wal"
+
+[storage.minio]
+endpoint = ""
+bucket = ""
+access_key = ""
+secret_key = ""
+use_ssl = false
+
+[sql]
+enabled = false
+backend = "sqlite"
+sqlite_path = "{{ akidb_market_data_dir }}/metadata.sqlite"
+
+[observability]
+tracing_enabled = false
+metrics_enabled = true
+metrics_port = {{ akidb_market_metrics_port }}
+log_level = "info"
+log_format = "json"
+
+[slo]
+[slo.reference]
+dimensions = {{ akidb_market_dimensions }}
+vectors_per_shard = {{ akidb_market_vectors }}
+top_k = 10
+nprobe = {{ akidb_market_hnsw_ef_search }}
+batch_size = {{ akidb_market_batch_size }}
+target_p95_ms = 100
+
+[slo.backpressure]
+soft_breach_ms = 100
+hard_breach_ms = 250
+degraded_mode_enabled = true
+
+[embedding]
+enabled = false
+url = "http://127.0.0.1:8081/v1/embeddings"
+model = "disabled"
+dimensions = {{ akidb_market_dimensions }}
+timeout_ms = 10000
+max_batch_size = 32

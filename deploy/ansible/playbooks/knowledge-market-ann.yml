@@ -1,0 +1,357 @@
+---
+- name: Validate immutable market-qualification inputs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    market_run_id: "{{ lookup('env', 'AKIDB_MARKET_RUN_ID') }}"
+    market_server: "{{ lookup('env', 'AKIDB_MARKET_SERVER') }}"
+    market_driver: "{{ lookup('env', 'AKIDB_MARKET_DRIVER') }}"
+    market_dataset_dir: "{{ lookup('env', 'AKIDB_MARKET_DATASET_DIR') }}"
+    market_output_dir: "{{ lookup('env', 'AKIDB_MARKET_OUTPUT_DIR') }}"
+    market_confirm: "{{ lookup('env', 'AKIDB_MARKET_CONFIRM') }}"
+  tasks:
+    - name: Require explicit isolation authorization and bounded paths
+      ansible.builtin.assert:
+        that:
+          - market_confirm == 'yes-isolate-one-qualification-replica'
+          - market_run_id is match('^[A-Za-z0-9._-]{7,96}$')
+          - market_server in groups['akidb_knowledge_replicas']
+          - market_driver in groups['akidb_knowledge_dependencies']
+          - market_server != market_driver
+          - market_dataset_dir.startswith('/var/tmp/akidb-market-data/')
+          - market_output_dir | length > 0
+          - akidb_release_id is match('^[A-Za-z0-9._-]{7,64}$')
+          - akidb_artifact_sha256 is match('^[0-9a-f]{64}$')
+
+    - name: Inspect the immutable controller artifact
+      ansible.builtin.stat:
+        path: "{{ akidb_artifact_path }}"
+        checksum_algorithm: sha256
+      register: market_artifact
+
+    - name: Require the exact artifact checksum
+      ansible.builtin.assert:
+        that:
+          - market_artifact.stat.isreg | default(false)
+          - market_artifact.stat.checksum == akidb_artifact_sha256
+
+    - name: Create controller evidence directory
+      ansible.builtin.file:
+        path: "{{ market_output_dir }}"
+        state: directory
+        mode: "0750"
+
+- name: Stage the same immutable candidate on server and driver
+  hosts: >-
+    {{
+      [
+        lookup('env', 'AKIDB_MARKET_SERVER'),
+        lookup('env', 'AKIDB_MARKET_DRIVER')
+      ]
+    }}
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: common
+    - role: release
+
+- name: Stage and verify the public ANN dataset on the isolated driver
+  hosts: "{{ lookup('env', 'AKIDB_MARKET_DRIVER') }}"
+  become: true
+  gather_facts: true
+  vars:
+    market_run_id: "{{ lookup('env', 'AKIDB_MARKET_RUN_ID') }}"
+    market_dataset_dir: "{{ lookup('env', 'AKIDB_MARKET_DATASET_DIR') }}"
+    market_remote_evidence_dir: "/var/tmp/akidb-market-evidence/{{ market_run_id }}"
+  tasks:
+    - name: Read converted dataset manifest
+      ansible.builtin.slurp:
+        src: "{{ market_dataset_dir }}/dataset-manifest.json"
+      register: market_dataset_manifest_source
+
+    - name: Parse converted dataset manifest
+      ansible.builtin.set_fact:
+        market_dataset_manifest: >-
+          {{ market_dataset_manifest_source.content | b64decode | from_json }}
+
+    - name: Inspect converted dataset files
+      ansible.builtin.stat:
+        path: "{{ market_dataset_dir }}/{{ item.file }}"
+        checksum_algorithm: sha256
+      loop:
+        - key: train
+          file: train.fvecs
+        - key: test
+          file: test.fvecs
+        - key: neighbors
+          file: neighbors.ivecs
+      register: market_dataset_files
+
+    - name: Require all dataset hashes and byte counts
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - item.stat.checksum == market_dataset_manifest.files[item.item.key].sha256
+          - item.stat.size == market_dataset_manifest.files[item.item.key].bytes
+      loop: "{{ market_dataset_files.results }}"
+      loop_control:
+        label: "{{ item.item.file }}"
+
+    - name: Require SIFT1M dimensions and row counts
+      ansible.builtin.assert:
+        that:
+          - market_dataset_manifest.files.train.rows == 1000000
+          - market_dataset_manifest.files.train.dimensions == 128
+          - market_dataset_manifest.files.test.rows == 10000
+          - market_dataset_manifest.files.test.dimensions == 128
+          - market_dataset_manifest.files.neighbors.rows == 10000
+          - market_dataset_manifest.files.neighbors.dimensions >= 100
+
+    - name: Create protected remote evidence directory
+      ansible.builtin.file:
+        path: "{{ market_remote_evidence_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Create protected driver qualification configuration directory
+      ansible.builtin.file:
+        path: /etc/akidb-market
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the qualification CA on the driver
+      ansible.builtin.copy:
+        src: "{{ akidb_knowledge_pki_dir }}/ca.crt"
+        dest: /etc/akidb-market/ca.crt
+        owner: root
+        group: root
+        mode: "0644"
+
+- name: Isolate one replica, execute the SIFT1M matrix, and always recover
+  hosts: "{{ lookup('env', 'AKIDB_MARKET_SERVER') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    market_run_id: "{{ lookup('env', 'AKIDB_MARKET_RUN_ID') }}"
+    market_driver: "{{ lookup('env', 'AKIDB_MARKET_DRIVER') }}"
+    market_dataset_dir: "{{ lookup('env', 'AKIDB_MARKET_DATASET_DIR') }}"
+    market_output_dir: "{{ lookup('env', 'AKIDB_MARKET_OUTPUT_DIR') }}"
+    market_remote_evidence_dir: "/var/tmp/akidb-market-evidence/{{ market_run_id }}"
+    akidb_market_run_id: "{{ market_run_id }}"
+    akidb_market_workspace: qualification
+    akidb_market_metric: l2
+    akidb_market_dimensions: 128
+    akidb_market_vectors: 1000000
+    akidb_market_batch_size: 256
+    akidb_market_hnsw_m: 16
+    akidb_market_hnsw_ef_construction: 128
+    akidb_market_hnsw_ef_search: 64
+    akidb_market_metrics_port: 9192
+    akidb_market_data_dir: "/var/lib/akidb-market/{{ market_run_id }}"
+    akidb_market_config_path: "/etc/akidb-market/{{ market_run_id }}.toml"
+    market_matrix:
+      - { name: "k10-n32-c1-load", top_k: 10, nprobe: 32, concurrency: 1, load: true }
+      - { name: "k10-n32-c8", top_k: 10, nprobe: 32, concurrency: 8, load: false }
+      - { name: "k10-n32-c32", top_k: 10, nprobe: 32, concurrency: 32, load: false }
+      - { name: "k10-n32-c64", top_k: 10, nprobe: 32, concurrency: 64, load: false }
+      - { name: "k10-n64-c1", top_k: 10, nprobe: 64, concurrency: 1, load: false }
+      - { name: "k10-n64-c8", top_k: 10, nprobe: 64, concurrency: 8, load: false }
+      - { name: "k10-n64-c32", top_k: 10, nprobe: 64, concurrency: 32, load: false }
+      - { name: "k10-n64-c64", top_k: 10, nprobe: 64, concurrency: 64, load: false }
+      - { name: "k10-n128-c1", top_k: 10, nprobe: 128, concurrency: 1, load: false }
+      - { name: "k10-n128-c8", top_k: 10, nprobe: 128, concurrency: 8, load: false }
+      - { name: "k10-n128-c32", top_k: 10, nprobe: 128, concurrency: 32, load: false }
+      - { name: "k10-n128-c64", top_k: 10, nprobe: 128, concurrency: 64, load: false }
+      - { name: "k10-n256-c1", top_k: 10, nprobe: 256, concurrency: 1, load: false }
+      - { name: "k10-n256-c8", top_k: 10, nprobe: 256, concurrency: 8, load: false }
+      - { name: "k10-n256-c32", top_k: 10, nprobe: 256, concurrency: 32, load: false }
+      - { name: "k10-n256-c64", top_k: 10, nprobe: 256, concurrency: 64, load: false }
+      - { name: "k100-n64-c8", top_k: 100, nprobe: 64, concurrency: 8, load: false }
+      - { name: "k100-n128-c8", top_k: 100, nprobe: 128, concurrency: 8, load: false }
+      - { name: "k100-n256-c8", top_k: 100, nprobe: 256, concurrency: 8, load: false }
+  roles:
+    - role: market_benchmark
+  tasks:
+    - name: Execute the isolated benchmark with unconditional recovery
+      block:
+        - name: Stop the knowledge replica selected for isolation
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: stopped
+
+        - name: Start the isolated market benchmark server
+          ansible.builtin.systemd_service:
+            name: akidb-market-benchmark
+            state: started
+
+        - name: Wait for the isolated TLS listener
+          ansible.builtin.wait_for:
+            host: "{{ akidb_overlay_address }}"
+            port: "{{ akidb_knowledge_server_port }}"
+            timeout: 120
+
+        - name: Require empty isolated-server readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/releases/{{ akidb_release_id }}/bin/akidb"
+              - health
+              - --server
+              - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_server_port }}"
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+            AKIDB_WORKSPACE: "{{ akidb_market_workspace }}"
+          changed_when: false
+
+        - name: Run the exact-ground-truth SIFT1M matrix from the driver
+          ansible.builtin.command:
+            argv: >-
+              {{
+                [
+                  akidb_install_root ~ '/releases/' ~ akidb_release_id
+                    ~ '/bin/akidb-ann-bench',
+                  '--server',
+                  'https://' ~ akidb_overlay_address ~ ':'
+                    ~ (akidb_knowledge_server_port | string),
+                  '--dataset-name', 'sift-128-euclidean',
+                  '--train-fvecs', market_dataset_dir ~ '/train.fvecs',
+                  '--query-fvecs', market_dataset_dir ~ '/test.fvecs',
+                  '--neighbors-ivecs', market_dataset_dir ~ '/neighbors.ivecs',
+                  '--metric', akidb_market_metric,
+                  '--collection', 'sift1m',
+                  '--id-prefix', 'sift1m',
+                  '--workspace', akidb_market_workspace,
+                  '--tls-ca', '/etc/akidb-market/ca.crt',
+                  '--top-k', item.top_k | string,
+                  '--nprobe', item.nprobe | string,
+                  '--concurrency', item.concurrency | string,
+                  '--warmup-queries', '1000',
+                  '--timeout-seconds', '30',
+                  '--output-json',
+                  market_remote_evidence_dir ~ '/' ~ item.name ~ '.json'
+                ]
+                + ([] if item.load else ['--skip-load'])
+              }}
+          environment:
+            AKIDB_AUTH_TOKEN: "{{ akidb_knowledge_read_token }}"
+          delegate_to: "{{ market_driver }}"
+          loop: "{{ market_matrix }}"
+          loop_control:
+            label: "{{ item.name }}"
+          register: market_matrix_results
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Inspect every market report
+          ansible.builtin.stat:
+            path: "{{ market_remote_evidence_dir }}/{{ item.name }}.json"
+          delegate_to: "{{ market_driver }}"
+          loop: "{{ market_matrix }}"
+          loop_control:
+            label: "{{ item.name }}"
+          register: market_reports
+
+        - name: Fetch every market report
+          ansible.builtin.fetch:
+            src: "{{ market_remote_evidence_dir }}/{{ item.name }}.json"
+            dest: "{{ market_output_dir }}/{{ market_run_id }}-{{ item.name }}.json"
+            flat: true
+          delegate_to: "{{ market_driver }}"
+          loop: "{{ market_matrix }}"
+          loop_control:
+            label: "{{ item.name }}"
+
+        - name: Require every matrix process and report
+          ansible.builtin.assert:
+            that:
+              - item.0.rc == 0
+              - item.1.stat.isreg | default(false)
+            fail_msg: >-
+              Market matrix point {{ item.0.item.name }} failed; inspect fetched
+              evidence and the isolated service journal.
+          loop: "{{ market_matrix_results.results | zip(market_reports.results) }}"
+          loop_control:
+            label: "{{ item.0.item.name }}"
+          no_log: true
+
+        - name: Measure final isolated index bytes
+          ansible.builtin.command:
+            argv: [du, --bytes, --summarize, "{{ akidb_market_data_dir }}"]
+          register: market_index_size
+          changed_when: false
+
+        - name: Record immutable candidate and server environment
+          ansible.builtin.copy:
+            content: >-
+              {{
+                {
+                  'schema_version': 1,
+                  'report_type': 'akidb.market-ann-environment.v1',
+                  'run_id': market_run_id,
+                  'release_id': akidb_release_id,
+                  'artifact_sha256': akidb_artifact_sha256,
+                  'server_host': inventory_hostname,
+                  'driver_host': market_driver,
+                  'distribution': ansible_distribution,
+                  'distribution_version': ansible_distribution_version,
+                  'architecture': ansible_architecture,
+                  'processor_vcpus': ansible_processor_vcpus,
+                  'memory_mb': ansible_memtotal_mb,
+                  'metric': akidb_market_metric,
+                  'dimensions': akidb_market_dimensions,
+                  'vectors': akidb_market_vectors,
+                  'index_bytes': market_index_size.stdout.split()[0] | int
+                } | to_nice_json
+              }}
+            dest: "{{ market_remote_evidence_dir }}/environment.json"
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ market_driver }}"
+
+        - name: Fetch immutable environment evidence
+          ansible.builtin.fetch:
+            src: "{{ market_remote_evidence_dir }}/environment.json"
+            dest: "{{ market_output_dir }}/{{ market_run_id }}-environment.json"
+            flat: true
+          delegate_to: "{{ market_driver }}"
+      always:
+        - name: Stop the isolated benchmark server
+          ansible.builtin.systemd_service:
+            name: akidb-market-benchmark
+            state: stopped
+          failed_when: false
+
+        - name: Restore the knowledge replica
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: started
+
+        - name: Wait for restored exact-generation readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/current/bin/akidb"
+              - health
+              - --server
+              - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_server_port }}"
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+            AKIDB_WORKSPACE: "{{ akidb_knowledge_workspace }}"
+          changed_when: false
+          register: restored_market_replica
+          retries: 30
+          delay: 2
+          until: restored_market_replica.rc == 0

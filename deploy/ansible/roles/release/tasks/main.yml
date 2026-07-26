@@ -76,6 +76,8 @@
     - akidb-server
     - akidb-coordinator
     - akidb-bench
+    - akidb-ann-bench
+    - akidb-graph-bench
   register: akidb_release_binaries
 
 - name: Require executable release binaries

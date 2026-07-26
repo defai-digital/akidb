@@ -1,0 +1,60 @@
+---
+- name: Require a bounded market-benchmark identity
+  ansible.builtin.assert:
+    that:
+      - akidb_market_run_id is match('^[A-Za-z0-9._-]{7,96}$')
+      - akidb_market_metric in ['cosine', 'l2', 'ip']
+      - akidb_market_dimensions | int > 0
+      - akidb_market_vectors | int > 0
+      - akidb_market_data_dir.startswith('/var/lib/akidb-market/')
+      - akidb_market_config_path.startswith('/etc/akidb-market/')
+
+- name: Inspect isolated benchmark data path
+  ansible.builtin.stat:
+    path: "{{ akidb_market_data_dir }}"
+  register: akidb_market_existing_data
+
+- name: Require a fresh benchmark data path
+  ansible.builtin.assert:
+    that:
+      - not akidb_market_existing_data.stat.exists
+    fail_msg: >-
+      {{ akidb_market_data_dir }} already exists. Use a new run id; benchmark
+      data is never overwritten implicitly.
+
+- name: Create protected market benchmark paths
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /etc/akidb-market
+      owner: root
+      group: "{{ akidb_group }}"
+      mode: "0750"
+    - path: "{{ akidb_market_data_dir }}"
+      owner: "{{ akidb_user }}"
+      group: "{{ akidb_group }}"
+      mode: "0750"
+
+- name: Render the isolated L2 benchmark configuration
+  ansible.builtin.template:
+    src: akidb-market-ann.toml.j2
+    dest: "{{ akidb_market_config_path }}"
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0640"
+
+- name: Install the isolated benchmark unit
+  ansible.builtin.template:
+    src: akidb-market-benchmark.service.j2
+    dest: /etc/systemd/system/akidb-market-benchmark.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Reload systemd for the benchmark unit
+  ansible.builtin.systemd_service:
+    daemon_reload: true
