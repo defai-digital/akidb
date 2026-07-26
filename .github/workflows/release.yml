@@ -8,30 +8,64 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-# Release job must be able to create/update GitHub releases and attach artifacts.
-# Job-level contents:write elevates above the repo default when elevation is allowed.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  validate:
+    name: Validate release identity
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require version-matched tag on main
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"]
+          expected = f"v{version}"
+          observed = os.environ["RELEASE_TAG"]
+          if observed != expected:
+              raise SystemExit(f"release tag {observed!r} must equal Cargo version tag {expected!r}")
+          PY
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+
+      - name: Reject sensitive or local-only files
+        run: python3 scripts/check-sensitive-files.py
+
   build:
     name: Build (${{ matrix.target }})
+    needs: [validate]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            os: macos-26
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
+            package_script: scripts/package-linux-amd64.sh
+            archive_prefix: akidb-linux-amd64
+          - target: aarch64-apple-darwin
+            os: macos-26
+            package_script: scripts/package-macos-arm64.sh
+            archive_prefix: akidb-macos-arm64
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
       - name: Install native dependencies (Linux)
         if: runner.os == 'Linux'
@@ -49,33 +83,88 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
-      - name: Build release binary
+      - name: Require the qualified host architecture
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
         run: |
-          cargo build --locked --release --target ${{ matrix.target }}
+          case "${EXPECTED_TARGET}" in
+            x86_64-unknown-linux-gnu)
+              test "$(uname -s)" = Linux
+              test "$(uname -m)" = x86_64
+              ;;
+            aarch64-apple-darwin)
+              test "$(uname -s)" = Darwin
+              test "$(uname -m)" = arm64
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
 
-      - name: Package binary
+      - name: Test release source on the target host
+        run: cargo test --locked --workspace
+
+      - name: Build immutable release archive
+        env:
+          AKIDB_BUILD_JOBS: "2"
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/akidb dist/
-          cp target/${{ matrix.target }}/release/akidb-server dist/ 2>/dev/null || true
-          cp target/${{ matrix.target }}/release/akidb-coordinator dist/ 2>/dev/null || true
-          cp target/${{ matrix.target }}/release/akidb-tui dist/ 2>/dev/null || true
-          tar -czf akidb-${{ matrix.target }}.tar.gz -C dist .
-          shasum -a 256 akidb-${{ matrix.target }}.tar.gz \
-            > akidb-${{ matrix.target }}.tar.gz.sha256
+          "./${{ matrix.package_script }}" "${GITHUB_SHA}" dist
+
+      - name: Verify checksum, manifest, and required binaries
+        env:
+          ARCHIVE_PREFIX: ${{ matrix.archive_prefix }}
+          EXPECTED_TARGET: ${{ matrix.target }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          archive="dist/${ARCHIVE_PREFIX}-${GITHUB_SHA}.tar.gz"
+          (
+            cd dist
+            shasum -a 256 -c "${ARCHIVE_PREFIX}-${GITHUB_SHA}.tar.gz.sha256"
+          )
+          mkdir verify
+          tar -xzf "${archive}" -C verify
+          for binary in \
+            akidb \
+            akidb-server \
+            akidb-coordinator \
+            akidb-bench \
+            akidb-ann-bench \
+            akidb-graph-bench
+          do
+            test -x "verify/bin/${binary}"
+            "verify/bin/${binary}" --version
+          done
+          test -f verify/LICENSE
+          test -f verify/README.md
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = json.loads(Path("verify/manifest.json").read_text())
+          assert manifest["release_id"] == os.environ["GITHUB_SHA"]
+          assert manifest["target"] == os.environ["EXPECTED_TARGET"]
+          assert f"v{manifest['version']}" == os.environ["RELEASE_TAG"]
+          PY
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/${{ matrix.archive_prefix }}-${{ github.sha }}.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: akidb-${{ matrix.target }}
+          name: ${{ matrix.archive_prefix }}-${{ github.sha }}
           path: |
-            akidb-${{ matrix.target }}.tar.gz
-            akidb-${{ matrix.target }}.tar.gz.sha256
+            dist/${{ matrix.archive_prefix }}-${{ github.sha }}.tar.gz
+            dist/${{ matrix.archive_prefix }}-${{ github.sha }}.tar.gz.sha256
+          if-no-files-found: error
 
   release:
     name: Create Release
-    needs: [build]
-    runs-on: ubuntu-latest
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

@@ -115,7 +115,8 @@ For every dataset, run at least:
 - search breadth: 32, 64, 128, and 256 where supported;
 - concurrency: 1, 8, 32, and 64;
 - 1,000 warm-up queries; and
-- at least 10,000 measured requests per point.
+- a 60-second post-import quiescence window; and
+- three complete 10,000-query measurement rounds per point.
 
 Use `akidb-ann-bench` to record:
 
@@ -133,8 +134,11 @@ Any pre-existing active vector causes the harness to fail closed.
 ### Filter and mixed-workload matrix
 
 Test exact metadata filters at approximately 1%, 5%, and 50% selectivity.
-Each result must satisfy the filter, and filtered Recall@K must use separately
-computed exact ground truth. Also run:
+The SIFT harness labels each train row deterministically and chooses each
+query's filter label from its exact nearest neighbor. Filtering the ordered
+official neighbor list then gives exact filtered ground truth without treating
+unfiltered recall as filtered recall. Every returned row is independently
+checked against the requested label. Also run:
 
 - search while inserting at 10% and 50% of measured ingest capacity;
 - update and delete while searching;
@@ -398,15 +402,21 @@ akidb-ann-bench \
   --query-fvecs /qualification/sift1m/test.fvecs \
   --neighbors-ivecs /qualification/sift1m/neighbors.ivecs \
   --metric l2 \
-  --collection sift1m \
+  --collection default \
   --workspace qualification \
   --top-k 10 \
   --nprobe 128 \
   --concurrency 8 \
   --warmup-queries 1000 \
+  --measurement-rounds 3 \
+  --post-load-settle-seconds 60 \
   --min-recall 0.95 \
   --output-json /qualification/evidence/sift1m-c8-n128.json
 ```
+
+The mutable standalone shard currently has one physical active collection,
+named `default`. Creating a registry entry does not create another physical
+index; market qualification therefore uses `--collection default`.
 
 Run the native graph G1 gate:
 
@@ -422,6 +432,21 @@ akidb-graph-bench \
   --max-p99-ms 50 \
   --output-json /qualification/evidence/graph-g1-c8.json
 ```
+
+Run the complete persistent G1/G2/G3 concurrency matrix from the Ansible
+controller:
+
+```bash
+AKIDB_GRAPH_RUN_ID=<unique-run-id> \
+AKIDB_GRAPH_SERVER=akidb-amd64-3 \
+AKIDB_GRAPH_OUTPUT_DIR=/qualification/evidence/graph \
+AKIDB_GRAPH_CONFIRM=yes-isolate-one-qualification-replica \
+ansible-playbook playbooks/knowledge-market-graph.yml
+```
+
+Each tier is built once. Concurrency 8, 32, and 64 reopen the same RocksDB
+graph through `--skip-build`, so query comparisons do not silently rebuild a
+different corpus.
 
 Run gateway correctness and security from the Ansible controller:
 

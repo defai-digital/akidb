@@ -66,6 +66,8 @@ jobs:
           verify/bin/akidb-ann-bench --version
           verify/bin/akidb-graph-bench --version
           sudo -u nobody verify/bin/akidb-server --version
+          test -f verify/LICENSE
+          test -f verify/README.md
           python3 - <<'PY'
           import json
           import tomllib

@@ -329,9 +329,9 @@ impl<I: VectorIndex + 'static> RebuildManager<I> {
         };
 
         // GUARD G3: Validate shadow is healthy (has vectors)
-        let shadow_stats = shadow.stats();
+        let _shadow_stats = shadow.stats();
         debug_invariant!(
-            shadow_stats.total_vectors > 0 || self.primary().stats().total_vectors == 0,
+            _shadow_stats.total_vectors > 0 || self.primary().stats().total_vectors == 0,
             "Shadow index has no vectors but primary has {}",
             self.primary().stats().total_vectors
         );

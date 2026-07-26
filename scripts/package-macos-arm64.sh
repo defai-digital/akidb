@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
-  echo "package-linux-amd64.sh must run on Linux x86_64" >&2
+if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+  echo "package-macos-arm64.sh must run on macOS Apple Silicon" >&2
   exit 1
 fi
 
@@ -19,18 +19,7 @@ if [[ ! "$build_jobs" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
-# Bundled RocksDB and numkong are memory-heavy native builds. Use the Ubuntu
-# LTS GCC toolchain by default: Clang 18 can crash in numkong's dynamic-dispatch
-# code generation on GitHub's Ubuntu 24.04 runners. Callers can still override
-# CC/CXX explicitly when qualifying another compiler.
-export CC="${CC:-gcc}"
-export CXX="${CXX:-g++}"
 export AKIDB_GIT_COMMIT="${AKIDB_GIT_COMMIT:-$(git rev-parse HEAD)}"
-# RocksDB 8.10 assumes fixed-width integer types are transitively included.
-# Newer Ubuntu toolchains do not guarantee that accidental include in every
-# translation unit, so inject the standard header while the bundled dependency
-# remains pinned to this release.
-export CXXFLAGS="${CXXFLAGS:+${CXXFLAGS} }-include cstdint"
 
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
@@ -41,13 +30,10 @@ chmod 0755 "$staging_dir"
 if [[ "${AKIDB_SKIP_BUILD:-0}" != "1" ]]; then
   cargo build --locked --release \
     --jobs "$build_jobs" \
+    -p akidb-server \
     -p akidb-coordinator \
     -p akidb-cli \
     -p akidb-benchmark
-  cargo build --locked --release \
-    --jobs "$build_jobs" \
-    -p akidb-server \
-    --features generation-postgres
 fi
 
 install -d "$staging_dir/bin"
@@ -84,33 +70,26 @@ if [[ -z "$cargo_version" ]]; then
   echo "workspace package version is missing from Cargo.toml" >&2
   exit 1
 fi
+
 source_epoch="${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}"
-archive_name="akidb-linux-amd64-${release_id}.tar.gz"
+archive_name="akidb-macos-arm64-${release_id}.tar.gz"
 archive_path="$output_dir/$archive_name"
 
 printf '%s\n' \
   '{' \
   "  \"release_id\": \"$release_id\"," \
   "  \"version\": \"$cargo_version\"," \
-  '  "target": "x86_64-unknown-linux-gnu",' \
-  '  "akidb_server_features": ["generation-postgres"],' \
+  '  "target": "aarch64-apple-darwin",' \
+  '  "akidb_server_features": [],' \
   "  \"build_jobs\": $build_jobs," \
   "  \"source_date_epoch\": $source_epoch" \
   '}' >"$staging_dir/manifest.json"
 
-tar \
-  --sort=name \
-  "--mtime=@${source_epoch}" \
-  --owner=0 \
-  --group=0 \
-  --numeric-owner \
-  -czf "$archive_path" \
-  -C "$staging_dir" \
-  .
-
+# COPYFILE_DISABLE prevents AppleDouble metadata from entering the archive.
+COPYFILE_DISABLE=1 tar -czf "$archive_path" -C "$staging_dir" .
 (
   cd "$output_dir"
-  sha256sum "$archive_name" >"${archive_name}.sha256"
+  shasum -a 256 "$archive_name" >"${archive_name}.sha256"
 )
 
 printf 'artifact=%s\n' "$archive_path"

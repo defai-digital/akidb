@@ -1,0 +1,294 @@
+---
+- name: Validate immutable bounded-graph qualification inputs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    graph_run_id: "{{ lookup('env', 'AKIDB_GRAPH_RUN_ID') }}"
+    graph_server: "{{ lookup('env', 'AKIDB_GRAPH_SERVER') }}"
+    graph_output_dir: "{{ lookup('env', 'AKIDB_GRAPH_OUTPUT_DIR') }}"
+    graph_confirm: "{{ lookup('env', 'AKIDB_GRAPH_CONFIRM') }}"
+  tasks:
+    - name: Require explicit isolation authorization and bounded paths
+      ansible.builtin.assert:
+        that:
+          - graph_confirm == 'yes-isolate-one-qualification-replica'
+          - graph_run_id is match('^[A-Za-z0-9._-]{7,96}$')
+          - graph_server in groups['akidb_knowledge_replicas']
+          - graph_output_dir | length > 0
+          - akidb_release_id is match('^[A-Za-z0-9._-]{7,64}$')
+          - akidb_artifact_sha256 is match('^[0-9a-f]{64}$')
+
+    - name: Inspect the immutable controller artifact
+      ansible.builtin.stat:
+        path: "{{ akidb_artifact_path }}"
+        checksum_algorithm: sha256
+      register: graph_artifact
+
+    - name: Require the exact artifact checksum
+      ansible.builtin.assert:
+        that:
+          - graph_artifact.stat.isreg | default(false)
+          - graph_artifact.stat.checksum == akidb_artifact_sha256
+
+    - name: Create controller evidence directory
+      ansible.builtin.file:
+        path: "{{ graph_output_dir }}"
+        state: directory
+        mode: "0750"
+
+- name: Stage the immutable candidate on the isolated graph server
+  hosts: "{{ lookup('env', 'AKIDB_GRAPH_SERVER') }}"
+  become: true
+  gather_facts: false
+  roles:
+    - role: common
+    - role: release
+
+- name: Isolate one replica, execute the graph matrix, and always recover
+  hosts: "{{ lookup('env', 'AKIDB_GRAPH_SERVER') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    graph_run_id: "{{ lookup('env', 'AKIDB_GRAPH_RUN_ID') }}"
+    graph_output_dir: "{{ lookup('env', 'AKIDB_GRAPH_OUTPUT_DIR') }}"
+    graph_data_root: "/var/lib/akidb-market-graph/{{ graph_run_id }}"
+    graph_evidence_root: "/var/tmp/akidb-market-graph-evidence/{{ graph_run_id }}"
+    graph_matrix:
+      - { name: "g1-c1-load", tier: "g1", documents: 10000, entities: 1000, batch_documents: 100, queries: 10000, concurrency: 1, skip_build: false }
+      - { name: "g1-c8", tier: "g1", documents: 10000, entities: 1000, batch_documents: 100, queries: 10000, concurrency: 8, skip_build: true }
+      - { name: "g1-c32", tier: "g1", documents: 10000, entities: 1000, batch_documents: 100, queries: 10000, concurrency: 32, skip_build: true }
+      - { name: "g1-c64", tier: "g1", documents: 10000, entities: 1000, batch_documents: 100, queries: 10000, concurrency: 64, skip_build: true }
+      - { name: "g2-c1-load", tier: "g2", documents: 100000, entities: 10000, batch_documents: 500, queries: 100000, concurrency: 1, skip_build: false }
+      - { name: "g2-c8", tier: "g2", documents: 100000, entities: 10000, batch_documents: 500, queries: 100000, concurrency: 8, skip_build: true }
+      - { name: "g2-c32", tier: "g2", documents: 100000, entities: 10000, batch_documents: 500, queries: 100000, concurrency: 32, skip_build: true }
+      - { name: "g2-c64", tier: "g2", documents: 100000, entities: 10000, batch_documents: 500, queries: 100000, concurrency: 64, skip_build: true }
+      - { name: "g3-c1-load", tier: "g3", documents: 1000000, entities: 100000, batch_documents: 1000, queries: 100000, concurrency: 1, skip_build: false }
+      - { name: "g3-c8", tier: "g3", documents: 1000000, entities: 100000, batch_documents: 1000, queries: 100000, concurrency: 8, skip_build: true }
+      - { name: "g3-c32", tier: "g3", documents: 1000000, entities: 100000, batch_documents: 1000, queries: 100000, concurrency: 32, skip_build: true }
+      - { name: "g3-c64", tier: "g3", documents: 1000000, entities: 100000, batch_documents: 1000, queries: 100000, concurrency: 64, skip_build: true }
+  tasks:
+    - name: Execute the isolated graph benchmark with unconditional recovery
+      block:
+        - name: Inspect isolated graph data path
+          ansible.builtin.stat:
+            path: "{{ graph_data_root }}"
+          register: graph_data_path
+
+        - name: Require a fresh graph data path
+          ansible.builtin.assert:
+            that:
+              - not graph_data_path.stat.exists
+
+        - name: Create protected graph qualification roots
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+          loop:
+            - "{{ graph_data_root }}"
+            - "{{ graph_evidence_root }}"
+
+        - name: Stop the knowledge replica selected for isolation
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: stopped
+
+        - name: Run persistent G1 G2 G3 known-answer matrix
+          ansible.builtin.command:
+            argv: >-
+              {{
+                [
+                  akidb_install_root ~ '/releases/' ~ akidb_release_id
+                    ~ '/bin/akidb-graph-bench',
+                  '--data-dir', graph_data_root ~ '/' ~ item.tier,
+                  '--workspace', 'qualification',
+                  '--documents', item.documents | string,
+                  '--chunks-per-document', '4',
+                  '--entities', item.entities | string,
+                  '--batch-documents', item.batch_documents | string,
+                  '--queries', item.queries | string,
+                  '--concurrency', item.concurrency | string,
+                  '--min-accuracy', '1',
+                  '--output-json', graph_evidence_root ~ '/' ~ item.name ~ '.json'
+                ]
+                + ([] if not item.skip_build else ['--skip-build'])
+              }}
+          loop: "{{ graph_matrix }}"
+          loop_control:
+            label: "{{ item.name }}"
+          register: graph_matrix_results
+          changed_when: false
+          failed_when: false
+
+        - name: Build bounded graph process evidence
+          ansible.builtin.set_fact:
+            graph_process_evidence: >-
+              {{
+                (graph_process_evidence | default([]))
+                + [
+                  {
+                    'name': item.item.name,
+                    'rc': item.rc,
+                    'stdout': item.stdout[-2048:],
+                    'stderr': item.stderr[-2048:]
+                  }
+                ]
+              }}
+          loop: "{{ graph_matrix_results.results }}"
+          loop_control:
+            label: "{{ item.item.name }}"
+
+        - name: Write bounded graph process evidence
+          ansible.builtin.copy:
+            content: "{{ graph_process_evidence | to_nice_json }}"
+            dest: "{{ graph_evidence_root }}/process-results.json"
+            owner: root
+            group: root
+            mode: "0600"
+
+        - name: Fetch graph process evidence
+          ansible.builtin.fetch:
+            src: "{{ graph_evidence_root }}/process-results.json"
+            dest: "{{ graph_output_dir }}/{{ graph_run_id }}-process-results.json"
+            flat: true
+
+        - name: Inspect every graph report
+          ansible.builtin.stat:
+            path: "{{ graph_evidence_root }}/{{ item.name }}.json"
+          loop: "{{ graph_matrix }}"
+          loop_control:
+            label: "{{ item.name }}"
+          register: graph_reports
+
+        - name: Require every graph matrix process and report
+          ansible.builtin.assert:
+            that:
+              - item.0.rc == 0
+              - item.1.stat.isreg | default(false)
+            fail_msg: >-
+              Graph matrix point {{ item.0.item.name }} failed; inspect
+              {{ graph_output_dir }}/{{ graph_run_id }}-process-results.json.
+          loop: "{{ graph_matrix_results.results | zip(graph_reports.results) }}"
+          loop_control:
+            label: "{{ item.0.item.name }}"
+
+        - name: Fetch every graph report
+          ansible.builtin.fetch:
+            src: "{{ graph_evidence_root }}/{{ item.name }}.json"
+            dest: "{{ graph_output_dir }}/{{ graph_run_id }}-{{ item.name }}.json"
+            flat: true
+          loop: "{{ graph_matrix }}"
+          loop_control:
+            label: "{{ item.name }}"
+
+        - name: Measure graph tier bytes
+          ansible.builtin.command:
+            argv: [du, --bytes, --summarize, "{{ graph_data_root }}/{{ item }}"]
+          loop: [g1, g2, g3]
+          register: graph_tier_sizes
+          changed_when: false
+
+        - name: Read CPU topology evidence
+          ansible.builtin.command:
+            argv: [lscpu, --json]
+          register: graph_cpu_topology
+          changed_when: false
+
+        - name: Read block-device evidence
+          ansible.builtin.command:
+            argv:
+              - lsblk
+              - --json
+              - --bytes
+              - --output
+              - NAME,TYPE,SIZE,ROTA,MODEL,TRAN,MOUNTPOINTS
+          register: graph_block_devices
+          changed_when: false
+
+        - name: Record immutable graph environment
+          ansible.builtin.copy:
+            content: >-
+              {{
+                {
+                  'schema_version': 1,
+                  'report_type': 'akidb.market-graph-environment.v1',
+                  'run_id': graph_run_id,
+                  'release_id': akidb_release_id,
+                  'artifact_sha256': akidb_artifact_sha256,
+                  'server_host': inventory_hostname,
+                  'distribution': ansible_facts['distribution'],
+                  'distribution_version': ansible_facts['distribution_version'],
+                  'architecture': ansible_facts['architecture'],
+                  'kernel': ansible_facts['kernel'],
+                  'processor_vcpus': ansible_facts['processor_vcpus'],
+                  'memory_mb': ansible_facts['memtotal_mb'],
+                  'cpu_topology': graph_cpu_topology.stdout | from_json,
+                  'block_devices': graph_block_devices.stdout | from_json,
+                  'tier_bytes': {
+                    'g1': graph_tier_sizes.results[0].stdout.split()[0] | int,
+                    'g2': graph_tier_sizes.results[1].stdout.split()[0] | int,
+                    'g3': graph_tier_sizes.results[2].stdout.split()[0] | int
+                  }
+                } | to_nice_json
+              }}
+            dest: "{{ graph_evidence_root }}/environment.json"
+            owner: root
+            group: root
+            mode: "0600"
+
+        - name: Fetch immutable graph environment
+          ansible.builtin.fetch:
+            src: "{{ graph_evidence_root }}/environment.json"
+            dest: "{{ graph_output_dir }}/{{ graph_run_id }}-environment.json"
+            flat: true
+      always:
+        - name: Restore the knowledge replica
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: started
+
+        - name: Wait for restored exact-generation readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/current/bin/akidb"
+              - health
+              - --server
+              - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_server_port }}"
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+            AKIDB_WORKSPACE: "{{ akidb_knowledge_workspace }}"
+          changed_when: false
+          register: restored_graph_replica
+          retries: 30
+          delay: 2
+          until: restored_graph_replica.rc == 0
+
+- name: Validate the complete bounded-graph evidence set
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    graph_run_id: "{{ lookup('env', 'AKIDB_GRAPH_RUN_ID') }}"
+    graph_output_dir: "{{ lookup('env', 'AKIDB_GRAPH_OUTPUT_DIR') }}"
+  tasks:
+    - name: Build the fail-closed graph qualification summary
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../../scripts/summarize_market_graph.py"
+          - --evidence-dir
+          - "{{ graph_output_dir }}"
+          - --run-id
+          - "{{ graph_run_id }}"
+          - --artifact
+          - "{{ akidb_artifact_path }}"
+          - --output
+          - "{{ graph_output_dir }}/{{ graph_run_id }}-summary.json"
+      changed_when: false

@@ -282,6 +282,7 @@ jobs:
           AKIDB_READINESS_FAULT_REPLICA: knowledge-1
           AKIDB_MARKET_SERVER: knowledge-3
           AKIDB_MARKET_DRIVER: knowledge-4
+          AKIDB_GRAPH_SERVER: knowledge-3
         run: |
           ansible-playbook \
             -i inventories/example/knowledge-hosts.yml \
@@ -294,6 +295,10 @@ jobs:
           ansible-playbook \
             -i inventories/example/knowledge-hosts.yml \
             playbooks/knowledge-market-ann.yml \
+            --syntax-check
+          ansible-playbook \
+            -i inventories/example/knowledge-hosts.yml \
+            playbooks/knowledge-market-graph.yml \
             --syntax-check
 
   # Python service tests

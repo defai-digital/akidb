@@ -176,6 +176,9 @@
       - { name: "k100-n64-c8", top_k: 100, nprobe: 64, concurrency: 8, load: false }
       - { name: "k100-n128-c8", top_k: 100, nprobe: 128, concurrency: 8, load: false }
       - { name: "k100-n256-c8", top_k: 100, nprobe: 256, concurrency: 8, load: false }
+      - { name: "k10-n256-c8-filter2", top_k: 10, nprobe: 256, concurrency: 8, load: false, filter_modulus: 2 }
+      - { name: "k1-n256-c8-filter20", top_k: 1, nprobe: 256, concurrency: 8, load: false, filter_modulus: 20 }
+      - { name: "k1-n256-c8-filter100", top_k: 1, nprobe: 256, concurrency: 8, load: false, filter_modulus: 100 }
   roles:
     - role: market_benchmark
   tasks:
@@ -227,7 +230,7 @@
                   '--query-fvecs', market_dataset_dir ~ '/test.fvecs',
                   '--neighbors-ivecs', market_dataset_dir ~ '/neighbors.ivecs',
                   '--metric', akidb_market_metric,
-                  '--collection', 'sift1m',
+                  '--collection', 'default',
                   '--id-prefix', 'sift1m',
                   '--workspace', akidb_market_workspace,
                   '--tls-ca', '/etc/akidb-market/ca.crt',
@@ -235,10 +238,17 @@
                   '--nprobe', item.nprobe | string,
                   '--concurrency', item.concurrency | string,
                   '--warmup-queries', '1000',
+                  '--measurement-rounds', '3',
+                  '--post-load-settle-seconds', '60',
                   '--timeout-seconds', '30',
                   '--output-json',
                   market_remote_evidence_dir ~ '/' ~ item.name ~ '.json'
                 ]
+                + (
+                  []
+                  if item.filter_modulus is not defined
+                  else ['--filter-modulus', item.filter_modulus | string]
+                )
                 + ([] if item.load else ['--skip-load'])
               }}
           environment:
@@ -252,6 +262,41 @@
           failed_when: false
           no_log: true
 
+        - name: Build bounded matrix process evidence
+          ansible.builtin.set_fact:
+            market_process_evidence: >-
+              {{
+                (market_process_evidence | default([]))
+                + [
+                  {
+                    'name': item.item.name,
+                    'rc': item.rc,
+                    'stdout': item.stdout[-2048:],
+                    'stderr': item.stderr[-2048:]
+                  }
+                ]
+              }}
+          loop: "{{ market_matrix_results.results }}"
+          loop_control:
+            label: "{{ item.item.name }}"
+          no_log: true
+
+        - name: Write bounded matrix process evidence
+          ansible.builtin.copy:
+            content: "{{ market_process_evidence | to_nice_json }}"
+            dest: "{{ market_remote_evidence_dir }}/process-results.json"
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ market_driver }}"
+
+        - name: Fetch matrix process evidence
+          ansible.builtin.fetch:
+            src: "{{ market_remote_evidence_dir }}/process-results.json"
+            dest: "{{ market_output_dir }}/{{ market_run_id }}-process-results.json"
+            flat: true
+          delegate_to: "{{ market_driver }}"
+
         - name: Inspect every market report
           ansible.builtin.stat:
             path: "{{ market_remote_evidence_dir }}/{{ item.name }}.json"
@@ -260,6 +305,20 @@
           loop_control:
             label: "{{ item.name }}"
           register: market_reports
+
+        - name: Require every matrix process and report
+          ansible.builtin.assert:
+            that:
+              - item.0.rc == 0
+              - item.1.stat.isreg | default(false)
+            fail_msg: >-
+              Market matrix point {{ item.0.item.name }} failed; inspect
+              {{ market_output_dir }}/{{ market_run_id }}-process-results.json
+              and the isolated service journal.
+          loop: "{{ market_matrix_results.results | zip(market_reports.results) }}"
+          loop_control:
+            label: "{{ item.0.item.name }}"
+          no_log: true
 
         - name: Fetch every market report
           ansible.builtin.fetch:
@@ -271,24 +330,47 @@
           loop_control:
             label: "{{ item.name }}"
 
-        - name: Require every matrix process and report
-          ansible.builtin.assert:
-            that:
-              - item.0.rc == 0
-              - item.1.stat.isreg | default(false)
-            fail_msg: >-
-              Market matrix point {{ item.0.item.name }} failed; inspect fetched
-              evidence and the isolated service journal.
-          loop: "{{ market_matrix_results.results | zip(market_reports.results) }}"
-          loop_control:
-            label: "{{ item.0.item.name }}"
-          no_log: true
-
         - name: Measure final isolated index bytes
           ansible.builtin.command:
             argv: [du, --bytes, --summarize, "{{ akidb_market_data_dir }}"]
           register: market_index_size
           changed_when: false
+
+        - name: Read isolated service resource accounting
+          ansible.builtin.command:
+            argv:
+              - systemctl
+              - show
+              - akidb-market-benchmark
+              - --property=CPUUsageNSec
+              - --property=MemoryCurrent
+              - --property=MemoryPeak
+              - --property=TasksCurrent
+          register: market_systemd_resources
+          changed_when: false
+
+        - name: Read CPU topology evidence
+          ansible.builtin.command:
+            argv: [lscpu, --json]
+          register: market_cpu_topology
+          changed_when: false
+
+        - name: Read block-device evidence
+          ansible.builtin.command:
+            argv:
+              - lsblk
+              - --json
+              - --bytes
+              - --output
+              - NAME,TYPE,SIZE,ROTA,MODEL,TRAN,MOUNTPOINTS
+          register: market_block_devices
+          changed_when: false
+
+        - name: Hash the exact benchmark configuration
+          ansible.builtin.stat:
+            path: "{{ akidb_market_config_path }}"
+            checksum_algorithm: sha256
+          register: market_config_identity
 
         - name: Record immutable candidate and server environment
           ansible.builtin.copy:
@@ -305,8 +387,13 @@
                   'distribution': ansible_distribution,
                   'distribution_version': ansible_distribution_version,
                   'architecture': ansible_architecture,
+                  'kernel': ansible_kernel,
                   'processor_vcpus': ansible_processor_vcpus,
                   'memory_mb': ansible_memtotal_mb,
+                  'cpu_topology': market_cpu_topology.stdout | from_json,
+                  'block_devices': market_block_devices.stdout | from_json,
+                  'systemd_resource_accounting': market_systemd_resources.stdout_lines,
+                  'config_sha256': market_config_identity.stat.checksum,
                   'metric': akidb_market_metric,
                   'dimensions': akidb_market_dimensions,
                   'vectors': akidb_market_vectors,
@@ -355,3 +442,34 @@
           retries: 30
           delay: 2
           until: restored_market_replica.rc == 0
+
+- name: Validate the complete market ANN evidence set
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    market_run_id: "{{ lookup('env', 'AKIDB_MARKET_RUN_ID') }}"
+    market_output_dir: "{{ lookup('env', 'AKIDB_MARKET_OUTPUT_DIR') }}"
+  tasks:
+    - name: Build the fail-closed ANN qualification summary
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../../scripts/summarize_market_ann.py"
+          - --evidence-dir
+          - "{{ market_output_dir }}"
+          - --run-id
+          - "{{ market_run_id }}"
+          - --artifact
+          - "{{ akidb_artifact_path }}"
+          - --min-recall
+          - "0.95"
+          - --min-unfiltered-qps
+          - "100"
+          - --max-p99-ms
+          - "250"
+          - --min-import-vps
+          - "500"
+          - --output
+          - "{{ market_output_dir }}/{{ market_run_id }}-summary.json"
+      changed_when: false

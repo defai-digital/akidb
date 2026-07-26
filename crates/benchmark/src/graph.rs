@@ -29,6 +29,10 @@ struct Args {
     #[arg(long)]
     data_dir: PathBuf,
 
+    /// Reopen and query an already materialized deterministic graph.
+    #[arg(long, default_value_t = false)]
+    skip_build: bool,
+
     /// Stable graph workspace.
     #[arg(long, default_value = "qualification")]
     workspace: String,
@@ -76,6 +80,7 @@ struct Args {
 
 #[derive(Debug, Serialize)]
 struct BuildReport {
+    skipped: bool,
     nodes: u64,
     edges: u64,
     duration_ms: u128,
@@ -192,14 +197,18 @@ fn validate_args(args: &Args) -> Result<(), String> {
     if args.min_accuracy > 1.0 {
         return Err("--min-accuracy cannot exceed 1".to_string());
     }
-    if args.data_dir.exists()
+    let data_exists = args.data_dir.exists();
+    let data_has_entries = data_exists
         && args
             .data_dir
             .read_dir()
             .map_err(|error| error.to_string())?
             .next()
-            .is_some()
-    {
+            .is_some();
+    if args.skip_build && !data_has_entries {
+        return Err("--skip-build requires an existing non-empty graph".to_string());
+    }
+    if !args.skip_build && data_has_entries {
         return Err("--data-dir must not exist or must be empty".to_string());
     }
     Ok(())
@@ -285,11 +294,28 @@ fn build_graph(
     let duration = started.elapsed();
     let stats = graph.stats()?;
     Ok(BuildReport {
+        skipped: false,
         nodes: stats.nodes,
         edges: stats.edges,
         duration_ms: duration.as_millis(),
         nodes_per_second: stats.nodes as f64 / duration.as_secs_f64(),
         edges_per_second: stats.edges as f64 / duration.as_secs_f64(),
+        persisted_bytes: directory_size(&args.data_dir)?,
+    })
+}
+
+fn existing_graph(
+    graph: &NativeGraphIndex<RocksDbBackend>,
+    args: &Args,
+) -> Result<BuildReport, Box<dyn std::error::Error>> {
+    let stats = graph.stats()?;
+    Ok(BuildReport {
+        skipped: true,
+        nodes: stats.nodes,
+        edges: stats.edges,
+        duration_ms: 0,
+        nodes_per_second: 0.0,
+        edges_per_second: 0.0,
         persisted_bytes: directory_size(&args.data_dir)?,
     })
 }
@@ -580,7 +606,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&args.data_dir)?;
     let backend = Arc::new(RocksDbBackend::open(&args.data_dir)?);
     let graph = NativeGraphIndex::new(Arc::clone(&backend));
-    let build = build_graph(&graph, &args)?;
+    let build = if args.skip_build {
+        existing_graph(&graph, &args)?
+    } else {
+        build_graph(&graph, &args)?
+    };
     let (expected_nodes, expected_edges) = expected_counts(&args);
     drop(graph);
     drop(backend);
@@ -633,8 +663,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
     let report = GraphReport {
-        schema_version: 1,
-        report_type: "akidb.bounded-graph-benchmark.v1",
+        schema_version: 2,
+        report_type: "akidb.bounded-graph-benchmark.v2",
         generated_at_unix_ms: generated_at_unix_ms(),
         workload: WorkloadReport {
             workspace: args.workspace.clone(),
@@ -680,6 +710,7 @@ mod tests {
     fn test_args() -> Args {
         Args {
             data_dir: PathBuf::from("unused"),
+            skip_build: false,
             workspace: "workspace-a".to_string(),
             documents: 10,
             chunks_per_document: 4,
@@ -714,5 +745,23 @@ mod tests {
         let id = chunk_id("workspace-a", 7, 2);
         assert_eq!(id.workspace_id(), Some("workspace-a"));
         assert_eq!(id.local_id(), "chunk:0000000007:002");
+    }
+
+    #[test]
+    fn skip_build_requires_a_materialized_graph() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut args = test_args();
+        args.data_dir = directory.path().to_path_buf();
+        args.skip_build = true;
+        assert!(validate_args(&args)
+            .unwrap_err()
+            .contains("existing non-empty graph"));
+
+        std::fs::write(directory.path().join("CURRENT"), b"fixture").unwrap();
+        assert!(validate_args(&args).is_ok());
+        args.skip_build = false;
+        assert!(validate_args(&args)
+            .unwrap_err()
+            .contains("must not exist or must be empty"));
     }
 }

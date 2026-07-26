@@ -63,6 +63,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     skip_load: bool,
 
+    /// Quiescence window after a load, excluded from import and query timing.
+    #[arg(long, default_value = "0")]
+    post_load_settle_seconds: u64,
+
     /// Maximum train vectors to load (all when omitted).
     #[arg(long)]
     train_limit: Option<usize>,
@@ -87,9 +91,21 @@ struct Args {
     #[arg(long, default_value = "1")]
     concurrency: usize,
 
+    /// Apply a deterministic metadata filter with selectivity 1/modulus.
+    ///
+    /// Train rows are labeled for moduli 2, 20, and 100 during load. The
+    /// target label for each query is derived from its exact nearest neighbor,
+    /// allowing the official ground-truth ordering to remain authoritative.
+    #[arg(long)]
+    filter_modulus: Option<u32>,
+
     /// Warm-up queries excluded from measurements.
     #[arg(long, default_value = "1000")]
     warmup_queries: usize,
+
+    /// Full deterministic query-set repetitions included in measurements.
+    #[arg(long, default_value = "1")]
+    measurement_rounds: usize,
 
     /// Optional bearer credential environment variable.
     #[arg(long, default_value = "AKIDB_AUTH_TOKEN")]
@@ -172,6 +188,8 @@ struct LatencyReport {
 #[derive(Debug, Clone, Serialize)]
 struct QueryReport {
     requested: usize,
+    unique_queries: usize,
+    measurement_rounds: usize,
     succeeded: usize,
     failed: usize,
     concurrency: usize,
@@ -181,7 +199,20 @@ struct QueryReport {
     duration_ms: u128,
     qps: f64,
     recall_at_k: f64,
+    filter_violations: usize,
+    result_count_violations: usize,
+    duplicate_results: usize,
+    unparseable_results: usize,
+    invalid_scores: usize,
     latency: LatencyReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FilterReport {
+    enabled: bool,
+    metadata_key: Option<String>,
+    modulus: Option<u32>,
+    expected_selectivity: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -203,6 +234,8 @@ struct AnnReport {
     health_before: HealthReport,
     health_after: HealthReport,
     load: LoadReport,
+    post_load_settle_seconds: u64,
+    filter: FilterReport,
     query: QueryReport,
     verdict: Verdict,
 }
@@ -219,6 +252,11 @@ struct QueryMeasurements {
     recall_sum: f64,
     succeeded: usize,
     failed: usize,
+    filter_violations: usize,
+    result_count_violations: usize,
+    duplicate_results: usize,
+    unparseable_results: usize,
+    invalid_scores: usize,
 }
 
 struct QueryDataset {
@@ -342,6 +380,7 @@ fn validate_args(args: &Args) -> Result<(), String> {
         ("batch-size", args.batch_size),
         ("top-k", args.top_k),
         ("concurrency", args.concurrency),
+        ("measurement-rounds", args.measurement_rounds),
     ] {
         if value == 0 {
             return Err(format!("--{name} must be positive"));
@@ -353,11 +392,23 @@ fn validate_args(args: &Args) -> Result<(), String> {
     if args.concurrency > 4_096 {
         return Err("--concurrency cannot exceed 4096".to_string());
     }
+    if args.measurement_rounds > 10 {
+        return Err("--measurement-rounds cannot exceed 10".to_string());
+    }
     if args.timeout_seconds == 0 || args.timeout_seconds > 300 {
         return Err("--timeout-seconds must be in 1..=300".to_string());
     }
+    if args.post_load_settle_seconds > 600 {
+        return Err("--post-load-settle-seconds cannot exceed 600".to_string());
+    }
     if args.train_limit == Some(0) || args.query_limit == Some(0) {
         return Err("--train-limit and --query-limit must be positive when set".to_string());
+    }
+    if args
+        .filter_modulus
+        .is_some_and(|modulus| !matches!(modulus, 2 | 20 | 100))
+    {
+        return Err("--filter-modulus must be one of 2, 20, or 100".to_string());
     }
     for (name, value) in [
         ("min-recall", args.min_recall),
@@ -580,12 +631,15 @@ fn load_queries(args: &Args) -> Result<QueryDataset, Box<dyn std::error::Error>>
 async fn warmup(
     client: &mut AkidbClient<Channel>,
     args: &Args,
-    queries: &[Vec<f32>],
+    dataset: &QueryDataset,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let count = args.warmup_queries.min(queries.len());
-    for query in queries.iter().take(count) {
+    let count = args.warmup_queries.min(dataset.queries.len());
+    for (query, expected) in dataset.queries.iter().zip(&dataset.neighbors).take(count) {
         client
-            .search(authenticated(search_request(args, query.clone()), args)?)
+            .search(authenticated(
+                search_request(args, query.clone(), expected),
+                args,
+            )?)
             .await?;
     }
     Ok(count)
@@ -600,12 +654,18 @@ async fn measure_queries(
 ) -> QueryReport {
     let queries = Arc::new(queries);
     let neighbors = Arc::new(neighbors);
+    let total_requests = queries.len().saturating_mul(args.measurement_rounds);
     let next = Arc::new(AtomicUsize::new(0));
     let measurements = Arc::new(Mutex::new(QueryMeasurements {
-        latencies: Vec::with_capacity(queries.len()),
+        latencies: Vec::with_capacity(total_requests),
         recall_sum: 0.0,
         succeeded: 0,
         failed: 0,
+        filter_violations: 0,
+        result_count_violations: 0,
+        duplicate_results: 0,
+        unparseable_results: 0,
+        invalid_scores: 0,
     }));
     let started = Instant::now();
     let mut workers = Vec::with_capacity(args.concurrency);
@@ -623,19 +683,22 @@ async fn measure_queries(
             token: std::env::var(&args.token_env).ok(),
             top_k: args.top_k,
             nprobe: args.nprobe,
+            filter_modulus: args.filter_modulus,
         };
         workers.push(tokio::spawn(async move {
             loop {
-                let index = worker_next.fetch_add(1, Ordering::Relaxed);
-                if index >= worker_queries.len() {
+                let task = worker_next.fetch_add(1, Ordering::Relaxed);
+                if task >= total_requests {
                     break;
                 }
+                let index = task % worker_queries.len();
                 let request = worker_request(
                     search_request_parts(
                         &worker_args.collection,
                         worker_args.top_k,
                         worker_args.nprobe,
                         worker_queries[index].clone(),
+                        filter_bytes(worker_args.filter_modulus, &worker_neighbors[index]),
                     ),
                     &worker_args,
                 );
@@ -652,14 +715,37 @@ async fn measure_queries(
                 let mut result = worker_measurements.lock().await;
                 match response {
                     Ok(response) => {
-                        let returned = response
-                            .into_inner()
-                            .results
+                        let response_results = response.into_inner().results;
+                        if response_results.len() != worker_args.top_k {
+                            result.result_count_violations += 1;
+                        }
+                        result.invalid_scores += response_results
+                            .iter()
+                            .filter(|value| !value.score.is_finite())
+                            .count();
+                        let returned_rows = response_results
                             .iter()
                             .filter_map(|value| parse_dataset_id(&worker_args.id_prefix, &value.id))
-                            .collect::<HashSet<_>>();
-                        result.recall_sum +=
-                            recall_at_k(&returned, &worker_neighbors[index], worker_args.top_k);
+                            .collect::<Vec<_>>();
+                        let parsed_result_count = returned_rows.len();
+                        result.unparseable_results +=
+                            response_results.len().saturating_sub(returned_rows.len());
+                        if let Some(modulus) = worker_args.filter_modulus {
+                            let target = filter_target(modulus, &worker_neighbors[index]);
+                            result.filter_violations += returned_rows
+                                .iter()
+                                .filter(|row| **row % modulus != target)
+                                .count();
+                        }
+                        let returned = returned_rows.into_iter().collect::<HashSet<_>>();
+                        result.duplicate_results +=
+                            parsed_result_count.saturating_sub(returned.len());
+                        let expected = filtered_ground_truth(
+                            &worker_neighbors[index],
+                            worker_args.top_k,
+                            worker_args.filter_modulus,
+                        );
+                        result.recall_sum += recall_at_k(&returned, &expected, worker_args.top_k);
                         result.succeeded += 1;
                         result.latencies.push(latency);
                     }
@@ -677,7 +763,9 @@ async fn measure_queries(
     let elapsed = started.elapsed();
     let result = measurements.lock().await;
     QueryReport {
-        requested: queries.len(),
+        requested: total_requests,
+        unique_queries: queries.len(),
+        measurement_rounds: args.measurement_rounds,
         succeeded: result.succeeded,
         failed: result.failed,
         concurrency: args.concurrency,
@@ -691,6 +779,11 @@ async fn measure_queries(
         } else {
             result.recall_sum / result.succeeded as f64
         },
+        filter_violations: result.filter_violations,
+        result_count_violations: result.result_count_violations,
+        duplicate_results: result.duplicate_results,
+        unparseable_results: result.unparseable_results,
+        invalid_scores: result.invalid_scores,
         latency: latency_report(&result.latencies),
     }
 }
@@ -702,6 +795,7 @@ struct WorkerArgs {
     token: Option<String>,
     top_k: usize,
     nprobe: u32,
+    filter_modulus: Option<u32>,
 }
 
 fn worker_request(
@@ -725,8 +819,14 @@ fn worker_request(
     Ok(request)
 }
 
-fn search_request(args: &Args, query: Vec<f32>) -> SearchRequest {
-    search_request_parts(&args.collection, args.top_k, args.nprobe, query)
+fn search_request(args: &Args, query: Vec<f32>, expected: &[u32]) -> SearchRequest {
+    search_request_parts(
+        &args.collection,
+        args.top_k,
+        args.nprobe,
+        query,
+        filter_bytes(args.filter_modulus, expected),
+    )
 }
 
 fn search_request_parts(
@@ -734,17 +834,47 @@ fn search_request_parts(
     top_k: usize,
     nprobe: u32,
     query: Vec<f32>,
+    filter: Vec<u8>,
 ) -> SearchRequest {
     SearchRequest {
         collection: collection.to_string(),
         query,
         top_k: top_k as u32,
         nprobe: Some(nprobe),
-        filter: vec![],
+        filter,
         tag_filter: None,
         score_threshold: None,
         group_by: String::new(),
         group_size: None,
+    }
+}
+
+fn filter_target(modulus: u32, expected: &[u32]) -> u32 {
+    expected[0] % modulus
+}
+
+fn filter_bytes(modulus: Option<u32>, expected: &[u32]) -> Vec<u8> {
+    modulus.map_or_else(Vec::new, |modulus| {
+        format!(
+            r#"{{"ann_label_{modulus}":{}}}"#,
+            filter_target(modulus, expected)
+        )
+        .into_bytes()
+    })
+}
+
+fn filtered_ground_truth(expected: &[u32], top_k: usize, modulus: Option<u32>) -> Vec<u32> {
+    match modulus {
+        Some(modulus) => {
+            let target = filter_target(modulus, expected);
+            expected
+                .iter()
+                .copied()
+                .filter(|row| row % modulus == target)
+                .take(top_k)
+                .collect()
+        }
+        None => expected.iter().copied().take(top_k).collect(),
     }
 }
 
@@ -753,25 +883,40 @@ fn recall_at_k(returned: &HashSet<u32>, expected: &[u32], top_k: usize) -> f64 {
     returned.intersection(&expected).count() as f64 / top_k as f64
 }
 
-fn validate_ground_truth(
-    neighbors: &[Vec<u32>],
-    train_vectors: usize,
-    top_k: usize,
-) -> Result<(), String> {
+fn validate_ground_truth(neighbors: &[Vec<u32>], train_vectors: usize) -> Result<(), String> {
     for (query_index, expected) in neighbors.iter().enumerate() {
-        let top = expected.iter().take(top_k).copied().collect::<HashSet<_>>();
-        if top.len() != top_k {
+        let unique = expected.iter().copied().collect::<HashSet<_>>();
+        if unique.len() != expected.len() {
             return Err(format!(
-                "ground truth query {query_index} contains duplicate IDs in its top-{top_k}"
+                "ground truth query {query_index} contains duplicate IDs"
             ));
         }
         if let Some(value) = expected
             .iter()
-            .take(top_k)
             .find(|value| **value as usize >= train_vectors)
         {
             return Err(format!(
                 "ground truth query {query_index} references row {value} outside {train_vectors} train vectors"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_filtered_ground_truth(
+    neighbors: &[Vec<u32>],
+    top_k: usize,
+    modulus: Option<u32>,
+) -> Result<(), String> {
+    let Some(modulus) = modulus else {
+        return Ok(());
+    };
+    for (query_index, expected) in neighbors.iter().enumerate() {
+        let filtered = filtered_ground_truth(expected, top_k, Some(modulus));
+        if filtered.len() != top_k {
+            return Err(format!(
+                "ground truth query {query_index} has only {} exact neighbors for modulus {modulus}; top-k requires {top_k}",
+                filtered.len()
             ));
         }
     }
@@ -869,6 +1014,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query_identity = file_identity(&args.query_fvecs)?;
     let neighbor_identity = file_identity(&args.neighbors_ivecs)?;
     let query_dataset = load_queries(&args)?;
+    let dataset_query_vectors = query_dataset.queries.len();
     let mut client = connect(&args).await?;
     let health_before = health(&mut client, &args).await?;
     if !health_before.healthy || !health_before.ready {
@@ -911,10 +1057,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    validate_ground_truth(&query_dataset.neighbors, train_vectors, args.top_k)
+    validate_ground_truth(&query_dataset.neighbors, train_vectors)
         .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
+    validate_filtered_ground_truth(&query_dataset.neighbors, args.top_k, args.filter_modulus)
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
+    if !load.skipped && args.post_load_settle_seconds > 0 {
+        tokio::time::sleep(Duration::from_secs(args.post_load_settle_seconds)).await;
+    }
     let health_after = health(&mut client, &args).await?;
-    let warmup_count = warmup(&mut client, &args, &query_dataset.queries).await?;
+    let warmup_count = warmup(&mut client, &args, &query_dataset).await?;
     let query = measure_queries(
         client,
         &args,
@@ -940,6 +1091,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             query.failed, query.requested
         ));
     }
+    if query.filter_violations != 0 {
+        failures.push(format!(
+            "{} returned vectors violated the requested metadata filter",
+            query.filter_violations
+        ));
+    }
+    if query.result_count_violations != 0
+        || query.duplicate_results != 0
+        || query.unparseable_results != 0
+        || query.invalid_scores != 0
+    {
+        failures.push(format!(
+            "{} result-count violations, {} duplicate IDs, {} unparseable IDs, and {} invalid scores",
+            query.result_count_violations,
+            query.duplicate_results,
+            query.unparseable_results,
+            query.invalid_scores
+        ));
+    }
     if query.recall_at_k < args.min_recall {
         failures.push(format!(
             "Recall@{} {:.6} is below {:.6}",
@@ -956,8 +1126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
     let report = AnnReport {
-        schema_version: 1,
-        report_type: "akidb.market-ann-benchmark.v1",
+        schema_version: 2,
+        report_type: "akidb.market-ann-benchmark.v2",
         generated_at_unix_ms: generated_at_unix_ms(),
         server: args.server.clone(),
         collection: args.collection.clone(),
@@ -965,7 +1135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             name: args.dataset_name.clone(),
             dimensions: train_dimensions,
             train_vectors,
-            query_vectors: query.requested,
+            query_vectors: dataset_query_vectors,
             ground_truth_width: query_dataset.ground_truth_width,
             metric: args.metric.clone(),
             train: train_identity,
@@ -975,6 +1145,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         health_before,
         health_after,
         load,
+        post_load_settle_seconds: if args.skip_load {
+            0
+        } else {
+            args.post_load_settle_seconds
+        },
+        filter: FilterReport {
+            enabled: args.filter_modulus.is_some(),
+            metadata_key: args
+                .filter_modulus
+                .map(|modulus| format!("ann_label_{modulus}")),
+            modulus: args.filter_modulus,
+            expected_selectivity: args.filter_modulus.map(|modulus| 1.0 / f64::from(modulus)),
+        },
         query,
         verdict: Verdict {
             status: if failures.is_empty() { "pass" } else { "fail" },
@@ -990,6 +1173,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "recall_at_k": report.query.recall_at_k,
             "qps": report.query.qps,
             "p99_ms": report.query.latency.p99_ms,
+            "filter_violations": report.query.filter_violations,
+            "result_count_violations": report.query.result_count_violations,
+            "duplicate_results": report.query.duplicate_results,
+            "unparseable_results": report.query.unparseable_results,
+            "invalid_scores": report.query.invalid_scores,
             "failures": report.verdict.failures,
         })
     );
@@ -1075,12 +1263,28 @@ mod tests {
 
     #[test]
     fn validates_ground_truth_bounds_and_uniqueness() {
-        assert!(validate_ground_truth(&[vec![0, 2, 1]], 3, 3).is_ok());
-        assert!(validate_ground_truth(&[vec![0, 0, 1]], 3, 3)
+        assert!(validate_ground_truth(&[vec![0, 2, 1]], 3).is_ok());
+        assert!(validate_ground_truth(&[vec![0, 0, 1]], 3)
             .unwrap_err()
             .contains("duplicate"));
-        assert!(validate_ground_truth(&[vec![0, 3, 1]], 3, 3)
+        assert!(validate_ground_truth(&[vec![0, 3, 1]], 3)
             .unwrap_err()
             .contains("outside"));
+    }
+
+    #[test]
+    fn derives_exact_filtered_ground_truth_from_ordered_neighbors() {
+        let expected = vec![41, 2, 4, 7, 6, 8];
+        assert_eq!(filtered_ground_truth(&expected, 3, Some(2)), vec![41, 7]);
+        assert!(
+            validate_filtered_ground_truth(std::slice::from_ref(&expected), 2, Some(2)).is_ok()
+        );
+        assert!(validate_filtered_ground_truth(&[expected], 3, Some(2))
+            .unwrap_err()
+            .contains("only 2"));
+        assert_eq!(
+            filter_bytes(Some(20), &[41]),
+            br#"{"ann_label_20":1}"#.to_vec()
+        );
     }
 }
