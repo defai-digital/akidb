@@ -510,7 +510,11 @@ index; market qualification therefore uses `--collection default`.
 ### Competitor parity (Lane A relative gates)
 
 After the immutable AkiDB SIFT1M matrix passes, run both competitors
-sequentially on the same isolated server and driver:
+sequentially on the same isolated server and driver. Inject
+`AKIDB_COMPETITOR_MINIO_ACCESS_KEY` and
+`AKIDB_COMPETITOR_MINIO_SECRET_KEY` from the CI secret store or an ephemeral
+lab credential helper first; never put either value in the command line or an
+inventory file.
 
 ```bash
 AKIDB_COMPETITOR_RUN_ID=<unique-run-id> \
@@ -519,8 +523,6 @@ AKIDB_COMPETITOR_DRIVER=akidb-amd64-4 \
 AKIDB_COMPETITOR_DATASET_DIR=/var/tmp/akidb-market-data/sift1m-fvecs \
 AKIDB_COMPETITOR_OUTPUT_DIR=/qualification/evidence/competitors \
 AKIDB_COMPETITOR_CONFIRM=yes-run-isolated-market-competitors \
-AKIDB_COMPETITOR_MINIO_ACCESS_KEY=<ephemeral-lab-access-key> \
-AKIDB_COMPETITOR_MINIO_SECRET_KEY=<ephemeral-lab-secret> \
 AKIDB_PARITY_AKI_EVIDENCE_DIR=/qualification/evidence/akidb \
 AKIDB_PARITY_AKI_RUN_ID=<passed-akidb-run-id> \
 ansible-playbook playbooks/knowledge-market-competitors.yml

@@ -252,6 +252,11 @@ Pinned comparison set reviewed 2026-07-26:
 - Milvus server `v2.6.21` with `pymilvus==2.6.17`
 - Weaviate server `1.38.6` with `weaviate-client==4.22.0`
 
+Inject `AKIDB_COMPETITOR_MINIO_ACCESS_KEY` and
+`AKIDB_COMPETITOR_MINIO_SECRET_KEY` from the CI secret store or an ephemeral
+lab credential helper before invoking the playbook. Do not place either value
+in the command line or an inventory file.
+
 ```bash
 AKIDB_COMPETITOR_RUN_ID=<unique-run-id> \
 AKIDB_COMPETITOR_SERVER=akidb-amd64-3 \
@@ -259,8 +264,6 @@ AKIDB_COMPETITOR_DRIVER=akidb-amd64-4 \
 AKIDB_COMPETITOR_DATASET_DIR=/var/tmp/akidb-market-data/sift1m-fvecs \
 AKIDB_COMPETITOR_OUTPUT_DIR=/qualification/evidence/competitors \
 AKIDB_COMPETITOR_CONFIRM=yes-run-isolated-market-competitors \
-AKIDB_COMPETITOR_MINIO_ACCESS_KEY=<ephemeral-lab-access-key> \
-AKIDB_COMPETITOR_MINIO_SECRET_KEY=<ephemeral-lab-secret> \
 AKIDB_PARITY_AKI_EVIDENCE_DIR=/qualification/evidence/akidb \
 AKIDB_PARITY_AKI_RUN_ID=<passed-akidb-run-id> \
 ansible-playbook playbooks/knowledge-market-competitors.yml
