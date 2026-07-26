@@ -159,6 +159,11 @@ def summarize(args: argparse.Namespace) -> dict[str, Any]:
         "benchmark configuration checksum is missing",
         failures,
     )
+    require(
+        environment.get("max_postfilter_candidates") == 16_384,
+        "bounded post-filter candidate window differs from 16384",
+        failures,
+    )
 
     process_by_name = {
         item.get("name"): item

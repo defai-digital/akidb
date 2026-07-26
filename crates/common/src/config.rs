@@ -425,6 +425,9 @@ pub struct FilterSettings {
     /// Over-fetch factor for post-filter candidate generation.
     #[serde(default = "default_overfetch")]
     pub postfilter_overfetch_factor: u32,
+    /// Hard bound for the largest adaptive post-filter candidate window.
+    #[serde(default = "default_max_postfilter_candidates")]
+    pub max_postfilter_candidates: usize,
     /// When estimated selectivity is at or below this, adaptive prefers pre-filter.
     #[serde(default = "default_adaptive_pre_selectivity")]
     pub adaptive_pre_selectivity: f32,
@@ -432,6 +435,10 @@ pub struct FilterSettings {
 
 fn default_overfetch() -> u32 {
     5
+}
+
+fn default_max_postfilter_candidates() -> usize {
+    16_384
 }
 
 fn default_adaptive_pre_selectivity() -> f32 {
@@ -443,6 +450,7 @@ impl Default for FilterSettings {
         Self {
             mode: FilterMode::Adaptive,
             postfilter_overfetch_factor: default_overfetch(),
+            max_postfilter_candidates: default_max_postfilter_candidates(),
             adaptive_pre_selectivity: default_adaptive_pre_selectivity(),
         }
     }
@@ -717,6 +725,7 @@ mod tests {
         assert_eq!(config.index.vector_precision, "f32");
         assert_eq!(config.index.metric, "cosine");
         assert_eq!(config.index.filter.mode, FilterMode::Adaptive);
+        assert_eq!(config.index.filter.max_postfilter_candidates, 16_384);
         assert_eq!(config.auth.mode, AuthMode::LoopbackOptional);
         assert!(config.auth.acl.enforce_workspace);
         assert_eq!(config.slo.reference.dimensions, 768);

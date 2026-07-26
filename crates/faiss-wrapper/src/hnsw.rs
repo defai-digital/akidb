@@ -1,8 +1,8 @@
 //! HNSW vector index implementation using usearch
 //!
 //! This module provides a real HNSW (Hierarchical Navigable Small World) index
-//! via the `usearch` crate. It is the sole vector index backend for AkiDB on
-//! Mac Apple Silicon.
+//! via the `usearch` crate. It is the portable CPU vector-index backend used
+//! on supported macOS ARM64 and Ubuntu AMD64 targets.
 
 use crate::{
     allocate_internal_id,
@@ -41,6 +41,24 @@ fn candidate_count(top_k: usize, index_size: usize, tombstoned: usize, filtered:
     usize::try_from(compensated)
         .unwrap_or(usize::MAX)
         .min(index_size)
+}
+
+fn next_candidate_count(current: usize, limit: usize) -> usize {
+    current
+        .saturating_mul(2)
+        .max(current.saturating_add(1))
+        .min(limit)
+}
+
+struct ExpansionSearchReset<'a> {
+    index: &'a Index,
+    default: usize,
+}
+
+impl Drop for ExpansionSearchReset<'_> {
+    fn drop(&mut self) {
+        self.index.change_expansion_search(self.default);
+    }
 }
 
 /// Vector storage precision for usearch (GAP-010).
@@ -184,9 +202,10 @@ pub struct HnswIndex {
     ef_search: usize,
     /// Distance metric used for score conversion
     metric: DistanceMetric,
-    /// Serializes ef_search mutations to prevent concurrent search corruption.
-    /// Only acquired when a search uses a non-default nprobe value.
-    ef_search_lock: Mutex<()>,
+    /// Prevents usearch's shared expansion-search setting from changing while
+    /// any default search reads it. Default searches share a read lock;
+    /// non-default `nprobe` searches take the write lock.
+    ef_search_lock: RwLock<()>,
     /// Prevents concurrent insert/delete operations during trigger_rebuild.
     /// Searches do NOT acquire this lock (tombstone filtering remains correct).
     rebuild_lock: Mutex<()>,
@@ -241,7 +260,7 @@ impl HnswIndex {
             is_rebuilding: AtomicBool::new(false),
             ef_search: config.ef_search,
             metric: config.metric,
-            ef_search_lock: Mutex::new(()),
+            ef_search_lock: RwLock::new(()),
             rebuild_lock: Mutex::new(()),
         })
     }
@@ -257,6 +276,51 @@ impl HnswIndex {
             DistanceMetric::Cosine => 1.0 - distance,
             DistanceMetric::L2 => 1.0 / (1.0 + distance),
             DistanceMetric::InnerProduct => 1.0 - distance,
+        }
+    }
+
+    fn search_candidate_window(
+        &self,
+        query: &[f32],
+        params: &SearchParams,
+        mut search_count: usize,
+        candidate_limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        loop {
+            let matches = self
+                .index
+                .search::<f32>(query, search_count)
+                .map_err(|error| {
+                    AkiDbError::InvalidParameter(format!("HNSW search failed: {error}"))
+                })?;
+
+            let reverse = self.reverse_mapping.read();
+            let mut results = Vec::with_capacity(params.top_k);
+            for (key, distance) in matches.keys.iter().zip(matches.distances.iter()) {
+                let internal_id = *key as i64;
+
+                if self.tombstones.is_deleted(InternalId(internal_id)) {
+                    continue;
+                }
+                if let Some(ext_id) = reverse.get(&internal_id) {
+                    if params.filter.as_ref().is_some_and(|filter| !filter(ext_id)) {
+                        continue;
+                    }
+                    results.push(SearchResult::new(
+                        ext_id.clone(),
+                        self.distance_to_score(*distance),
+                    ));
+                    if results.len() >= params.top_k {
+                        break;
+                    }
+                }
+            }
+            drop(reverse);
+
+            if results.len() >= params.top_k || search_count >= candidate_limit {
+                return Ok(results);
+            }
+            search_count = next_candidate_count(search_count, candidate_limit);
         }
     }
 
@@ -358,68 +422,42 @@ impl VectorIndex for HnswIndex {
         // ACL contributes a predicate. Compensate proportionally for
         // tombstones so normal delete churn does not starve the final top_k.
         let tombstoned = usize::try_from(self.tombstones.deleted_count()).unwrap_or(usize::MAX);
-        let search_count = candidate_count(
+        let mut search_count = candidate_count(
             params.top_k,
             self.index.size(),
             tombstoned,
             params.filter.is_some(),
         );
-
-        // When nprobe differs from the default ef_search, we must mutate the
-        // shared usearch index expansion parameter. Hold ef_search_lock for the
-        // entire change-search-restore sequence to prevent concurrent searches
-        // from corrupting each other's expansion setting.
-        let needs_custom_ef = params.nprobe as usize != self.ef_search;
-        let _ef_guard = if needs_custom_ef {
-            let guard = self.ef_search_lock.lock();
-            self.index.change_expansion_search(params.nprobe as usize);
-            Some(guard)
+        if search_count == 0 {
+            return Ok(Vec::new());
+        }
+        let candidate_limit = if params.filter.is_some() {
+            params
+                .filter_candidate_limit
+                .max(params.top_k)
+                .min(self.index.size())
         } else {
-            None
+            search_count
         };
+        search_count = search_count.min(candidate_limit);
 
-        let matches = self
-            .index
-            .search::<f32>(query, search_count)
-            .map_err(|e| AkiDbError::InvalidParameter(format!("HNSW search failed: {}", e)))?;
-
-        // Restore default ef_search while still holding the lock
-        if needs_custom_ef {
-            self.index.change_expansion_search(self.ef_search);
+        // Usearch exposes expansion_search as shared mutable index state
+        // rather than a per-call option. Every default search therefore holds
+        // a shared guard; a custom nprobe search exclusively performs the
+        // change-search-restore sequence. This avoids a C++ read/write data
+        // race while preserving concurrency at the configured operating point.
+        if params.nprobe as usize == self.ef_search {
+            let _guard = self.ef_search_lock.read();
+            self.search_candidate_window(query, params, search_count, candidate_limit)
+        } else {
+            let _guard = self.ef_search_lock.write();
+            self.index.change_expansion_search(params.nprobe as usize);
+            let _reset = ExpansionSearchReset {
+                index: &self.index,
+                default: self.ef_search,
+            };
+            self.search_candidate_window(query, params, search_count, candidate_limit)
         }
-        // _ef_guard drops here, releasing the lock
-        drop(_ef_guard);
-
-        let reverse = self.reverse_mapping.read();
-        let mut results: Vec<SearchResult> = Vec::with_capacity(params.top_k);
-
-        for (key, distance) in matches.keys.iter().zip(matches.distances.iter()) {
-            let internal_id = *key as i64;
-
-            // Skip tombstoned vectors
-            if self.tombstones.is_deleted(InternalId(internal_id)) {
-                continue;
-            }
-
-            // Look up external ID
-            if let Some(ext_id) = reverse.get(&internal_id) {
-                // Apply filter if provided
-                if let Some(ref filter) = params.filter {
-                    if !filter(ext_id) {
-                        continue;
-                    }
-                }
-
-                let score = self.distance_to_score(*distance);
-                results.push(SearchResult::new(ext_id.clone(), score));
-
-                if results.len() >= params.top_k {
-                    break;
-                }
-            }
-        }
-
-        Ok(results)
     }
 
     fn search_batch(
@@ -595,12 +633,97 @@ mod tests {
     }
 
     #[test]
+    fn selective_filter_expands_until_it_finds_a_bounded_match() {
+        let index = HnswIndex::new(create_test_config()).unwrap();
+        for row in 0..100 {
+            index
+                .insert(
+                    &VectorId::new(format!("row-{row}")),
+                    &create_random_vector(128, row as f32),
+                )
+                .unwrap();
+        }
+        let query = create_random_vector(128, 0.0);
+        let broad = index
+            .search(&query, &SearchParams::new(100).with_nprobe(128))
+            .unwrap();
+        assert!(broad.len() > MIN_FILTER_CANDIDATES);
+        let allowed = broad.last().unwrap().id.as_str().to_string();
+
+        let params = SearchParams::new(1)
+            .with_filter(std::sync::Arc::new(move |id: &VectorId| {
+                id.as_str() == allowed
+            }))
+            .with_filter_candidate_limit(100);
+        let results = index.search(&query, &params).unwrap();
+
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn selective_filter_work_is_geometrically_bounded() {
+        let index = HnswIndex::new(create_test_config()).unwrap();
+        for row in 0..100 {
+            index
+                .insert(
+                    &VectorId::new(format!("row-{row}")),
+                    &create_random_vector(128, row as f32),
+                )
+                .unwrap();
+        }
+        let predicate_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_calls = std::sync::Arc::clone(&predicate_calls);
+        let params = SearchParams::new(1)
+            .with_filter(std::sync::Arc::new(move |_id: &VectorId| {
+                observed_calls.fetch_add(1, Ordering::Relaxed);
+                false
+            }))
+            .with_filter_candidate_limit(100);
+
+        let results = index
+            .search(&create_random_vector(128, 0.0), &params)
+            .unwrap();
+
+        assert!(results.is_empty());
+        // Windows are 32, 64, and 100. Repeated candidates make cumulative
+        // predicate work larger than the final window, but geometric growth
+        // keeps it below twice that configured maximum.
+        assert!(predicate_calls.load(Ordering::Relaxed) < 200);
+    }
+
+    #[test]
+    fn custom_expansion_is_restored_when_a_filter_panics() {
+        let index = HnswIndex::new(create_test_config()).unwrap();
+        let vector = create_random_vector(128, 1.0);
+        index.insert(&VectorId::new("row-1"), &vector).unwrap();
+        let params = SearchParams::new(1)
+            .with_nprobe(128)
+            .with_filter(std::sync::Arc::new(|_id: &VectorId| {
+                panic!("intentional predicate panic")
+            }));
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = index.search(&vector, &params);
+        }));
+
+        assert!(panic.is_err());
+        assert_eq!(index.index.expansion_search(), index.ef_search);
+        assert_eq!(
+            index.search(&vector, &SearchParams::new(1)).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
     fn filtered_candidate_window_is_bounded_and_tombstone_aware() {
         assert_eq!(candidate_count(50, 100_000, 0, true), 100);
         assert_eq!(candidate_count(1, 2, 0, true), 2);
         assert_eq!(candidate_count(50, 100_000, 50_000, true), 200);
         assert_eq!(candidate_count(10, 100_000, 0, false), 15);
         assert_eq!(candidate_count(10, 100, 100, true), 100);
+        assert_eq!(next_candidate_count(32, 1_000), 64);
+        assert_eq!(next_candidate_count(768, 1_000), 1_000);
+        assert_eq!(next_candidate_count(1_000, 1_000), 1_000);
     }
 
     #[test]

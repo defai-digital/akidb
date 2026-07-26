@@ -573,6 +573,7 @@
                     akidb_market_hnsw_ef_construction
                   ),
                   'hnsw_ef_search_default': akidb_market_hnsw_ef_search,
+                  'max_postfilter_candidates': 16384,
                   'index_bytes': market_index_size.stdout.split()[0] | int
                 } | to_nice_json
               }}

@@ -636,6 +636,8 @@ where
                     _ => false,
                 }
             }));
+            params =
+                params.with_filter_candidate_limit(self.filter_settings.max_postfilter_candidates);
         }
         params
     }

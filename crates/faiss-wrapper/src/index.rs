@@ -14,6 +14,8 @@ pub struct SearchParams {
     pub nprobe: u32,
     /// Optional filter function
     pub filter: Option<SearchFilter>,
+    /// Maximum ANN candidate window when a post-filter needs expansion.
+    pub filter_candidate_limit: usize,
 }
 
 impl std::fmt::Debug for SearchParams {
@@ -22,6 +24,7 @@ impl std::fmt::Debug for SearchParams {
             .field("top_k", &self.top_k)
             .field("nprobe", &self.nprobe)
             .field("filter", &self.filter.is_some())
+            .field("filter_candidate_limit", &self.filter_candidate_limit)
             .finish()
     }
 }
@@ -32,6 +35,7 @@ impl Default for SearchParams {
             top_k: 10,
             nprobe: 32,
             filter: None,
+            filter_candidate_limit: 16_384,
         }
     }
 }
@@ -82,6 +86,13 @@ impl SearchParams {
     /// during search.
     pub fn with_filter(mut self, filter: Arc<dyn Fn(&VectorId) -> bool + Send + Sync>) -> Self {
         self.filter = Some(filter);
+        self
+    }
+
+    /// Bound the largest iterative post-filter window so selective or
+    /// impossible predicates cannot force an unbounded full-index scan.
+    pub fn with_filter_candidate_limit(mut self, limit: usize) -> Self {
+        self.filter_candidate_limit = limit.max(self.top_k);
         self
     }
 }

@@ -25,6 +25,7 @@ metric = "{{ akidb_market_metric }}"
 [index.filter]
 mode = "adaptive"
 postfilter_overfetch_factor = 5
+max_postfilter_candidates = 16384
 adaptive_pre_selectivity = 0.20
 
 [index.rebuild]
