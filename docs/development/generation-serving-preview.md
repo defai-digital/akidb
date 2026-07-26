@@ -201,7 +201,9 @@ later, PostgreSQL remains the replay and activation authority.
   [Platform Support](../platform/SUPPORT.md).
 - The Ubuntu AMD64 knowledge cell is qualified for a bounded envelope only
   ([qualification report](../quality/linux-amd64-knowledge-cell-qualification.md)).
-  Public-dataset ANN and competitor-parity claims remain a separate market gate
+  Mac Studio clusters are an intended enterprise path with the same ownership
+  model; they need their own measured evidence. Public-dataset ANN and
+  competitor-parity claims remain a separate market gate
   ([market-readiness qualification](../quality/market-readiness-qualification.md)).
 
 ## Verification

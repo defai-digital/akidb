@@ -3,8 +3,10 @@
 ## Scope
 
 This runbook covers supported macOS 26 Apple Silicon and Ubuntu 24.04+ native
-deployments, plus local Compose stacks. GPU, CUDA, Thor, and Kubernetes
-incidents are outside the active support scope.
+deployments (Mac Studio / Mini / MacBook and AMD64 PC or cloud), plus local
+Compose stacks. Secondary Thor portable-CPU hosts may use the same recovery
+principles with device-specific capacity expectations. CUDA/GPU index paths
+and Kubernetes production incidents are outside the active support scope.
 
 The immutable single-node path is a preview. The PostgreSQL-led Ubuntu AMD64
 cell provides generation-aware read failover; PostgreSQL and MinIO availability

@@ -17,9 +17,15 @@ AkiDB has two deliberately different data-lifecycle profiles:
   generation-aware AX read gateway are implemented; the Linux AMD64 cell is
   qualified separately from the primary Mac profile.
 
-AkiDB v0.10.0 supports macOS 26 on Apple Silicon and Ubuntu 24.04 or newer on
-AMD64. The default runtime is CPU-portable. Linux ARM64, macOS Intel, CUDA,
-NVIDIA GPU, and Thor-specific paths are not supported release targets.
+AkiDB v0.10.0 is CPU-portable. The product centers on two best-fit use cases:
+
+- **Single user:** one Mac Studio or one AMD64 PC running a standalone server.
+- **Enterprise:** a Mac Studio cluster on-prem, or an AMD64 cluster in cloud.
+
+Mac Mini and MacBook standalone hosts are also supported for lighter personal
+and development loads. NVIDIA Thor is supported as a secondary Linux ARM64
+portable path (not a CUDA/GPU index claim). See
+[Platform Support](docs/platform/SUPPORT.md).
 
 > **Project status:** the standalone database is the primary supported
 > deployment. Immutable generation serving adds independently rebuilt full
@@ -53,19 +59,23 @@ core retrieval path behind one API and one operational boundary:
   controls, redacted management output, and an optional, separately secured
   PostgreSQL control plane for the replica profile.
 
-## Supported platforms
+## Target use cases and platforms
 
-| Operating system | Architecture | Runtime status | Delivery path |
+| Audience | Best-fit target | Also supported |
+| --- | --- | --- |
+| Single user | **Mac Studio** or **AMD64 PC** standalone | Mac Mini / MacBook standalone; NVIDIA Thor (portable CPU) |
+| Enterprise | **Mac Studio cluster** or **AMD64 cloud cluster** | Secondary edge nodes (for example Thor) without replacing the cluster design |
+
+| Operating system | Architecture | Support tier | Delivery path |
 | --- | --- | --- | --- |
-| macOS 26 | Apple Silicon (`arm64`, M2 or newer) | Supported | Release archive or source build |
-| Ubuntu 24.04+ | AMD64 (`x86_64`) | Supported | Release archive, source build, Docker, and qualified Ansible artifact workflow |
+| macOS 26 | Apple Silicon (`arm64`, M2 or newer) | Primary on Mac Studio; also Mac Mini / MacBook | Release archive or source build |
+| Ubuntu 24.04+ | AMD64 (`x86_64`) | Primary workstation and cloud | Release archive, source build, Docker, qualified Ansible artifacts |
+| Linux | ARM64 (NVIDIA Thor class) | Secondary portable CPU | Source build; not the enterprise packaging center |
 
-Both supported targets use the portable HNSW backend. Linux ARM64 (including
-NVIDIA Thor), macOS Intel, Ubuntu older than 24.04, CUDA/NVIDIA acceleration,
-and other Linux distributions are outside the release support matrix. Thor
-may be used for isolated experiments, but those results do not change the
-supported platforms without a separate qualification decision. See
-[Platform Support](docs/platform/SUPPORT.md) for the exact matrix.
+All tiers use the portable HNSW backend. macOS Intel, Ubuntu older than 24.04,
+other Linux distributions as release claims, and CUDA/GPU-accelerated index
+paths are outside the support matrix. Thor support is the portable CPU path,
+not a vendor GPU index. See [Platform Support](docs/platform/SUPPORT.md).
 
 ## Architecture
 
@@ -173,10 +183,10 @@ the ownership, consistency, and release boundaries.
 
 | Shape | Components | Status and intended use |
 | --- | --- | --- |
-| Mutable standalone | One `akidb` server and local storage | Primary supported path for local RAG, agent memory, development, and single-node deployments |
+| Mutable standalone | One `akidb` server and local storage | Best-fit single-user path on Mac Studio or AMD64 PC; also Mac Mini / MacBook and Thor |
 | Immutable single node | MinIO plus one generation-enabled AkiDB server | Opt-in atomic-publication preview; no replication or failover |
-| Full-replica cell | HA PostgreSQL, MinIO, three independent AkiDB replicas, and two or more AX gateways | Qualified Ubuntu AMD64 knowledge-serving profile; PostgreSQL and object-store HA remain external deployment responsibilities |
-| Multi-shard | Coordinator plus two or more independent shard servers | Fan-out search, capacity experiments, and qualified private-network clusters; not the HA replica design |
+| Full-replica cell | HA PostgreSQL, MinIO, three independent AkiDB replicas, and two or more AX gateways | Enterprise design: Mac Studio cluster or AMD64 cloud cell. Ubuntu AMD64 envelope is the checked-in qualification; PostgreSQL and object-store HA remain external |
+| Multi-shard | Coordinator plus two or more independent shard servers | Fan-out search and capacity experiments; not the HA replica design |
 | Ingestion stack | Upload gateway, parsers, NATS, MinIO, ingestion workers, embedding service, and AkiDB | Document-processing and integration workflows; its NATS stream is separate from knowledge-generation authority |
 
 The coordinator merges results across shards and applies backpressure, but it
@@ -445,10 +455,15 @@ akidb/
 - The storage crate includes WAL primitives, but the server write path does not
   yet use the configured WAL.
 - The native BM25 index is rebuilt in memory from persisted records.
-- Linux release artifacts and the knowledge-serving cell are AMD64-only.
-- Linux ARM64, NVIDIA Thor, and CUDA builds are unsupported release paths.
+- Primary packaging and knowledge-cell qualification evidence are AMD64-first;
+  Mac Studio is the preferred Apple Silicon capacity host.
+- Mac Mini / MacBook and NVIDIA Thor are supported secondary form factors, not
+  substitutes for Studio or AMD64 enterprise capacity claims.
+- There is no CUDA/GPU-accelerated vector-index path; Thor uses the portable
+  CPU runtime.
 - Four-Mac Thunderbolt validation tooling defines an experimental evidence
-  path; it is not the primary product topology or a production-readiness claim.
+  path for Mac clustering; the enterprise design centers on Mac Studio or
+  AMD64 cloud full-replica cells.
 
 ## Contributing
 

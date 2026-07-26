@@ -222,8 +222,9 @@ capacity claims are different evidence classes:
 
 | Claim | Current public status | Evidence |
 | --- | --- | --- |
-| Portable standalone runtime | Supported on macOS 26 Apple Silicon and Ubuntu 24.04+ AMD64 | [Platform Support](../platform/SUPPORT.md) |
-| PostgreSQL-led full-replica cell | Implemented; Ubuntu AMD64 qualified for a bounded 100k × 768 envelope | [Ubuntu AMD64 qualification](../quality/linux-amd64-knowledge-cell-qualification.md) |
+| Target deployments | Single user: Mac Studio or AMD64 PC. Enterprise: Mac Studio cluster or AMD64 cloud cluster. Secondary: Mac Mini/MacBook, NVIDIA Thor portable CPU | [Platform Support](../platform/SUPPORT.md) |
+| Portable standalone runtime | Supported on macOS 26 Apple Silicon and Ubuntu 24.04+ AMD64; Thor secondary | [Platform Support](../platform/SUPPORT.md) |
+| PostgreSQL-led full-replica cell | Implemented; Ubuntu AMD64 qualified for a bounded 100k × 768 envelope; Mac Studio cluster is an intended enterprise path | [Ubuntu AMD64 qualification](../quality/linux-amd64-knowledge-cell-qualification.md) |
 | Market ANN / competitor parity / larger soak | Active release gate; automation ready, full verdict not complete | [Market-readiness qualification](../quality/market-readiness-qualification.md) |
 
 The full PostgreSQL-led replica cell, gateway failover, and production capacity

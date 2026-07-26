@@ -4,9 +4,10 @@
 
 | Area | Status | Canonical document |
 | --- | --- | --- |
-| Mutable standalone server | Primary supported profile | [Platform Support](platform/SUPPORT.md) |
+| Target deployments | Single user: Mac Studio or AMD64 PC. Enterprise: Mac Studio cluster or AMD64 cloud cluster. Also: Mac Mini/MacBook, NVIDIA Thor (secondary) | [Platform Support](platform/SUPPORT.md) |
+| Mutable standalone server | Primary supported profile for single-user targets | [Platform Support](platform/SUPPORT.md) |
 | Immutable single-node generation serving | Opt-in preview | [Immutable Generation Serving](development/generation-serving-preview.md) |
-| PostgreSQL-led full-replica knowledge cell | Implemented; Ubuntu AMD64 qualified for a bounded envelope | [Agentic Knowledge-Serving Architecture](architecture/knowledge-serving.md), [Ubuntu AMD64 qualification](quality/linux-amd64-knowledge-cell-qualification.md) |
+| PostgreSQL-led full-replica knowledge cell | Implemented; Ubuntu AMD64 qualified for a bounded envelope; Mac Studio cluster is an intended enterprise path | [Agentic Knowledge-Serving Architecture](architecture/knowledge-serving.md), [Ubuntu AMD64 qualification](quality/linux-amd64-knowledge-cell-qualification.md) |
 | Market-aligned ANN / graph / competitor parity | Active release gate; automation ready, full evidence verdict not complete | [Market-Readiness Qualification](quality/market-readiness-qualification.md) |
 | Multi-shard coordinator | Capacity / fan-out path only; not HA replication | [Ansible deployment](../deploy/ansible/README.md) |
 | Native GraphRAG | Shipped as bounded retrieval graph, not a general graph DB | [Native GraphRAG Plan](development/native-graphrag-plan.md) |

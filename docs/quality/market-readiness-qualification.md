@@ -2,9 +2,13 @@
 
 Status: active release gate (automation ready; full evidence verdict not complete)
 
-Supported targets: macOS Apple Silicon and Ubuntu 24.04-or-later AMD64
+Primary targets: Mac Studio / AMD64 PC (single user); Mac Studio cluster /
+AMD64 cloud cluster (enterprise)
 
-Unsupported targets: Linux ARM64, CUDA, NVIDIA Thor, and older Linux distributions
+Also supported: Mac Mini / MacBook standalone; NVIDIA Thor portable CPU path
+
+Outside the release matrix: macOS Intel, Ubuntu older than 24.04, CUDA/GPU
+index acceleration, and unqualified Linux distributions
 
 ## Current status (2026-07-26)
 

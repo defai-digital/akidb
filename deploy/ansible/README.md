@@ -9,11 +9,14 @@ plus isolated market-qualification playbooks:
 | Market qualification | `knowledge-market-ann.yml`, `knowledge-market-competitors.yml`, `knowledge-market-graph.yml` | Active release gate automation. Isolates one replica or runs competitors; not production reconciliation. |
 | Legacy four-shard lab | `preflight.yml`, `network.yml`, `deploy.yml`, `verify.yml`, `site.yml` | Independent-shard capacity path only. Not HA and not the agent-facing replica design. |
 
-Linux ARM64 and NVIDIA Thor are not release targets. See
-[`docs/architecture/knowledge-serving.md`](../../docs/architecture/knowledge-serving.md)
-for ownership boundaries and
-[`docs/quality/market-readiness-qualification.md`](../../docs/quality/market-readiness-qualification.md)
-for market gates.
+These playbooks target the **enterprise AMD64 cloud/lab path**. Product
+targets also include single-user Mac Studio or AMD64 PC, and enterprise Mac
+Studio clusters; Mac Mini/MacBook and NVIDIA Thor are secondary portable form
+factors and are not the design center of this Ansible tree. See
+[`docs/platform/SUPPORT.md`](../../docs/platform/SUPPORT.md),
+[`docs/architecture/knowledge-serving.md`](../../docs/architecture/knowledge-serving.md),
+and
+[`docs/quality/market-readiness-qualification.md`](../../docs/quality/market-readiness-qualification.md).
 
 ## Design decision
 

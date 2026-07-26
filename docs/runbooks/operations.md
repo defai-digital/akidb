@@ -2,10 +2,12 @@
 
 ## Supported Environment
 
-AkiDB is supported on macOS 26 Apple Silicon and Ubuntu 24.04+ on AMD64. Use
-the CPU-portable path for all builds and tests. Linux ARM64, Thor, CUDA,
-NVIDIA GPU, and Kubernetes production procedures are outside the active
-support scope. See `docs/platform/SUPPORT.md` for packaging-specific limits.
+Best-fit targets are a single **Mac Studio** or **AMD64 PC**, and enterprise
+**Mac Studio** or **AMD64 cloud** clusters. Mac Mini / MacBook standalone and
+NVIDIA Thor (portable CPU) are also supported secondary form factors. Use the
+CPU-portable path for all builds and tests. CUDA/GPU-accelerated index paths
+and Kubernetes production procedures are outside the active support scope.
+See `docs/platform/SUPPORT.md` for packaging-specific limits.
 
 ## Runtime Profiles
 

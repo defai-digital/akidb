@@ -25,7 +25,10 @@ This decision does not qualify:
 
 - PostgreSQL or MinIO as highly available in the four-VM lab;
 - one million vectors, five million vectors, or 1,536 dimensions;
-- Linux ARM64, NVIDIA Thor, CUDA, or another Linux distribution;
+- Mac Studio cluster evidence (an intended enterprise path, separate from this
+  AMD64 report);
+- NVIDIA Thor or other Linux ARM64 hosts as equivalents of this AMD64 envelope;
+- CUDA/GPU-accelerated index backends;
 - AkiDB sharding, automatic resharding, or a stateful Kubernetes profile;
 - `graph_hybrid` without a configured embedding provider.
 
