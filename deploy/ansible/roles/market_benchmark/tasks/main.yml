@@ -14,13 +14,23 @@
     path: "{{ akidb_market_data_dir }}"
   register: akidb_market_existing_data
 
-- name: Require a fresh benchmark data path
+- name: Require the requested benchmark data-path lifecycle
   ansible.builtin.assert:
     that:
-      - not akidb_market_existing_data.stat.exists
+      - >-
+        (
+          akidb_market_reuse_existing | default(false) | bool
+          and akidb_market_existing_data.stat.isdir | default(false)
+        )
+        or
+        (
+          not (akidb_market_reuse_existing | default(false) | bool)
+          and not akidb_market_existing_data.stat.exists
+        )
     fail_msg: >-
-      {{ akidb_market_data_dir }} already exists. Use a new run id; benchmark
-      data is never overwritten implicitly.
+      {{ akidb_market_data_dir }} does not match the requested lifecycle.
+      Fresh qualification never overwrites data; recovery qualification must
+      explicitly reuse an existing directory.
 
 - name: Create protected market benchmark paths
   ansible.builtin.file:

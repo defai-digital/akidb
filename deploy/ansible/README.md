@@ -6,13 +6,13 @@ plus isolated market-qualification playbooks:
 | Profile | Playbooks | Status and purpose |
 | --- | --- | --- |
 | Knowledge-serving cell | `knowledge-preflight.yml`, `knowledge-site.yml`, `knowledge-verify.yml`, load/failure/backup drills | Supported availability design: three independently rebuilt full replicas, two AX gateways, PostgreSQL authority, MinIO artifacts. Bounded Ubuntu AMD64 envelope is qualified. |
-| Market qualification | `knowledge-market-ann.yml`, `knowledge-market-competitors.yml`, `knowledge-market-graph.yml` | Active release gate automation. Isolates one replica or runs competitors; not production reconciliation. |
+| Market qualification | `knowledge-market-ann.yml`, `knowledge-market-recovery.yml`, `knowledge-market-competitors.yml`, `knowledge-market-graph.yml` | Active release gate automation. Isolates one replica or runs competitors; not production reconciliation. |
 | Legacy four-shard lab | `preflight.yml`, `network.yml`, `deploy.yml`, `verify.yml`, `site.yml` | Independent-shard capacity path only. Not HA and not the agent-facing replica design. |
 
 These playbooks target the **enterprise AMD64 cloud/lab path**. Product
 targets also include single-user Mac Studio or AMD64 PC, and enterprise Mac
-Studio clusters; Mac Mini/MacBook and NVIDIA Thor are secondary portable form
-factors and are not the design center of this Ansible tree. See
+Studio clusters. Linux ARM64, NVIDIA Thor, CUDA, and older Ubuntu releases are
+outside the supported matrix. See
 [`docs/platform/SUPPORT.md`](../../docs/platform/SUPPORT.md),
 [`docs/architecture/knowledge-serving.md`](../../docs/architecture/knowledge-serving.md),
 and
@@ -227,9 +227,12 @@ Recommended order on a healthy knowledge cell:
    `/var/tmp/akidb-market-data/…` with
    `scripts/convert_ann_benchmarks_hdf5.py`.
 2. Run `knowledge-market-ann.yml` for the absolute AkiDB SIFT1M matrix.
-3. Run `knowledge-market-competitors.yml` for pinned Milvus then Weaviate on
+3. Run `knowledge-market-recovery.yml` against that passed, persisted SIFT1M
+   run for fsynced acknowledged-mutation, SIGKILL, automatic restart, and exact
+   ANN recovery evidence.
+4. Run `knowledge-market-competitors.yml` for pinned Milvus then Weaviate on
    the same dataset digests, then the fail-closed parity summary.
-4. Run `knowledge-market-graph.yml` for the native G1/G2/G3 matrix on an
+5. Run `knowledge-market-graph.yml` for the native G1/G2/G3 matrix on an
    isolated replica.
 
 ### AkiDB SIFT1M
@@ -247,6 +250,32 @@ ansible-playbook playbooks/knowledge-market-ann.yml
 Isolates one replica, loads the public SIFT1M matrix through `akidb-ann-bench`,
 writes point reports, always restores generation readiness, and summarizes with
 `scripts/summarize_market_ann.py`.
+
+### Mutable crash recovery
+
+Run this only after the referenced SIFT1M summary has passed for the same
+immutable artifact. The playbook reuses that run's isolated data directory;
+it never points the crash fault at a knowledge-serving generation.
+
+```bash
+AKIDB_RECOVERY_RUN_ID=<unique-recovery-run-id> \
+AKIDB_RECOVERY_SOURCE_MARKET_RUN_ID=<passed-akidb-run-id> \
+AKIDB_RECOVERY_SERVER=akidb-amd64-3 \
+AKIDB_RECOVERY_DRIVER=akidb-amd64-4 \
+AKIDB_RECOVERY_DATASET_DIR=/var/tmp/akidb-market-data/sift1m-fvecs \
+AKIDB_RECOVERY_ANN_EVIDENCE_DIR=/qualification/evidence/akidb \
+AKIDB_RECOVERY_OUTPUT_DIR=/qualification/evidence/recovery \
+AKIDB_RECOVERY_CONFIRM=yes-sigkill-isolated-market-replica \
+ansible-playbook playbooks/knowledge-market-recovery.yml
+```
+
+`akidb-recovery-probe` fsyncs an acknowledgement journal after deterministic
+insert, update, and delete responses. After Ansible sends SIGKILL to the exact
+isolated service main process, the verifier rejects any acknowledged state
+regression, bounds in-flight ambiguity to one operation per worker, removes
+all probe IDs, and requires the SIFT1M active count and exact Recall@10 before
+and after both crash and graceful restarts. The unconditional recovery block
+restores exact-generation knowledge-replica readiness.
 
 ### Competitor parity (Milvus and Weaviate)
 
@@ -319,7 +348,7 @@ no AkiDB service port is reachable on a public interface.
 - direct health on all shards
 - coordinator fan-out paths to all four shards
 - deterministic insert, get, update, delete, and search
-- restart persistence and RocksDB/WAL recovery
+- fsynced acknowledged-mutation, SIGKILL, and RocksDB/WAL recovery
 - GraphRAG node, edge, traversal, and context-expansion smoke tests
 
 Exit criterion: all API tests pass with no missing shard and no data loss.

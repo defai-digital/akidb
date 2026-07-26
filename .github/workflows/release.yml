@@ -129,7 +129,8 @@ jobs:
             akidb-coordinator \
             akidb-bench \
             akidb-ann-bench \
-            akidb-graph-bench
+            akidb-graph-bench \
+            akidb-recovery-probe
           do
             test -x "verify/bin/${binary}"
             "verify/bin/${binary}" --version

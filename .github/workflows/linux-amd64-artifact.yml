@@ -65,6 +65,7 @@ jobs:
           verify/bin/akidb-bench --version
           verify/bin/akidb-ann-bench --version
           verify/bin/akidb-graph-bench --version
+          verify/bin/akidb-recovery-probe --version
           sudo -u nobody verify/bin/akidb-server --version
           test -f verify/LICENSE
           test -f verify/README.md

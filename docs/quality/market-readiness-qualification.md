@@ -5,16 +5,17 @@ Status: active release gate (automation ready; full evidence verdict not complet
 Primary targets: Mac Studio / AMD64 PC (single user); Mac Studio cluster /
 AMD64 cloud cluster (enterprise)
 
-Also supported: Mac Mini / MacBook standalone; NVIDIA Thor portable CPU path
+Also supported: Mac Mini / MacBook standalone
 
-Outside the release matrix: macOS Intel, Ubuntu older than 24.04, CUDA/GPU
-index acceleration, and unqualified Linux distributions
+Outside the release matrix: macOS Intel, Linux ARM64/NVIDIA Thor, Ubuntu older
+than 24.04, CUDA/GPU index acceleration, and unqualified Linux distributions
 
 ## Current status (2026-07-26)
 
 | Lane | Automation | Evidence status |
 | --- | --- | --- |
 | A — AkiDB SIFT1M matrix | `knowledge-market-ann.yml` + `akidb-ann-bench` + `summarize_market_ann.py` | Ready to run on the isolated lab; not a checked-in release pass |
+| A — mutable crash recovery | `knowledge-market-recovery.yml` + `akidb-recovery-probe` + `summarize_market_recovery.py` | Automated fsynced-ack/SIGKILL/restart gate; not yet a checked-in release pass |
 | A — Milvus / Weaviate parity | `knowledge-market-competitors.yml` + `competitor_ann_bench.py` + `summarize_market_parity.py` | Ready to run on pinned images; not a checked-in release pass |
 | B — native graph matrix | `knowledge-market-graph.yml` + `akidb-graph-bench` + `summarize_market_graph.py` | Ready to run; G1–G3 not a checked-in market pass |
 | C — knowledge-serving cell | knowledge-site / load / failure playbooks | Bounded Ubuntu AMD64 cell already qualified separately at 100k × 768; full market soak and scale matrix still open |
@@ -27,8 +28,9 @@ Related but separate from this market gate:
   [linux-amd64-knowledge-cell-qualification.md](linux-amd64-knowledge-cell-qualification.md).
 - That cell pass is necessary serving-system evidence, not a substitute for
   public-dataset ANN parity or competitor comparison.
-- CI syntax-checks the market Ansible playbooks. It does not execute live
-  SIFT1M, competitor, or soak workloads.
+- CI syntax-checks the market Ansible playbooks and tests their local
+  summarizers and probe state machines. It does not execute live SIFT1M,
+  SIGKILL, competitor, or soak workloads.
 
 A market release verdict remains `not-ready` until one immutable candidate
 produces a single evidence manifest that passes every required gate in this
@@ -180,7 +182,17 @@ The SIFT harness labels each train row deterministically and chooses each
 query's filter label from its exact nearest neighbor. Filtering the ordered
 official neighbor list then gives exact filtered ground truth without treating
 unfiltered recall as filtered recall. Every returned row is independently
-checked against the requested label. Also run:
+checked against the requested label.
+
+The current post-filter implementation doubles its ANN candidate window only
+when the filtered result is incomplete and caps the largest window at 16,384.
+Geometric retries keep cumulative predicate work below three times that
+maximum window. The cap prevents an impossible or hostile predicate from silently
+turning every large-index query into an unbounded full-index scan; exhausting
+it returns fewer results and fails this qualification's result-count gate
+instead of hiding the limitation.
+
+Also run:
 
 - search while inserting at 10% and 50% of measured ingest capacity;
 - update and delete while searching;
@@ -368,6 +380,16 @@ recovery, and no stale route.
 - backup/restore: full known-answer suite passes from the restored path; and
 - cross-tenant leakage: exactly 0 in every phase.
 
+The mutable crash gate is stronger than a health-only restart check.
+`akidb-recovery-probe` fsyncs a client-side journal after each successful
+insert, update, or delete response. The server is then SIGKILLed while those
+operations are active. After systemd automatic restart, every allocated ID is
+checked against its last acknowledged state. A state may advance by only the
+single operation whose response was in flight; an acknowledged state may
+never disappear or regress. Probe IDs are deleted, the active count must
+return to exactly 1,000,000, and full SIFT1M Recall@10 is rerun before the
+crash, after crash recovery, and after a graceful restart.
+
 The lab's PostgreSQL and MinIO may remain single-node only for AkiDB process
 qualification. A production-HA claim additionally requires managed or
 independently qualified HA PostgreSQL and object storage.
@@ -440,11 +462,14 @@ evidence keeps the candidate in `not-ready` state.
 | `scripts/convert_ann_benchmarks_hdf5.py` | Convert official ANN-Benchmarks HDF5 to streaming `fvecs`/`ivecs` with SHA-256 manifests |
 | `akidb-ann-bench` | Exact-ground-truth AkiDB ANN driver (in the Linux AMD64 release archive) |
 | `scripts/summarize_market_ann.py` | Fail-closed summary for a complete AkiDB market ANN evidence set |
+| `akidb-recovery-probe` | Fsynced acknowledged-mutation journal and post-crash state verifier |
+| `scripts/summarize_market_recovery.py` | Fail-closed SIGKILL, automatic restart, durability, and ANN regression summary |
 | `scripts/competitor_ann_bench.py` | Qualification-only Milvus / Weaviate driver using the same SIFT files |
 | `scripts/summarize_market_parity.py` | Fail-closed three-engine parity verdict |
 | `akidb-graph-bench` | Known-answer native graph matrix driver |
 | `scripts/summarize_market_graph.py` | Fail-closed graph-matrix summary |
 | `deploy/ansible/playbooks/knowledge-market-ann.yml` | Isolate one replica, run SIFT1M, always restore the cell |
+| `deploy/ansible/playbooks/knowledge-market-recovery.yml` | Reuse a passed SIFT1M run, SIGKILL during writes, verify durable recovery, always restore the cell |
 | `deploy/ansible/playbooks/knowledge-market-competitors.yml` | Sequential pinned Milvus then Weaviate, then parity summary |
 | `deploy/ansible/playbooks/knowledge-market-graph.yml` | Isolate one replica for the G1/G2/G3 graph matrix |
 
@@ -510,6 +535,30 @@ akidb-ann-bench \
 The mutable standalone shard currently has one physical active collection,
 named `default`. Creating a registry entry does not create another physical
 index; market qualification therefore uses `--collection default`.
+
+### Mutable SIGKILL recovery (Lane A durability gate)
+
+The source run must already have a passing SIFT1M summary for the same
+immutable artifact. From `deploy/ansible`:
+
+```bash
+AKIDB_RECOVERY_RUN_ID=<unique-recovery-run-id> \
+AKIDB_RECOVERY_SOURCE_MARKET_RUN_ID=<passed-akidb-run-id> \
+AKIDB_RECOVERY_SERVER=akidb-amd64-3 \
+AKIDB_RECOVERY_DRIVER=akidb-amd64-4 \
+AKIDB_RECOVERY_DATASET_DIR=/var/tmp/akidb-market-data/sift1m-fvecs \
+AKIDB_RECOVERY_ANN_EVIDENCE_DIR=/qualification/evidence/akidb \
+AKIDB_RECOVERY_OUTPUT_DIR=/qualification/evidence/recovery \
+AKIDB_RECOVERY_CONFIRM=yes-sigkill-isolated-market-replica \
+ansible-playbook playbooks/knowledge-market-recovery.yml
+```
+
+The gate requires at least 100 acknowledged inserts, 50 updates, and 25
+deletes before SIGKILL; systemd must record an automatic restart with a new
+PID and invocation identity. Crash and graceful recovery must each finish
+within 900 seconds, every acknowledged state must survive, cleanup must return
+to exactly 1,000,000 active vectors, and all three 10,000-query ANN checks must
+retain Recall@10 of at least 0.95 with P99 no more than 250 ms.
 
 ### Competitor parity (Lane A relative gates)
 

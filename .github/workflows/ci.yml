@@ -283,6 +283,14 @@ jobs:
           AKIDB_MARKET_SERVER: knowledge-3
           AKIDB_MARKET_DRIVER: knowledge-4
           AKIDB_GRAPH_SERVER: knowledge-3
+          AKIDB_RECOVERY_RUN_ID: recovery-syntax-run
+          AKIDB_RECOVERY_SOURCE_MARKET_RUN_ID: sift1m-syntax-run
+          AKIDB_RECOVERY_SERVER: knowledge-3
+          AKIDB_RECOVERY_DRIVER: knowledge-4
+          AKIDB_RECOVERY_DATASET_DIR: /var/tmp/akidb-market-data/sift1m
+          AKIDB_RECOVERY_ANN_EVIDENCE_DIR: /tmp/akidb-ann-syntax
+          AKIDB_RECOVERY_OUTPUT_DIR: /tmp/akidb-recovery-syntax
+          AKIDB_RECOVERY_CONFIRM: yes-sigkill-isolated-market-replica
           AKIDB_COMPETITOR_RUN_ID: syntax-run-001
           AKIDB_COMPETITOR_SERVER: knowledge-3
           AKIDB_COMPETITOR_DRIVER: knowledge-4
@@ -313,6 +321,10 @@ jobs:
           ansible-playbook \
             -i inventories/example/knowledge-hosts.yml \
             playbooks/knowledge-market-competitors.yml \
+            --syntax-check
+          ansible-playbook \
+            -i inventories/example/knowledge-hosts.yml \
+            playbooks/knowledge-market-recovery.yml \
             --syntax-check
 
   # Python service tests

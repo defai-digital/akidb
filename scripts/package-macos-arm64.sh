@@ -43,7 +43,8 @@ for binary in \
   akidb-coordinator \
   akidb-bench \
   akidb-ann-bench \
-  akidb-graph-bench
+  akidb-graph-bench \
+  akidb-recovery-probe
 do
   install -m 0755 "target/release/$binary" "$staging_dir/bin/$binary"
 done

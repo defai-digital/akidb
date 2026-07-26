@@ -17,6 +17,10 @@ path = "src/ann.rs"
 name = "akidb-graph-bench"
 path = "src/graph.rs"
 
+[[bin]]
+name = "akidb-recovery-probe"
+path = "src/recovery.rs"
+
 [dependencies]
 akidb-graph = { path = "../graph" }
 akidb-proto = { path = "../proto" }

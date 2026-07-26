@@ -1,0 +1,1017 @@
+---
+- name: Validate immutable crash-recovery qualification inputs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    recovery_run_id: "{{ lookup('env', 'AKIDB_RECOVERY_RUN_ID') }}"
+    recovery_source_run_id: >-
+      {{ lookup('env', 'AKIDB_RECOVERY_SOURCE_MARKET_RUN_ID') }}
+    recovery_server: "{{ lookup('env', 'AKIDB_RECOVERY_SERVER') }}"
+    recovery_driver: "{{ lookup('env', 'AKIDB_RECOVERY_DRIVER') }}"
+    recovery_dataset_dir: "{{ lookup('env', 'AKIDB_RECOVERY_DATASET_DIR') }}"
+    recovery_ann_evidence_dir: >-
+      {{ lookup('env', 'AKIDB_RECOVERY_ANN_EVIDENCE_DIR') }}
+    recovery_output_dir: "{{ lookup('env', 'AKIDB_RECOVERY_OUTPUT_DIR') }}"
+    recovery_confirm: "{{ lookup('env', 'AKIDB_RECOVERY_CONFIRM') }}"
+    recovery_source_summary_path: >-
+      {{ recovery_ann_evidence_dir }}/{{ recovery_source_run_id }}-summary.json
+  tasks:
+    - name: Require explicit crash authorization and bounded inputs
+      ansible.builtin.assert:
+        that:
+          - recovery_confirm == 'yes-sigkill-isolated-market-replica'
+          - recovery_run_id is match('^[A-Za-z0-9._-]{7,96}$')
+          - recovery_source_run_id is match('^[A-Za-z0-9._-]{7,96}$')
+          - recovery_run_id != recovery_source_run_id
+          - recovery_server in groups['akidb_knowledge_replicas']
+          - recovery_driver in groups['akidb_knowledge_dependencies']
+          - recovery_server != recovery_driver
+          - recovery_dataset_dir.startswith('/var/tmp/akidb-market-data/')
+          - recovery_ann_evidence_dir | length > 0
+          - recovery_output_dir | length > 0
+          - akidb_release_id is match('^[A-Za-z0-9._-]{7,64}$')
+          - akidb_artifact_sha256 is match('^[0-9a-f]{64}$')
+
+    - name: Inspect the immutable controller artifact
+      ansible.builtin.stat:
+        path: "{{ akidb_artifact_path }}"
+        checksum_algorithm: sha256
+      register: recovery_artifact
+
+    - name: Require the exact artifact checksum
+      ansible.builtin.assert:
+        that:
+          - recovery_artifact.stat.isreg | default(false)
+          - recovery_artifact.stat.checksum == akidb_artifact_sha256
+
+    - name: Read the passed source ANN summary
+      ansible.builtin.slurp:
+        src: "{{ recovery_source_summary_path }}"
+      register: recovery_source_summary_source
+
+    - name: Parse the source ANN summary
+      ansible.builtin.set_fact:
+        recovery_source_summary: >-
+          {{ recovery_source_summary_source.content | b64decode | from_json }}
+
+    - name: Require a passed source run for the same artifact and SIFT1M
+      ansible.builtin.assert:
+        that:
+          - >-
+            recovery_source_summary.report_type
+            == 'akidb.market-ann-summary.v1'
+          - recovery_source_summary.run_id == recovery_source_run_id
+          - recovery_source_summary.verdict.status == 'pass'
+          - >-
+            recovery_source_summary.artifact.sha256
+            == akidb_artifact_sha256
+          - >-
+            recovery_source_summary.artifact.manifest.release_id
+            == akidb_release_id
+          - recovery_source_summary.dataset.name == 'sift-128-euclidean'
+          - recovery_source_summary.dataset.train_vectors == 1000000
+          - recovery_source_summary.dataset.dimensions == 128
+
+    - name: Create protected controller evidence directory
+      ansible.builtin.file:
+        path: "{{ recovery_output_dir }}"
+        state: directory
+        mode: "0750"
+
+- name: Stage the same immutable candidate on recovery server and driver
+  hosts: >-
+    {{
+      [
+        lookup('env', 'AKIDB_RECOVERY_SERVER'),
+        lookup('env', 'AKIDB_RECOVERY_DRIVER')
+      ]
+    }}
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: common
+    - role: release
+
+- name: Prepare the exact dataset, CA, and fresh recovery evidence root
+  hosts: "{{ lookup('env', 'AKIDB_RECOVERY_DRIVER') }}"
+  become: true
+  gather_facts: false
+  vars:
+    recovery_run_id: "{{ lookup('env', 'AKIDB_RECOVERY_RUN_ID') }}"
+    recovery_dataset_dir: "{{ lookup('env', 'AKIDB_RECOVERY_DATASET_DIR') }}"
+    recovery_remote_evidence_dir: >-
+      /var/tmp/akidb-market-recovery-evidence/{{ recovery_run_id }}
+  tasks:
+    - name: Read the converted dataset manifest
+      ansible.builtin.slurp:
+        src: "{{ recovery_dataset_dir }}/dataset-manifest.json"
+      register: recovery_dataset_manifest_source
+
+    - name: Parse the converted dataset manifest
+      ansible.builtin.set_fact:
+        recovery_dataset_manifest: >-
+          {{ recovery_dataset_manifest_source.content | b64decode | from_json }}
+
+    - name: Inspect converted dataset files
+      ansible.builtin.stat:
+        path: "{{ recovery_dataset_dir }}/{{ item.file }}"
+        checksum_algorithm: sha256
+      loop:
+        - key: train
+          file: train.fvecs
+        - key: test
+          file: test.fvecs
+        - key: neighbors
+          file: neighbors.ivecs
+      register: recovery_dataset_files
+
+    - name: Require the exact SIFT1M identities
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - >-
+            item.stat.checksum
+            == recovery_dataset_manifest.files[item.item.key].sha256
+          - >-
+            item.stat.size
+            == recovery_dataset_manifest.files[item.item.key].bytes
+          - recovery_dataset_manifest.files.train.rows == 1000000
+          - recovery_dataset_manifest.files.train.dimensions == 128
+          - recovery_dataset_manifest.files.test.rows == 10000
+          - recovery_dataset_manifest.files.test.dimensions == 128
+          - recovery_dataset_manifest.files.neighbors.rows == 10000
+          - recovery_dataset_manifest.files.neighbors.dimensions >= 100
+      loop: "{{ recovery_dataset_files.results }}"
+      loop_control:
+        label: "{{ item.item.file }}"
+
+    - name: Inspect the recovery evidence root
+      ansible.builtin.stat:
+        path: "{{ recovery_remote_evidence_dir }}"
+      register: recovery_remote_evidence
+
+    - name: Require a fresh recovery evidence root
+      ansible.builtin.assert:
+        that:
+          - not recovery_remote_evidence.stat.exists
+
+    - name: Create the protected recovery evidence root
+      ansible.builtin.file:
+        path: "{{ recovery_remote_evidence_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Create protected driver qualification configuration directory
+      ansible.builtin.file:
+        path: /etc/akidb-market
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the qualification CA on the driver
+      ansible.builtin.copy:
+        src: "{{ akidb_knowledge_pki_dir }}/ca.crt"
+        dest: /etc/akidb-market/ca.crt
+        owner: root
+        group: root
+        mode: "0644"
+
+- name: SIGKILL the mutable SIFT1M server and verify durable recovery
+  hosts: "{{ lookup('env', 'AKIDB_RECOVERY_SERVER') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    recovery_run_id: "{{ lookup('env', 'AKIDB_RECOVERY_RUN_ID') }}"
+    recovery_source_run_id: >-
+      {{ lookup('env', 'AKIDB_RECOVERY_SOURCE_MARKET_RUN_ID') }}
+    recovery_driver: "{{ lookup('env', 'AKIDB_RECOVERY_DRIVER') }}"
+    recovery_dataset_dir: "{{ lookup('env', 'AKIDB_RECOVERY_DATASET_DIR') }}"
+    recovery_output_dir: "{{ lookup('env', 'AKIDB_RECOVERY_OUTPUT_DIR') }}"
+    recovery_remote_evidence_dir: >-
+      /var/tmp/akidb-market-recovery-evidence/{{ recovery_run_id }}
+    recovery_journal: >-
+      {{ recovery_remote_evidence_dir }}/journal.ndjson
+    recovery_mutate_report: >-
+      {{ recovery_remote_evidence_dir }}/mutate.json
+    recovery_verification_report: >-
+      {{ recovery_remote_evidence_dir }}/verification.json
+    recovery_probe_prefix: "recovery-{{ recovery_run_id }}"
+    akidb_market_run_id: "{{ recovery_source_run_id }}"
+    akidb_market_reuse_existing: true
+    akidb_market_workspace: qualification
+    akidb_market_metric: l2
+    akidb_market_dimensions: 128
+    akidb_market_vectors: 1000000
+    akidb_market_batch_size: 256
+    akidb_market_hnsw_m: 16
+    akidb_market_hnsw_ef_construction: 128
+    akidb_market_hnsw_ef_search: 64
+    akidb_market_metrics_port: 9192
+    akidb_market_data_dir: >-
+      /var/lib/akidb-market/{{ recovery_source_run_id }}
+    akidb_market_config_path: >-
+      /etc/akidb-market/{{ recovery_source_run_id }}.toml
+    recovery_service_properties:
+      - MainPID
+      - NRestarts
+      - InvocationID
+      - ActiveState
+      - SubState
+      - ExecMainStartTimestampMonotonic
+  roles:
+    - role: market_benchmark
+  tasks:
+    - name: Execute crash recovery with unconditional replica restoration
+      block:
+        - name: Ensure the isolated market server starts from a stopped state
+          ansible.builtin.systemd_service:
+            name: akidb-market-benchmark
+            state: stopped
+
+        - name: Stop the knowledge replica selected for isolation
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: stopped
+
+        - name: Start the persisted SIFT1M market server
+          ansible.builtin.systemd_service:
+            name: akidb-market-benchmark
+            state: started
+
+        - name: Wait for restart-persistent readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/current/bin/akidb"
+              - health
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+            AKIDB_WORKSPACE: "{{ akidb_market_workspace }}"
+          register: recovery_initial_health
+          retries: 450
+          delay: 2
+          until: recovery_initial_health.rc == 0
+          changed_when: false
+          no_log: true
+
+        - name: Run the pre-crash exact-ground-truth point
+          ansible.builtin.command:
+            argv:
+              - >-
+                {{ akidb_install_root }}/releases/{{ akidb_release_id
+                }}/bin/akidb-ann-bench
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --dataset-name
+              - sift-128-euclidean
+              - --train-fvecs
+              - "{{ recovery_dataset_dir }}/train.fvecs"
+              - --query-fvecs
+              - "{{ recovery_dataset_dir }}/test.fvecs"
+              - --neighbors-ivecs
+              - "{{ recovery_dataset_dir }}/neighbors.ivecs"
+              - --metric
+              - l2
+              - --collection
+              - default
+              - --id-prefix
+              - sift1m
+              - --workspace
+              - qualification
+              - --tls-ca
+              - /etc/akidb-market/ca.crt
+              - --top-k
+              - "10"
+              - --nprobe
+              - "128"
+              - --concurrency
+              - "8"
+              - --warmup-queries
+              - "1000"
+              - --measurement-rounds
+              - "1"
+              - --min-recall
+              - "0.95"
+              - --max-p99-ms
+              - "250"
+              - --skip-load
+              - --output-json
+              - "{{ recovery_remote_evidence_dir }}/baseline.json"
+          environment:
+            AKIDB_AUTH_TOKEN: "{{ akidb_knowledge_read_token }}"
+          delegate_to: "{{ recovery_driver }}"
+          register: recovery_baseline_process
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Require the pre-crash ANN point
+          ansible.builtin.assert:
+            that:
+              - recovery_baseline_process.rc == 0
+          no_log: true
+
+        - name: Start fsynced deterministic mutation traffic
+          ansible.builtin.command:
+            argv:
+              - >-
+                {{ akidb_install_root }}/releases/{{ akidb_release_id
+                }}/bin/akidb-recovery-probe
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --collection
+              - default
+              - --workspace
+              - qualification
+              - --tls-ca
+              - /etc/akidb-market/ca.crt
+              - --timeout-seconds
+              - "10"
+              - mutate
+              - --run-id
+              - "{{ recovery_run_id }}"
+              - --id-prefix
+              - "{{ recovery_probe_prefix }}"
+              - --dimensions
+              - "128"
+              - --workers
+              - "16"
+              - --cycle-qps
+              - "100"
+              - --duration-seconds
+              - "60"
+              - --max-cycles
+              - "6000"
+              - --journal
+              - "{{ recovery_journal }}"
+              - --output-json
+              - "{{ recovery_mutate_report }}"
+          environment:
+            AKIDB_AUTH_TOKEN: "{{ akidb_knowledge_read_token }}"
+          delegate_to: "{{ recovery_driver }}"
+          async: 120
+          poll: 0
+          register: recovery_mutator_job
+          changed_when: false
+          no_log: true
+
+        - name: Wait for insert update and delete acknowledgement floors
+          ansible.builtin.command:
+            argv:
+              - >-
+                {{ akidb_install_root }}/releases/{{ akidb_release_id
+                }}/bin/akidb-recovery-probe
+              - inspect
+              - --journal
+              - "{{ recovery_journal }}"
+              - --min-insert-acks
+              - "100"
+              - --min-update-acks
+              - "50"
+              - --min-delete-acks
+              - "25"
+          delegate_to: "{{ recovery_driver }}"
+          register: recovery_ack_floor
+          retries: 120
+          delay: 1
+          until: recovery_ack_floor.rc == 0
+          changed_when: false
+          failed_when: false
+
+        - name: Require the mutation acknowledgement floor
+          ansible.builtin.assert:
+            that:
+              - recovery_ack_floor.rc == 0
+
+        - name: Read pre-crash systemd identity
+          ansible.builtin.command:
+            argv: >-
+              {{
+                [
+                  'systemctl', 'show', 'akidb-market-benchmark.service'
+                ]
+                + (
+                  recovery_service_properties
+                  | map('regex_replace', '^(.*)$', '--property=\\1')
+                  | list
+                )
+              }}
+          register: recovery_service_before_crash
+          changed_when: false
+
+        - name: Read crash start monotonic evidence
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "import time; print(time.monotonic_ns())"
+          register: recovery_crash_started
+          changed_when: false
+
+        - name: SIGKILL only the isolated market server main process
+          ansible.builtin.command:
+            argv:
+              - systemctl
+              - kill
+              - --kill-whom=main
+              - --signal=SIGKILL
+              - akidb-market-benchmark.service
+          changed_when: true
+
+        - name: Wait for automatic crash recovery readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/current/bin/akidb"
+              - health
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+            AKIDB_WORKSPACE: "{{ akidb_market_workspace }}"
+          register: recovery_crash_health
+          retries: 450
+          delay: 2
+          until: recovery_crash_health.rc == 0
+          changed_when: false
+          no_log: true
+
+        - name: Read crash-ready monotonic evidence
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "import time; print(time.monotonic_ns())"
+          register: recovery_crash_ready
+          changed_when: false
+
+        - name: Read post-crash systemd identity
+          ansible.builtin.command:
+            argv: >-
+              {{
+                [
+                  'systemctl', 'show', 'akidb-market-benchmark.service'
+                ]
+                + (
+                  recovery_service_properties
+                  | map('regex_replace', '^(.*)$', '--property=\\1')
+                  | list
+                )
+              }}
+          register: recovery_service_after_crash
+          changed_when: false
+
+        - name: Wait for the mutation client to observe the outage
+          ansible.builtin.async_status:
+            jid: "{{ recovery_mutator_job.ansible_job_id }}"
+          delegate_to: "{{ recovery_driver }}"
+          register: recovery_mutator_process
+          retries: 120
+          delay: 1
+          until: recovery_mutator_process.finished | default(false)
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Require a completed mutation client
+          ansible.builtin.assert:
+            that:
+              - recovery_mutator_process.finished | default(false)
+              - recovery_mutator_process.rc | default(1) == 0
+          no_log: true
+
+        - name: Verify every acknowledged crash-boundary state and clean up
+          ansible.builtin.command:
+            argv:
+              - >-
+                {{ akidb_install_root }}/releases/{{ akidb_release_id
+                }}/bin/akidb-recovery-probe
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --collection
+              - default
+              - --workspace
+              - qualification
+              - --tls-ca
+              - /etc/akidb-market/ca.crt
+              - --timeout-seconds
+              - "30"
+              - verify
+              - --journal
+              - "{{ recovery_journal }}"
+              - --expected-baseline-active-vectors
+              - "1000000"
+              - --min-insert-acks
+              - "100"
+              - --min-update-acks
+              - "50"
+              - --min-delete-acks
+              - "25"
+              - --cleanup
+              - --cleanup-timeout-seconds
+              - "120"
+              - --output-json
+              - "{{ recovery_verification_report }}"
+          environment:
+            AKIDB_AUTH_TOKEN: "{{ akidb_knowledge_read_token }}"
+          delegate_to: "{{ recovery_driver }}"
+          register: recovery_verify_process
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Require durable acknowledged mutations and cleanup
+          ansible.builtin.assert:
+            that:
+              - recovery_verify_process.rc == 0
+          no_log: true
+
+        - name: Run the post-crash exact-ground-truth point
+          ansible.builtin.command:
+            argv:
+              - >-
+                {{ akidb_install_root }}/releases/{{ akidb_release_id
+                }}/bin/akidb-ann-bench
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --dataset-name
+              - sift-128-euclidean
+              - --train-fvecs
+              - "{{ recovery_dataset_dir }}/train.fvecs"
+              - --query-fvecs
+              - "{{ recovery_dataset_dir }}/test.fvecs"
+              - --neighbors-ivecs
+              - "{{ recovery_dataset_dir }}/neighbors.ivecs"
+              - --metric
+              - l2
+              - --collection
+              - default
+              - --id-prefix
+              - sift1m
+              - --workspace
+              - qualification
+              - --tls-ca
+              - /etc/akidb-market/ca.crt
+              - --top-k
+              - "10"
+              - --nprobe
+              - "128"
+              - --concurrency
+              - "8"
+              - --warmup-queries
+              - "1000"
+              - --measurement-rounds
+              - "1"
+              - --min-recall
+              - "0.95"
+              - --max-p99-ms
+              - "250"
+              - --skip-load
+              - --output-json
+              - "{{ recovery_remote_evidence_dir }}/after-crash.json"
+          environment:
+            AKIDB_AUTH_TOKEN: "{{ akidb_knowledge_read_token }}"
+          delegate_to: "{{ recovery_driver }}"
+          register: recovery_after_crash_process
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Require the post-crash ANN point
+          ansible.builtin.assert:
+            that:
+              - recovery_after_crash_process.rc == 0
+          no_log: true
+
+        - name: Read graceful restart start monotonic evidence
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "import time; print(time.monotonic_ns())"
+          register: recovery_graceful_started
+          changed_when: false
+
+        - name: Perform a graceful service restart
+          ansible.builtin.systemd_service:
+            name: akidb-market-benchmark
+            state: restarted
+
+        - name: Wait for graceful restart readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/current/bin/akidb"
+              - health
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+            AKIDB_WORKSPACE: "{{ akidb_market_workspace }}"
+          register: recovery_graceful_health
+          retries: 450
+          delay: 2
+          until: recovery_graceful_health.rc == 0
+          changed_when: false
+          no_log: true
+
+        - name: Read graceful-ready monotonic evidence
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "import time; print(time.monotonic_ns())"
+          register: recovery_graceful_ready
+          changed_when: false
+
+        - name: Read post-graceful systemd identity
+          ansible.builtin.command:
+            argv: >-
+              {{
+                [
+                  'systemctl', 'show', 'akidb-market-benchmark.service'
+                ]
+                + (
+                  recovery_service_properties
+                  | map('regex_replace', '^(.*)$', '--property=\\1')
+                  | list
+                )
+              }}
+          register: recovery_service_after_graceful
+          changed_when: false
+
+        - name: Run the post-graceful exact-ground-truth point
+          ansible.builtin.command:
+            argv:
+              - >-
+                {{ akidb_install_root }}/releases/{{ akidb_release_id
+                }}/bin/akidb-ann-bench
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --dataset-name
+              - sift-128-euclidean
+              - --train-fvecs
+              - "{{ recovery_dataset_dir }}/train.fvecs"
+              - --query-fvecs
+              - "{{ recovery_dataset_dir }}/test.fvecs"
+              - --neighbors-ivecs
+              - "{{ recovery_dataset_dir }}/neighbors.ivecs"
+              - --metric
+              - l2
+              - --collection
+              - default
+              - --id-prefix
+              - sift1m
+              - --workspace
+              - qualification
+              - --tls-ca
+              - /etc/akidb-market/ca.crt
+              - --top-k
+              - "10"
+              - --nprobe
+              - "128"
+              - --concurrency
+              - "8"
+              - --warmup-queries
+              - "1000"
+              - --measurement-rounds
+              - "1"
+              - --min-recall
+              - "0.95"
+              - --max-p99-ms
+              - "250"
+              - --skip-load
+              - --output-json
+              - "{{ recovery_remote_evidence_dir }}/after-graceful.json"
+          environment:
+            AKIDB_AUTH_TOKEN: "{{ akidb_knowledge_read_token }}"
+          delegate_to: "{{ recovery_driver }}"
+          register: recovery_after_graceful_process
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Require the post-graceful ANN point
+          ansible.builtin.assert:
+            that:
+              - recovery_after_graceful_process.rc == 0
+          no_log: true
+
+        - name: Measure persisted source data bytes
+          ansible.builtin.command:
+            argv: [du, --bytes, --summarize, "{{ akidb_market_data_dir }}"]
+          register: recovery_source_data_size
+          changed_when: false
+
+        - name: Hash the exact persisted-server configuration
+          ansible.builtin.stat:
+            path: "{{ akidb_market_config_path }}"
+            checksum_algorithm: sha256
+          register: recovery_config_identity
+
+        - name: Read bounded service journal evidence
+          ansible.builtin.command:
+            argv:
+              - journalctl
+              - --unit
+              - akidb-market-benchmark.service
+              - --lines
+              - "500"
+              - --output
+              - short-iso
+              - --no-pager
+          register: recovery_service_journal
+          changed_when: false
+
+        - name: Write bounded service journal evidence on the driver
+          ansible.builtin.copy:
+            content: "{{ recovery_service_journal.stdout }}\n"
+            dest: >-
+              {{ recovery_remote_evidence_dir }}/service-journal.log
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ recovery_driver }}"
+
+        - name: Build bounded process evidence
+          ansible.builtin.set_fact:
+            recovery_process_evidence:
+              - name: baseline
+                rc: "{{ recovery_baseline_process.rc }}"
+                stdout: >-
+                  {{ recovery_baseline_process.stdout[-2048:] }}
+                stderr: >-
+                  {{ recovery_baseline_process.stderr[-2048:] }}
+              - name: mutator
+                rc: "{{ recovery_mutator_process.rc | default(1) }}"
+                stdout: >-
+                  {{ (recovery_mutator_process.stdout | default(''))[-2048:] }}
+                stderr: >-
+                  {{ (recovery_mutator_process.stderr | default(''))[-2048:] }}
+              - name: verify
+                rc: "{{ recovery_verify_process.rc }}"
+                stdout: "{{ recovery_verify_process.stdout[-2048:] }}"
+                stderr: "{{ recovery_verify_process.stderr[-2048:] }}"
+              - name: after-crash
+                rc: "{{ recovery_after_crash_process.rc }}"
+                stdout: >-
+                  {{ recovery_after_crash_process.stdout[-2048:] }}
+                stderr: >-
+                  {{ recovery_after_crash_process.stderr[-2048:] }}
+              - name: after-graceful
+                rc: "{{ recovery_after_graceful_process.rc }}"
+                stdout: >-
+                  {{ recovery_after_graceful_process.stdout[-2048:] }}
+                stderr: >-
+                  {{ recovery_after_graceful_process.stderr[-2048:] }}
+          no_log: true
+
+        - name: Write bounded process evidence on the driver
+          ansible.builtin.copy:
+            content: "{{ recovery_process_evidence | to_nice_json }}"
+            dest: >-
+              {{ recovery_remote_evidence_dir }}/process-results.json
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ recovery_driver }}"
+
+        - name: Write immutable environment and recovery timing evidence
+          ansible.builtin.copy:
+            content: >-
+              {{
+                {
+                  'schema_version': 1,
+                  'report_type': 'akidb.market-recovery-environment.v1',
+                  'run_id': recovery_run_id,
+                  'source_market_run_id': recovery_source_run_id,
+                  'release_id': akidb_release_id,
+                  'artifact_sha256': akidb_artifact_sha256,
+                  'server_host': inventory_hostname,
+                  'driver_host': recovery_driver,
+                  'distribution': ansible_distribution,
+                  'distribution_version': ansible_distribution_version,
+                  'architecture': ansible_architecture,
+                  'kernel': ansible_kernel,
+                  'processor_vcpus': ansible_processor_vcpus,
+                  'memory_mb': ansible_memtotal_mb,
+                  'source_data_bytes': (
+                    recovery_source_data_size.stdout.split()[0] | int
+                  ),
+                  'config_sha256': recovery_config_identity.stat.checksum,
+                  'crash_started_ns': recovery_crash_started.stdout | int,
+                  'crash_ready_ns': recovery_crash_ready.stdout | int,
+                  'crash_recovery_ms': (
+                    (
+                      recovery_crash_ready.stdout | int
+                      - recovery_crash_started.stdout | int
+                    ) / 1000000
+                  ),
+                  'graceful_started_ns': (
+                    recovery_graceful_started.stdout | int
+                  ),
+                  'graceful_ready_ns': (
+                    recovery_graceful_ready.stdout | int
+                  ),
+                  'graceful_restart_ms': (
+                    (
+                      recovery_graceful_ready.stdout | int
+                      - recovery_graceful_started.stdout | int
+                    ) / 1000000
+                  ),
+                  'service_before_crash': (
+                    recovery_service_before_crash.stdout_lines
+                  ),
+                  'service_after_crash': (
+                    recovery_service_after_crash.stdout_lines
+                  ),
+                  'service_after_graceful': (
+                    recovery_service_after_graceful.stdout_lines
+                  )
+                } | to_nice_json
+              }}
+            dest: "{{ recovery_remote_evidence_dir }}/environment.json"
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ recovery_driver }}"
+
+        - name: Inspect every required recovery evidence file
+          ansible.builtin.stat:
+            path: "{{ recovery_remote_evidence_dir }}/{{ item }}"
+          delegate_to: "{{ recovery_driver }}"
+          loop:
+            - baseline.json
+            - after-crash.json
+            - after-graceful.json
+            - journal.ndjson
+            - mutate.json
+            - verification.json
+            - process-results.json
+            - environment.json
+            - service-journal.log
+          register: recovery_evidence_files
+
+        - name: Require every recovery evidence file
+          ansible.builtin.assert:
+            that:
+              - item.stat.isreg | default(false)
+              - item.stat.size | int > 0
+          loop: "{{ recovery_evidence_files.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: Fetch every recovery evidence file
+          ansible.builtin.fetch:
+            src: "{{ recovery_remote_evidence_dir }}/{{ item }}"
+            dest: >-
+              {{ recovery_output_dir }}/{{ recovery_run_id }}-{{ item }}
+            flat: true
+          delegate_to: "{{ recovery_driver }}"
+          loop:
+            - baseline.json
+            - after-crash.json
+            - after-graceful.json
+            - journal.ndjson
+            - mutate.json
+            - verification.json
+            - process-results.json
+            - environment.json
+            - service-journal.log
+      always:
+        - name: Stop the isolated market server
+          ansible.builtin.systemd_service:
+            name: akidb-market-benchmark
+            state: stopped
+          failed_when: false
+
+        - name: Let an active mutation client observe the stopped endpoint
+          ansible.builtin.async_status:
+            jid: "{{ recovery_mutator_job.ansible_job_id }}"
+          delegate_to: "{{ recovery_driver }}"
+          register: recovery_mutator_cleanup
+          retries: 30
+          delay: 1
+          until: recovery_mutator_cleanup.finished | default(false)
+          when:
+            - recovery_mutator_job is defined
+            - recovery_mutator_job.ansible_job_id is defined
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Restore the knowledge replica
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: started
+
+        - name: Wait for restored exact-generation readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/current/bin/akidb"
+              - health
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+            AKIDB_WORKSPACE: "{{ akidb_knowledge_workspace }}"
+          register: restored_recovery_replica
+          retries: 60
+          delay: 2
+          until: restored_recovery_replica.rc == 0
+          changed_when: false
+          no_log: true
+
+- name: Build the fail-closed crash-recovery qualification summary
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    recovery_run_id: "{{ lookup('env', 'AKIDB_RECOVERY_RUN_ID') }}"
+    recovery_source_run_id: >-
+      {{ lookup('env', 'AKIDB_RECOVERY_SOURCE_MARKET_RUN_ID') }}
+    recovery_ann_evidence_dir: >-
+      {{ lookup('env', 'AKIDB_RECOVERY_ANN_EVIDENCE_DIR') }}
+    recovery_output_dir: "{{ lookup('env', 'AKIDB_RECOVERY_OUTPUT_DIR') }}"
+  tasks:
+    - name: Summarize durability restart and exact ANN evidence
+      ansible.builtin.command:
+        argv:
+          - python3
+          - >-
+            {{ playbook_dir
+            }}/../../../scripts/summarize_market_recovery.py
+          - --evidence-dir
+          - "{{ recovery_output_dir }}"
+          - --run-id
+          - "{{ recovery_run_id }}"
+          - --source-ann-summary
+          - >-
+            {{ recovery_ann_evidence_dir }}/{{ recovery_source_run_id
+            }}-summary.json
+          - --artifact
+          - "{{ akidb_artifact_path }}"
+          - --min-recall
+          - "0.95"
+          - --max-p99-ms
+          - "250"
+          - --max-crash-recovery-ms
+          - "900000"
+          - --max-graceful-restart-ms
+          - "900000"
+          - --min-insert-acks
+          - "100"
+          - --min-update-acks
+          - "50"
+          - --min-delete-acks
+          - "25"
+          - --max-inflight-advances
+          - "16"
+          - --output
+          - >-
+            {{ recovery_output_dir }}/{{ recovery_run_id }}-summary.json
+      changed_when: false
