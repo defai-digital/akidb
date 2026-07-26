@@ -184,6 +184,15 @@ checked against the requested label. Also run:
 - WAL recovery after an unclean stop; and
 - snapshot restore followed by the full query set.
 
+The Ansible ANN gate derives the two paced rates from the candidate's measured
+SIFT1M import throughput. Each scheduled cycle performs an insert, an update,
+and an immediate delete of a deliberately distant transient vector while eight
+workers continue exact-ground-truth searches. Each 10% and 50% phase lasts five
+minutes, must complete at least 90% of its requested cycle rate, must return to
+the original active-vector count, and must preserve Recall@10, result integrity,
+and P99 gates. The cycle rate is based on insert capacity; update and delete
+traffic are additional load.
+
 ### Absolute vector gates
 
 The chosen production configuration must meet all of these:

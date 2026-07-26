@@ -154,6 +154,7 @@
     akidb_market_hnsw_ef_construction: 128
     akidb_market_hnsw_ef_search: 64
     akidb_market_metrics_port: 9192
+    akidb_market_mixed_duration_seconds: 300
     akidb_market_data_dir: "/var/lib/akidb-market/{{ market_run_id }}"
     akidb_market_config_path: "/etc/akidb-market/{{ market_run_id }}.toml"
     market_matrix:
@@ -330,6 +331,175 @@
           loop_control:
             label: "{{ item.name }}"
 
+        - name: Read measured import capacity for mixed-workload pacing
+          ansible.builtin.slurp:
+            src: >-
+              {{ market_remote_evidence_dir }}/k10-n32-c1-load.json
+          delegate_to: "{{ market_driver }}"
+          register: market_load_report_source
+
+        - name: Parse measured import capacity
+          ansible.builtin.set_fact:
+            market_load_report: >-
+              {{ market_load_report_source.content | b64decode | from_json }}
+
+        - name: Require valid measured import capacity
+          ansible.builtin.assert:
+            that:
+              - market_load_report.verdict.status == 'pass'
+              - market_load_report.load.inserted == 1000000
+              - market_load_report.load.failed == 0
+              - market_load_report.load.vectors_per_second > 0
+
+        - name: Run paced mutation cycles while exact searches continue
+          ansible.builtin.command:
+            argv:
+              - >-
+                {{ akidb_install_root }}/releases/{{ akidb_release_id
+                }}/bin/akidb-ann-bench
+              - --server
+              - >-
+                https://{{ akidb_overlay_address }}:{{
+                  akidb_knowledge_server_port
+                }}
+              - --dataset-name
+              - sift-128-euclidean
+              - --train-fvecs
+              - "{{ market_dataset_dir }}/train.fvecs"
+              - --query-fvecs
+              - "{{ market_dataset_dir }}/test.fvecs"
+              - --neighbors-ivecs
+              - "{{ market_dataset_dir }}/neighbors.ivecs"
+              - --metric
+              - "{{ akidb_market_metric }}"
+              - --collection
+              - default
+              - --id-prefix
+              - sift1m
+              - --mixed-id-prefix
+              - "mixed-{{ market_run_id }}-{{ item.name }}"
+              - --workspace
+              - "{{ akidb_market_workspace }}"
+              - --tls-ca
+              - /etc/akidb-market/ca.crt
+              - --top-k
+              - "10"
+              - --nprobe
+              - "64"
+              - --concurrency
+              - "8"
+              - --warmup-queries
+              - "1000"
+              - --measurement-rounds
+              - "1"
+              - --mixed-cycle-qps
+              - >-
+                {{
+                  [
+                    1,
+                    (
+                      market_load_report.load.vectors_per_second
+                      * item.fraction
+                    ) | round(0, 'floor') | int
+                  ] | max | string
+                }}
+              - --mixed-duration-seconds
+              - "{{ akidb_market_mixed_duration_seconds | string }}"
+              - --mixed-writers
+              - "32"
+              - --min-recall
+              - "0.95"
+              - --timeout-seconds
+              - "30"
+              - --skip-load
+              - --output-json
+              - "{{ market_remote_evidence_dir }}/{{ item.name }}.json"
+          environment:
+            AKIDB_AUTH_TOKEN: "{{ akidb_knowledge_read_token }}"
+          delegate_to: "{{ market_driver }}"
+          loop:
+            - { name: mixed10, fraction: 0.10 }
+            - { name: mixed50, fraction: 0.50 }
+          loop_control:
+            label: "{{ item.name }}"
+          register: market_mixed_results
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Build bounded mixed-workload process evidence
+          ansible.builtin.set_fact:
+            market_mixed_process_evidence: >-
+              {{
+                (market_mixed_process_evidence | default([]))
+                + [
+                  {
+                    'name': item.item.name,
+                    'rc': item.rc,
+                    'stdout': item.stdout[-2048:],
+                    'stderr': item.stderr[-2048:]
+                  }
+                ]
+              }}
+          loop: "{{ market_mixed_results.results }}"
+          loop_control:
+            label: "{{ item.item.name }}"
+          no_log: true
+
+        - name: Write bounded mixed-workload process evidence
+          ansible.builtin.copy:
+            content: "{{ market_mixed_process_evidence | to_nice_json }}"
+            dest: >-
+              {{ market_remote_evidence_dir }}/mixed-process-results.json
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ market_driver }}"
+
+        - name: Fetch mixed-workload process evidence
+          ansible.builtin.fetch:
+            src: >-
+              {{ market_remote_evidence_dir }}/mixed-process-results.json
+            dest: >-
+              {{ market_output_dir }}/{{ market_run_id
+              }}-mixed-process-results.json
+            flat: true
+          delegate_to: "{{ market_driver }}"
+
+        - name: Inspect mixed-workload reports
+          ansible.builtin.stat:
+            path: "{{ market_remote_evidence_dir }}/{{ item.name }}.json"
+          delegate_to: "{{ market_driver }}"
+          loop:
+            - { name: mixed10 }
+            - { name: mixed50 }
+          register: market_mixed_reports
+
+        - name: Require every mixed-workload process and report
+          ansible.builtin.assert:
+            that:
+              - item.0.rc == 0
+              - item.1.stat.isreg | default(false)
+          loop: >-
+            {{
+              market_mixed_results.results
+              | zip(market_mixed_reports.results)
+            }}
+          loop_control:
+            label: "{{ item.0.item.name }}"
+          no_log: true
+
+        - name: Fetch every mixed-workload report
+          ansible.builtin.fetch:
+            src: "{{ market_remote_evidence_dir }}/{{ item.name }}.json"
+            dest: >-
+              {{ market_output_dir }}/{{ market_run_id }}-{{ item.name }}.json
+            flat: true
+          delegate_to: "{{ market_driver }}"
+          loop:
+            - { name: mixed10 }
+            - { name: mixed50 }
+
         - name: Measure final isolated index bytes
           ansible.builtin.command:
             argv: [du, --bytes, --summarize, "{{ akidb_market_data_dir }}"]
@@ -478,4 +648,25 @@
           - "500"
           - --output
           - "{{ market_output_dir }}/{{ market_run_id }}-summary.json"
+      changed_when: false
+
+    - name: Build the fail-closed mixed-workload summary
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../../scripts/summarize_market_mixed.py"
+          - --evidence-dir
+          - "{{ market_output_dir }}"
+          - --run-id
+          - "{{ market_run_id }}"
+          - --duration-seconds
+          - "300"
+          - --min-recall
+          - "0.95"
+          - --max-p99-ms
+          - "250"
+          - --output
+          - >-
+            {{ market_output_dir }}/{{ market_run_id
+            }}-mixed-summary.json
       changed_when: false
