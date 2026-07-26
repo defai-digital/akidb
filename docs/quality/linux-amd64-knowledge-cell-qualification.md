@@ -67,7 +67,7 @@ requires active-plus-shadow headroom.
 
 | Artifact | Release ID | SHA-256 |
 | --- | --- | --- |
-| AkiDB Linux AMD64 qualification build | `dac7ba24f6066b3d1934962cab1afd5967a3409c` | `28bfc0246be22c14724583738b457b0622cc8af8f5fa47fd990d26bf06db3c14` |
+| AkiDB Linux AMD64 qualification build | `328dbf124b8370a2acb99c6179a4ea766feea82d` | `ae7b930861dbc9703d9ee563c59a31740f1a3462d8ad456cb1ff5f75bc6e758b` |
 | AX knowledge gateway Linux AMD64 build | `214ad4d41d0f60aa4a16d93316806cd0fcc343fc` | `b96e18e39e408ab355accee02389197d35b5134f0ddd711f63776bd811f5d75a` |
 | Backup archive | `qualification-20260725-01` | `17f74f7e7abfc6318a931ce141ad1e9d82f7c13d595f04230bf9dfb06d863b0c` |
 
@@ -75,6 +75,16 @@ The two release IDs are the exact source commit SHAs. The final artifacts were
 rebuilt from those committed trees, checksum-verified before deployment,
 rolled across the cell, and then reconciled by a second complete Ansible site
 run with zero changes and zero failures.
+
+The final AkiDB build upgrades tonic, prost, and rustls-webpki beyond the
+RustSec-affected dependency set and explicitly selects the portable ring
+CryptoProvider before creating TLS clients or listeners. The first upgraded
+candidate exposed the otherwise ambiguous ring/AWS-LC feature combination:
+the rolling readiness gate kept the replica drained, stopped the rollout, and
+the installed prior release restored all three replicas before the corrected
+commit-derived artifact was rebuilt and deployed. The corrected production
+feature set, workspace tests, startup smoke, rolling deployment, golden
+queries, and final convergence checks all passed.
 
 The active authority state after all drills was:
 
