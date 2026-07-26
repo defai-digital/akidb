@@ -397,6 +397,12 @@
                   'metric': akidb_market_metric,
                   'dimensions': akidb_market_dimensions,
                   'vectors': akidb_market_vectors,
+                  'batch_size': akidb_market_batch_size,
+                  'hnsw_m': akidb_market_hnsw_m,
+                  'hnsw_ef_construction': (
+                    akidb_market_hnsw_ef_construction
+                  ),
+                  'hnsw_ef_search_default': akidb_market_hnsw_ef_search,
                   'index_bytes': market_index_size.stdout.split()[0] | int
                 } | to_nice_json
               }}

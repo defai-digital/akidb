@@ -1,8 +1,11 @@
 # Native GraphRAG Productization Plan
 
-Status: accepted; aligned with the versioned knowledge-serving design
+Status: accepted and shipped as a bounded retrieval graph; aligned with the
+versioned knowledge-serving design. Market G1–G3 evidence remains an active
+gate under
+[market-readiness qualification](../quality/market-readiness-qualification.md).
 
-Date: 2026-07-24
+Date: 2026-07-24 (status note updated 2026-07-26)
 
 ## Decision
 

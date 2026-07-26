@@ -1,15 +1,39 @@
 # Market-Aligned Product Readiness Qualification
 
-Status: active release gate
+Status: active release gate (automation ready; full evidence verdict not complete)
 
 Supported targets: macOS Apple Silicon and Ubuntu 24.04-or-later AMD64
 
 Unsupported targets: Linux ARM64, CUDA, NVIDIA Thor, and older Linux distributions
 
+## Current status (2026-07-26)
+
+| Lane | Automation | Evidence status |
+| --- | --- | --- |
+| A — AkiDB SIFT1M matrix | `knowledge-market-ann.yml` + `akidb-ann-bench` + `summarize_market_ann.py` | Ready to run on the isolated lab; not a checked-in release pass |
+| A — Milvus / Weaviate parity | `knowledge-market-competitors.yml` + `competitor_ann_bench.py` + `summarize_market_parity.py` | Ready to run on pinned images; not a checked-in release pass |
+| B — native graph matrix | `knowledge-market-graph.yml` + `akidb-graph-bench` + `summarize_market_graph.py` | Ready to run; G1–G3 not a checked-in market pass |
+| C — knowledge-serving cell | knowledge-site / load / failure playbooks | Bounded Ubuntu AMD64 cell already qualified separately at 100k × 768; full market soak and scale matrix still open |
+
+Related but separate from this market gate:
+
+- The PostgreSQL-led three-replica knowledge cell passed a bounded Ubuntu AMD64
+  qualification (100,000 vectors × 768 dimensions, plus smaller generation and
+  failover drills). See
+  [linux-amd64-knowledge-cell-qualification.md](linux-amd64-knowledge-cell-qualification.md).
+- That cell pass is necessary serving-system evidence, not a substitute for
+  public-dataset ANN parity or competitor comparison.
+- CI syntax-checks the market Ansible playbooks. It does not execute live
+  SIFT1M, competitor, or soak workloads.
+
+A market release verdict remains `not-ready` until one immutable candidate
+produces a single evidence manifest that passes every required gate in this
+document. Missing, stale, mismatched, or failed reports never count as pass.
+
 ## Decision
 
-AkiDB is ready for release only when one immutable release candidate passes
-three independent evidence lanes:
+AkiDB is ready for a market-aligned release claim only when one immutable
+release candidate passes three independent evidence lanes:
 
 1. **Vector retrieval:** exact-ground-truth ANN quality and performance using
    public datasets and market-standard metrics.
@@ -51,12 +75,12 @@ The pinned comparison set was reviewed on 2026-07-26:
 - VectorDBBench `v1.0.22` methodology at commit
   `191b7106a08a3e6f9f9ffe9bf5604d8f5daa8270`.
 
-The release evidence records resolved container `RepoDigest` values; tags alone
-are not immutable evidence. `scripts/competitor_ann_bench.py` uses the public
-SIFT files directly so all three products receive exactly the same 1,000,000
-vectors and 10,000 queries. VectorDBBench remains a methodology reference
-because its built-in SIFT capacity does not match this exact SIFT1M release
-matrix.
+The playbook pins the reviewed multi-architecture image digests and the release
+evidence independently records resolved `RepoDigest` values; tags alone are not
+immutable evidence. `scripts/competitor_ann_bench.py` uses the public SIFT files
+directly so all three products receive exactly the same 1,000,000 vectors and
+10,000 queries. VectorDBBench remains a methodology reference because its
+built-in SIFT capacity does not match this exact SIFT1M release matrix.
 
 The graph lane is intentionally narrower. AkiDB provides a bounded retrieval
 graph, not a general Cypher/GQL database. It applies known-answer, persistence,
@@ -396,6 +420,25 @@ gateways.
 Exit: the release verdict is `pass`. Any missing, stale, mismatched, or failed
 evidence keeps the candidate in `not-ready` state.
 
+## Automation inventory
+
+| Tool | Role |
+| --- | --- |
+| `scripts/convert_ann_benchmarks_hdf5.py` | Convert official ANN-Benchmarks HDF5 to streaming `fvecs`/`ivecs` with SHA-256 manifests |
+| `akidb-ann-bench` | Exact-ground-truth AkiDB ANN driver (in the Linux AMD64 release archive) |
+| `scripts/summarize_market_ann.py` | Fail-closed summary for a complete AkiDB market ANN evidence set |
+| `scripts/competitor_ann_bench.py` | Qualification-only Milvus / Weaviate driver using the same SIFT files |
+| `scripts/summarize_market_parity.py` | Fail-closed three-engine parity verdict |
+| `akidb-graph-bench` | Known-answer native graph matrix driver |
+| `scripts/summarize_market_graph.py` | Fail-closed graph-matrix summary |
+| `deploy/ansible/playbooks/knowledge-market-ann.yml` | Isolate one replica, run SIFT1M, always restore the cell |
+| `deploy/ansible/playbooks/knowledge-market-competitors.yml` | Sequential pinned Milvus then Weaviate, then parity summary |
+| `deploy/ansible/playbooks/knowledge-market-graph.yml` | Isolate one replica for the G1/G2/G3 graph matrix |
+
+Market playbooks are deliberately separate from production reconciliation
+(`knowledge-site.yml`). They require explicit confirmation strings, path
+allowlists, and WireGuard-only exposure.
+
 ## Reproducible commands
 
 Convert an official ANN-Benchmarks HDF5 dataset:
@@ -403,18 +446,41 @@ Convert an official ANN-Benchmarks HDF5 dataset:
 ```bash
 python3 scripts/convert_ann_benchmarks_hdf5.py \
   --input /qualification/sift-128-euclidean.hdf5 \
-  --output-dir /qualification/sift1m
+  --output-dir /var/tmp/akidb-market-data/sift1m-fvecs
 ```
 
-Run exact-ground-truth ANN qualification against an isolated L2 server:
+Place the converted files under a `/var/tmp/akidb-market-data/` path so the
+Ansible market playbooks accept the dataset directory.
+
+### AkiDB SIFT1M matrix (Lane A absolute gates)
+
+From `deploy/ansible`, after the knowledge cell is healthy and the immutable
+candidate artifact variables are exported:
+
+```bash
+AKIDB_MARKET_RUN_ID=<unique-run-id> \
+AKIDB_MARKET_SERVER=akidb-amd64-3 \
+AKIDB_MARKET_DRIVER=akidb-amd64-4 \
+AKIDB_MARKET_DATASET_DIR=/var/tmp/akidb-market-data/sift1m-fvecs \
+AKIDB_MARKET_OUTPUT_DIR=/qualification/evidence/akidb \
+AKIDB_MARKET_CONFIRM=yes-isolate-one-qualification-replica \
+ansible-playbook playbooks/knowledge-market-ann.yml
+```
+
+The playbook stages the same immutable candidate on the server and driver,
+isolates one replica into a dedicated market data directory, runs the full
+SIFT1M point matrix through `akidb-ann-bench`, always restores generation
+readiness, and writes a fail-closed summary with `summarize_market_ann.py`.
+
+For a single manual point against an already isolated L2 server:
 
 ```bash
 akidb-ann-bench \
   --server https://10.77.0.13:50061 \
   --dataset-name sift-128-euclidean \
-  --train-fvecs /qualification/sift1m/train.fvecs \
-  --query-fvecs /qualification/sift1m/test.fvecs \
-  --neighbors-ivecs /qualification/sift1m/neighbors.ivecs \
+  --train-fvecs /var/tmp/akidb-market-data/sift1m-fvecs/train.fvecs \
+  --query-fvecs /var/tmp/akidb-market-data/sift1m-fvecs/test.fvecs \
+  --neighbors-ivecs /var/tmp/akidb-market-data/sift1m-fvecs/neighbors.ivecs \
   --metric l2 \
   --collection default \
   --workspace qualification \
@@ -431,6 +497,8 @@ akidb-ann-bench \
 The mutable standalone shard currently has one physical active collection,
 named `default`. Creating a registry entry does not create another physical
 index; market qualification therefore uses `--collection default`.
+
+### Competitor parity (Lane A relative gates)
 
 After the immutable AkiDB SIFT1M matrix passes, run both competitors
 sequentially on the same isolated server and driver:
@@ -454,7 +522,9 @@ ports only to the WireGuard address, runs one database at a time, captures
 resolved image digests and resource/storage evidence, removes every container,
 and restores exact-generation AkiDB readiness in an unconditional recovery
 block. Anonymous database access is accepted only inside this isolated
-comparison network and is recorded in the evidence.
+comparison network and is recorded in the evidence. `summarize_market_parity.py`
+then compares AkiDB, Milvus, and Weaviate on the same dataset digests and fails
+closed on the relative QPS, P99, build-time, and storage gates.
 
 Run the native graph G1 gate:
 

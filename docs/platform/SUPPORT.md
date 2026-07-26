@@ -25,7 +25,7 @@ Linux distributions are outside the release support matrix.
 | Standalone server | Supported | Supported |
 | Shard and coordinator binaries | Supported | Supported |
 | Immutable single-node generation serving | Preview | Supported |
-| PostgreSQL-led full-replica knowledge cell | Not currently qualified | Supported for the documented three-replica, 100k × 768 envelope |
+| PostgreSQL-led full-replica knowledge cell | Not currently qualified | Supported for the documented three-replica, 100k × 768 envelope (market ANN/competitor parity remains a separate gate) |
 | Docker images | Development use only | Supported image architecture |
 | Checksum-pinned Ansible artifact | Not applicable | Supported |
 | Four-Mac Thunderbolt evidence tooling | Experimental | Not applicable |
@@ -45,6 +45,10 @@ failure/recovery workflow. See the
 The measured envelope, failure drills, and important control-plane/object-store
 limitations are recorded in the
 [Ubuntu AMD64 qualification report](../quality/linux-amd64-knowledge-cell-qualification.md).
+Public-dataset ANN matrices, Milvus/Weaviate parity, and broader market soak
+gates are tracked separately in
+[market-readiness qualification](../quality/market-readiness-qualification.md)
+and are not implied by the 100k × 768 cell pass.
 
 ## macOS 26 on Apple Silicon
 
@@ -114,7 +118,10 @@ GitHub Actions exercises:
 - the Apple Silicon build script on macOS 26;
 - release builds for macOS Apple Silicon and Linux AMD64;
 - the immutable Linux cluster artifact on Ubuntu 24.04 AMD64;
-- the real-MinIO immutable generation-serving gate on Ubuntu 24.04 AMD64.
+- the real-MinIO immutable generation-serving gate on Ubuntu 24.04 AMD64;
+- Ansible syntax checks for knowledge-cell and market-qualification playbooks
+  (no live SIFT1M, competitor, or soak execution).
 
 Platform-specific hardware, performance, and failure claims require their own
-checked-in evidence; a successful compile is not a production-readiness claim.
+checked-in evidence; a successful compile or playbook syntax check is not a
+production-readiness claim.

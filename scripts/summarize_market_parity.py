@@ -163,9 +163,32 @@ def competitor(
         f"{expected_engine}: report engine differs",
         failures,
     )
+    expected_versions = {
+        "milvus": ("2.6.21", "2.6.17"),
+        "weaviate": ("1.38.6", "4.22.0"),
+    }
+    server_version, client_version = expected_versions[expected_engine]
+    require(
+        str(report.get("server", {}).get("server_version", "")).lstrip("v")
+        == server_version,
+        f"{expected_engine}: server version differs from {server_version}",
+        failures,
+    )
+    require(
+        report.get("server", {}).get("client_version") == client_version,
+        f"{expected_engine}: client version differs from {client_version}",
+        failures,
+    )
     require(
         report.get("verdict", {}).get("status") == "pass",
         f"{expected_engine}: driver verdict failed",
+        failures,
+    )
+    require(
+        report.get("index", {}).get("type") == "HNSW"
+        and report.get("index", {}).get("m") == 16
+        and report.get("index", {}).get("ef_construction") == 128,
+        f"{expected_engine}: HNSW construction settings differ",
         failures,
     )
     require(

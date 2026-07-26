@@ -6,7 +6,10 @@
 //! Weaviate without coupling the AkiDB release artifact to their runtimes.
 
 use akidb_proto::akidb_client::AkidbClient;
-use akidb_proto::{HealthRequest, InsertBatchRequest, SearchRequest, Vector};
+use akidb_proto::{
+    DeleteRequest, DeleteStatus, HealthRequest, InsertBatchRequest, InsertRequest, SearchRequest,
+    UpdateRequest, UpdateStatus, Vector,
+};
 use clap::Parser;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -14,7 +17,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -139,6 +142,22 @@ struct Args {
     #[arg(long, default_value = "0")]
     max_p99_ms: f64,
 
+    /// Concurrent insert-update-delete cycles per second (zero disables).
+    #[arg(long, default_value = "0")]
+    mixed_cycle_qps: f64,
+
+    /// Duration of the concurrent mutation/search phase.
+    #[arg(long, default_value = "0")]
+    mixed_duration_seconds: u64,
+
+    /// Concurrent mutation workers used to reach the requested cycle rate.
+    #[arg(long, default_value = "8")]
+    mixed_writers: usize,
+
+    /// Unique ID prefix for transient mixed-workload rows.
+    #[arg(long, default_value = "ann-mixed")]
+    mixed_id_prefix: String,
+
     /// Machine-readable report path.
     #[arg(long)]
     output_json: PathBuf,
@@ -237,6 +256,7 @@ struct AnnReport {
     post_load_settle_seconds: u64,
     filter: FilterReport,
     query: QueryReport,
+    mixed: Option<MixedReport>,
     verdict: Verdict,
 }
 
@@ -257,6 +277,62 @@ struct QueryMeasurements {
     duplicate_results: usize,
     unparseable_results: usize,
     invalid_scores: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MixedReport {
+    duration_seconds: u64,
+    requested_cycle_qps: f64,
+    mutation_writers: usize,
+    mutation: MutationReport,
+    search: MixedSearchReport,
+    health_before: HealthReport,
+    health_after: HealthReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MutationReport {
+    requested_cycles: usize,
+    completed_cycles: usize,
+    failed_cycles: usize,
+    insert_failures: usize,
+    update_failures: usize,
+    delete_failures: usize,
+    duration_ms: u128,
+    cycles_per_second: f64,
+    insert_latency: LatencyReport,
+    update_latency: LatencyReport,
+    delete_latency: LatencyReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MixedSearchReport {
+    requested: usize,
+    succeeded: usize,
+    failed: usize,
+    concurrency: usize,
+    top_k: usize,
+    nprobe: u32,
+    duration_ms: u128,
+    qps: f64,
+    recall_at_k: f64,
+    result_count_violations: usize,
+    duplicate_results: usize,
+    unparseable_results: usize,
+    invalid_scores: usize,
+    latency: LatencyReport,
+}
+
+#[derive(Debug)]
+struct MutationMeasurements {
+    completed_cycles: usize,
+    failed_cycles: usize,
+    insert_failures: usize,
+    update_failures: usize,
+    delete_failures: usize,
+    insert_latencies: Vec<Duration>,
+    update_latencies: Vec<Duration>,
+    delete_latencies: Vec<Duration>,
 }
 
 struct QueryDataset {
@@ -381,6 +457,7 @@ fn validate_args(args: &Args) -> Result<(), String> {
         ("top-k", args.top_k),
         ("concurrency", args.concurrency),
         ("measurement-rounds", args.measurement_rounds),
+        ("mixed-writers", args.mixed_writers),
     ] {
         if value == 0 {
             return Err(format!("--{name} must be positive"));
@@ -395,11 +472,23 @@ fn validate_args(args: &Args) -> Result<(), String> {
     if args.measurement_rounds > 10 {
         return Err("--measurement-rounds cannot exceed 10".to_string());
     }
+    if args.mixed_writers > 256 {
+        return Err("--mixed-writers cannot exceed 256".to_string());
+    }
     if args.timeout_seconds == 0 || args.timeout_seconds > 300 {
         return Err("--timeout-seconds must be in 1..=300".to_string());
     }
     if args.post_load_settle_seconds > 600 {
         return Err("--post-load-settle-seconds cannot exceed 600".to_string());
+    }
+    if args.mixed_duration_seconds > 3_600 {
+        return Err("--mixed-duration-seconds cannot exceed 3600".to_string());
+    }
+    if (args.mixed_cycle_qps > 0.0) != (args.mixed_duration_seconds > 0) {
+        return Err(
+            "--mixed-cycle-qps and --mixed-duration-seconds must both be set or both be zero"
+                .to_string(),
+        );
     }
     if args.train_limit == Some(0) || args.query_limit == Some(0) {
         return Err("--train-limit and --query-limit must be positive when set".to_string());
@@ -414,6 +503,7 @@ fn validate_args(args: &Args) -> Result<(), String> {
         ("min-recall", args.min_recall),
         ("min-qps", args.min_qps),
         ("max-p99-ms", args.max_p99_ms),
+        ("mixed-cycle-qps", args.mixed_cycle_qps),
     ] {
         if !value.is_finite() || value < 0.0 {
             return Err(format!("--{name} must be finite and non-negative"));
@@ -422,16 +512,28 @@ fn validate_args(args: &Args) -> Result<(), String> {
     if args.min_recall > 1.0 {
         return Err("--min-recall cannot exceed 1".to_string());
     }
+    if args.mixed_cycle_qps > 100_000.0 {
+        return Err("--mixed-cycle-qps cannot exceed 100000".to_string());
+    }
+    if args.mixed_cycle_qps > 0.0
+        && args.mixed_cycle_qps * (args.mixed_duration_seconds as f64) < 1.0
+    {
+        return Err("mixed workload must schedule at least one cycle".to_string());
+    }
     if !is_canonical_origin(&args.server)
         || !is_canonical(&args.dataset_name)
         || !is_canonical(&args.collection)
         || !is_canonical(&args.workspace)
         || !is_canonical(&args.id_prefix)
+        || !is_canonical(&args.mixed_id_prefix)
         || !is_environment_name(&args.token_env)
     {
         return Err(
             "collection, workspace, ID prefix, or token environment is not canonical".to_string(),
         );
+    }
+    if args.mixed_id_prefix == args.id_prefix {
+        return Err("--mixed-id-prefix must differ from --id-prefix".to_string());
     }
     for path in [&args.train_fvecs, &args.query_fvecs, &args.neighbors_ivecs] {
         if !path.is_file() {
@@ -788,6 +890,326 @@ async fn measure_queries(
     }
 }
 
+async fn measure_mixed(
+    client: AkidbClient<Channel>,
+    args: &Args,
+    queries: Vec<Vec<f32>>,
+    neighbors: Vec<Vec<u32>>,
+    health_before: HealthReport,
+) -> Result<MixedReport, Box<dyn std::error::Error>> {
+    let queries = Arc::new(queries);
+    let neighbors = Arc::new(neighbors);
+    let requested_cycles =
+        (args.mixed_cycle_qps * args.mixed_duration_seconds as f64).floor() as usize;
+    let next_cycle = Arc::new(AtomicUsize::new(0));
+    let next_query = Arc::new(AtomicUsize::new(0));
+    let writers_done = Arc::new(AtomicBool::new(false));
+    let started = Instant::now();
+    let schedule_started = tokio::time::Instant::now();
+    let deadline = schedule_started + Duration::from_secs(args.mixed_duration_seconds);
+    let worker_args = WorkerArgs {
+        collection: args.collection.clone(),
+        id_prefix: args.id_prefix.clone(),
+        workspace: args.workspace.clone(),
+        token: std::env::var(&args.token_env).ok(),
+        top_k: args.top_k,
+        nprobe: args.nprobe,
+        filter_modulus: None,
+    };
+
+    let mut search_workers = Vec::with_capacity(args.concurrency);
+    for _ in 0..args.concurrency {
+        let mut worker_client = client.clone();
+        let worker_queries = Arc::clone(&queries);
+        let worker_neighbors = Arc::clone(&neighbors);
+        let worker_next = Arc::clone(&next_query);
+        let worker_done = Arc::clone(&writers_done);
+        let worker_args = worker_args.clone();
+        search_workers.push(tokio::spawn(async move {
+            let mut result = QueryMeasurements {
+                latencies: Vec::new(),
+                recall_sum: 0.0,
+                succeeded: 0,
+                failed: 0,
+                filter_violations: 0,
+                result_count_violations: 0,
+                duplicate_results: 0,
+                unparseable_results: 0,
+                invalid_scores: 0,
+            };
+            while tokio::time::Instant::now() < deadline || !worker_done.load(Ordering::Acquire) {
+                let task = worker_next.fetch_add(1, Ordering::Relaxed);
+                let index = task % worker_queries.len();
+                let request = worker_request(
+                    search_request_parts(
+                        &worker_args.collection,
+                        worker_args.top_k,
+                        worker_args.nprobe,
+                        worker_queries[index].clone(),
+                        Vec::new(),
+                    ),
+                    &worker_args,
+                );
+                let query_started = Instant::now();
+                let response = match request {
+                    Ok(request) => worker_client.search(request).await,
+                    Err(_) => {
+                        result.failed += 1;
+                        continue;
+                    }
+                };
+                let latency = query_started.elapsed();
+                match response {
+                    Ok(response) => {
+                        let response_results = response.into_inner().results;
+                        if response_results.len() != worker_args.top_k {
+                            result.result_count_violations += 1;
+                        }
+                        result.invalid_scores += response_results
+                            .iter()
+                            .filter(|value| !value.score.is_finite())
+                            .count();
+                        let returned_rows = response_results
+                            .iter()
+                            .filter_map(|value| parse_dataset_id(&worker_args.id_prefix, &value.id))
+                            .collect::<Vec<_>>();
+                        let parsed_result_count = returned_rows.len();
+                        result.unparseable_results +=
+                            response_results.len().saturating_sub(returned_rows.len());
+                        let returned = returned_rows.into_iter().collect::<HashSet<_>>();
+                        result.duplicate_results +=
+                            parsed_result_count.saturating_sub(returned.len());
+                        result.recall_sum +=
+                            recall_at_k(&returned, &worker_neighbors[index], worker_args.top_k);
+                        result.succeeded += 1;
+                        result.latencies.push(latency);
+                    }
+                    Err(_) => result.failed += 1,
+                }
+            }
+            result
+        }));
+    }
+
+    let mut mutation_workers = Vec::with_capacity(args.mixed_writers);
+    for _ in 0..args.mixed_writers {
+        let mut worker_client = client.clone();
+        let worker_queries = Arc::clone(&queries);
+        let worker_next = Arc::clone(&next_cycle);
+        let worker_args = worker_args.clone();
+        let mixed_id_prefix = args.mixed_id_prefix.clone();
+        let cycle_qps = args.mixed_cycle_qps;
+        mutation_workers.push(tokio::spawn(async move {
+            let mut result = MutationMeasurements {
+                completed_cycles: 0,
+                failed_cycles: 0,
+                insert_failures: 0,
+                update_failures: 0,
+                delete_failures: 0,
+                insert_latencies: Vec::new(),
+                update_latencies: Vec::new(),
+                delete_latencies: Vec::new(),
+            };
+            loop {
+                let cycle = worker_next.fetch_add(1, Ordering::Relaxed);
+                if cycle >= requested_cycles {
+                    break;
+                }
+                let scheduled =
+                    schedule_started + Duration::from_secs_f64(cycle as f64 / cycle_qps);
+                tokio::time::sleep_until(scheduled).await;
+                let id = dataset_id(&mixed_id_prefix, cycle);
+                let shift = 1_000_000.0_f32 + (cycle % 1_000) as f32;
+                let vector = worker_queries[cycle % worker_queries.len()]
+                    .iter()
+                    .map(|value| value + shift)
+                    .collect::<Vec<_>>();
+                let metadata =
+                    format!(r#"{{"ann_mixed":true,"cycle":{cycle},"revision":1}}"#).into_bytes();
+
+                let insert_started = Instant::now();
+                let inserted = match worker_request(
+                    InsertRequest {
+                        collection: worker_args.collection.clone(),
+                        id: id.clone(),
+                        vector: vector.clone(),
+                        metadata,
+                        text: String::new(),
+                    },
+                    &worker_args,
+                ) {
+                    Ok(request) => worker_client
+                        .insert(request)
+                        .await
+                        .map(|response| response.into_inner().success)
+                        .unwrap_or(false),
+                    Err(_) => false,
+                };
+                result.insert_latencies.push(insert_started.elapsed());
+                if !inserted {
+                    result.insert_failures += 1;
+                    result.failed_cycles += 1;
+                    continue;
+                }
+
+                let update_started = Instant::now();
+                let updated = match worker_request(
+                    UpdateRequest {
+                        collection: worker_args.collection.clone(),
+                        id: id.clone(),
+                        vector: vector.iter().map(|value| value + 1.0).collect(),
+                        metadata: format!(r#"{{"ann_mixed":true,"cycle":{cycle},"revision":2}}"#)
+                            .into_bytes(),
+                    },
+                    &worker_args,
+                ) {
+                    Ok(request) => worker_client
+                        .update(request)
+                        .await
+                        .map(|response| {
+                            let value = response.into_inner();
+                            value.success && value.status == UpdateStatus::Updated as i32
+                        })
+                        .unwrap_or(false),
+                    Err(_) => false,
+                };
+                result.update_latencies.push(update_started.elapsed());
+                if !updated {
+                    result.update_failures += 1;
+                }
+
+                let delete_started = Instant::now();
+                let deleted = match worker_request(
+                    DeleteRequest {
+                        collection: worker_args.collection.clone(),
+                        id,
+                    },
+                    &worker_args,
+                ) {
+                    Ok(request) => worker_client
+                        .delete(request)
+                        .await
+                        .map(|response| {
+                            let value = response.into_inner();
+                            value.success && value.status == DeleteStatus::Deleted as i32
+                        })
+                        .unwrap_or(false),
+                    Err(_) => false,
+                };
+                result.delete_latencies.push(delete_started.elapsed());
+                if !deleted {
+                    result.delete_failures += 1;
+                }
+                if updated && deleted {
+                    result.completed_cycles += 1;
+                } else {
+                    result.failed_cycles += 1;
+                }
+            }
+            result
+        }));
+    }
+
+    let mut mutation = MutationMeasurements {
+        completed_cycles: 0,
+        failed_cycles: 0,
+        insert_failures: 0,
+        update_failures: 0,
+        delete_failures: 0,
+        insert_latencies: Vec::new(),
+        update_latencies: Vec::new(),
+        delete_latencies: Vec::new(),
+    };
+    for worker in mutation_workers {
+        match worker.await {
+            Ok(value) => {
+                mutation.completed_cycles += value.completed_cycles;
+                mutation.failed_cycles += value.failed_cycles;
+                mutation.insert_failures += value.insert_failures;
+                mutation.update_failures += value.update_failures;
+                mutation.delete_failures += value.delete_failures;
+                mutation.insert_latencies.extend(value.insert_latencies);
+                mutation.update_latencies.extend(value.update_latencies);
+                mutation.delete_latencies.extend(value.delete_latencies);
+            }
+            Err(_) => mutation.failed_cycles += 1,
+        }
+    }
+    writers_done.store(true, Ordering::Release);
+
+    let mut search = QueryMeasurements {
+        latencies: Vec::new(),
+        recall_sum: 0.0,
+        succeeded: 0,
+        failed: 0,
+        filter_violations: 0,
+        result_count_violations: 0,
+        duplicate_results: 0,
+        unparseable_results: 0,
+        invalid_scores: 0,
+    };
+    for worker in search_workers {
+        match worker.await {
+            Ok(value) => {
+                search.latencies.extend(value.latencies);
+                search.recall_sum += value.recall_sum;
+                search.succeeded += value.succeeded;
+                search.failed += value.failed;
+                search.result_count_violations += value.result_count_violations;
+                search.duplicate_results += value.duplicate_results;
+                search.unparseable_results += value.unparseable_results;
+                search.invalid_scores += value.invalid_scores;
+            }
+            Err(_) => search.failed += 1,
+        }
+    }
+    let elapsed = started.elapsed();
+    let mut health_client = client;
+    let health_after = health(&mut health_client, args).await?;
+    let search_requested = search.succeeded + search.failed;
+    Ok(MixedReport {
+        duration_seconds: args.mixed_duration_seconds,
+        requested_cycle_qps: args.mixed_cycle_qps,
+        mutation_writers: args.mixed_writers,
+        mutation: MutationReport {
+            requested_cycles,
+            completed_cycles: mutation.completed_cycles,
+            failed_cycles: mutation.failed_cycles,
+            insert_failures: mutation.insert_failures,
+            update_failures: mutation.update_failures,
+            delete_failures: mutation.delete_failures,
+            duration_ms: elapsed.as_millis(),
+            cycles_per_second: mutation.completed_cycles as f64 / elapsed.as_secs_f64(),
+            insert_latency: latency_report(&mutation.insert_latencies),
+            update_latency: latency_report(&mutation.update_latencies),
+            delete_latency: latency_report(&mutation.delete_latencies),
+        },
+        search: MixedSearchReport {
+            requested: search_requested,
+            succeeded: search.succeeded,
+            failed: search.failed,
+            concurrency: args.concurrency,
+            top_k: args.top_k,
+            nprobe: args.nprobe,
+            duration_ms: elapsed.as_millis(),
+            qps: search.succeeded as f64 / elapsed.as_secs_f64(),
+            recall_at_k: if search.succeeded == 0 {
+                0.0
+            } else {
+                search.recall_sum / search.succeeded as f64
+            },
+            result_count_violations: search.result_count_violations,
+            duplicate_results: search.duplicate_results,
+            unparseable_results: search.unparseable_results,
+            invalid_scores: search.invalid_scores,
+            latency: latency_report(&search.latencies),
+        },
+        health_before,
+        health_after,
+    })
+}
+
+#[derive(Clone)]
 struct WorkerArgs {
     collection: String,
     id_prefix: String,
@@ -798,10 +1220,10 @@ struct WorkerArgs {
     filter_modulus: Option<u32>,
 }
 
-fn worker_request(
-    message: SearchRequest,
+fn worker_request<T>(
+    message: T,
     args: &WorkerArgs,
-) -> Result<Request<SearchRequest>, tonic::metadata::errors::InvalidMetadataValue> {
+) -> Result<Request<T>, tonic::metadata::errors::InvalidMetadataValue> {
     let mut request = Request::new(message);
     request.metadata_mut().insert(
         "x-akidb-workspace",
@@ -1066,6 +1488,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let health_after = health(&mut client, &args).await?;
     let warmup_count = warmup(&mut client, &args, &query_dataset).await?;
+    let mixed_inputs = (args.mixed_cycle_qps > 0.0).then(|| {
+        (
+            client.clone(),
+            query_dataset.queries.clone(),
+            query_dataset.neighbors.clone(),
+            health_after.clone(),
+        )
+    });
     let query = measure_queries(
         client,
         &args,
@@ -1074,6 +1504,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warmup_count,
     )
     .await;
+    let mixed = match mixed_inputs {
+        Some((mixed_client, queries, neighbors, mixed_health_before)) => {
+            Some(measure_mixed(mixed_client, &args, queries, neighbors, mixed_health_before).await?)
+        }
+        None => None,
+    };
 
     let mut failures = Vec::new();
     if load.failed != 0 {
@@ -1125,6 +1561,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             query.latency.p99_ms, args.max_p99_ms
         ));
     }
+    if let Some(mixed) = &mixed {
+        if mixed.mutation.completed_cycles != mixed.mutation.requested_cycles
+            || mixed.mutation.failed_cycles != 0
+            || mixed.mutation.insert_failures != 0
+            || mixed.mutation.update_failures != 0
+            || mixed.mutation.delete_failures != 0
+        {
+            failures.push(format!(
+                "mixed mutations completed {} of {} cycles with {} failed cycles, {} insert failures, {} update failures, and {} delete failures",
+                mixed.mutation.completed_cycles,
+                mixed.mutation.requested_cycles,
+                mixed.mutation.failed_cycles,
+                mixed.mutation.insert_failures,
+                mixed.mutation.update_failures,
+                mixed.mutation.delete_failures,
+            ));
+        }
+        if mixed.mutation.cycles_per_second < args.mixed_cycle_qps * 0.90 {
+            failures.push(format!(
+                "mixed mutation rate {:.3} cycles/s is below 90% of requested {:.3}",
+                mixed.mutation.cycles_per_second, args.mixed_cycle_qps
+            ));
+        }
+        if mixed.search.requested == 0
+            || mixed.search.failed != 0
+            || mixed.search.succeeded != mixed.search.requested
+        {
+            failures.push(format!(
+                "{} of {} mixed-workload searches failed",
+                mixed.search.failed, mixed.search.requested
+            ));
+        }
+        if mixed.search.result_count_violations != 0
+            || mixed.search.duplicate_results != 0
+            || mixed.search.unparseable_results != 0
+            || mixed.search.invalid_scores != 0
+        {
+            failures.push(format!(
+                "mixed search observed {} result-count violations, {} duplicate IDs, {} unparseable IDs, and {} invalid scores",
+                mixed.search.result_count_violations,
+                mixed.search.duplicate_results,
+                mixed.search.unparseable_results,
+                mixed.search.invalid_scores,
+            ));
+        }
+        if mixed.search.recall_at_k < args.min_recall {
+            failures.push(format!(
+                "mixed Recall@{} {:.6} is below {:.6}",
+                args.top_k, mixed.search.recall_at_k, args.min_recall
+            ));
+        }
+        if !mixed.health_after.healthy
+            || !mixed.health_after.ready
+            || mixed.health_after.active_vectors != mixed.health_before.active_vectors
+        {
+            failures.push(format!(
+                "mixed workload did not reconcile active vectors: before={}, after={}",
+                mixed.health_before.active_vectors, mixed.health_after.active_vectors
+            ));
+        }
+    }
     let report = AnnReport {
         schema_version: 2,
         report_type: "akidb.market-ann-benchmark.v2",
@@ -1159,6 +1656,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             expected_selectivity: args.filter_modulus.map(|modulus| 1.0 / f64::from(modulus)),
         },
         query,
+        mixed,
         verdict: Verdict {
             status: if failures.is_empty() { "pass" } else { "fail" },
             failures,
@@ -1178,6 +1676,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "duplicate_results": report.query.duplicate_results,
             "unparseable_results": report.query.unparseable_results,
             "invalid_scores": report.query.invalid_scores,
+            "mixed_cycles": report.mixed.as_ref().map(|value| value.mutation.completed_cycles),
+            "mixed_search_recall": report.mixed.as_ref().map(|value| value.search.recall_at_k),
             "failures": report.verdict.failures,
         })
     );

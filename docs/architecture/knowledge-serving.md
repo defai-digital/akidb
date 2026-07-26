@@ -217,12 +217,21 @@ or an unmeasured preference is not a trigger.
 
 ## Platform and release claims
 
-Native runtime support and knowledge-cell qualification are different claims.
-AkiDB's portable standalone runtime supports the platforms listed in
-[Platform Support](../platform/SUPPORT.md). The full PostgreSQL-led replica
-cell, gateway failover, and production capacity envelope require their own
-multi-replica correctness, failure, security, and performance evidence.
+Native runtime support, knowledge-cell qualification, and market-aligned
+capacity claims are different evidence classes:
+
+| Claim | Current public status | Evidence |
+| --- | --- | --- |
+| Portable standalone runtime | Supported on macOS 26 Apple Silicon and Ubuntu 24.04+ AMD64 | [Platform Support](../platform/SUPPORT.md) |
+| PostgreSQL-led full-replica cell | Implemented; Ubuntu AMD64 qualified for a bounded 100k × 768 envelope | [Ubuntu AMD64 qualification](../quality/linux-amd64-knowledge-cell-qualification.md) |
+| Market ANN / competitor parity / larger soak | Active release gate; automation ready, full verdict not complete | [Market-readiness qualification](../quality/market-readiness-qualification.md) |
+
+The full PostgreSQL-led replica cell, gateway failover, and production capacity
+envelope still require their own multi-replica correctness, failure, security,
+and performance evidence. A compile-time feature flag is never a capacity claim.
 
 See [Immutable Generation Serving](../development/generation-serving-preview.md)
-for the implemented preview and configuration surface, and the
-[Operations Runbook](../runbooks/operations.md) for operator boundaries.
+for the implemented preview and configuration surface, the
+[Operations Runbook](../runbooks/operations.md) for operator boundaries, and the
+[Knowledge-Serving Runbook](../runbooks/knowledge-serving.md) for cell
+deployment and recovery.

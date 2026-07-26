@@ -23,9 +23,12 @@ NVIDIA GPU, and Thor-specific paths are not supported release targets.
 
 > **Project status:** the standalone database is the primary supported
 > deployment. Immutable generation serving adds independently rebuilt full
-> replicas, quorum activation, and generation-aware read failover. It is not a
-> consensus database: canonical data remains in MinIO/OpenWiki and PostgreSQL.
-> The existing multi-shard coordinator remains a separate capacity path.
+> replicas, quorum activation, and generation-aware read failover. The Ubuntu
+> AMD64 three-replica knowledge cell is qualified for a bounded 100k × 768
+> envelope. Broader market ANN, graph, and competitor-parity claims remain an
+> active release gate, not a completed verdict. AkiDB is not a consensus
+> database: canonical data remains in MinIO/OpenWiki and PostgreSQL. The
+> multi-shard coordinator remains a separate capacity path.
 
 ## Why AkiDB
 
@@ -296,7 +299,7 @@ reference.
 | `server` | Bind address, gRPC port, and transport settings |
 | `auth` / `auth.acl` | Loopback policy, bearer token source, default workspace, and workspace enforcement |
 | `generation_serving` | Opt-in immutable generation paths, publication credential, S3 limits, and generation materialization |
-| `generation_serving.replica_control` | Disabled-by-default PostgreSQL replica-worker settings for the in-development convergence profile |
+| `generation_serving.replica_control` | Disabled-by-default PostgreSQL replica-worker settings for the Ubuntu AMD64 knowledge-serving profile |
 | `index` | HNSW construction/search settings, metric, precision, filtering, and rebuild thresholds |
 | `storage` | RocksDB and snapshot-related paths; WAL settings are reserved for the not-yet-wired server WAL path |
 | `sql` | Optional SQLite or feature-gated PostgreSQL metadata index |
@@ -411,7 +414,10 @@ akidb/
 - [Immutable generation serving](docs/development/generation-serving-preview.md)
 - [Platform support](docs/platform/SUPPORT.md)
 - [Operations runbook](docs/runbooks/operations.md)
-- [Ansible cluster deployment](deploy/ansible/README.md)
+- [Knowledge-serving runbook](docs/runbooks/knowledge-serving.md)
+- [Ansible deployment](deploy/ansible/README.md)
+- [Ubuntu AMD64 knowledge-cell qualification](docs/quality/linux-amd64-knowledge-cell-qualification.md)
+- [Market-readiness qualification](docs/quality/market-readiness-qualification.md)
 - [Vector quality gates](docs/quality/vector-quality.md)
 - [One-node benchmark](docs/quality/one-mac-benchmark.md)
 - [Native GraphRAG plan and status](docs/development/native-graphrag-plan.md)
@@ -419,13 +425,19 @@ akidb/
 ## Current limitations
 
 - Immutable generation serving provides PostgreSQL-led full-replica
-  convergence and generation-aware read failover. It does not make PostgreSQL
-  or MinIO highly available; production must supply those durable HA services.
-- Privileged single-node publication accepts self-contained base generations
-  with `target_sequence == base_sequence`. The in-development PostgreSQL
-  worker can rebuild a deterministic post-bundle revision from an ordered
-  mutation tail, but multi-replica convergence is not yet a qualified release
-  claim.
+  convergence and generation-aware read failover. The Ubuntu AMD64 cell is
+  qualified for a bounded retrieval envelope (100k vectors × 768 dimensions
+  with smaller deterministic generation/failover drills). It does not make
+  PostgreSQL or MinIO highly available; production must supply those durable
+  HA services.
+- Privileged single-node publication remains an opt-in preview. The PostgreSQL
+  replica worker rebuilds deterministic post-bundle revisions from ordered
+  mutations; multi-replica convergence is implemented and qualified only for
+  the documented Ubuntu AMD64 profile and envelope.
+- Market-aligned ANN, competitor parity (Milvus/Weaviate on SIFT1M), larger
+  graph tiers, and full serving-system soak/failure gates are automated but
+  not a completed release verdict. See
+  [market-readiness qualification](docs/quality/market-readiness-qualification.md).
 - The multi-shard coordinator is not a replication layer and does not provide
   automatic placement, failover, or rebalancing.
 - Coordinator authentication/workspace propagation to shards is not complete,

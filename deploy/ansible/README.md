@@ -1,16 +1,19 @@
 # AkiDB Linux AMD64 Cluster Deployment
 
-This directory provides two reproducible Ubuntu 24.04-or-newer AMD64 paths:
+This directory provides two reproducible Ubuntu 24.04-or-newer AMD64 paths,
+plus isolated market-qualification playbooks:
 
-- the legacy four-independent-shard capacity lab, which is not HA; and
-- the supported knowledge-serving cell with three independently rebuilt full
-  replicas, two stateless AX gateways, PostgreSQL authority, and MinIO
-  artifacts.
+| Profile | Playbooks | Status and purpose |
+| --- | --- | --- |
+| Knowledge-serving cell | `knowledge-preflight.yml`, `knowledge-site.yml`, `knowledge-verify.yml`, load/failure/backup drills | Supported availability design: three independently rebuilt full replicas, two AX gateways, PostgreSQL authority, MinIO artifacts. Bounded Ubuntu AMD64 envelope is qualified. |
+| Market qualification | `knowledge-market-ann.yml`, `knowledge-market-competitors.yml`, `knowledge-market-graph.yml` | Active release gate automation. Isolates one replica or runs competitors; not production reconciliation. |
+| Legacy four-shard lab | `preflight.yml`, `network.yml`, `deploy.yml`, `verify.yml`, `site.yml` | Independent-shard capacity path only. Not HA and not the agent-facing replica design. |
 
-Linux ARM64 and NVIDIA Thor are not release targets. The legacy profile remains
-useful for shard fan-out and capacity qualification, while the knowledge cell
-is the accepted availability design. See
-[`docs/architecture/knowledge-serving.md`](../../docs/architecture/knowledge-serving.md).
+Linux ARM64 and NVIDIA Thor are not release targets. See
+[`docs/architecture/knowledge-serving.md`](../../docs/architecture/knowledge-serving.md)
+for ownership boundaries and
+[`docs/quality/market-readiness-qualification.md`](../../docs/quality/market-readiness-qualification.md)
+for market gates.
 
 ## Design decision
 
@@ -159,21 +162,11 @@ health, and public bind policy:
 ansible-playbook playbooks/verify.yml
 ```
 
-The complete, safely rerunnable path is:
+The complete, safely rerunnable path for the **legacy four-shard lab** is:
 
 ```bash
 ansible-playbook playbooks/site.yml
 ```
-
-Market qualification is deliberately separate from production reconciliation.
-`knowledge-market-ann.yml` isolates one AkiDB replica for the public SIFT1M
-matrix. Once that run passes, `knowledge-market-competitors.yml` uses the same
-server and driver for pinned Milvus and Weaviate images, one at a time. The
-competitor playbook is qualification-only: it records resolved image digests,
-keeps ports on WireGuard, removes its containers, and always restores the
-AkiDB replica. See
-[`docs/quality/market-readiness-qualification.md`](../../docs/quality/market-readiness-qualification.md)
-for the required environment variables and parity gates.
 
 Rollback requires an already installed release and still rolls one shard at a
 time:
@@ -187,6 +180,118 @@ Configuration is stored per release under `/etc/akidb/releases/`. Binaries are
 stored under `/opt/akidb/releases/`; `/opt/akidb/current` is the atomic
 activation pointer. Persistent RocksDB, WAL, and snapshots stay under
 `/var/lib/akidb` and are never removed by deploy or rollback.
+
+## Knowledge-serving cell
+
+The knowledge cell is the supported availability profile. Operator detail lives
+in [`docs/runbooks/knowledge-serving.md`](../../docs/runbooks/knowledge-serving.md).
+Bounded Ubuntu AMD64 evidence is recorded in
+[`docs/quality/linux-amd64-knowledge-cell-qualification.md`](../../docs/quality/linux-amd64-knowledge-cell-qualification.md).
+
+From `deploy/ansible`, with immutable AkiDB and gateway artifacts exported:
+
+```bash
+ansible-galaxy collection install -r requirements.yml
+ansible-playbook playbooks/knowledge-preflight.yml
+ansible-playbook playbooks/knowledge-site.yml
+ansible-playbook playbooks/knowledge-verify.yml
+```
+
+`knowledge-site.yml` is safely rerunnable. It composes preflight, network,
+optional lab dependencies, deploy, and verify. Lab dependency management is
+gated by inventory (`akidb_knowledge_manage_lab_dependencies`); production
+points at managed PostgreSQL and S3/MinIO instead.
+
+Additional knowledge drills (separate from market isolation):
+
+- `knowledge-load-test.yml` — gateway correctness, security, and paced load
+- `knowledge-failure-under-load.yml` — one authorized replica fault under traffic
+- `knowledge-blank-rebuild.yml` — blank volume rebuild from canonical state
+- `knowledge-backup.yml` / `knowledge-restore-verify.yml`
+- `knowledge-rolling-upgrade.yml` / `knowledge-rollback.yml`
+
+## Market qualification
+
+Market qualification is deliberately separate from production reconciliation.
+Do not fold these playbooks into `knowledge-site.yml`. Each market run requires
+an explicit confirmation string, WireGuard-only service exposure, and a unique
+run ID. CI only syntax-checks these playbooks; it does not execute SIFT1M or
+competitor workloads.
+
+Recommended order on a healthy knowledge cell:
+
+1. Convert and stage the public SIFT1M files under
+   `/var/tmp/akidb-market-data/…` with
+   `scripts/convert_ann_benchmarks_hdf5.py`.
+2. Run `knowledge-market-ann.yml` for the absolute AkiDB SIFT1M matrix.
+3. Run `knowledge-market-competitors.yml` for pinned Milvus then Weaviate on
+   the same dataset digests, then the fail-closed parity summary.
+4. Run `knowledge-market-graph.yml` for the native G1/G2/G3 matrix on an
+   isolated replica.
+
+### AkiDB SIFT1M
+
+```bash
+AKIDB_MARKET_RUN_ID=<unique-run-id> \
+AKIDB_MARKET_SERVER=akidb-amd64-3 \
+AKIDB_MARKET_DRIVER=akidb-amd64-4 \
+AKIDB_MARKET_DATASET_DIR=/var/tmp/akidb-market-data/sift1m-fvecs \
+AKIDB_MARKET_OUTPUT_DIR=/qualification/evidence/akidb \
+AKIDB_MARKET_CONFIRM=yes-isolate-one-qualification-replica \
+ansible-playbook playbooks/knowledge-market-ann.yml
+```
+
+Isolates one replica, loads the public SIFT1M matrix through `akidb-ann-bench`,
+writes point reports, always restores generation readiness, and summarizes with
+`scripts/summarize_market_ann.py`.
+
+### Competitor parity (Milvus and Weaviate)
+
+Pinned comparison set reviewed 2026-07-26:
+
+- Milvus server `v2.6.21` with `pymilvus==2.6.17`
+- Weaviate server `1.38.6` with `weaviate-client==4.22.0`
+
+```bash
+AKIDB_COMPETITOR_RUN_ID=<unique-run-id> \
+AKIDB_COMPETITOR_SERVER=akidb-amd64-3 \
+AKIDB_COMPETITOR_DRIVER=akidb-amd64-4 \
+AKIDB_COMPETITOR_DATASET_DIR=/var/tmp/akidb-market-data/sift1m-fvecs \
+AKIDB_COMPETITOR_OUTPUT_DIR=/qualification/evidence/competitors \
+AKIDB_COMPETITOR_CONFIRM=yes-run-isolated-market-competitors \
+AKIDB_COMPETITOR_MINIO_ACCESS_KEY=<ephemeral-lab-access-key> \
+AKIDB_COMPETITOR_MINIO_SECRET_KEY=<ephemeral-lab-secret> \
+AKIDB_PARITY_AKI_EVIDENCE_DIR=/qualification/evidence/akidb \
+AKIDB_PARITY_AKI_RUN_ID=<passed-akidb-run-id> \
+ansible-playbook playbooks/knowledge-market-competitors.yml
+```
+
+Qualification-only behavior:
+
+- installs a temporary Docker runtime on the isolated server;
+- binds database ports only to the WireGuard address;
+- runs one engine at a time with `scripts/competitor_ann_bench.py`;
+- records resolved container `RepoDigest` values, not tags alone;
+- removes containers and data directories after each engine;
+- always restores exact-generation AkiDB readiness;
+- fails closed through `scripts/summarize_market_parity.py`.
+
+### Native graph matrix
+
+```bash
+AKIDB_GRAPH_RUN_ID=<unique-run-id> \
+AKIDB_GRAPH_SERVER=akidb-amd64-3 \
+AKIDB_GRAPH_OUTPUT_DIR=/qualification/evidence/graph \
+AKIDB_GRAPH_CONFIRM=yes-isolate-one-qualification-replica \
+ansible-playbook playbooks/knowledge-market-graph.yml
+```
+
+Each tier builds once; higher concurrency reopens the same RocksDB graph via
+`--skip-build`. Summary: `scripts/summarize_market_graph.py`.
+
+Full gate definitions, absolute and relative thresholds, and the phased
+release decision live in
+[`docs/quality/market-readiness-qualification.md`](../../docs/quality/market-readiness-qualification.md).
 
 ## Qualification phases
 

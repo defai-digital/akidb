@@ -242,6 +242,12 @@ failure-domain-aware canonical object storage, external secret management,
 certificate lifecycle management, alert delivery, and scheduled restore
 drills.
 
+This report does **not** claim market-aligned ANN parity, Milvus/Weaviate
+competitor comparison, public SIFT1M/GIST1M release matrices, G2/G3 graph
+market tiers, or multi-hour soak at market scale. Those remain an active
+release gate under
+[market-readiness-qualification.md](market-readiness-qualification.md).
+
 The design deliberately favors full replicas over early sharding: it is
 simple, independently rebuildable, and gives deterministic failover, but
 multiplies index storage and rebuild work by the replica count. Scale out only
