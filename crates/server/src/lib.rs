@@ -45,12 +45,25 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
+
+static RUSTLS_CRYPTO_PROVIDER: OnceLock<Result<(), &'static str>> = OnceLock::new();
+
+fn install_rustls_crypto_provider() -> Result<(), Box<dyn std::error::Error>> {
+    match RUSTLS_CRYPTO_PROVIDER.get_or_init(|| {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .map_err(|_| "a Rustls CryptoProvider was installed before AkiDB startup")
+    }) {
+        Ok(()) => Ok(()),
+        Err(message) => Err((*message).into()),
+    }
+}
 
 /// Adapter from the shared AxEngineEmbedding client to the gRPC EmbeddingProvider trait.
 struct AxEngineProvider {
@@ -96,6 +109,11 @@ pub struct Args {
 }
 
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    // Generation serving combines tonic/reqwest (ring) with the AWS SDK
+    // (AWS-LC), so Rustls cannot infer one process-wide provider from Cargo
+    // features. Select the portable ring provider before constructing TLS.
+    install_rustls_crypto_provider()?;
+
     // Initialize logging
     let log_level = match args.log_level.as_str() {
         "trace" => Level::TRACE,
@@ -862,6 +880,15 @@ fn build_service(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn installs_rustls_crypto_provider_before_tls_configuration() {
+        install_rustls_crypto_provider().expect("first provider installation must succeed");
+        install_rustls_crypto_provider().expect("provider installation must be idempotent");
+
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        let _ = rustls::ServerConfig::builder();
+    }
 
     fn unique_temp_path(name: &str) -> PathBuf {
         let nanos = SystemTime::now()

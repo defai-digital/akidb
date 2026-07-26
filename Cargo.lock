@@ -320,6 +320,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "rustls",
  "tokio",
  "toml",
  "tonic 0.12.3",

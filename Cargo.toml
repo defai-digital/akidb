@@ -36,6 +36,7 @@ tonic = { version = "0.12", features = ["tls"] }
 tonic-build = "0.12"
 prost = "0.13"
 prost-types = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 # Storage
 rocksdb = "0.22"

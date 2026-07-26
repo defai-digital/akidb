@@ -28,6 +28,7 @@ akidb-proto = { path = "../proto" }
 
 tokio.workspace = true
 tonic.workspace = true
+rustls.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 clap = { version = "4.5", features = ["derive"] }
