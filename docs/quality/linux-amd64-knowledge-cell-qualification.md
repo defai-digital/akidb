@@ -67,9 +67,14 @@ requires active-plus-shadow headroom.
 
 | Artifact | Release ID | SHA-256 |
 | --- | --- | --- |
-| AkiDB Linux AMD64 qualification build | `qualification-20260725g` | `90cc6b9e5fa9f8b9e54fbe758a0d0fd2453f6dbdaf836bcbca25eb7c1145b7bb` |
-| AX knowledge gateway Linux AMD64 build | `qualification-20260725b` | `1fe26ef7619aa3ed15464e05889f6b2a40a736021b02aa16da9f8ee1c398c1b9` |
+| AkiDB Linux AMD64 qualification build | `dac7ba24f6066b3d1934962cab1afd5967a3409c` | `28bfc0246be22c14724583738b457b0622cc8af8f5fa47fd990d26bf06db3c14` |
+| AX knowledge gateway Linux AMD64 build | `214ad4d41d0f60aa4a16d93316806cd0fcc343fc` | `b96e18e39e408ab355accee02389197d35b5134f0ddd711f63776bd811f5d75a` |
 | Backup archive | `qualification-20260725-01` | `17f74f7e7abfc6318a931ce141ad1e9d82f7c13d595f04230bf9dfb06d863b0c` |
+
+The two release IDs are the exact source commit SHAs. The final artifacts were
+rebuilt from those committed trees, checksum-verified before deployment,
+rolled across the cell, and then reconciled by a second complete Ansible site
+run with zero changes and zero failures.
 
 The active authority state after all drills was:
 
