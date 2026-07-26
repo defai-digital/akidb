@@ -4,9 +4,8 @@
 
 The ingestion pipeline supports the portable runtime on macOS 26 Apple Silicon
 (Mac Studio preferred; Mini/MacBook also fine for development) and Ubuntu
-24.04+ AMD64. NVIDIA Thor may run the portable path as a secondary host. The
-published Compose images remain AMD64-first. CUDA/GPU-accelerated index steps
-are unsupported.
+24.04+ AMD64. Published Compose images are AMD64. Linux ARM64, NVIDIA Thor,
+and CUDA/GPU-accelerated index steps are unsupported.
 
 This runbook covers the ingestion work queue, not immutable-generation
 activation or replica recovery. NATS upload events are separate from the
