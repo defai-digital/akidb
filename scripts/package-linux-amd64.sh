@@ -19,14 +19,15 @@ if [[ ! "$build_jobs" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
-# Bundled RocksDB is a memory-heavy C++ build. Pin the portable Clang path and
-# a conservative default job count so newer Ubuntu compiler baselines produce
-# the same artifact reliably on the 8-vCPU/32-GiB qualification profile.
-export CC="${CC:-clang}"
-export CXX="${CXX:-clang++}"
+# Bundled RocksDB and numkong are memory-heavy native builds. Use the Ubuntu
+# LTS GCC toolchain by default: Clang 18 can crash in numkong's dynamic-dispatch
+# code generation on GitHub's Ubuntu 24.04 runners. Callers can still override
+# CC/CXX explicitly when qualifying another compiler.
+export CC="${CC:-gcc}"
+export CXX="${CXX:-g++}"
 export AKIDB_GIT_COMMIT="${AKIDB_GIT_COMMIT:-$(git rev-parse HEAD)}"
 # RocksDB 8.10 assumes fixed-width integer types are transitively included.
-# Clang on Ubuntu 26.04 no longer provides that accidental include for every
+# Newer Ubuntu toolchains do not guarantee that accidental include in every
 # translation unit, so inject the standard header while the bundled dependency
 # remains pinned to this release.
 export CXXFLAGS="${CXXFLAGS:+${CXXFLAGS} }-include cstdint"
