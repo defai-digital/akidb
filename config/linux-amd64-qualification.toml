@@ -1,0 +1,73 @@
+# Loopback-only mutable benchmark profile for Ubuntu 24.04+ AMD64.
+# This is deliberately separate from the PostgreSQL-led knowledge cell.
+
+[server]
+host = "127.0.0.1"
+port = 8180
+grpc_port = 50151
+tls_enabled = false
+
+[auth]
+mode = "loopback_optional"
+
+[index]
+index_type = "HNSW"
+hnsw_m = 16
+hnsw_ef_construction = 128
+hnsw_ef_search = 64
+vector_precision = "f32"
+metric = "cosine"
+
+[index.rebuild]
+tombstone_ratio_trigger = 0.10
+max_duration_seconds = 1800
+preferred_hours = [2, 3, 4]
+
+[index.tombstone]
+max_count = 100000
+
+[storage]
+rocksdb_path = "/var/lib/akidb-benchmark/rocksdb"
+wal_enabled = true
+wal_path = "/var/lib/akidb-benchmark/wal"
+
+[storage.minio]
+endpoint = ""
+bucket = ""
+access_key = ""
+secret_key = ""
+use_ssl = false
+
+[sql]
+enabled = false
+backend = "sqlite"
+sqlite_path = "/var/lib/akidb-benchmark/metadata.sqlite"
+
+[observability]
+tracing_enabled = false
+metrics_enabled = true
+metrics_port = 9191
+log_level = "info"
+log_format = "json"
+
+[slo]
+[slo.reference]
+dimensions = 768
+vectors_per_shard = 1000000
+top_k = 10
+nprobe = 64
+batch_size = 1000
+target_p95_ms = 50
+
+[slo.backpressure]
+soft_breach_ms = 50
+hard_breach_ms = 75
+degraded_mode_enabled = true
+
+[embedding]
+enabled = false
+url = "http://127.0.0.1:8081/v1/embeddings"
+model = "disabled"
+dimensions = 768
+timeout_ms = 10000
+max_batch_size = 32

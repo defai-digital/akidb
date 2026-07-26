@@ -16,6 +16,33 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tracing::{debug, warn};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
+const FILTER_CANDIDATE_MULTIPLIER: usize = 2;
+const MIN_FILTER_CANDIDATES: usize = 32;
+
+fn candidate_count(top_k: usize, index_size: usize, tombstoned: usize, filtered: bool) -> usize {
+    if index_size == 0 {
+        return 0;
+    }
+    let base = if filtered {
+        top_k
+            .saturating_mul(FILTER_CANDIDATE_MULTIPLIER)
+            .max(MIN_FILTER_CANDIDATES)
+    } else {
+        top_k.saturating_add(top_k.saturating_add(1) / 2)
+    };
+    let active = index_size.saturating_sub(tombstoned.min(index_size));
+    if active == 0 {
+        return index_size;
+    }
+    let compensated = (base as u128)
+        .saturating_mul(index_size as u128)
+        .saturating_add(active.saturating_sub(1) as u128)
+        / active as u128;
+    usize::try_from(compensated)
+        .unwrap_or(usize::MAX)
+        .min(index_size)
+}
+
 /// Vector storage precision for usearch (GAP-010).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VectorPrecision {
@@ -325,15 +352,18 @@ impl VectorIndex for HnswIndex {
         }
         validate_finite_vector_values(query, "Search")?;
 
-        // Request extra candidates to account for tombstoned vectors. Filters
-        // are evaluated after usearch returns candidates, so filtered searches
-        // must scan the available result set before applying the final top_k.
-        let tombstoned = self.tombstones.deleted_count() as usize;
-        let search_count = if params.filter.is_some() {
-            self.index.size().max(params.top_k)
-        } else {
-            params.top_k + tombstoned + params.top_k / 2
-        };
+        // The service already expands top_k according to its configured
+        // post-filter policy. Add one bounded window here rather than asking
+        // usearch to return the entire index whenever the mandatory workspace
+        // ACL contributes a predicate. Compensate proportionally for
+        // tombstones so normal delete churn does not starve the final top_k.
+        let tombstoned = usize::try_from(self.tombstones.deleted_count()).unwrap_or(usize::MAX);
+        let search_count = candidate_count(
+            params.top_k,
+            self.index.size(),
+            tombstoned,
+            params.filter.is_some(),
+        );
 
         // When nprobe differs from the default ef_search, we must mutate the
         // shared usearch index expansion parameter. Hold ef_search_lock for the
@@ -562,6 +592,15 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id.as_str(), "allowed");
+    }
+
+    #[test]
+    fn filtered_candidate_window_is_bounded_and_tombstone_aware() {
+        assert_eq!(candidate_count(50, 100_000, 0, true), 100);
+        assert_eq!(candidate_count(1, 2, 0, true), 2);
+        assert_eq!(candidate_count(50, 100_000, 50_000, true), 200);
+        assert_eq!(candidate_count(10, 100_000, 0, false), 15);
+        assert_eq!(candidate_count(10, 100, 100, true), 100);
     }
 
     #[test]
@@ -843,7 +882,11 @@ mod tests {
 
         // Self-match with normalized vector: dot product with itself = 1.0
         assert_eq!(results[0].id.as_str(), "vec-1");
-        assert!(results[0].score > 0.99, "IP self-match score was {}", results[0].score);
+        assert!(
+            results[0].score > 0.99,
+            "IP self-match score was {}",
+            results[0].score
+        );
     }
 
     #[test]

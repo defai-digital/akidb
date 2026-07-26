@@ -132,12 +132,83 @@ message SearchResponse {
   bool degraded_mode = 7;
   string context_pack = 8;  // Optional assembled context pack (TextSearch pack=true)
   ServingGenerationEvidence serving_generation = 9;
+  ContextPackV1 context_pack_v1 = 10;
+  RetrievalDiagnostics diagnostics = 11;
 }
 
 message SearchResult {
   string id = 1;
   float score = 2;
   string metadata = 3;
+}
+
+// Canonical, generation-stable source pointer for one packed chunk.
+message RetrievalCitationV1 {
+  string chunk_id = 1;
+  string document_id = 2;
+  string document_version = 3;
+  string source_uri = 4;
+  string source_version = 5;
+  string content_hash = 6;
+  optional uint64 start_offset = 7;
+  optional uint64 end_offset = 8;
+  string generation_id = 9;
+}
+
+message ContextPackItemV1 {
+  string chunk_id = 1;
+  string text = 2;
+  float score = 3;
+  string reason = 4;
+  RetrievalCitationV1 citation = 5;
+}
+
+// Typed form of context_pack. The legacy text field remains for compatibility.
+message ContextPackV1 {
+  string schema_version = 1;
+  repeated ContextPackItemV1 items = 2;
+  uint32 token_budget = 3;
+  uint32 used_tokens = 4;
+  bool truncated = 5;
+  string text = 6;
+}
+
+message GraphEdgeEvidence {
+  string edge_id = 1;
+  string predicate = 2;
+  string source_uri = 3;
+  string source_version = 4;
+  repeated string evidence_chunk_ids = 5;
+  float confidence = 6;
+}
+
+message GraphExpansionEvidence {
+  string result_id = 1;
+  string seed_id = 2;
+  uint32 hop = 3;
+  float score_contribution = 4;
+  repeated GraphEdgeEvidence path = 5;
+}
+
+// Explain data is bounded by the graph request limits and never includes raw
+// document text.
+message RetrievalDiagnostics {
+  string requested_mode = 1;
+  string resolved_mode = 2;
+  repeated string planner_reasons = 3;
+  uint32 dense_candidates = 4;
+  uint32 lexical_candidates = 5;
+  uint32 filtered_candidates = 6;
+  bool filter_applied = 7;
+  bool rerank_applied = 8;
+  bool diversity_applied = 9;
+  uint32 graph_depth = 10;
+  uint32 graph_per_seed_fanout = 11;
+  uint32 graph_max_expanded_nodes = 12;
+  uint32 graph_expanded_nodes = 13;
+  bool graph_truncated = 14;
+  float graph_hop_decay = 15;
+  repeated GraphExpansionEvidence graph_expansions = 16;
 }
 
 // Delete request
@@ -328,6 +399,10 @@ message TextSearchRequest {
   optional float score_threshold = 16;
   string group_by = 17;
   optional uint32 group_size = 18;
+  optional uint32 graph_max_depth = 19;  // default 1, hard maximum 3
+  optional uint32 graph_per_seed_fanout = 20;  // default 16, hard maximum 256
+  optional uint32 graph_max_expanded_nodes = 21;  // default 64, hard maximum 1024
+  bool include_diagnostics = 22;
 }
 
 // ============================================

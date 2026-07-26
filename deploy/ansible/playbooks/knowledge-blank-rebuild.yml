@@ -1,0 +1,150 @@
+---
+- name: Drain one replica and prove a blank-volume canonical rebuild
+  hosts: "{{ lookup('env', 'AKIDB_REBUILD_TARGET') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    knowledge_rebuild_target: "{{ lookup('env', 'AKIDB_REBUILD_TARGET') }}"
+    knowledge_rebuild_confirmation: "{{ lookup('env', 'AKIDB_CONFIRM_BLANK_REBUILD') }}"
+    knowledge_rebuild_quarantine: >-
+      {{
+        akidb_data_root ~ '/rebuild-quarantine/'
+        ~ ansible_facts.date_time.iso8601_basic_short
+      }}
+  pre_tasks:
+    - name: Require an exact, explicitly confirmed full-replica target
+      ansible.builtin.assert:
+        that:
+          - knowledge_rebuild_target in groups['akidb_knowledge_replicas']
+          - inventory_hostname == knowledge_rebuild_target
+          - >-
+            knowledge_rebuild_confirmation
+            == 'rebuild:' ~ inventory_hostname
+        fail_msg: >-
+          Set AKIDB_REBUILD_TARGET to exactly one replica and
+          AKIDB_CONFIRM_BLANK_REBUILD=rebuild:<same-host>.
+
+  tasks:
+    - name: Rebuild one replica inside a fail-closed drain block
+      block:
+        - name: Drain replica from gateway routing
+          ansible.builtin.command:
+            argv:
+              - "{{ ax_gateway_install_root }}/current/bin/node"
+              - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+              - knowledge-control
+              - --postgres-ca
+              - "{{ ax_gateway_config_root }}/tls/ca.crt"
+              - --postgres-server-name
+              - "{{ ax_knowledge_postgres_server_name }}"
+              - drain
+              - --workspace
+              - "{{ akidb_knowledge_workspace }}"
+              - --collection
+              - "{{ akidb_knowledge_collection }}"
+              - --replica
+              - "{{ akidb_knowledge_replica_id }}"
+              - --actor
+              - ansible-blank-rebuild
+          environment:
+            AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+          delegate_to: "{{ groups['ax_knowledge_gateways'][0] }}"
+          become: true
+          become_user: "{{ ax_gateway_user }}"
+          changed_when: true
+          no_log: true
+
+        - name: Stop the selected replica
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: stopped
+
+        - name: Create recoverable rebuild quarantine
+          ansible.builtin.file:
+            path: "{{ knowledge_rebuild_quarantine }}"
+            state: directory
+            owner: "{{ akidb_user }}"
+            group: "{{ akidb_group }}"
+            mode: "0700"
+
+        - name: Inspect disposable local projection directories
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ akidb_data_root }}/generations"
+            - "{{ akidb_data_root }}/generation-control"
+            - "{{ akidb_data_root }}/generation-downloads"
+          register: knowledge_rebuild_local_paths
+
+        - name: Move local projections to recoverable quarantine
+          ansible.builtin.command:
+            argv:
+              - mv
+              - "{{ item.stat.path }}"
+              - "{{ knowledge_rebuild_quarantine }}/{{ item.stat.path | basename }}"
+          loop: "{{ knowledge_rebuild_local_paths.results }}"
+          loop_control:
+            label: "{{ item.stat.path }}"
+          when: item.stat.exists
+          changed_when: true
+
+        - name: Reconcile release, blank directories, and service
+          ansible.builtin.include_role:
+            name: knowledge_replica
+
+        - name: Wait for exact active-generation rebuild readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/current/bin/akidb"
+              - health
+              - --server
+              - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_server_port }}"
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+            AKIDB_WORKSPACE: "{{ akidb_knowledge_workspace }}"
+          register: knowledge_rebuilt_ready
+          retries: 120
+          delay: 5
+          until: knowledge_rebuilt_ready.rc == 0
+          changed_when: false
+
+        - name: Re-admit exactly rebuilt replica
+          ansible.builtin.command:
+            argv:
+              - "{{ ax_gateway_install_root }}/current/bin/node"
+              - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+              - knowledge-control
+              - --postgres-ca
+              - "{{ ax_gateway_config_root }}/tls/ca.crt"
+              - --postgres-server-name
+              - "{{ ax_knowledge_postgres_server_name }}"
+              - drain
+              - --workspace
+              - "{{ akidb_knowledge_workspace }}"
+              - --collection
+              - "{{ akidb_knowledge_collection }}"
+              - --replica
+              - "{{ akidb_knowledge_replica_id }}"
+              - --clear
+              - --actor
+              - ansible-blank-rebuild
+          environment:
+            AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+          delegate_to: "{{ groups['ax_knowledge_gateways'][0] }}"
+          become: true
+          become_user: "{{ ax_gateway_user }}"
+          changed_when: true
+          no_log: true
+      rescue:
+        - name: Leave a failed rebuild target drained with quarantine intact
+          ansible.builtin.fail:
+            msg: >-
+              Blank rebuild failed. {{ inventory_hostname }} remains drained
+              and its old local projection is recoverable at
+              {{ knowledge_rebuild_quarantine }}.
+
+- import_playbook: knowledge-verify.yml

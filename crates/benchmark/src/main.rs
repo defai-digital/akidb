@@ -68,6 +68,10 @@ struct Args {
     /// Optional path for machine-readable JSON benchmark results
     #[arg(long)]
     output_json: Option<PathBuf>,
+
+    /// Benchmark searches against an existing corpus without inserting data
+    #[arg(long, default_value_t = false)]
+    skip_inserts: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +160,8 @@ struct BenchmarkReport {
 struct DatasetMetadata {
     dimension: usize,
     vectors: usize,
+    preexisting_vectors: u64,
+    inserts_skipped: bool,
     batch_size: usize,
     seed: u64,
     id_prefix: String,
@@ -179,21 +185,75 @@ fn command_output(command: &str, args: &[&str]) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+fn os_release_pretty_name(contents: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let value = line.strip_prefix("PRETTY_NAME=")?;
+        let value = value.trim().trim_matches('"');
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+fn linux_cpu_brand(contents: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        (key.trim() == "model name")
+            .then(|| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn linux_memory_bytes(contents: &str) -> Option<u64> {
+    contents.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next()? != "MemTotal:" {
+            return None;
+        }
+        fields.next()?.parse::<u64>().ok()?.checked_mul(1024)
+    })
+}
+
 fn hardware_metadata() -> HardwareMetadata {
+    let os_release = std::fs::read_to_string("/etc/os-release").ok();
+    let cpu_info = std::fs::read_to_string("/proc/cpuinfo").ok();
+    let memory_info = std::fs::read_to_string("/proc/meminfo").ok();
+    let macos_version = command_output("sw_vers", &["-productVersion"]);
+    let macos_cpu = command_output("sysctl", &["-n", "machdep.cpu.brand_string"]);
+    let macos_memory = command_output("sysctl", &["-n", "hw.memsize"]);
+
     HardwareMetadata {
-        os: command_output("sw_vers", &["-productVersion"]),
+        os: if macos_version == "unknown" {
+            os_release
+                .as_deref()
+                .and_then(os_release_pretty_name)
+                .unwrap_or_else(|| "unknown".to_string())
+        } else {
+            format!("macOS {macos_version}")
+        },
         kernel: command_output("uname", &["-sr"]),
         arch: command_output("uname", &["-m"]),
         mac_model: command_output("sysctl", &["-n", "hw.model"]),
-        cpu_brand: command_output("sysctl", &["-n", "machdep.cpu.brand_string"]),
-        memory_bytes: command_output("sysctl", &["-n", "hw.memsize"]).parse().ok(),
+        cpu_brand: if macos_cpu == "unknown" {
+            cpu_info
+                .as_deref()
+                .and_then(linux_cpu_brand)
+                .unwrap_or_else(|| "unknown".to_string())
+        } else {
+            macos_cpu
+        },
+        memory_bytes: macos_memory
+            .parse()
+            .ok()
+            .or_else(|| memory_info.as_deref().and_then(linux_memory_bytes)),
     }
 }
 
 fn software_metadata() -> SoftwareMetadata {
     SoftwareMetadata {
         akidb_version: env!("CARGO_PKG_VERSION").to_string(),
-        git_commit: command_output("git", &["rev-parse", "HEAD"]),
+        git_commit: option_env!("AKIDB_GIT_COMMIT")
+            .map(str::to_string)
+            .unwrap_or_else(|| command_output("git", &["rev-parse", "HEAD"])),
         rustc: command_output("rustc", &["--version"]),
     }
 }
@@ -556,9 +616,9 @@ async fn benchmark_searches_concurrent(
                 nprobe: Some(nprobe),
                 filter: vec![],
                 tag_filter: None,
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+                score_threshold: None,
+                group_by: String::new(),
+                group_size: None,
             };
 
             let start = Instant::now();
@@ -676,14 +736,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check health
     let health_before = check_health(&mut client).await?;
 
-    // Run insert benchmark
-    let insert = benchmark_inserts(&mut client, &args, &id_prefix).await?;
-
-    // Check health again (should show vectors in index)
-    let health_after_insert = check_health(&mut client).await?;
-
-    // Run single insert latency test
-    let single_insert = benchmark_single_inserts(&mut client, &args, &id_prefix, 100).await?;
+    let (insert, health_after_insert, single_insert) = if args.skip_inserts {
+        if health_before.active_vectors == 0 {
+            return Err("--skip-inserts requires an existing non-empty corpus".into());
+        }
+        println!(
+            "\nSkipping inserts; benchmarking the existing {}-vector corpus",
+            health_before.active_vectors
+        );
+        (
+            InsertSummary {
+                vectors_requested: 0,
+                vectors_inserted: 0,
+                duration_ms: 0,
+                throughput_vectors_per_sec: 0.0,
+            },
+            health_before.clone(),
+            SingleInsertSummary {
+                count: 0,
+                latency: latency_stats(&[]),
+            },
+        )
+    } else {
+        let insert = benchmark_inserts(&mut client, &args, &id_prefix).await?;
+        let health_after_insert = check_health(&mut client).await?;
+        let single_insert = benchmark_single_inserts(&mut client, &args, &id_prefix, 100).await?;
+        (insert, health_after_insert, single_insert)
+    };
 
     // Run search benchmark
     let search = benchmark_searches(&mut client, &args).await?;
@@ -692,11 +771,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n========================================");
     println!("  BENCHMARK SUMMARY");
     println!("========================================");
-    println!("Vectors indexed: {}", args.num_vectors + 100);
     println!(
-        "Insert throughput: {:.0} vec/sec",
-        insert.throughput_vectors_per_sec
+        "Vectors available: {}",
+        health_after_insert.active_vectors + single_insert.count as u64
     );
+    if !args.skip_inserts {
+        println!(
+            "Insert throughput: {:.0} vec/sec",
+            insert.throughput_vectors_per_sec
+        );
+    }
 
     println!(
         "Search avg latency: {} us ({:.2} ms)",
@@ -711,12 +795,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Search QPS: {:.0}", search.throughput_queries_per_sec);
 
     let report = BenchmarkReport {
-        benchmark_version: 1,
+        benchmark_version: 2,
         generated_at_unix_ms: generated_at_unix_ms(),
         server: args.server.clone(),
         dataset: DatasetMetadata {
             dimension: args.dimension,
             vectors: args.num_vectors,
+            preexisting_vectors: health_before.active_vectors,
+            inserts_skipped: args.skip_inserts,
             batch_size: args.batch_size,
             seed: args.seed,
             id_prefix,
@@ -737,4 +823,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{linux_cpu_brand, linux_memory_bytes, os_release_pretty_name};
+
+    #[test]
+    fn parses_linux_hardware_metadata() {
+        assert_eq!(
+            os_release_pretty_name("NAME=Ubuntu\nPRETTY_NAME=\"Ubuntu 24.04.3 LTS\"\n"),
+            Some("Ubuntu 24.04.3 LTS".to_string())
+        );
+        assert_eq!(
+            linux_cpu_brand("processor: 0\nmodel name : Example AMD64 CPU\n"),
+            Some("Example AMD64 CPU".to_string())
+        );
+        assert_eq!(
+            linux_memory_bytes("MemTotal:       31796256 kB\n"),
+            Some(32_559_366_144)
+        );
+    }
 }

@@ -47,6 +47,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build and package
+        env:
+          AKIDB_BUILD_JOBS: "2"
         run: ./scripts/package-linux-amd64.sh "${GITHUB_SHA}" dist
 
       - name: Verify checksum and contents
@@ -70,7 +72,7 @@ jobs:
           manifest = json.loads(Path("verify/manifest.json").read_text())
           workspace = tomllib.loads(Path("../Cargo.toml").read_text())
           assert manifest["version"] == workspace["workspace"]["package"]["version"]
-          assert manifest["akidb_server_features"] == ["generation-s3"]
+          assert manifest["akidb_server_features"] == ["generation-postgres"]
           PY
 
       - name: Attest build provenance

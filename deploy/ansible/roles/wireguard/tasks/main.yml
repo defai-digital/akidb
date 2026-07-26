@@ -9,6 +9,19 @@
       - ansible_host is defined
       - groups['akidb_cluster'] | length >= 2
 
+- name: Reconcile private service-name resolution
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} AKIDB PRIVATE OVERLAY"
+    block: |
+      {% for host in groups['akidb_cluster'] | sort %}
+      {{ hostvars[host].akidb_overlay_address }} {{ host }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+  when: akidb_manage_overlay_hosts | bool
+
 - name: Install WireGuard
   ansible.builtin.apt:
     name:
@@ -177,7 +190,7 @@
   changed_when: "'Rule added' in akidb_ufw_shard_rule.stdout"
   when:
     - akidb_manage_ufw | bool
-    - inventory_hostname in groups['akidb_shards']
+    - inventory_hostname in groups.get('akidb_shards', [])
 
 - name: Allow coordinator traffic only through the trusted overlay
   ansible.builtin.command:
@@ -201,7 +214,127 @@
   changed_when: "'Rule added' in akidb_ufw_coordinator_rule.stdout"
   when:
     - akidb_manage_ufw | bool
-    - inventory_hostname in groups['akidb_coordinators']
+    - inventory_hostname in groups.get('akidb_coordinators', [])
+
+- name: Allow immutable knowledge-replica traffic through the overlay
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - in
+      - "on"
+      - "{{ akidb_wireguard_interface }}"
+      - from
+      - "{{ akidb_overlay_cidr }}"
+      - to
+      - any
+      - port
+      - "{{ akidb_knowledge_server_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - AkiDB knowledge replica overlay
+  register: akidb_ufw_knowledge_replica_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_replica_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('akidb_knowledge_replicas', [])
+
+- name: Allow knowledge-replica Prometheus traffic through the overlay
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - in
+      - "on"
+      - "{{ akidb_wireguard_interface }}"
+      - from
+      - "{{ akidb_overlay_cidr }}"
+      - to
+      - any
+      - port
+      - "{{ akidb_knowledge_metrics_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - AkiDB knowledge metrics overlay
+  register: akidb_ufw_knowledge_metrics_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_metrics_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('akidb_knowledge_replicas', [])
+
+- name: Allow AX knowledge-gateway traffic through the overlay
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - in
+      - "on"
+      - "{{ akidb_wireguard_interface }}"
+      - from
+      - "{{ akidb_overlay_cidr }}"
+      - to
+      - any
+      - port
+      - "{{ akidb_knowledge_gateway_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - AX knowledge gateway overlay
+  register: akidb_ufw_knowledge_gateway_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_gateway_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('ax_knowledge_gateways', [])
+
+- name: Allow knowledge-control PostgreSQL through the overlay
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - in
+      - "on"
+      - "{{ akidb_wireguard_interface }}"
+      - from
+      - "{{ akidb_overlay_cidr }}"
+      - to
+      - any
+      - port
+      - "{{ akidb_knowledge_postgres_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - AX knowledge PostgreSQL overlay
+  register: akidb_ufw_knowledge_postgres_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_postgres_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('akidb_knowledge_dependencies', [])
+
+- name: Allow knowledge MinIO through the overlay
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - in
+      - "on"
+      - "{{ akidb_wireguard_interface }}"
+      - from
+      - "{{ akidb_overlay_cidr }}"
+      - to
+      - any
+      - port
+      - "{{ akidb_knowledge_minio_port | string }}"
+      - proto
+      - tcp
+      - comment
+      - AkiDB knowledge MinIO overlay
+  register: akidb_ufw_knowledge_minio_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_minio_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('akidb_knowledge_dependencies', [])
 
 - name: Enable UFW after administration and overlay rules exist
   ansible.builtin.command:

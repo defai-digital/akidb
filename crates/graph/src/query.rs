@@ -3,7 +3,7 @@
 use crate::error::GraphResult;
 use crate::model::{
     DeleteNodeResult, Direction, EdgeKind, GraphEdge, GraphEdgeId, GraphMutationBatch,
-    GraphNeighbor, GraphNode, GraphNodeId, GraphPath, GraphStats, RelatedChunk,
+    GraphNeighbor, GraphNode, GraphNodeId, GraphPath, GraphStats, RelatedChunk, RelatedChunkTrace,
 };
 use std::collections::{HashSet, VecDeque};
 
@@ -43,6 +43,21 @@ pub trait GraphIndex: Send + Sync {
         &self,
         request: RelatedChunksRequest,
     ) -> GraphResult<Vec<RelatedChunk>> {
+        Ok(self
+            .related_chunks_with_trace(request)?
+            .into_iter()
+            .map(|trace| RelatedChunk {
+                vector_id: trace.vector_id,
+                via_node: trace.via_node,
+            })
+            .collect())
+    }
+    /// Traverse a bounded neighborhood and retain the evidence-bearing path for
+    /// every reachable chunk. The first deterministic path wins.
+    fn related_chunks_with_trace(
+        &self,
+        request: RelatedChunksRequest,
+    ) -> GraphResult<Vec<RelatedChunkTrace>> {
         if request.limit == 0 || request.max_depth == 0 {
             return Ok(Vec::new());
         }
@@ -55,9 +70,9 @@ pub trait GraphIndex: Send + Sync {
         let mut chunks = Vec::new();
         let mut seen_chunks = HashSet::new();
         let mut visited = HashSet::from([request.node_id.clone()]);
-        let mut queue = VecDeque::from([(request.node_id.clone(), 0u8)]);
+        let mut queue = VecDeque::from([(request.node_id.clone(), 0u8, Vec::<GraphEdge>::new())]);
 
-        while let Some((node_id, depth)) = queue.pop_front() {
+        while let Some((node_id, depth, path)) = queue.pop_front() {
             if depth >= request.max_depth {
                 continue;
             }
@@ -72,11 +87,16 @@ pub trait GraphIndex: Send + Sync {
                 if !request.node_id.is_same_workspace(&neighbor_id) {
                     continue;
                 }
+                let mut next_path = path.clone();
+                next_path.push(neighbor.edge);
+                let hop = depth.saturating_add(1);
                 if let Some(vector_id) = neighbor_id.as_chunk_vector_id() {
                     if neighbor_id != request.node_id && seen_chunks.insert(vector_id.clone()) {
-                        chunks.push(RelatedChunk {
+                        chunks.push(RelatedChunkTrace {
                             vector_id,
                             via_node: neighbor_id.clone(),
+                            hop,
+                            path_edges: next_path.clone(),
                         });
                         if chunks.len() >= request.limit {
                             return Ok(chunks);
@@ -84,7 +104,7 @@ pub trait GraphIndex: Send + Sync {
                     }
                 }
                 if depth + 1 < request.max_depth && visited.insert(neighbor_id.clone()) {
-                    queue.push_back((neighbor_id, depth + 1));
+                    queue.push_back((neighbor_id, depth + 1, next_path));
                 }
             }
         }

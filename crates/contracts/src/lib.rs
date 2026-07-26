@@ -40,6 +40,7 @@ pub use knowledge::{
 };
 pub use knowledge_bundle::{
     KnowledgeAssertionState, KnowledgeBundleEdge, KnowledgeBundleEntry, KnowledgeBundleHeader,
-    KnowledgeBundleNode, KnowledgeBundleRecord, KnowledgeEdgeKind, KnowledgeNodeKind,
+    KnowledgeBundleNode, KnowledgeBundleRecord, KnowledgeEdgeKind, KnowledgeMutationPayload,
+    KnowledgeNodeKind,
 };
 pub use wal::WalContract;

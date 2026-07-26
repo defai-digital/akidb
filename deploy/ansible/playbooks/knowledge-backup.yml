@@ -1,0 +1,182 @@
+---
+- name: Validate explicit canonical backup inputs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    knowledge_backup_id: "{{ lookup('env', 'AKIDB_KNOWLEDGE_BACKUP_ID') }}"
+    knowledge_backup_controller_dir: "{{ lookup('env', 'AKIDB_KNOWLEDGE_BACKUP_DIR') }}"
+  tasks:
+    - name: Require a unique backup id and absolute controller destination
+      ansible.builtin.assert:
+        that:
+          - knowledge_backup_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{6,63}$')
+          - knowledge_backup_controller_dir is match('^/[^\\n]+$')
+
+    - name: Create protected controller backup directory
+      ansible.builtin.file:
+        path: "{{ knowledge_backup_controller_dir }}"
+        state: directory
+        mode: "0700"
+
+- name: Capture PostgreSQL authority and canonical MinIO objects
+  hosts: akidb_knowledge_dependencies
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    knowledge_backup_id: "{{ lookup('env', 'AKIDB_KNOWLEDGE_BACKUP_ID') }}"
+    knowledge_backup_root: "/var/backups/akidb-knowledge"
+    knowledge_backup_dir: "{{ knowledge_backup_root }}/{{ knowledge_backup_id }}"
+    knowledge_backup_archive: "{{ knowledge_backup_root }}/{{ knowledge_backup_id }}.tar.gz"
+  tasks:
+    - name: Create protected backup root traversable by PostgreSQL
+      ansible.builtin.file:
+        path: "{{ knowledge_backup_root }}"
+        state: directory
+        owner: root
+        group: postgres
+        mode: "0710"
+
+    - name: Inspect immutable backup destination
+      ansible.builtin.stat:
+        path: "{{ knowledge_backup_archive }}"
+      register: knowledge_existing_backup
+
+    - name: Refuse to overwrite an existing backup id
+      ansible.builtin.assert:
+        that:
+          - not knowledge_existing_backup.stat.exists
+        fail_msg: "Backup ids are immutable; choose a new AKIDB_KNOWLEDGE_BACKUP_ID."
+
+    - name: Create protected backup staging directory
+      ansible.builtin.file:
+        path: "{{ knowledge_backup_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+
+    - name: Dump the authoritative PostgreSQL database
+      ansible.builtin.command:
+        argv:
+          - pg_dump
+          - --format=custom
+          - --no-owner
+          - --no-privileges
+          - --file
+          - "{{ knowledge_backup_dir }}/knowledge-control.pgdump"
+          - "{{ akidb_knowledge_postgres_database }}"
+      become_user: postgres
+      changed_when: true
+
+    - name: Mirror canonical immutable knowledge objects
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/mc
+          - mirror
+          - --overwrite
+          - "knowledge/{{ akidb_knowledge_minio_bucket }}"
+          - "{{ knowledge_backup_dir }}/minio/{{ akidb_knowledge_minio_bucket }}"
+      environment:
+        MC_CONFIG_DIR: /root/.mc-akidb-knowledge
+        SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
+      changed_when: true
+
+    - name: Write machine-readable backup scope
+      ansible.builtin.copy:
+        content: |
+          {
+            "schema_version": 1,
+            "backup_id": {{ knowledge_backup_id | to_json }},
+            "workspace": {{ akidb_knowledge_workspace | to_json }},
+            "collection": {{ akidb_knowledge_collection | to_json }},
+            "postgres_database": {{ akidb_knowledge_postgres_database | to_json }},
+            "minio_bucket": {{ akidb_knowledge_minio_bucket | to_json }},
+            "disposable_local_akidb_indexes_included": false
+          }
+        dest: "{{ knowledge_backup_dir }}/backup-scope.json"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Create immutable canonical backup archive
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --sort=name
+          - --owner=0
+          - --group=0
+          - --numeric-owner
+          - -czf
+          - "{{ knowledge_backup_archive }}"
+          - -C
+          - "{{ knowledge_backup_root }}"
+          - "{{ knowledge_backup_id }}"
+      changed_when: true
+
+    - name: Protect canonical backup archive
+      ansible.builtin.file:
+        path: "{{ knowledge_backup_archive }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Calculate backup archive evidence
+      ansible.builtin.stat:
+        path: "{{ knowledge_backup_archive }}"
+        checksum_algorithm: sha256
+      register: knowledge_backup_evidence
+
+    - name: Fetch canonical backup to the protected controller destination
+      ansible.builtin.fetch:
+        src: "{{ knowledge_backup_archive }}"
+        dest: "{{ lookup('env', 'AKIDB_KNOWLEDGE_BACKUP_DIR') }}/{{ knowledge_backup_id }}.tar.gz"
+        flat: true
+        validate_checksum: true
+
+    - name: Publish backup evidence for the audit play
+      ansible.builtin.set_fact:
+        knowledge_backup_audit_details:
+          backup_id: "{{ knowledge_backup_id }}"
+          sha256: "{{ knowledge_backup_evidence.stat.checksum }}"
+          size_bytes: "{{ knowledge_backup_evidence.stat.size }}"
+          postgres_database: "{{ akidb_knowledge_postgres_database }}"
+          minio_bucket: "{{ akidb_knowledge_minio_bucket }}"
+          local_akidb_indexes_included: false
+
+- name: Record the completed canonical backup in the authoritative audit
+  hosts: ax_knowledge_gateways[0]
+  become: true
+  become_user: "{{ ax_gateway_user }}"
+  gather_facts: false
+  tasks:
+    - name: Append bounded backup audit evidence
+      ansible.builtin.command:
+        argv:
+          - "{{ ax_gateway_install_root }}/current/bin/node"
+          - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+          - knowledge-control
+          - --postgres-ca
+          - "{{ ax_gateway_config_root }}/tls/ca.crt"
+          - --postgres-server-name
+          - "{{ ax_knowledge_postgres_server_name }}"
+          - maintenance-audit
+          - --workspace
+          - "{{ akidb_knowledge_workspace }}"
+          - --collection
+          - "{{ akidb_knowledge_collection }}"
+          - --action
+          - knowledge.backup.completed
+          - --actor
+          - ansible-backup
+          - --details-json
+          - >-
+            {{
+              hostvars[groups['akidb_knowledge_dependencies'][0]]
+              .knowledge_backup_audit_details | to_json
+            }}
+      environment:
+        AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+      changed_when: true
+      no_log: true

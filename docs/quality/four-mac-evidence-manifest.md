@@ -5,7 +5,10 @@ run. It complements `four-mac-cell-validation.md`: the validation document
 defines gates and schema, while this manifest defines the files that must exist
 before AkiDB can mark the four-Mac cell validation complete.
 
-Do not use synthetic smoke artifacts to close the README checkbox. The checkbox
+This manifest is retained for the experimental Thunderbolt path and does not
+qualify the PostgreSQL-led full-replica knowledge-serving design.
+
+Do not use synthetic smoke artifacts to make a qualification claim. Validation
 can be marked complete only after the final artifact is built from measured
 four-Mac hardware inputs and passes `validate-four-mac-evidence.py`.
 
@@ -132,4 +135,3 @@ The four-Mac validation remains pending unless all of these are true:
 - The cell benchmark uses the same workload shape as the one-Mac baseline.
 - The final throughput ratio is at least `2.5x` the one-Mac reference.
 - All six Thunderbolt links and both degraded-mode tests are present.
-

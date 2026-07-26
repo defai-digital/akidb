@@ -1,0 +1,147 @@
+---
+- name: Validate knowledge-cell topology and local release inputs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require the full-replica topology
+      ansible.builtin.assert:
+        that:
+          - groups.get('akidb_knowledge_replicas', []) | length >= 3
+          - groups.get('ax_knowledge_gateways', []) | length >= 2
+          - groups.get('akidb_knowledge_dependencies', []) | length == 1
+          - akidb_knowledge_min_ready_replicas | int >= 2
+          - akidb_knowledge_min_ready_replicas | int <= groups['akidb_knowledge_replicas'] | length
+          - akidb_knowledge_min_failure_domains | int >= 2
+        fail_msg: >-
+          Qualification requires three full replicas, two stateless gateways,
+          one lab dependency host, and a quorum of at least two.
+
+    - name: Validate immutable release identifiers and checksums
+      ansible.builtin.assert:
+        that:
+          - akidb_knowledge_release_id is match('^[A-Za-z0-9._-]{7,64}$')
+          - akidb_knowledge_artifact_sha256 is match('^[a-fA-F0-9]{64}$')
+          - ax_gateway_release_id is match('^[A-Za-z0-9._-]{7,64}$')
+          - ax_gateway_artifact_sha256 is match('^[a-fA-F0-9]{64}$')
+
+    - name: Inspect local immutable artifacts
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+        checksum_algorithm: sha256
+      loop:
+        - name: AkiDB
+          path: "{{ akidb_knowledge_artifact_path }}"
+          sha256: "{{ akidb_knowledge_artifact_sha256 }}"
+        - name: AX gateway
+          path: "{{ ax_gateway_artifact_path }}"
+          sha256: "{{ ax_gateway_artifact_sha256 }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: knowledge_local_artifacts
+
+    - name: Require exact local artifact checksums
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+          - item.stat.checksum == item.item.sha256 | lower
+      loop: "{{ knowledge_local_artifacts.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Require non-empty protected credentials
+      ansible.builtin.assert:
+        that:
+          - akidb_knowledge_read_token | length >= 24
+          - akidb_knowledge_control_token | length >= 24
+          - akidb_knowledge_read_token != akidb_knowledge_control_token
+          - ax_knowledge_gateway_token | length >= 24
+          - ax_knowledge_postgres_url | length > 0
+          - akidb_knowledge_minio_root_access_key | length >= 3
+          - akidb_knowledge_minio_root_secret_key | length >= 24
+          - akidb_knowledge_minio_access_key | length >= 3
+          - akidb_knowledge_minio_secret_key | length >= 24
+          - ax_knowledge_minio_publish_access_key | length >= 3
+          - ax_knowledge_minio_publish_secret_key | length >= 24
+          - akidb_knowledge_minio_root_access_key != akidb_knowledge_minio_access_key
+          - akidb_knowledge_minio_root_access_key != ax_knowledge_minio_publish_access_key
+          - akidb_knowledge_minio_access_key != ax_knowledge_minio_publish_access_key
+          - "'\n' not in ax_knowledge_postgres_url"
+          - "'\n' not in akidb_knowledge_read_token"
+          - "'\n' not in ax_knowledge_gateway_token"
+      no_log: true
+
+    - name: Inspect local PKI material
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: >-
+        {{
+          [akidb_knowledge_pki_dir ~ '/ca.crt']
+          + (
+            groups['akidb_cluster']
+            | map('regex_replace', '^', akidb_knowledge_pki_dir ~ '/hosts/')
+            | map('regex_replace', '$', '.crt')
+            | list
+          )
+          + (
+            groups['akidb_cluster']
+            | map('regex_replace', '^', akidb_knowledge_pki_dir ~ '/hosts/')
+            | map('regex_replace', '$', '.key')
+            | list
+          )
+        }}
+      register: knowledge_pki_files
+
+    - name: Require every PKI file
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+      loop: "{{ knowledge_pki_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+- name: Validate Ubuntu AMD64 knowledge-cell hosts
+  hosts: akidb_cluster
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: preflight
+
+- name: Validate full-replica disk headroom
+  hosts: akidb_knowledge_replicas
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Locate the data-volume mount
+      ansible.builtin.set_fact:
+        akidb_knowledge_data_mount: >-
+          {{
+            (
+              ansible_facts['mounts']
+              | selectattr('mount', 'equalto', '/var/lib/akidb')
+              | list
+              | first
+            )
+            | default(
+              ansible_facts['mounts']
+              | selectattr('mount', 'equalto', '/')
+              | list
+              | first,
+              true
+            )
+          }}
+
+    - name: Require active-plus-shadow generation headroom
+      ansible.builtin.assert:
+        that:
+          - >-
+            akidb_knowledge_data_mount.size_available | int
+            >= akidb_knowledge_min_available_disk_mb | int * 1024 * 1024
+        fail_msg: >-
+          {{ inventory_hostname }} requires at least
+          {{ akidb_knowledge_min_available_disk_mb }} MiB free for an active
+          generation plus a shadow rebuild.

@@ -1,0 +1,27 @@
+[Unit]
+Description=MinIO canonical object store for AkiDB qualification
+After=network-online.target wg-quick@{{ akidb_wireguard_interface }}.service
+Wants=network-online.target
+Requires=wg-quick@{{ akidb_wireguard_interface }}.service
+
+[Service]
+Type=notify
+User=minio
+Group=minio
+UMask=0027
+EnvironmentFile=/etc/minio/knowledge.env
+ExecStart=/usr/local/bin/minio server /var/lib/minio/knowledge --address {{ akidb_overlay_address }}:{{ akidb_knowledge_minio_port }} --console-address 127.0.0.1:{{ akidb_knowledge_minio_console_port }} --certs-dir /etc/minio/certs
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/minio
+
+[Install]
+WantedBy=multi-user.target

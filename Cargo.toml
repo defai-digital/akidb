@@ -32,7 +32,7 @@ repository = "https://github.com/defai-digital/akidb"
 tokio = { version = "1.35", features = ["full"] }
 
 # gRPC
-tonic = "0.11"
+tonic = { version = "0.11", features = ["tls"] }
 tonic-build = "0.11"
 prost = "0.12"
 prost-types = "0.12"
@@ -58,6 +58,7 @@ tracing-opentelemetry = "0.23"
 
 # Metrics
 prometheus = "0.14"
+fs2 = "0.4"
 
 # Testing
 criterion = "0.5"

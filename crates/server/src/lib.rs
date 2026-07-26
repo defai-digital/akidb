@@ -13,7 +13,7 @@ use akidb_embedding::ax_engine::AxEngineEmbedding;
 use akidb_faiss::{DistanceMetric, HnswConfig, HnswIndex, VectorIndex, VectorPrecision};
 use akidb_graph::NativeGraphIndex;
 use akidb_grpc::{
-    AdminState, AkiDbService, AuthInterceptor, AuthRuntime, EmbeddingProvider,
+    export_metrics, AdminState, AkiDbService, AuthInterceptor, AuthRuntime, EmbeddingProvider,
     ManagementServiceImpl, ManagementState, StagingRegistry,
 };
 #[cfg(feature = "generation-s3")]
@@ -22,6 +22,8 @@ use akidb_grpc::{
     GenerationManagementServiceImpl, GenerationMaterializer, GenerationMaterializerConfig,
     S3GenerationBundleFetcher, S3GenerationBundleFetcherConfig,
 };
+#[cfg(feature = "generation-postgres")]
+use akidb_grpc::{PostgresReplicaWorker, ReplicaWorkerConfig};
 use akidb_proto::akidb_server::AkidbServer;
 #[cfg(feature = "generation-s3")]
 use akidb_proto::generation_management_server::GenerationManagementServer;
@@ -32,12 +34,21 @@ use akidb_sql::{SqliteMetadataIndex, POSTGRES_BACKEND, SQLITE_BACKEND};
 #[cfg(feature = "generation-s3")]
 use akidb_storage::{GenerationStore, ServingStateStore};
 use akidb_storage::{IdMapping, LocalSnapshotBackend, RocksDbBackend, SnapshotManager};
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Method, Request as HyperRequest, Response as HyperResponse, StatusCode};
+use hyper_util::rt::TokioIo;
 #[cfg(feature = "generation-s3")]
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tonic::transport::Server;
+use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -133,6 +144,12 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let auth_runtime = AuthRuntime::bootstrap(config.auth.clone(), &bind_host)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let _metrics_task = if config.observability.metrics_enabled {
+        let metrics_addr = SocketAddr::new(addr.ip(), config.observability.metrics_port);
+        Some(start_metrics_server(metrics_addr).await?)
+    } else {
+        None
+    };
     if config.generation_serving.enabled {
         if args.standalone {
             return Err(
@@ -185,9 +202,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         config.management.audit_max_entries,
         env!("CARGO_PKG_VERSION"),
         auth_mode,
-        // Tonic TLS is not wired in this binary yet; report transport truth,
-        // not merely the configured intent.
-        false,
+        config.server.tls_enabled,
     ));
     let management = ManagementServiceImpl::new(management_state);
     let management_interceptor = AuthInterceptor::new(auth_runtime);
@@ -195,7 +210,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting gRPC server on {}", addr);
 
     // Start server with auth interceptor (GAP-001)
-    Server::builder()
+    server_builder(&config)?
         .add_service(AkidbServer::with_interceptor(service, data_interceptor))
         .add_service(ManagementServiceServer::with_interceptor(
             management,
@@ -215,19 +230,6 @@ async fn run_generation_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_generation_paths(config)?;
     let generation = &config.generation_serving;
-    let control_auth_runtime = AuthRuntime::bootstrap_generation_control(
-        akidb_common::config::AuthConfig {
-            mode: AuthMode::Required,
-            token_file: generation.control_token_file.clone(),
-            token: generation.control_token.clone(),
-            acl: config.auth.acl.clone(),
-        },
-        &addr.ip().to_string(),
-    )
-    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-    if auth_runtime.token.is_some() && auth_runtime.token == control_auth_runtime.token {
-        return Err("generation-control token must differ from the read data-plane token".into());
-    }
     let generation_store = Arc::new(GenerationStore::open(&generation.generation_root)?);
     let materializer = Arc::new(GenerationMaterializer::new(
         generation_store,
@@ -240,6 +242,8 @@ async fn run_generation_server(
             hnsw_ef_search: config.index.hnsw_ef_search as usize,
             vector_precision: VectorPrecision::parse(&config.index.vector_precision)?,
             distance_metric: DistanceMetric::parse(&config.index.metric)?,
+            minimum_free_bytes_after_build: generation.minimum_free_bytes_after_build,
+            estimated_build_overhead_percent: generation.estimated_build_overhead_percent,
             ..Default::default()
         },
     ));
@@ -287,9 +291,6 @@ async fn run_generation_server(
             require_version_or_digest_key: generation.require_version_or_digest_key,
         },
     )?);
-    let generation_management =
-        GenerationManagementServiceImpl::new(Arc::new(data_plane.clone()), fetcher);
-
     let metrics = Arc::new(SimpleMetricsSource::new());
     let governor = Arc::new(ResourceGovernor::new(
         ResourceGovernorConfig::default(),
@@ -307,31 +308,195 @@ async fn run_generation_server(
         config.management.audit_max_entries,
         env!("CARGO_PKG_VERSION"),
         auth_mode,
-        false,
+        config.server.tls_enabled,
     ));
     let management = ManagementServiceImpl::new(management_state);
 
-    info!(
-        %addr,
-        replica_id = %generation.replica_id,
-        "Starting immutable single-node generation serving preview"
-    );
-    Server::builder()
-        .add_service(AkidbServer::with_interceptor(
-            data_plane,
-            AuthInterceptor::new(auth_runtime.clone()),
-        ))
-        .add_service(GenerationManagementServer::with_interceptor(
-            generation_management,
-            AuthInterceptor::new(control_auth_runtime),
-        ))
-        .add_service(ManagementServiceServer::with_interceptor(
-            management,
-            AuthInterceptor::new(auth_runtime),
-        ))
-        .serve(addr)
-        .await?;
+    if generation.replica_control.enabled {
+        #[cfg(not(feature = "generation-postgres"))]
+        {
+            return Err(
+                "generation_serving.replica_control.enabled requires an akidb-server build with --features generation-postgres"
+                    .into(),
+            );
+        }
+        #[cfg(feature = "generation-postgres")]
+        {
+            let postgres_url = std::env::var(&generation.replica_control.postgres_url_env)
+                .map_err(|_| {
+                    format!(
+                        "PostgreSQL authority URL is required in environment variable {}",
+                        generation.replica_control.postgres_url_env
+                    )
+                })?;
+            let worker = Arc::new(PostgresReplicaWorker::new(
+                ReplicaWorkerConfig {
+                    replica_id: generation.replica_id.clone(),
+                    endpoint: generation.replica_control.endpoint.clone(),
+                    failure_domain: generation.replica_control.failure_domain.clone(),
+                    workspace_id: config.auth.acl.default_workspace.clone(),
+                    collection: generation.default_collection.clone(),
+                    postgres_url,
+                    postgres_tls_mode: generation.replica_control.postgres_tls_mode,
+                    postgres_ca_certificate_path: generation
+                        .replica_control
+                        .postgres_ca_certificate_path
+                        .as_ref()
+                        .map(PathBuf::from),
+                    poll_interval: std::time::Duration::from_millis(
+                        generation.replica_control.poll_interval_ms,
+                    ),
+                    heartbeat_interval: std::time::Duration::from_millis(
+                        generation.replica_control.heartbeat_interval_ms,
+                    ),
+                    index_format_version: generation.replica_control.index_format_version.clone(),
+                    supported_graph_schema_versions: generation
+                        .replica_control
+                        .supported_graph_schema_versions
+                        .clone(),
+                    generation_gc_enabled: generation.replica_control.generation_gc_enabled,
+                    generation_gc_interval: std::time::Duration::from_millis(
+                        generation.replica_control.generation_gc_interval_ms,
+                    ),
+                    generation_gc_minimum_age: std::time::Duration::from_millis(
+                        generation.replica_control.generation_gc_minimum_age_ms,
+                    ),
+                    generation_gc_dry_run: generation.replica_control.generation_gc_dry_run,
+                    software_version: env!("CARGO_PKG_VERSION").to_string(),
+                },
+                Arc::new(data_plane.clone()),
+                fetcher,
+            )?);
+            let worker_task = tokio::spawn(worker.run());
+            info!(
+                %addr,
+                replica_id = %generation.replica_id,
+                endpoint = %generation.replica_control.endpoint,
+                failure_domain = %generation.replica_control.failure_domain,
+                "Starting PostgreSQL-authoritative immutable generation replica"
+            );
+            let result = server_builder(config)?
+                .add_service(AkidbServer::with_interceptor(
+                    data_plane,
+                    AuthInterceptor::new(auth_runtime.clone()),
+                ))
+                .add_service(ManagementServiceServer::with_interceptor(
+                    management,
+                    AuthInterceptor::new(auth_runtime),
+                ))
+                .serve(addr)
+                .await;
+            worker_task.abort();
+            result?;
+        }
+    } else {
+        let control_auth_runtime = AuthRuntime::bootstrap_generation_control(
+            akidb_common::config::AuthConfig {
+                mode: AuthMode::Required,
+                token_file: generation.control_token_file.clone(),
+                token: generation.control_token.clone(),
+                acl: config.auth.acl.clone(),
+            },
+            &addr.ip().to_string(),
+        )
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        if auth_runtime.token.is_some() && auth_runtime.token == control_auth_runtime.token {
+            return Err(
+                "generation-control token must differ from the read data-plane token".into(),
+            );
+        }
+        let generation_management =
+            GenerationManagementServiceImpl::new(Arc::new(data_plane.clone()), fetcher);
+        info!(
+            %addr,
+            replica_id = %generation.replica_id,
+            "Starting immutable single-node generation serving preview"
+        );
+        server_builder(config)?
+            .add_service(AkidbServer::with_interceptor(
+                data_plane,
+                AuthInterceptor::new(auth_runtime.clone()),
+            ))
+            .add_service(GenerationManagementServer::with_interceptor(
+                generation_management,
+                AuthInterceptor::new(control_auth_runtime),
+            ))
+            .add_service(ManagementServiceServer::with_interceptor(
+                management,
+                AuthInterceptor::new(auth_runtime),
+            ))
+            .serve(addr)
+            .await?;
+    }
     Ok(())
+}
+
+fn server_builder(config: &AkiDbConfig) -> Result<Server, Box<dyn std::error::Error>> {
+    let mut builder = Server::builder();
+    if config.server.tls_enabled {
+        let cert_path = config
+            .server
+            .tls_cert_path
+            .as_deref()
+            .ok_or("server.tls_cert_path is required when TLS is enabled")?;
+        let key_path = config
+            .server
+            .tls_key_path
+            .as_deref()
+            .ok_or("server.tls_key_path is required when TLS is enabled")?;
+        let certificate = std::fs::read(cert_path)?;
+        let private_key = std::fs::read(key_path)?;
+        builder = builder.tls_config(
+            ServerTlsConfig::new().identity(Identity::from_pem(certificate, private_key)),
+        )?;
+    }
+    Ok(builder)
+}
+
+async fn start_metrics_server(
+    address: SocketAddr,
+) -> Result<JoinHandle<()>, Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind(address).await?;
+    info!(%address, "AkiDB Prometheus endpoint listening");
+    Ok(tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(%error, "AkiDB metrics listener failed");
+                    break;
+                }
+            };
+            tokio::spawn(async move {
+                let connection = http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service_fn(metrics_response));
+                if let Err(error) = connection.await {
+                    warn!(%error, "AkiDB metrics connection failed");
+                }
+            });
+        }
+    }))
+}
+
+async fn metrics_response(
+    request: HyperRequest<hyper::body::Incoming>,
+) -> Result<HyperResponse<Full<Bytes>>, Infallible> {
+    let response = match (request.method(), request.uri().path()) {
+        (&Method::GET, "/metrics") => HyperResponse::builder()
+            .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+            .header("cache-control", "no-store")
+            .body(Full::new(Bytes::from(export_metrics())))
+            .expect("static metrics response is valid"),
+        (&Method::GET, "/healthz") => HyperResponse::builder()
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from_static(br#"{"status":"alive"}"#)))
+            .expect("static health response is valid"),
+        _ => HyperResponse::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Full::new(Bytes::from_static(b"not found")))
+            .expect("static not-found response is valid"),
+    };
+    Ok(response)
 }
 
 #[cfg(feature = "generation-s3")]
@@ -381,6 +546,68 @@ fn validate_generation_paths(config: &AkiDbConfig) -> Result<(), Box<dyn std::er
     {
         return Err("generation serving index limits must be greater than zero".into());
     }
+    if !(100..=1000).contains(&generation.estimated_build_overhead_percent) {
+        return Err(
+            "generation_serving.estimated_build_overhead_percent must be between 100 and 1000"
+                .into(),
+        );
+    }
+    if generation.replica_control.enabled {
+        if !is_valid_env_name(&generation.replica_control.postgres_url_env) {
+            return Err(
+                "generation_serving.replica_control.postgres_url_env must be a valid environment variable name"
+                    .into(),
+            );
+        }
+        for (field, value) in [
+            (
+                "generation_serving.replica_control.endpoint",
+                generation.replica_control.endpoint.as_str(),
+            ),
+            (
+                "generation_serving.replica_control.failure_domain",
+                generation.replica_control.failure_domain.as_str(),
+            ),
+            (
+                "generation_serving.replica_control.index_format_version",
+                generation.replica_control.index_format_version.as_str(),
+            ),
+        ] {
+            if value.trim().is_empty() || value.trim() != value {
+                return Err(format!("{field} must be non-empty canonical text").into());
+            }
+        }
+        if generation.replica_control.poll_interval_ms == 0
+            || generation.replica_control.heartbeat_interval_ms == 0
+        {
+            return Err("generation replica poll and heartbeat intervals must be positive".into());
+        }
+        if generation.replica_control.generation_gc_enabled
+            && (generation.replica_control.generation_gc_interval_ms == 0
+                || generation.replica_control.generation_gc_minimum_age_ms == 0)
+        {
+            return Err("enabled generation GC requires positive interval and minimum age".into());
+        }
+        if generation
+            .replica_control
+            .supported_graph_schema_versions
+            .is_empty()
+            || generation
+                .replica_control
+                .supported_graph_schema_versions
+                .iter()
+                .any(|version| version.trim().is_empty() || version.trim() != version)
+        {
+            return Err(
+                "generation replica must declare canonical supported graph schema versions".into(),
+            );
+        }
+        #[cfg(not(feature = "generation-postgres"))]
+        return Err(
+            "generation_serving.replica_control.enabled requires --features generation-postgres"
+                .into(),
+        );
+    }
 
     let configured = [
         PathBuf::from(&generation.generation_root),
@@ -407,6 +634,13 @@ fn validate_generation_paths(config: &AkiDbConfig) -> Result<(), Box<dyn std::er
         }
     }
     Ok(())
+}
+
+#[cfg(any(feature = "generation-s3", test))]
+fn is_valid_env_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some('_' | 'A'..='Z' | 'a'..='z'))
+        && chars.all(|character| matches!(character, '_' | 'A'..='Z' | 'a'..='z' | '0'..='9'))
 }
 
 /// Run AkiDB as an MCP server over stdio (newline-delimited JSON-RPC), sharing
@@ -683,5 +917,17 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&config.generation_serving.download_path);
+    }
+
+    #[test]
+    fn tls_requires_explicit_certificate_and_key_paths() {
+        let mut config = AkiDbConfig::default();
+        config.server.tls_enabled = true;
+
+        let error = server_builder(&config).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("server.tls_cert_path is required"));
     }
 }

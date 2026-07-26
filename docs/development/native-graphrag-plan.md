@@ -1,6 +1,6 @@
 # Native GraphRAG Productization Plan
 
-Status: accepted
+Status: accepted; aligned with the versioned knowledge-serving design
 
 Date: 2026-07-24
 
@@ -14,15 +14,18 @@ The product boundary is:
 
 - Ingestion owns parsing, deterministic relationship discovery, entity
   extraction, canonicalization, and review workflows.
-- AkiDB owns the durable graph projection, bounded traversal, vector/BM25/SQL
-  fusion, reranking, and evidence-bearing context assembly.
+- AkiDB owns the local, rebuildable graph projection, bounded traversal,
+  vector/BM25/SQL fusion, reranking, and evidence-bearing context assembly.
 - The trust/control plane owns credential-to-workspace authorization, policy,
   audit, retention, and operator review.
 - External graph formats may be supported for export or offline analysis, but
   are not a core runtime dependency.
 
 This preserves AkiDB's embedded, local-first deployment model while adding the
-relationship retrieval needed by private enterprise AI.
+relationship retrieval needed by private enterprise AI. In immutable
+generation mode, AX Fabric/OpenWiki remain authoritative and the graph is
+rebuilt alongside vector, lexical, and payload state from one logical bundle;
+see the [knowledge-serving architecture](../architecture/knowledge-serving.md).
 
 ## Why this direction
 
@@ -40,18 +43,23 @@ an evidence-bearing retrieval projection rather than an unrestricted database.
 
 ### Source of truth and consistency
 
-Raw MinIO objects and durable AkiDB vector metadata are authoritative. The
-native graph is a rebuildable projection. A graph mutation derived from one
-chunk must be atomic inside RocksDB: remove stale projection edges, merge
-nodes, and add replacement edges in one batch.
+AX Fabric/OpenWiki identities and versioned source objects in MinIO are
+canonical. AkiDB's vector, lexical, payload, and native graph structures are
+retrieval projections.
 
-Vector, lexical, SQL, and graph stores do not share one cross-engine
-transaction. Until a durable projection journal/outbox is added, writes are
-idempotent, each chunk records the edge IDs from its last successful projection,
-a failed projection is reported so a caller can retry, an empty graph is
-bootstrapped from durable vectors at startup, and operators can run a full
-projection rebuild. Replaying every projection at every startup is deliberately
-avoided because it would make large-index startup unbounded.
+In mutable standalone mode, RocksDB records are the durable local state used
+to rebuild in-memory indexes. A graph mutation derived from one chunk must be
+atomic inside RocksDB: remove stale projection edges, merge nodes, and add
+replacement edges in one batch. Until every mutable projection has a durable
+journal/outbox, writes remain idempotent, each chunk records its last edge IDs,
+failures are retryable, and operators can rebuild the graph from durable local
+records.
+
+In immutable generation mode, the logical bundle binds records, graph nodes,
+and graph edges to the same workspace, collection, source versions, embedding
+model, and generation. A shadow build is either verified and atomically
+activated as a whole or never becomes visible. AkiDB database/index files are
+not canonical and are never shared between replicas.
 
 ### Deterministic relationships first
 
@@ -60,6 +68,7 @@ have the highest value and lowest risk:
 
 - document, section, page, and chunk containment;
 - email thread membership, sender/recipient, and attachments;
+- OpenWiki document/revision identity and typed relationships;
 - MinIO object identity and source version;
 - PDF page/image extraction;
 - ticket creation and source evidence when supplied by a trusted system.
@@ -104,15 +113,17 @@ Frequently queried predicates must not require scans of JSON properties.
 
 ### Security at every hop
 
-Workspace scope is encoded in graph node IDs. Native graph writes reject edges
-whose endpoints are in different workspace namespaces, and traversal only
-follows nodes in the seed workspace. Vector, batch, point, SQL, and context-pack
-results are also filtered by workspace.
+Workspace scope is encoded in graph node IDs. Immutable graph records are also
+bound to a collection and generation. Native graph writes reject edges whose
+endpoints are in different workspace namespaces, and traversal only follows
+nodes in the request's workspace and active generation. Vector, batch, point,
+SQL, and context-pack results are filtered through the same boundary.
 
 This is projection isolation, not yet a complete tenant identity boundary. The
 current bearer-token runtime accepts a caller-selected workspace header.
 Production multi-tenant claims require credentials to be bound to an allowed
-workspace/security domain and forwarded by the coordinator.
+workspace/security domain and forwarded by the future AX retrieval gateway.
+The existing shard coordinator does not provide that gateway contract.
 
 ### Bounded retrieval, not arbitrary traversal
 
@@ -133,6 +144,7 @@ query contract is safer and easier to benchmark.
 ```text
 query
   -> workspace/ACL scope
+  -> active generation/checkpoint scope (generation mode)
   -> deterministic intent planner
   -> vector, BM25, or structured SQL seeds
   -> bounded native graph expansion
@@ -240,18 +252,22 @@ Exit gate: cross-workspace leakage remains zero; retention and legal deletion
 tests remove all derivatives; as-of answers are reproducible from cited source
 versions.
 
-### Phase 6 — Four-Mac cell and optional interoperability
+### Phase 6 — Generation-scoped replicas and optional interoperability
 
-- Forward authorization context through the coordinator.
-- Route graph-aware text search to relevant shards and merge bounded traversal
-  results with coverage reporting.
-- Avoid unrestricted distributed graph walks; use seed ownership, hop budgets,
-  and partial-result semantics.
+- Build the same graph projection independently on each full AkiDB replica
+  from the authoritative generation bundle.
+- Include generation, manifest digest, checkpoint, and evidence identity in
+  readiness and retrieval responses.
+- Have the AX gateway forward authorization context and route only to replicas
+  that match the active generation/checkpoint.
+- Keep graph expansion local to one verified full replica. Do not introduce
+  unrestricted distributed graph walks before measured sharding need.
 - Add optional GraphML/JSONL/Neo4j export for analysis and migration.
 
-Exit gate: four-Mac quality matches one-Mac results within declared coverage;
-P50/P95 latency and failure behavior meet the cell SLO; no external graph
-service is required.
+Exit gate: independently rebuilt replicas have identical graph digest/counts
+and golden-query evidence; a stale or wrong-generation replica receives no
+traffic; P50/P95 latency and one-node failure behavior meet the cell SLO; no
+external graph service is required.
 
 ## Evaluation gates
 

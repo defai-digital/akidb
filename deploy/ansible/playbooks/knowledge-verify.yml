@@ -1,0 +1,199 @@
+---
+- name: Verify every full replica is generation-ready over authenticated TLS
+  hosts: akidb_knowledge_replicas
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Check replica gRPC readiness
+      ansible.builtin.command:
+        argv:
+          - "{{ akidb_install_root }}/current/bin/akidb"
+          - health
+          - --server
+          - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_server_port }}"
+          - --tls-ca
+          - "{{ akidb_config_root }}/tls/ca.crt"
+          - --require-ready
+      environment:
+        AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+        AKIDB_WORKSPACE: "{{ akidb_knowledge_workspace }}"
+      changed_when: false
+      register: knowledge_replica_ready
+      retries: 20
+      delay: 3
+      until: knowledge_replica_ready.rc == 0
+
+    - name: Read listening TCP sockets
+      ansible.builtin.command:
+        argv: [ss, -H, -lnt]
+      changed_when: false
+      register: knowledge_replica_sockets
+
+    - name: Require private-only replica binding
+      ansible.builtin.assert:
+        that:
+          - "'0.0.0.0:' ~ (akidb_knowledge_server_port | string) not in knowledge_replica_sockets.stdout"
+          - "'[::]:' ~ (akidb_knowledge_server_port | string) not in knowledge_replica_sockets.stdout"
+          - "akidb_overlay_address ~ ':' ~ (akidb_knowledge_server_port | string) in knowledge_replica_sockets.stdout"
+
+    - name: Read replica Prometheus metrics
+      ansible.builtin.uri:
+        url: "http://{{ akidb_overlay_address }}:{{ akidb_knowledge_metrics_port }}/metrics"
+        status_code: 200
+        return_content: true
+      register: knowledge_replica_metrics
+
+    - name: Require generation checkpoint and disk metrics
+      ansible.builtin.assert:
+        that:
+          - "'akidb_replica_applied_sequence' in knowledge_replica_metrics.content"
+          - "'akidb_replica_route_ready' in knowledge_replica_metrics.content"
+          - "'akidb_generation_disk_available_bytes' in knowledge_replica_metrics.content"
+          - "'akidb_generation_gc_runs_total' in knowledge_replica_metrics.content"
+
+- name: Verify both stateless gateways and Prometheus evidence
+  hosts: ax_knowledge_gateways
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Check gateway generation readiness
+      ansible.builtin.uri:
+        url: "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_gateway_port }}/readyz"
+        ca_path: "{{ ax_gateway_config_root }}/tls/ca.crt"
+        headers:
+          Authorization: "Bearer {{ ax_knowledge_gateway_token }}"
+        status_code: 200
+        return_content: true
+      no_log: true
+      register: knowledge_gateway_ready
+      retries: 20
+      delay: 3
+      until: knowledge_gateway_ready.status == 200
+
+    - name: Require quorum-eligible replicas
+      ansible.builtin.assert:
+        that:
+          - >-
+            knowledge_gateway_ready.json.eligibleReplicaIds | length
+            >= akidb_knowledge_min_ready_replicas | int
+
+    - name: Read gateway Prometheus metrics
+      ansible.builtin.uri:
+        url: "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_gateway_port }}/metrics"
+        ca_path: "{{ ax_gateway_config_root }}/tls/ca.crt"
+        headers:
+          Authorization: "Bearer {{ ax_knowledge_gateway_token }}"
+        status_code: 200
+        return_content: true
+      no_log: true
+      register: knowledge_gateway_metrics
+
+    - name: Require generation and eligibility metrics
+      ansible.builtin.assert:
+        that:
+          - "'akidb_gateway_active_generation_info' in knowledge_gateway_metrics.content"
+          - "'akidb_gateway_eligible_replicas' in knowledge_gateway_metrics.content"
+          - "'akidb_gateway_route_latency_seconds' in knowledge_gateway_metrics.content"
+
+- name: Verify authoritative replica convergence
+  hosts: ax_knowledge_gateways[0]
+  become: true
+  become_user: "{{ ax_gateway_user }}"
+  gather_facts: false
+  tasks:
+    - name: Read control-plane status
+      ansible.builtin.command:
+        argv:
+          - "{{ ax_gateway_install_root }}/current/bin/node"
+          - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+          - knowledge-control
+          - --postgres-ca
+          - "{{ ax_gateway_config_root }}/tls/ca.crt"
+          - --postgres-server-name
+          - "{{ ax_knowledge_postgres_server_name }}"
+          - status
+          - --workspace
+          - "{{ akidb_knowledge_workspace }}"
+          - --collection
+          - "{{ akidb_knowledge_collection }}"
+      environment:
+        AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+      changed_when: false
+      no_log: true
+      register: knowledge_control_status
+
+    - name: Parse authoritative status
+      ansible.builtin.set_fact:
+        knowledge_control_status_json: "{{ knowledge_control_status.stdout | from_json }}"
+
+    - name: Collect active-generation checkpoint reports
+      ansible.builtin.set_fact:
+        knowledge_active_checkpoint_reports: >-
+          {{
+            (knowledge_active_checkpoint_reports | default([]))
+            + (
+              item.checkpoints
+              | selectattr(
+                  'checkpoint.generation_id',
+                  'equalto',
+                  knowledge_control_status_json.stream.activeGenerationId
+                )
+              | list
+            )
+          }}
+      loop: "{{ knowledge_control_status_json.replicas }}"
+      loop_control:
+        label: "{{ item.registration.replicaId }}"
+
+    - name: Require one active generation and all replica checkpoints
+      ansible.builtin.assert:
+        that:
+          - knowledge_control_status_json.stream.activeGenerationId | length > 0
+          - >-
+            knowledge_control_status_json.replicas | length
+            == groups['akidb_knowledge_replicas'] | length
+          - >-
+            knowledge_active_checkpoint_reports | length
+            == groups['akidb_knowledge_replicas'] | length
+          - >-
+            knowledge_active_checkpoint_reports
+            | map(attribute='checkpoint.state')
+            | unique
+            | list
+            == ['serving']
+          - >-
+            knowledge_active_checkpoint_reports
+            | map(attribute='checkpoint.applied_sequence')
+            | unique
+            | list
+            | length
+            == 1
+          - >-
+            knowledge_active_checkpoint_reports
+            | map(attribute='generationDigest')
+            | unique
+            | list
+            | length
+            == 1
+          - >-
+            knowledge_active_checkpoint_reports
+            | map(attribute='vectorCount')
+            | unique
+            | list
+            | length
+            == 1
+          - >-
+            knowledge_active_checkpoint_reports
+            | map(attribute='edgeCount')
+            | unique
+            | list
+            | length
+            == 1
+          - >-
+            knowledge_active_checkpoint_reports
+            | selectattr('indexReady', 'equalto', true)
+            | list
+            | length
+            == groups['akidb_knowledge_replicas'] | length

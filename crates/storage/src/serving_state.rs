@@ -449,6 +449,178 @@ impl<S: StorageBackend> ServingStateStore<S> {
         Ok(ApplyMutationOutcome::Applied)
     }
 
+    /// Atomically advance any locally retained generation to an already
+    /// verified shadow revision.
+    ///
+    /// The caller must build and seal the complete logical revision before
+    /// entering this commit. The state/checkpoint and every newly observed
+    /// mutation identity marker are then written in one RocksDB batch. Passing
+    /// the full tail from the immutable manifest target makes retries and
+    /// blank-volume rebuilds independently verifiable.
+    pub fn commit_generation_revision(
+        &self,
+        scope: &KnowledgeScope,
+        generation_id: &str,
+        manifest_sha256: &str,
+        target_sequence: u64,
+        mutations: &[KnowledgeMutation],
+        updated_at_ms: u64,
+    ) -> ServingStateResult<ApplyMutationOutcome> {
+        let _guard = self.transition_lock.lock();
+        scope.validate()?;
+        validate_sha256("manifest_sha256", manifest_sha256)?;
+        validate_timestamp("updated_at_ms", updated_at_ms)?;
+        if target_sequence > MAX_SAFE_JSON_INTEGER {
+            return Err(ServingStateError::NonPortableInteger {
+                field: "target_sequence",
+            });
+        }
+
+        let mut record = self.load_required_unlocked(scope)?;
+        let generation = generation_by_id_mut(&mut record, generation_id)?;
+        if generation.manifest_sha256 != manifest_sha256 {
+            return Err(ServingStateError::GenerationConflict(format!(
+                "generation {generation_id} manifest digest differs from the sealed revision"
+            )));
+        }
+        if matches!(
+            generation.state,
+            LocalGenerationState::Staged
+                | LocalGenerationState::CatchingUp
+                | LocalGenerationState::Failed
+        ) {
+            return Err(ServingStateError::InvalidTransition(format!(
+                "generation revision requires ready or serving state; generation is {:?}",
+                generation.state
+            )));
+        }
+        let base_sequence = generation.manifest.target_sequence;
+        let current_sequence = generation.applied_sequence;
+        if target_sequence < current_sequence || target_sequence <= base_sequence {
+            return Err(ServingStateError::InvalidTransition(format!(
+                "revision target {target_sequence} must exceed base {base_sequence} and not precede current {current_sequence}"
+            )));
+        }
+        let expected_count = target_sequence.checked_sub(base_sequence).ok_or_else(|| {
+            ServingStateError::InvalidTransition("revision sequence range underflow".to_string())
+        })?;
+        if u64::try_from(mutations.len()).unwrap_or(u64::MAX) != expected_count {
+            return Err(ServingStateError::SequenceGap {
+                expected: base_sequence.saturating_add(1),
+                actual: mutations
+                    .first()
+                    .map_or(target_sequence, |item| item.sequence),
+            });
+        }
+
+        let mut marker_operations = Vec::new();
+        for (offset, mutation) in mutations.iter().enumerate() {
+            mutation.validate()?;
+            if mutation.scope() != *scope || mutation.generation_id != generation_id {
+                return Err(ServingStateError::GenerationMismatch {
+                    expected: generation_id.to_string(),
+                    actual: mutation.generation_id.clone(),
+                });
+            }
+            let expected = base_sequence
+                .checked_add(u64::try_from(offset).unwrap_or(u64::MAX))
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| {
+                    ServingStateError::CorruptState("mutation sequence overflow".to_string())
+                })?;
+            if mutation.sequence != expected {
+                return Err(ServingStateError::SequenceGap {
+                    expected,
+                    actual: mutation.sequence,
+                });
+            }
+
+            let sequence_key = mutation_sequence_key(scope, generation_id, mutation.sequence);
+            let identity_key = mutation_identity_key(scope, generation_id, &mutation.mutation_id);
+            let fingerprint = mutation_fingerprint(mutation)?;
+            let sequence_marker = self
+                .storage
+                .get(&sequence_key)?
+                .map(|bytes| decode_marker(&bytes))
+                .transpose()?;
+            let identity_marker = self
+                .storage
+                .get(&identity_key)?
+                .map(|bytes| decode_marker(&bytes))
+                .transpose()?;
+
+            match (sequence_marker, identity_marker) {
+                (Some(sequence), Some(identity)) => {
+                    if sequence != identity {
+                        return Err(ServingStateError::CorruptState(format!(
+                            "sequence and identity markers differ for {}",
+                            mutation.mutation_id
+                        )));
+                    }
+                    if sequence.mutation_id != mutation.mutation_id {
+                        return Err(ServingStateError::SequenceConflict {
+                            sequence: mutation.sequence,
+                            existing_mutation_id: sequence.mutation_id,
+                            received_mutation_id: mutation.mutation_id.clone(),
+                        });
+                    }
+                    if sequence.mutation_sha256 != fingerprint {
+                        return Err(ServingStateError::MutationContentConflict {
+                            mutation_id: mutation.mutation_id.clone(),
+                        });
+                    }
+                }
+                (Some(sequence), None) => {
+                    return Err(ServingStateError::CorruptState(format!(
+                        "sequence marker exists without identity marker for {}",
+                        sequence.mutation_id
+                    )));
+                }
+                (None, Some(identity)) => {
+                    return Err(ServingStateError::CorruptState(format!(
+                        "identity marker exists without sequence marker for {}",
+                        identity.mutation_id
+                    )));
+                }
+                (None, None) if mutation.sequence <= current_sequence => {
+                    return Err(ServingStateError::CorruptState(format!(
+                        "applied sequence {} lacks mutation marker {}",
+                        mutation.sequence, mutation.mutation_id
+                    )));
+                }
+                (None, None) => {
+                    let marker = MutationMarker {
+                        mutation_id: mutation.mutation_id.clone(),
+                        sequence: mutation.sequence,
+                        mutation_sha256: fingerprint,
+                    };
+                    let bytes = serde_json::to_vec(&marker)?;
+                    marker_operations.push(BatchOperation::Put {
+                        key: sequence_key,
+                        value: bytes.clone(),
+                    });
+                    marker_operations.push(BatchOperation::Put {
+                        key: identity_key,
+                        value: bytes,
+                    });
+                }
+            }
+        }
+
+        if current_sequence == target_sequence {
+            return Ok(ApplyMutationOutcome::Duplicate);
+        }
+        generation.applied_sequence = target_sequence;
+        generation.last_error = None;
+        let checkpoint = checkpoint_for(&self.replica_id, generation, updated_at_ms)?;
+        record.updated_at_ms = updated_at_ms;
+        validate_record(&record, &self.replica_id)?;
+        let mut operations = self.record_operations(&record, vec![checkpoint])?;
+        operations.extend(marker_operations);
+        self.storage.write_batch(operations)?;
+        Ok(ApplyMutationOutcome::Applied)
+    }
+
     /// Promotes a caught-up staged generation to ready.
     pub fn mark_ready(
         &self,
@@ -671,6 +843,37 @@ fn staged_mut<'a>(
     Ok(staged)
 }
 
+fn generation_by_id_mut<'a>(
+    record: &'a mut ServingStateRecord,
+    generation_id: &str,
+) -> ServingStateResult<&'a mut GenerationServingState> {
+    if record
+        .active
+        .as_ref()
+        .is_some_and(|generation| generation.manifest.generation_id == generation_id)
+    {
+        return Ok(record.active.as_mut().expect("active checked above"));
+    }
+    if record
+        .previous
+        .as_ref()
+        .is_some_and(|generation| generation.manifest.generation_id == generation_id)
+    {
+        return Ok(record.previous.as_mut().expect("previous checked above"));
+    }
+    if record
+        .staged
+        .as_ref()
+        .is_some_and(|generation| generation.manifest.generation_id == generation_id)
+    {
+        return Ok(record.staged.as_mut().expect("staged checked above"));
+    }
+    Err(ServingStateError::GenerationMismatch {
+        expected: "<locally retained generation>".to_string(),
+        actual: generation_id.to_string(),
+    })
+}
+
 fn missing_staged(scope: &KnowledgeScope) -> ServingStateError {
     ServingStateError::StagedGenerationNotFound {
         workspace_id: scope.workspace_id.clone(),
@@ -792,19 +995,17 @@ fn validate_generation_state(
         )));
     }
     if generation.applied_sequence < generation.manifest.base_sequence
-        || generation.applied_sequence > generation.manifest.target_sequence
+        || generation.applied_sequence > MAX_SAFE_JSON_INTEGER
     {
         return Err(ServingStateError::CorruptState(format!(
-            "{role} applied sequence {} is outside {}..={}",
-            generation.applied_sequence,
-            generation.manifest.base_sequence,
-            generation.manifest.target_sequence
+            "{role} applied sequence {} is below base {} or not JSON-safe",
+            generation.applied_sequence, generation.manifest.base_sequence,
         )));
     }
     if matches!(
         generation.state,
         LocalGenerationState::Ready | LocalGenerationState::Serving
-    ) && generation.applied_sequence != generation.manifest.target_sequence
+    ) && generation.applied_sequence < generation.manifest.target_sequence
     {
         return Err(ServingStateError::CorruptState(format!(
             "{role} generation is {:?} before reaching target sequence",
@@ -1430,6 +1631,75 @@ mod tests {
                 ReplicaState::Serving
             );
         }
+    }
+
+    #[test]
+    fn sealed_revision_advances_active_checkpoint_and_markers_atomically() {
+        let backend = Arc::new(MemoryBackend::default());
+        let store = ServingStateStore::new(backend.clone(), "replica-1").unwrap();
+        let mut base = manifest("generation-a", None);
+        base.target_sequence = base.base_sequence;
+        store.stage_generation(base, DIGEST_A, 1).unwrap();
+        store
+            .mark_bundle_loaded(&scope(), "generation-a", 2)
+            .unwrap();
+        store.mark_ready(&scope(), "generation-a", 3).unwrap();
+        store.activate(&scope(), "generation-a", 4).unwrap();
+        let tail = vec![
+            mutation("generation-a", 101, "mutation-101"),
+            mutation("generation-a", 102, "mutation-102"),
+        ];
+
+        backend.fail_next_batch();
+        assert!(matches!(
+            store.commit_generation_revision(&scope(), "generation-a", DIGEST_A, 102, &tail, 5,),
+            Err(ServingStateError::Storage(_))
+        ));
+        assert_eq!(
+            store
+                .load(&scope())
+                .unwrap()
+                .unwrap()
+                .active
+                .unwrap()
+                .applied_sequence,
+            100
+        );
+
+        assert_eq!(
+            store
+                .commit_generation_revision(&scope(), "generation-a", DIGEST_A, 102, &tail, 6,)
+                .unwrap(),
+            ApplyMutationOutcome::Applied
+        );
+        assert_eq!(
+            store
+                .load_checkpoint(&scope(), "generation-a")
+                .unwrap()
+                .unwrap()
+                .applied_sequence,
+            102
+        );
+        let writes_after_commit = backend.batch_count();
+        assert_eq!(
+            store
+                .commit_generation_revision(&scope(), "generation-a", DIGEST_A, 102, &tail, 7,)
+                .unwrap(),
+            ApplyMutationOutcome::Duplicate
+        );
+        assert_eq!(backend.batch_count(), writes_after_commit);
+
+        assert!(matches!(
+            store.commit_generation_revision(
+                &scope(),
+                "generation-a",
+                DIGEST_A,
+                103,
+                &[mutation("generation-a", 103, "mutation-103")],
+                8,
+            ),
+            Err(ServingStateError::SequenceGap { .. })
+        ));
     }
 
     #[test]

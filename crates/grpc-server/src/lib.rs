@@ -18,6 +18,8 @@ mod ingestion;
 mod management;
 pub mod mcp;
 mod metrics;
+#[cfg(feature = "generation-postgres")]
+pub mod replica_worker;
 mod service;
 mod tags;
 mod webhook;
@@ -26,8 +28,8 @@ pub use admin::{AdminServiceImpl, AdminState, RegisteredTask};
 pub use auth::{AuthContext, AuthInterceptor, AuthRuntime};
 pub use collections::{CollectionMeta, CollectionRegistry, SharedCollectionRegistry};
 pub use generation::{
-    GenerationMaterializer, GenerationMaterializerConfig, GenerationMaterializerError,
-    ReadyGenerationRuntime,
+    GenerationDiskAdmission, GenerationMaterializer, GenerationMaterializerConfig,
+    GenerationMaterializerError, MaterializedKnowledgeMutation, ReadyGenerationRuntime,
 };
 pub use generation_control::{
     ExpectedActiveGeneration, GenerationControlError, GenerationController, GenerationPublication,
@@ -41,7 +43,9 @@ pub use generation_fetch::{S3GenerationBundleFetcher, S3GenerationBundleFetcherC
 pub use generation_management::GenerationManagementServiceImpl;
 pub use ingestion::IngestionServiceImpl;
 pub use management::{ManagementServiceImpl, ManagementState, StagedObject, StagingRegistry};
-pub use metrics::{metrics, AkiDbMetrics};
+pub use metrics::{export_metrics, metrics, registry as metrics_registry, AkiDbMetrics};
+#[cfg(feature = "generation-postgres")]
+pub use replica_worker::{PostgresReplicaWorker, ReplicaWorkerConfig, ReplicaWorkerError};
 pub use service::{AkiDbService, EmbeddingProvider};
 pub use tags::{
     proto_to_rust_tag_value, proto_to_rust_tags, rust_to_proto_tag_value, rust_to_proto_tags,

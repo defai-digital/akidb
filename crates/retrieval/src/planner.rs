@@ -315,8 +315,8 @@ fn trace_for_mode(mode: RetrievalMode, reasons: Vec<String>) -> PlannerTrace {
         RetrievalMode::Auto | RetrievalMode::Hybrid => (1.0, 1.0, false, 0),
         RetrievalMode::Vector => (1.0, 0.0, false, 0),
         RetrievalMode::Bm25 => (0.0, 1.0, false, 0),
-        RetrievalMode::Graph => (0.0, 0.5, true, 2),
-        RetrievalMode::GraphHybrid => (1.0, 1.0, true, 2),
+        RetrievalMode::Graph => (0.0, 0.5, true, 1),
+        RetrievalMode::GraphHybrid => (1.0, 1.0, true, 1),
         RetrievalMode::StructuredSql => (0.0, 0.0, false, 0),
     };
     PlannerTrace {
@@ -381,7 +381,7 @@ mod tests {
         let trace = plan_query(&PlannerInput::new("what calls draft_model.rs"));
         assert_eq!(trace.mode, RetrievalMode::GraphHybrid);
         assert!(trace.graph_enabled);
-        assert_eq!(trace.graph_depth, 2);
+        assert_eq!(trace.graph_depth, 1);
     }
 
     #[test]

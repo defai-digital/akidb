@@ -241,9 +241,13 @@ fn text_search_request(
         filter: vec![],
         tag_filter: None,
         retrieval_mode: String::new(),
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+        score_threshold: None,
+        group_by: String::new(),
+        group_size: None,
+        graph_max_depth: None,
+        graph_per_seed_fanout: None,
+        graph_max_expanded_nodes: None,
+        include_diagnostics: false,
     }
 }
 
@@ -322,12 +326,13 @@ where
     let id = required_str(args, "id")?;
     let text = required_str(args, "text")?;
     let kind = match arg_str(args, "kind")? {
-        Some(kind) => MemoryKind::parse(&kind)
-            .ok_or_else(|| format!("unknown memory kind: {kind}"))?,
+        Some(kind) => {
+            MemoryKind::parse(&kind).ok_or_else(|| format!("unknown memory kind: {kind}"))?
+        }
         None => MemoryKind::Note,
     };
-    let workspace = arg_str(args, "workspace")?
-        .or_else(|| arg_str(args, "workspace_id").ok().flatten());
+    let workspace =
+        arg_str(args, "workspace")?.or_else(|| arg_str(args, "workspace_id").ok().flatten());
 
     let mut entry = MemoryEntry::new(id.clone(), kind, text.clone());
     if let Some(v) = arg_str(args, "conversation_id")? {
@@ -378,8 +383,8 @@ where
     let query = required_str(args, "query")?;
     let top_k = arg_u32(args, "top_k", 10)?;
     let vector = service.embed_text(&query)?;
-    let workspace = arg_str(args, "workspace")?
-        .or_else(|| arg_str(args, "workspace_id").ok().flatten());
+    let workspace =
+        arg_str(args, "workspace")?.or_else(|| arg_str(args, "workspace_id").ok().flatten());
 
     // Scope to a conversation when provided, via a typed tag filter.
     let tag_filter = arg_str(args, "conversation_id")?.map(|cid| TagFilter {

@@ -3,8 +3,12 @@
 ## Supported Environment
 
 The ingestion pipeline supports the portable runtime on macOS 26 Apple Silicon
-and Ubuntu 24.04+ AMD64 or ARM64. The published Compose images remain AMD64;
+and Ubuntu 24.04+ AMD64. The published Compose images remain AMD64;
 GPU, Thor, and CUDA deployment steps are unsupported.
+
+This runbook covers the ingestion work queue, not immutable-generation
+activation or replica recovery. NATS upload events are separate from the
+PostgreSQL-authoritative knowledge-serving control path.
 
 ## Start The Stack
 

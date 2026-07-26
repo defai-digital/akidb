@@ -1,0 +1,40 @@
+---
+all:
+  vars:
+    ansible_user: root
+  children:
+    akidb_cluster:
+      vars:
+        akidb_cluster_network_trusted: true
+        akidb_overlay_cidr: 10.77.0.0/24
+      hosts:
+        knowledge-1:
+          ansible_host: 192.0.2.11
+          akidb_overlay_address: 10.77.0.11
+        knowledge-2:
+          ansible_host: 192.0.2.12
+          akidb_overlay_address: 10.77.0.12
+        knowledge-3:
+          ansible_host: 192.0.2.13
+          akidb_overlay_address: 10.77.0.13
+        knowledge-4:
+          ansible_host: 192.0.2.14
+          akidb_overlay_address: 10.77.0.14
+    akidb_knowledge_replicas:
+      hosts:
+        knowledge-1:
+          akidb_knowledge_replica_id: knowledge-replica-1
+          akidb_knowledge_failure_domain: host-1
+        knowledge-2:
+          akidb_knowledge_replica_id: knowledge-replica-2
+          akidb_knowledge_failure_domain: host-2
+        knowledge-3:
+          akidb_knowledge_replica_id: knowledge-replica-3
+          akidb_knowledge_failure_domain: host-3
+    ax_knowledge_gateways:
+      hosts:
+        knowledge-1:
+        knowledge-2:
+    akidb_knowledge_dependencies:
+      hosts:
+        knowledge-4:

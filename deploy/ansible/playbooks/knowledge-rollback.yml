@@ -1,0 +1,190 @@
+---
+- name: Validate installed rollback releases
+  hosts: akidb_knowledge_replicas:ax_knowledge_gateways
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    akidb_rollback_release_id: "{{ lookup('env', 'AKIDB_ROLLBACK_RELEASE_ID') }}"
+    ax_gateway_rollback_release_id: "{{ lookup('env', 'AX_GATEWAY_ROLLBACK_RELEASE_ID') }}"
+  tasks:
+    - name: Validate rollback identifiers
+      ansible.builtin.assert:
+        that:
+          - akidb_rollback_release_id is match('^[A-Za-z0-9._-]{7,64}$')
+          - ax_gateway_rollback_release_id is match('^[A-Za-z0-9._-]{7,64}$')
+
+    - name: Inspect required installed rollback release
+      ansible.builtin.stat:
+        path: >-
+          {{
+            (
+              inventory_hostname in groups['akidb_knowledge_replicas']
+            )
+            | ternary(
+              akidb_install_root ~ '/releases/' ~ akidb_rollback_release_id
+              ~ '/bin/akidb-server',
+              ax_gateway_install_root ~ '/releases/'
+              ~ ax_gateway_rollback_release_id ~ '/bin/node'
+            )
+          }}
+      register: knowledge_rollback_binary
+
+    - name: Require rollback release on every target
+      ansible.builtin.assert:
+        that:
+          - knowledge_rollback_binary.stat.exists
+          - knowledge_rollback_binary.stat.executable
+
+- name: Roll back stateless gateways one at a time
+  hosts: ax_knowledge_gateways
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    ax_gateway_rollback_release_id: "{{ lookup('env', 'AX_GATEWAY_ROLLBACK_RELEASE_ID') }}"
+  tasks:
+    - name: Activate installed AX gateway rollback release
+      ansible.builtin.file:
+        src: "{{ ax_gateway_install_root }}/releases/{{ ax_gateway_rollback_release_id }}"
+        dest: "{{ ax_gateway_install_root }}/current"
+        state: link
+        force: true
+
+    - name: Restart rolled-back gateway
+      ansible.builtin.systemd_service:
+        name: ax-knowledge-gateway
+        state: restarted
+
+    - name: Gate gateway rollback on HTTPS liveness
+      ansible.builtin.uri:
+        url: "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_gateway_port }}/healthz"
+        ca_path: "{{ ax_gateway_config_root }}/tls/ca.crt"
+        status_code: 200
+      register: rolled_back_gateway_live
+      retries: 15
+      delay: 2
+      until: rolled_back_gateway_live.status == 200
+
+- name: Drain and roll back each full replica
+  hosts: akidb_knowledge_replicas
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    akidb_rollback_release_id: "{{ lookup('env', 'AKIDB_ROLLBACK_RELEASE_ID') }}"
+  tasks:
+    - name: Roll back one replica inside a fail-closed drain block
+      block:
+        - name: Drain replica before rollback
+          ansible.builtin.command:
+            argv:
+              - "{{ ax_gateway_install_root }}/current/bin/node"
+              - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+              - knowledge-control
+              - --postgres-ca
+              - "{{ ax_gateway_config_root }}/tls/ca.crt"
+              - --postgres-server-name
+              - "{{ ax_knowledge_postgres_server_name }}"
+              - drain
+              - --workspace
+              - "{{ akidb_knowledge_workspace }}"
+              - --collection
+              - "{{ akidb_knowledge_collection }}"
+              - --replica
+              - "{{ akidb_knowledge_replica_id }}"
+              - --actor
+              - ansible-rollback
+          environment:
+            AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+          delegate_to: "{{ groups['ax_knowledge_gateways'][0] }}"
+          become: true
+          become_user: "{{ ax_gateway_user }}"
+          changed_when: true
+          no_log: true
+
+        - name: Activate installed AkiDB rollback release
+          ansible.builtin.file:
+            src: "{{ akidb_install_root }}/releases/{{ akidb_rollback_release_id }}"
+            dest: "{{ akidb_install_root }}/current"
+            state: link
+            force: true
+
+        - name: Inspect rollback replica configuration
+          ansible.builtin.stat:
+            path: "{{ akidb_config_root }}/releases/{{ akidb_rollback_release_id }}/akidb-knowledge.toml"
+          register: rollback_replica_config
+
+        - name: Require versioned rollback configuration
+          ansible.builtin.assert:
+            that:
+              - rollback_replica_config.stat.exists
+
+        - name: Activate rollback replica configuration
+          ansible.builtin.file:
+            src: "{{ akidb_config_root }}/releases/{{ akidb_rollback_release_id }}/akidb-knowledge.toml"
+            dest: "{{ akidb_config_root }}/akidb-knowledge.toml"
+            state: link
+            force: true
+
+        - name: Restart rolled-back replica
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: restarted
+
+        - name: Gate replica rollback on generation readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/current/bin/akidb"
+              - health
+              - --server
+              - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_server_port }}"
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+            AKIDB_WORKSPACE: "{{ akidb_knowledge_workspace }}"
+          changed_when: false
+          register: rollback_replica_ready
+          retries: 30
+          delay: 3
+          until: rollback_replica_ready.rc == 0
+
+        - name: Re-admit rolled-back replica
+          ansible.builtin.command:
+            argv:
+              - "{{ ax_gateway_install_root }}/current/bin/node"
+              - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+              - knowledge-control
+              - --postgres-ca
+              - "{{ ax_gateway_config_root }}/tls/ca.crt"
+              - --postgres-server-name
+              - "{{ ax_knowledge_postgres_server_name }}"
+              - drain
+              - --workspace
+              - "{{ akidb_knowledge_workspace }}"
+              - --collection
+              - "{{ akidb_knowledge_collection }}"
+              - --replica
+              - "{{ akidb_knowledge_replica_id }}"
+              - --clear
+              - --actor
+              - ansible-rollback
+          environment:
+            AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+          delegate_to: "{{ groups['ax_knowledge_gateways'][0] }}"
+          become: true
+          become_user: "{{ ax_gateway_user }}"
+          changed_when: true
+          no_log: true
+      rescue:
+        - name: Leave failed rollback target drained
+          ansible.builtin.fail:
+            msg: >-
+              {{ inventory_hostname }} failed rollback readiness and remains
+              drained; the rollout stopped before exposing it.
+
+- import_playbook: knowledge-verify.yml

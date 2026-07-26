@@ -1,0 +1,30 @@
+[Unit]
+Description=AkiDB immutable knowledge replica
+After=network-online.target wg-quick@{{ akidb_wireguard_interface }}.service
+Wants=network-online.target
+Requires=wg-quick@{{ akidb_wireguard_interface }}.service
+
+[Service]
+Type=simple
+User={{ akidb_user }}
+Group={{ akidb_group }}
+UMask=0027
+EnvironmentFile={{ akidb_config_root }}/knowledge-replica.env
+ExecStart={{ akidb_install_root }}/current/bin/akidb-server --config {{ akidb_config_root }}/akidb-knowledge.toml --listen {{ akidb_overlay_address }}:{{ akidb_knowledge_server_port }} --log-level {{ akidb_log_level }}
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=120
+TimeoutStopSec=120
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths={{ akidb_data_root }}
+
+[Install]
+WantedBy=multi-user.target

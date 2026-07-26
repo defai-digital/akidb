@@ -1,0 +1,5 @@
+---
+- import_playbook: knowledge-preflight.yml
+- import_playbook: network.yml
+- import_playbook: knowledge-dependencies.yml
+- import_playbook: knowledge-deploy.yml

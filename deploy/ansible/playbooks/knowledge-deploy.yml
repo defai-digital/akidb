@@ -1,0 +1,83 @@
+---
+- name: Stage the checksum-pinned AkiDB release on every full replica
+  hosts: akidb_knowledge_replicas
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    akidb_release_id: "{{ akidb_knowledge_release_id }}"
+    akidb_artifact_path: "{{ akidb_knowledge_artifact_path }}"
+    akidb_artifact_sha256: "{{ akidb_knowledge_artifact_sha256 }}"
+  roles:
+    - role: common
+    - role: release
+
+- name: Stage the checksum-pinned AX gateway release
+  hosts: ax_knowledge_gateways
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  serial: 1
+  roles:
+    - role: knowledge_gateway_release
+    - role: knowledge_gateway
+
+- name: Apply authoritative schema and activation policy
+  hosts: ax_knowledge_gateways[0]
+  become: true
+  become_user: "{{ ax_gateway_user }}"
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Apply idempotent PostgreSQL migrations
+      ansible.builtin.command:
+        argv:
+          - "{{ ax_gateway_install_root }}/current/bin/node"
+          - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+          - knowledge-control
+          - --postgres-ca
+          - "{{ ax_gateway_config_root }}/tls/ca.crt"
+          - --postgres-server-name
+          - "{{ ax_knowledge_postgres_server_name }}"
+          - migrate
+      environment:
+        AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+      changed_when: false
+      no_log: true
+
+    - name: Configure failure-domain-aware activation quorum
+      ansible.builtin.command:
+        argv:
+          - "{{ ax_gateway_install_root }}/current/bin/node"
+          - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+          - knowledge-control
+          - --postgres-ca
+          - "{{ ax_gateway_config_root }}/tls/ca.crt"
+          - --postgres-server-name
+          - "{{ ax_knowledge_postgres_server_name }}"
+          - configure
+          - --workspace
+          - "{{ akidb_knowledge_workspace }}"
+          - --collection
+          - "{{ akidb_knowledge_collection }}"
+          - --minimum-ready-replicas
+          - "{{ akidb_knowledge_min_ready_replicas | string }}"
+          - --minimum-failure-domains
+          - "{{ akidb_knowledge_min_failure_domains | string }}"
+          - --heartbeat-ttl-ms
+          - "{{ akidb_knowledge_heartbeat_ttl_ms | string }}"
+          - --actor
+          - ansible
+      environment:
+        AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+      changed_when: false
+      no_log: true
+
+- name: Roll immutable full replicas one at a time
+  hosts: akidb_knowledge_replicas
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: knowledge_replica

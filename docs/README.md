@@ -3,19 +3,23 @@
 Canonical documents:
 
 - [Platform Support](platform/SUPPORT.md)
+- [Agentic Knowledge-Serving Architecture](architecture/knowledge-serving.md)
 
-> The Product Requirements (PRD), Architecture Decision Records (ADR), and
-> Technical Specification are maintained as internal documents under `ax-internal/`
-> and are intentionally excluded from this public repository.
+> Detailed Product Requirements, Architecture Decision Records, research, and
+> technical specifications are maintained in the internal-only `ax-internal/`
+> and `.internal/` packs. They are intentionally excluded from the public
+> repository; the public architecture summary above is authoritative for
+> released capability claims.
 
 Supporting documents:
 
 - [Development Notes](development/AGENT_CONFIGS.md)
 - [Native GraphRAG Productization Plan](development/native-graphrag-plan.md)
-- [Immutable Generation Serving Preview](development/generation-serving-preview.md)
+- [Immutable Generation Serving](development/generation-serving-preview.md)
 - [One-Mac Benchmark](quality/one-mac-benchmark.md)
 - [Four-Mac Cell Validation](quality/four-mac-cell-validation.md)
 - [Four-Mac Evidence Manifest](quality/four-mac-evidence-manifest.md)
+- [Ubuntu AMD64 Knowledge-Cell Qualification](quality/linux-amd64-knowledge-cell-qualification.md)
 - [Vector Quality Gates](quality/vector-quality.md) - exact-vector and semantic retrieval QA
 - [Security Review](security/SECURITY_REVIEW.md)
 - [Runbooks](runbooks/)

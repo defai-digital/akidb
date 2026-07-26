@@ -1,9 +1,15 @@
 # AkiDB Ingestion Orchestrator
 
 The Ingestion Orchestrator is a hybrid Rust/Python document-processing pipeline
-for AkiDB on macOS 26 Apple Silicon and Ubuntu 24.04+ AMD64 or ARM64. It
+for AkiDB on macOS 26 Apple Silicon and Ubuntu 24.04+ AMD64. It
 processes documents uploaded to MinIO, extracts text, generates embeddings, and
 stores vectors in AkiDB.
+
+The NATS stream described here coordinates document-processing work. It is not
+the authority for immutable knowledge generations or replica replay. In the
+generation-serving profile, AX Fabric publishes checksum-addressed bundles and
+PostgreSQL owns generation activation/checkpoints; see the
+[knowledge-serving architecture](../../architecture/knowledge-serving.md).
 
 ## Architecture Overview
 

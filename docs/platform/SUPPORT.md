@@ -11,30 +11,40 @@ a narrower qualification matrix, documented separately below.
 | --- | --- | --- | --- | --- |
 | macOS 26 | Apple Silicon ARM64 | `aarch64-apple-darwin` | Supported | M2 or newer. Primary local-development and private single-node path. |
 | Ubuntu 24.04+ | AMD64 | `x86_64-unknown-linux-gnu` | Supported | Native standalone, shard, coordinator, release archive, and qualified Ansible artifact path. |
-| Ubuntu 24.04+ | ARM64 | `aarch64-unknown-linux-gnu` | Supported | Native standalone, shard, and coordinator. Build from source or use the matching release archive. |
 
-All three targets use the portable HNSW backend. CUDA, NVIDIA GPU,
+Both targets use the portable HNSW backend. Linux ARM64, CUDA, NVIDIA GPU,
 Thor-specific acceleration, macOS Intel, Ubuntu older than 24.04, and other
-Linux distributions are outside the tested support matrix.
+Linux distributions are outside the release support matrix.
 
 ## Delivery and deployment matrix
 
-| Path | macOS 26 ARM64 | Ubuntu 24.04+ AMD64 | Ubuntu 24.04+ ARM64 |
-| --- | --- | --- | --- |
-| Source build and workspace tests | Supported | Supported | Supported |
-| GitHub release archive | Supported | Supported | Supported |
-| Standalone server | Supported | Supported | Supported |
-| Shard and coordinator binaries | Supported | Supported | Supported |
-| Immutable generation serving | Single-node preview | Single-node qualification preview | Not currently qualified |
-| Docker images | Development use only | Supported image architecture | Not currently published |
-| Checksum-pinned Ansible cluster artifact | Not applicable | Qualified | Not yet qualified |
-| Four-Mac Thunderbolt evidence tooling | Experimental | Not applicable | Not applicable |
+| Path | macOS 26 ARM64 | Ubuntu 24.04+ AMD64 |
+| --- | --- | --- |
+| Source build and workspace tests | Supported | Supported |
+| GitHub release archive | Supported | Supported |
+| Standalone server | Supported | Supported |
+| Shard and coordinator binaries | Supported | Supported |
+| Immutable single-node generation serving | Preview | Supported |
+| PostgreSQL-led full-replica knowledge cell | Not currently qualified | Supported for the documented three-replica, 100k × 768 envelope |
+| Docker images | Development use only | Supported image architecture |
+| Checksum-pinned Ansible artifact | Not applicable | Supported |
+| Four-Mac Thunderbolt evidence tooling | Experimental | Not applicable |
 
 The runtime being supported does not imply that every packaging, cluster, or
-preview path is supported on the same architecture. The current Docker,
-immutable Ansible artifact, and generation-serving qualification pipelines are
-AMD64-only. These preview and cluster rows do not claim replication, automatic
-failover, or production HA.
+preview path is supported on the same architecture. The Docker, immutable
+Ansible artifact, and generation-serving qualification pipelines are
+AMD64-only. The knowledge cell provides full-copy retrieval replicas and read
+failover; it does not provide PostgreSQL or MinIO HA.
+
+The `generation-postgres` build feature enables the replica worker, but a
+feature-enabled binary by itself is not an HA deployment. The supported cell
+also requires independent storage, authoritative activation policy,
+generation-aware routing, blank-node rebuild evidence, and the checked-in
+failure/recovery workflow. See the
+[knowledge-serving architecture](../architecture/knowledge-serving.md).
+The measured envelope, failure drills, and important control-plane/object-store
+limitations are recorded in the
+[Ubuntu AMD64 qualification report](../quality/linux-amd64-knowledge-cell-qualification.md).
 
 ## macOS 26 on Apple Silicon
 
@@ -50,7 +60,7 @@ builds the unified `akidb` CLI. Optional local text embeddings can use
 `scripts/ax_engine_embedding_server.py` with native `ax-engine` model
 artifacts.
 
-## Ubuntu 24.04+ on AMD64 or ARM64
+## Ubuntu 24.04+ on AMD64
 
 Install the native build dependencies:
 
@@ -69,8 +79,8 @@ cargo test --workspace
 cargo build --release -p akidb-cli
 ```
 
-The same commands apply to `x86_64` and `aarch64` hosts. Use an
-OpenAI-compatible local embedding endpoint when `TextSearch` is enabled.
+Use an OpenAI-compatible local embedding endpoint when `TextSearch` is
+enabled.
 
 ## Cluster qualification
 
@@ -87,18 +97,22 @@ The checked-in Ansible profile is therefore a qualification environment:
 - no public AkiDB bind;
 - `auth.mode=disabled` only inside the explicitly trusted overlay.
 
-See [`deploy/ansible/README.md`](../../deploy/ansible/README.md). ARM64 cluster
-automation remains unqualified even though the ARM64 server, shard, and
-coordinator runtime is supported.
+See [`deploy/ansible/README.md`](../../deploy/ansible/README.md). Linux ARM64
+cluster automation and release artifacts are intentionally not published.
+
+This four-shard profile is separate from the knowledge-serving replica design.
+The latter starts with full logical copies on two or three nodes and a
+generation-aware AX gateway; it does not relabel independent hash-routed
+shards as replicas.
 
 ## CI coverage
 
 GitHub Actions exercises:
 
 - workspace tests on macOS 26 ARM64;
-- workspace tests on Ubuntu 24.04 AMD64 and ARM64;
+- workspace tests on Ubuntu 24.04 AMD64;
 - the Apple Silicon build script on macOS 26;
-- release builds for all three native target triples;
+- release builds for macOS Apple Silicon and Linux AMD64;
 - the immutable Linux cluster artifact on Ubuntu 24.04 AMD64;
 - the real-MinIO immutable generation-serving gate on Ubuntu 24.04 AMD64.
 

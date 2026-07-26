@@ -2,7 +2,12 @@
 
 The four-Mac Thunderbolt cell is deferred until the one-Mac product has
 traction, but any future validation claim must be backed by a machine-readable
-artifact. Do not mark the cell production-ready from prose notes alone.
+artifact. Do not mark the cell qualified from prose notes alone.
+
+This is an experimental shard/cell evidence path, not the accepted first HA
+topology. Agentic knowledge serving starts with independently rebuilt full
+replicas under PostgreSQL authority; see the
+[knowledge-serving architecture](../architecture/knowledge-serving.md).
 
 Validate an artifact:
 
@@ -107,7 +112,7 @@ The validator checks:
 - throughput ratio versus the one-Mac reference benchmark
 - matching benchmark reference workload for dimensions, vector count, topK, and
   `nprobe` when both one-Mac and cell benchmark artifacts are attached
-- no Kubernetes dependency for the initial production path
+- no Kubernetes dependency for this deferred experimental path
 
 Default gates:
 

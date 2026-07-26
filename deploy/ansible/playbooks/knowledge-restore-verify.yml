@@ -1,0 +1,194 @@
+---
+- name: Verify one canonical backup by restoring PostgreSQL into an isolated database
+  hosts: akidb_knowledge_dependencies
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    knowledge_backup_id: "{{ lookup('env', 'AKIDB_KNOWLEDGE_BACKUP_ID') }}"
+    knowledge_backup_sha256: "{{ lookup('env', 'AKIDB_KNOWLEDGE_BACKUP_SHA256') }}"
+    knowledge_backup_root: /var/backups/akidb-knowledge
+    knowledge_backup_archive: "{{ knowledge_backup_root }}/{{ knowledge_backup_id }}.tar.gz"
+    knowledge_restore_dir: "/var/tmp/akidb-restore-verify-{{ knowledge_backup_id }}"
+    knowledge_restore_database: "akidb_restore_{{ knowledge_backup_id | regex_replace('[^A-Za-z0-9]', '_') }}"
+  tasks:
+    - name: Validate immutable restore-test input
+      ansible.builtin.assert:
+        that:
+          - knowledge_backup_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{6,63}$')
+          - knowledge_backup_sha256 is match('^[a-fA-F0-9]{64}$')
+          - knowledge_restore_database | length <= 63
+
+    - name: Verify the exact backup archive checksum
+      ansible.builtin.stat:
+        path: "{{ knowledge_backup_archive }}"
+        checksum_algorithm: sha256
+      register: knowledge_restore_archive
+
+    - name: Require exact immutable backup evidence
+      ansible.builtin.assert:
+        that:
+          - knowledge_restore_archive.stat.exists
+          - knowledge_restore_archive.stat.checksum == knowledge_backup_sha256 | lower
+
+    - name: Inspect isolated restore directory
+      ansible.builtin.stat:
+        path: "{{ knowledge_restore_dir }}"
+      register: knowledge_restore_existing
+
+    - name: Refuse to reuse a restore-test directory
+      ansible.builtin.assert:
+        that:
+          - not knowledge_restore_existing.stat.exists
+
+    - name: Restore and validate inside an always-cleaned isolation boundary
+      block:
+        - name: Create isolated restore-test directory
+          ansible.builtin.file:
+            path: "{{ knowledge_restore_dir }}"
+            state: directory
+            owner: root
+            group: postgres
+            mode: "0710"
+
+        - name: Expand backup only into the isolated restore directory
+          ansible.builtin.unarchive:
+            src: "{{ knowledge_backup_archive }}"
+            dest: "{{ knowledge_restore_dir }}"
+            remote_src: true
+
+        - name: Permit PostgreSQL to traverse the extracted backup
+          ansible.builtin.file:
+            path: "{{ knowledge_restore_dir }}/{{ knowledge_backup_id }}"
+            state: directory
+            owner: root
+            group: postgres
+            mode: "0710"
+
+        - name: Grant PostgreSQL read-only access to the dump
+          ansible.builtin.file:
+            path: "{{ knowledge_restore_dir }}/{{ knowledge_backup_id }}/knowledge-control.pgdump"
+            state: file
+            owner: root
+            group: postgres
+            mode: "0640"
+
+        - name: Require a structurally readable PostgreSQL dump
+          ansible.builtin.command:
+            argv:
+              - pg_restore
+              - --list
+              - "{{ knowledge_restore_dir }}/{{ knowledge_backup_id }}/knowledge-control.pgdump"
+          become_user: postgres
+          changed_when: false
+
+        - name: Create disposable restore verification database
+          community.postgresql.postgresql_db:
+            name: "{{ knowledge_restore_database }}"
+            owner: postgres
+            state: present
+            login_unix_socket: /var/run/postgresql
+          become_user: postgres
+
+        - name: Restore authority into the disposable database
+          ansible.builtin.command:
+            argv:
+              - pg_restore
+              - --exit-on-error
+              - --no-owner
+              - --no-privileges
+              - --dbname
+              - "{{ knowledge_restore_database }}"
+              - "{{ knowledge_restore_dir }}/{{ knowledge_backup_id }}/knowledge-control.pgdump"
+          become_user: postgres
+          changed_when: true
+
+        - name: Verify restored control-plane schema and active pointer
+          community.postgresql.postgresql_query:
+            db: "{{ knowledge_restore_database }}"
+            login_unix_socket: /var/run/postgresql
+            query: >-
+              select
+                (select count(*) from knowledge_schema_migrations) as migrations,
+                (select count(*) from knowledge_streams) as streams,
+                (select count(*) from knowledge_generations) as generations,
+                (select count(*) from knowledge_audit) as audit_events
+          become_user: postgres
+          register: knowledge_restore_query
+
+        - name: Require restored knowledge authority records
+          ansible.builtin.assert:
+            that:
+              - knowledge_restore_query.query_result[0].migrations | int >= 1
+              - knowledge_restore_query.query_result[0].streams | int >= 1
+              - knowledge_restore_query.query_result[0].generations | int >= 1
+
+        - name: Count restored canonical object files
+          ansible.builtin.find:
+            paths: "{{ knowledge_restore_dir }}/{{ knowledge_backup_id }}/minio/{{ akidb_knowledge_minio_bucket }}"
+            file_type: file
+            recurse: true
+          register: knowledge_restore_objects
+
+        - name: Require at least one canonical generation object
+          ansible.builtin.assert:
+            that:
+              - knowledge_restore_objects.matched | int >= 1
+
+        - name: Publish restore verification evidence
+          ansible.builtin.set_fact:
+            knowledge_restore_audit_details:
+              backup_id: "{{ knowledge_backup_id }}"
+              sha256: "{{ knowledge_backup_sha256 | lower }}"
+              restored_streams: "{{ knowledge_restore_query.query_result[0].streams }}"
+              restored_generations: "{{ knowledge_restore_query.query_result[0].generations }}"
+              restored_objects: "{{ knowledge_restore_objects.matched }}"
+      always:
+        - name: Drop disposable restore verification database
+          community.postgresql.postgresql_db:
+            name: "{{ knowledge_restore_database }}"
+            state: absent
+            force: true
+            login_unix_socket: /var/run/postgresql
+          become_user: postgres
+
+        - name: Remove disposable restore directory
+          ansible.builtin.file:
+            path: "{{ knowledge_restore_dir }}"
+            state: absent
+
+- name: Record successful restore verification in the authoritative audit
+  hosts: ax_knowledge_gateways[0]
+  become: true
+  become_user: "{{ ax_gateway_user }}"
+  gather_facts: false
+  tasks:
+    - name: Append bounded restore audit evidence
+      ansible.builtin.command:
+        argv:
+          - "{{ ax_gateway_install_root }}/current/bin/node"
+          - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+          - knowledge-control
+          - --postgres-ca
+          - "{{ ax_gateway_config_root }}/tls/ca.crt"
+          - --postgres-server-name
+          - "{{ ax_knowledge_postgres_server_name }}"
+          - maintenance-audit
+          - --workspace
+          - "{{ akidb_knowledge_workspace }}"
+          - --collection
+          - "{{ akidb_knowledge_collection }}"
+          - --action
+          - knowledge.restore.verified
+          - --actor
+          - ansible-restore-drill
+          - --details-json
+          - >-
+            {{
+              hostvars[groups['akidb_knowledge_dependencies'][0]]
+              .knowledge_restore_audit_details | to_json
+            }}
+      environment:
+        AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+      changed_when: true
+      no_log: true

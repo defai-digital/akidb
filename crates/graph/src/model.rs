@@ -295,6 +295,18 @@ pub struct RelatedChunk {
     pub via_node: GraphNodeId,
 }
 
+/// A bounded graph expansion result with the exact edge path that justified it.
+///
+/// The serving layer uses this trace to expose hop decay and source evidence
+/// without turning the graph index into an arbitrary query surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelatedChunkTrace {
+    pub vector_id: VectorId,
+    pub via_node: GraphNodeId,
+    pub hop: u8,
+    pub path_edges: Vec<GraphEdge>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphStats {
     pub nodes: u64,

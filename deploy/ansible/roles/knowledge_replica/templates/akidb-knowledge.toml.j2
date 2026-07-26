@@ -1,0 +1,126 @@
+[server]
+host = "{{ akidb_overlay_address }}"
+port = 8080
+grpc_port = {{ akidb_knowledge_server_port }}
+tls_enabled = true
+tls_cert_path = "{{ akidb_config_root }}/tls/server.crt"
+tls_key_path = "{{ akidb_config_root }}/tls/server.key"
+
+[auth]
+mode = "required"
+token_file = "{{ akidb_config_root }}/knowledge-read.token"
+
+[auth.acl]
+default_workspace = "{{ akidb_knowledge_workspace }}"
+enforce_workspace = true
+
+[management]
+audit_max_entries = 1000
+
+[management.import_plan]
+enabled = false
+max_source_bytes = 104857600
+max_expanded_bytes = 536870912
+plan_ttl_seconds = 300
+
+[generation_serving]
+enabled = true
+replica_id = "{{ akidb_knowledge_replica_id }}"
+generation_root = "{{ akidb_data_root }}/generations"
+control_rocksdb_path = "{{ akidb_data_root }}/generation-control"
+download_path = "{{ akidb_data_root }}/generation-downloads"
+default_collection = "{{ akidb_knowledge_collection }}"
+control_token_file = "{{ akidb_config_root }}/knowledge-control.token"
+allowed_buckets = ["{{ akidb_knowledge_minio_bucket }}"]
+s3_region = "us-east-1"
+require_version_or_digest_key = true
+max_bundle_size_bytes = 53687091200
+max_vectors = {{ akidb_knowledge_max_vectors }}
+max_graph_nodes = {{ akidb_knowledge_max_graph_nodes }}
+max_graph_edges = {{ akidb_knowledge_max_graph_edges }}
+minimum_free_bytes_after_build = {{ akidb_knowledge_minimum_free_bytes_after_build }}
+estimated_build_overhead_percent = {{ akidb_knowledge_estimated_build_overhead_percent }}
+
+[generation_serving.replica_control]
+enabled = true
+postgres_url_env = "AKIDB_KNOWLEDGE_POSTGRES_URL"
+postgres_tls_mode = "require"
+postgres_ca_certificate_path = "{{ akidb_config_root }}/tls/ca.crt"
+endpoint = "{{ inventory_hostname }}:{{ akidb_knowledge_server_port }}"
+failure_domain = "{{ akidb_knowledge_failure_domain }}"
+poll_interval_ms = {{ akidb_knowledge_poll_interval_ms }}
+heartbeat_interval_ms = {{ akidb_knowledge_heartbeat_interval_ms }}
+index_format_version = "{{ akidb_knowledge_index_format_version }}"
+supported_graph_schema_versions = {{ akidb_knowledge_graph_schema_versions | to_json }}
+generation_gc_enabled = {{ akidb_knowledge_generation_gc_enabled | bool | lower }}
+generation_gc_interval_ms = {{ akidb_knowledge_generation_gc_interval_ms }}
+generation_gc_minimum_age_ms = {{ akidb_knowledge_generation_gc_minimum_age_ms }}
+generation_gc_dry_run = {{ akidb_knowledge_generation_gc_dry_run | bool | lower }}
+
+[index]
+index_type = "{{ akidb_index_type }}"
+hnsw_m = {{ akidb_hnsw_m }}
+hnsw_ef_construction = {{ akidb_hnsw_ef_construction }}
+hnsw_ef_search = {{ akidb_hnsw_ef_search }}
+vector_precision = "{{ akidb_vector_precision }}"
+metric = "{{ akidb_metric }}"
+
+[index.filter]
+mode = "adaptive"
+postfilter_overfetch_factor = 5
+adaptive_pre_selectivity = 0.20
+
+[index.rebuild]
+tombstone_ratio_trigger = 0.10
+max_duration_seconds = 300
+preferred_hours = [2, 3, 4]
+
+[index.tombstone]
+max_count = 100000
+
+[storage]
+rocksdb_path = "{{ akidb_data_root }}/rocksdb"
+wal_enabled = true
+wal_path = "{{ akidb_data_root }}/wal"
+
+[storage.minio]
+endpoint = "https://{{ hostvars[groups['akidb_knowledge_dependencies'][0]].akidb_overlay_address }}:{{ akidb_knowledge_minio_port }}"
+bucket = "{{ akidb_knowledge_minio_bucket }}"
+access_key = "{{ akidb_knowledge_minio_access_key }}"
+secret_key = "{{ akidb_knowledge_minio_secret_key }}"
+use_ssl = true
+
+[sql]
+enabled = false
+backend = "sqlite"
+sqlite_path = "{{ akidb_data_root }}/akidb-metadata.sqlite"
+
+[observability]
+tracing_enabled = false
+otlp_endpoint = "http://127.0.0.1:4317"
+metrics_enabled = true
+metrics_port = {{ akidb_knowledge_metrics_port }}
+log_level = "{{ akidb_log_level }}"
+log_format = "json"
+
+[slo]
+[slo.reference]
+dimensions = {{ akidb_dimensions }}
+vectors_per_shard = {{ akidb_vectors_per_shard }}
+top_k = 10
+nprobe = 32
+batch_size = 1
+target_p95_ms = 50
+
+[slo.backpressure]
+soft_breach_ms = 50
+hard_breach_ms = 75
+degraded_mode_enabled = true
+
+[embedding]
+enabled = false
+url = "http://127.0.0.1:8081/v1/embeddings"
+model = "disabled"
+dimensions = {{ akidb_dimensions }}
+timeout_ms = 10000
+max_batch_size = 32

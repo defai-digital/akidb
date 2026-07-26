@@ -1,0 +1,388 @@
+---
+- name: Require pinned dependency artifacts and credentials
+  ansible.builtin.assert:
+    that:
+      - akidb_knowledge_minio_url | length > 0
+      - akidb_knowledge_minio_sha256 is match('^[a-fA-F0-9]{64}$')
+      - akidb_knowledge_mc_url | length > 0
+      - akidb_knowledge_mc_sha256 is match('^[a-fA-F0-9]{64}$')
+      - akidb_knowledge_postgres_password | length >= 24
+      - akidb_knowledge_minio_root_access_key | length >= 3
+      - akidb_knowledge_minio_root_secret_key | length >= 24
+      - akidb_knowledge_minio_access_key | length >= 3
+      - akidb_knowledge_minio_secret_key | length >= 24
+      - ax_knowledge_minio_publish_access_key | length >= 3
+      - ax_knowledge_minio_publish_secret_key | length >= 24
+  no_log: true
+
+- name: Install PostgreSQL and control dependencies
+  ansible.builtin.apt:
+    name:
+      - postgresql
+      - python3-psycopg2
+      - ca-certificates
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install knowledge-cell CA into the host trust store
+  ansible.builtin.copy:
+    src: "{{ akidb_knowledge_pki_dir }}/ca.crt"
+    dest: /usr/local/share/ca-certificates/akidb-knowledge-cell.crt
+    owner: root
+    group: root
+    mode: "0644"
+  register: knowledge_dependency_system_ca
+
+- name: Refresh dependency-host CA trust
+  ansible.builtin.command:
+    argv: [update-ca-certificates]
+  changed_when: true
+  when: knowledge_dependency_system_ca.changed
+
+- name: Create protected PostgreSQL TLS directory
+  ansible.builtin.file:
+    path: /etc/postgresql/knowledge-tls
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0700"
+
+- name: Install PostgreSQL TLS certificate
+  ansible.builtin.copy:
+    src: "{{ akidb_knowledge_pki_dir }}/hosts/{{ inventory_hostname }}.crt"
+    dest: /etc/postgresql/knowledge-tls/server.crt
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  notify: Restart knowledge PostgreSQL
+
+- name: Install PostgreSQL TLS private key
+  ansible.builtin.copy:
+    src: "{{ akidb_knowledge_pki_dir }}/hosts/{{ inventory_hostname }}.key"
+    dest: /etc/postgresql/knowledge-tls/server.key
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  no_log: true
+  notify: Restart knowledge PostgreSQL
+
+- name: Locate active PostgreSQL configuration
+  ansible.builtin.command:
+    argv: [sudo, -u, postgres, psql, -Atqc, show config_file]
+  changed_when: false
+  register: knowledge_postgres_config_path
+
+- name: Locate active PostgreSQL client policy
+  ansible.builtin.command:
+    argv: [sudo, -u, postgres, psql, -Atqc, show hba_file]
+  changed_when: false
+  register: knowledge_postgres_hba_path
+
+- name: Reconcile PostgreSQL knowledge-cell settings
+  ansible.builtin.lineinfile:
+    path: "{{ knowledge_postgres_config_path.stdout | trim }}"
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  loop:
+    - regexp: "^#?listen_addresses\\s*="
+      line: "listen_addresses = '{{ akidb_overlay_address }}'"
+    - regexp: "^#?ssl\\s*="
+      line: "ssl = on"
+    - regexp: "^#?ssl_cert_file\\s*="
+      line: "ssl_cert_file = '/etc/postgresql/knowledge-tls/server.crt'"
+    - regexp: "^#?ssl_key_file\\s*="
+      line: "ssl_key_file = '/etc/postgresql/knowledge-tls/server.key'"
+    - regexp: "^#?ssl_min_protocol_version\\s*="
+      line: "ssl_min_protocol_version = 'TLSv1.2'"
+    - regexp: "^#?password_encryption\\s*="
+      line: "password_encryption = 'scram-sha-256'"
+  notify: Restart knowledge PostgreSQL
+
+- name: Permit only TLS knowledge-control connections on the overlay
+  community.postgresql.postgresql_pg_hba:
+    dest: "{{ knowledge_postgres_hba_path.stdout | trim }}"
+    contype: hostssl
+    databases: "{{ akidb_knowledge_postgres_database }}"
+    users: "{{ akidb_knowledge_postgres_user }}"
+    source: "{{ akidb_overlay_cidr }}"
+    method: scram-sha-256
+    create: true
+  notify: Restart knowledge PostgreSQL
+
+- name: Apply pending PostgreSQL restart
+  ansible.builtin.meta: flush_handlers
+
+- name: Create least-privilege knowledge-control PostgreSQL role
+  community.postgresql.postgresql_user:
+    name: "{{ akidb_knowledge_postgres_user }}"
+    password: "{{ akidb_knowledge_postgres_password }}"
+    role_attr_flags: NOSUPERUSER,NOCREATEDB,NOCREATEROLE,NOINHERIT,LOGIN
+    state: present
+    login_unix_socket: /var/run/postgresql
+  become_user: postgres
+  no_log: true
+
+- name: Create knowledge-control database
+  community.postgresql.postgresql_db:
+    name: "{{ akidb_knowledge_postgres_database }}"
+    owner: "{{ akidb_knowledge_postgres_user }}"
+    encoding: UTF-8
+    state: present
+    login_unix_socket: /var/run/postgresql
+  become_user: postgres
+
+- name: Create MinIO service identity and directories
+  ansible.builtin.group:
+    name: minio
+    system: true
+    state: present
+
+- name: Create MinIO service user
+  ansible.builtin.user:
+    name: minio
+    group: minio
+    home: /var/lib/minio
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+    state: present
+
+- name: Create MinIO data and TLS directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /var/lib/minio/knowledge
+      owner: minio
+      group: minio
+      mode: "0750"
+    - path: /etc/minio
+      owner: root
+      group: minio
+      mode: "0750"
+    - path: /etc/minio/certs
+      owner: root
+      group: minio
+      mode: "0750"
+    - path: /etc/minio/certs/CAs
+      owner: root
+      group: minio
+      mode: "0750"
+
+- name: Install checksum-pinned MinIO binaries
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "{{ item.dest }}"
+    checksum: "sha256:{{ item.sha256 }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - url: "{{ akidb_knowledge_minio_url }}"
+      dest: /usr/local/bin/minio
+      sha256: "{{ akidb_knowledge_minio_sha256 }}"
+    - url: "{{ akidb_knowledge_mc_url }}"
+      dest: /usr/local/bin/mc
+      sha256: "{{ akidb_knowledge_mc_sha256 }}"
+  notify: Restart knowledge MinIO
+
+- name: Install MinIO TLS materials
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: minio
+    mode: "{{ item.mode }}"
+  loop:
+    - src: "{{ akidb_knowledge_pki_dir }}/ca.crt"
+      dest: /etc/minio/certs/CAs/ca.crt
+      mode: "0644"
+    - src: "{{ akidb_knowledge_pki_dir }}/hosts/{{ inventory_hostname }}.crt"
+      dest: /etc/minio/certs/public.crt
+      mode: "0644"
+    - src: "{{ akidb_knowledge_pki_dir }}/hosts/{{ inventory_hostname }}.key"
+      dest: /etc/minio/certs/private.key
+      mode: "0640"
+  no_log: true
+  notify: Restart knowledge MinIO
+
+- name: Install protected MinIO environment
+  ansible.builtin.copy:
+    content: |
+      MINIO_ROOT_USER="{{ akidb_knowledge_minio_root_access_key | replace('\\', '\\\\') | replace('"', '\\"') }}"
+      MINIO_ROOT_PASSWORD="{{ akidb_knowledge_minio_root_secret_key | replace('\\', '\\\\') | replace('"', '\\"') }}"
+    dest: /etc/minio/knowledge.env
+    owner: root
+    group: minio
+    mode: "0640"
+  no_log: true
+  notify: Restart knowledge MinIO
+
+- name: Install MinIO systemd unit
+  ansible.builtin.template:
+    src: minio-knowledge.service.j2
+    dest: /etc/systemd/system/minio-knowledge.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart knowledge MinIO
+
+- name: Start MinIO
+  ansible.builtin.systemd_service:
+    name: minio-knowledge
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Apply pending MinIO restart
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for MinIO TLS liveness
+  ansible.builtin.uri:
+    url: "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_minio_port }}/minio/health/live"
+    ca_path: /etc/minio/certs/CAs/ca.crt
+    status_code: 200
+  register: knowledge_minio_liveness
+  retries: 20
+  delay: 2
+  until: knowledge_minio_liveness.status == 200
+
+- name: Configure local MinIO client alias
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/mc
+      - alias
+      - set
+      - knowledge
+      - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_minio_port }}"
+      - "{{ akidb_knowledge_minio_root_access_key }}"
+      - "{{ akidb_knowledge_minio_root_secret_key }}"
+  environment:
+    MC_CONFIG_DIR: /root/.mc-akidb-knowledge
+    SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
+  changed_when: false
+  no_log: true
+
+- name: Install bounded read and publication policy documents
+  ansible.builtin.copy:
+    content: "{{ item.document | to_nice_json }}\n"
+    dest: "/etc/minio/{{ item.name }}.json"
+    owner: root
+    group: minio
+    mode: "0640"
+  loop:
+    - name: knowledge-replica-read
+      document:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource:
+              - "arn:aws:s3:::{{ akidb_knowledge_minio_bucket }}"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource:
+              - "arn:aws:s3:::{{ akidb_knowledge_minio_bucket }}/*"
+    - name: knowledge-publisher
+      document:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource:
+              - "arn:aws:s3:::{{ akidb_knowledge_minio_bucket }}"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - "arn:aws:s3:::{{ akidb_knowledge_minio_bucket }}/ax-fabric/*"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Reconcile bounded MinIO policies
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/mc
+      - admin
+      - policy
+      - create
+      - knowledge
+      - "{{ item }}"
+      - "/etc/minio/{{ item }}.json"
+  loop:
+    - knowledge-replica-read
+    - knowledge-publisher
+  environment:
+    MC_CONFIG_DIR: /root/.mc-akidb-knowledge
+    SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
+  changed_when: false
+
+- name: Reconcile least-privilege MinIO service users
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/mc
+      - admin
+      - user
+      - add
+      - knowledge
+      - "{{ item.access_key }}"
+      - "{{ item.secret_key }}"
+  loop:
+    - access_key: "{{ akidb_knowledge_minio_access_key }}"
+      secret_key: "{{ akidb_knowledge_minio_secret_key }}"
+    - access_key: "{{ ax_knowledge_minio_publish_access_key }}"
+      secret_key: "{{ ax_knowledge_minio_publish_secret_key }}"
+  loop_control:
+    label: "{{ item.access_key }}"
+  environment:
+    MC_CONFIG_DIR: /root/.mc-akidb-knowledge
+    SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
+  changed_when: false
+  no_log: true
+
+- name: Attach bounded policies to MinIO service users
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/mc
+      - admin
+      - policy
+      - attach
+      - knowledge
+      - "{{ item.policy }}"
+      - --user
+      - "{{ item.access_key }}"
+  loop:
+    - policy: knowledge-replica-read
+      access_key: "{{ akidb_knowledge_minio_access_key }}"
+    - policy: knowledge-publisher
+      access_key: "{{ ax_knowledge_minio_publish_access_key }}"
+  loop_control:
+    label: "{{ item.policy }} -> {{ item.access_key }}"
+  environment:
+    MC_CONFIG_DIR: /root/.mc-akidb-knowledge
+    SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
+  changed_when: false
+  no_log: true
+
+- name: Create immutable-generation bucket idempotently
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/mc
+      - mb
+      - --ignore-existing
+      - "knowledge/{{ akidb_knowledge_minio_bucket }}"
+  environment:
+    MC_CONFIG_DIR: /root/.mc-akidb-knowledge
+    SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
+  changed_when: false

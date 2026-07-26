@@ -14,6 +14,10 @@ is a header, followed by strictly ID-sorted records, nodes, and edges. The
 matching `bundle-manifest.json` pins its byte length and SHA-256. Bundles never
 contain engine-specific RocksDB or HNSW directories.
 
+`valid/mutation-payload-upsert.json` is the byte-stable logical replacement for
+one chunk and its evidence graph. `mutation-upsert-bundle.json` binds that
+object's exact byte length and SHA-256 to sequence 11 of the bundle generation.
+
 Changing an existing fixture is a compatibility change. Add a new version
 directory when a future schema is not backward compatible.
 

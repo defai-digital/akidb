@@ -1,0 +1,111 @@
+---
+- name: Create AX gateway service group
+  ansible.builtin.group:
+    name: "{{ ax_gateway_group }}"
+    system: true
+    state: present
+
+- name: Create AX gateway service user
+  ansible.builtin.user:
+    name: "{{ ax_gateway_user }}"
+    group: "{{ ax_gateway_group }}"
+    home: /nonexistent
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+    state: present
+
+- name: Create AX gateway release directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ ax_gateway_install_root }}"
+    - "{{ ax_gateway_install_root }}/releases"
+    - "{{ ax_gateway_install_root }}/.artifacts"
+
+- name: Create protected AX gateway configuration
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ ax_gateway_group }}"
+    mode: "0750"
+  loop:
+    - "{{ ax_gateway_config_root }}"
+    - "{{ ax_gateway_config_root }}/tls"
+
+- name: Install gateway trust and listener credentials
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: "{{ ax_gateway_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - src: "{{ akidb_knowledge_pki_dir }}/ca.crt"
+      dest: "{{ ax_gateway_config_root }}/tls/ca.crt"
+      mode: "0644"
+    - src: "{{ akidb_knowledge_pki_dir }}/hosts/{{ inventory_hostname }}.crt"
+      dest: "{{ ax_gateway_config_root }}/tls/server.crt"
+      mode: "0644"
+    - src: "{{ akidb_knowledge_pki_dir }}/hosts/{{ inventory_hostname }}.key"
+      dest: "{{ ax_gateway_config_root }}/tls/server.key"
+      mode: "0640"
+  loop_control:
+    label: "{{ item.dest }}"
+  no_log: true
+  notify: Restart AX knowledge gateway
+
+- name: Install protected AX gateway environment
+  ansible.builtin.copy:
+    content: |
+      AX_KNOWLEDGE_POSTGRES_URL="{{ ax_knowledge_postgres_url | replace('\\', '\\\\') | replace('"', '\\"') }}"
+      AX_KNOWLEDGE_AKIDB_TOKEN="{{ akidb_knowledge_read_token | replace('\\', '\\\\') | replace('"', '\\"') }}"
+      AX_KNOWLEDGE_GATEWAY_TOKEN="{{ ax_knowledge_gateway_token | replace('\\', '\\\\') | replace('"', '\\"') }}"
+    dest: "{{ ax_gateway_config_root }}/gateway.env"
+    owner: root
+    group: "{{ ax_gateway_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart AX knowledge gateway
+
+- name: Activate immutable AX gateway release
+  ansible.builtin.file:
+    src: "{{ ax_gateway_install_root }}/releases/{{ ax_gateway_release_id }}"
+    dest: "{{ ax_gateway_install_root }}/current"
+    state: link
+    force: true
+  notify: Restart AX knowledge gateway
+
+- name: Install AX gateway systemd unit
+  ansible.builtin.template:
+    src: ax-knowledge-gateway.service.j2
+    dest: /etc/systemd/system/ax-knowledge-gateway.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart AX knowledge gateway
+
+- name: Start AX knowledge gateway
+  ansible.builtin.systemd_service:
+    name: ax-knowledge-gateway
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Apply pending gateway restart
+  ansible.builtin.meta: flush_handlers
+
+- name: Require the gateway HTTPS liveness endpoint
+  ansible.builtin.uri:
+    url: "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_gateway_port }}/healthz"
+    ca_path: "{{ ax_gateway_config_root }}/tls/ca.crt"
+    status_code: 200
+  register: ax_gateway_liveness
+  retries: 15
+  delay: 2
+  until: ax_gateway_liveness.status == 200

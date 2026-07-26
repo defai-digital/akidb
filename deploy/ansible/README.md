@@ -1,10 +1,16 @@
 # AkiDB Linux AMD64 Cluster Deployment
 
-This directory provides the reproducible qualification path for a four-node
-Ubuntu 24.04-or-newer AMD64 cluster. The native AkiDB runtime also supports
-macOS 26 Apple Silicon and Ubuntu 24.04+ ARM64, but this checksum-pinned
-cluster artifact and Ansible profile remain AMD64-specific. They produce
-qualification evidence and are not an HA or production-support claim.
+This directory provides two reproducible Ubuntu 24.04-or-newer AMD64 paths:
+
+- the legacy four-independent-shard capacity lab, which is not HA; and
+- the supported knowledge-serving cell with three independently rebuilt full
+  replicas, two stateless AX gateways, PostgreSQL authority, and MinIO
+  artifacts.
+
+Linux ARM64 and NVIDIA Thor are not release targets. The legacy profile remains
+useful for shard fan-out and capacity qualification, while the knowledge cell
+is the accepted availability design. See
+[`docs/architecture/knowledge-serving.md`](../../docs/architecture/knowledge-serving.md).
 
 ## Design decision
 
@@ -222,24 +228,23 @@ high-concurrency saturation, not a functional requirement.
 ### Phase 4 — platform matrix
 
 - Linux AMD64 cluster release qualification
-- Linux ARM64 cluster artifact and automation qualification
 - macOS 26 ARM64 regression qualification
 - mixed-client compatibility and artifact provenance checks
 
 Exit criterion: only passing combinations are described as supported.
 
-### Phase 5 — production hardening
+### Phase 5 — architecture decision gate
 
-- RF2 replication and automatic shard failover
-- persisted shard placement and safe rebalancing
-- coordinator bearer/workspace propagation
-- TLS or mTLS on external data-plane traffic
-- coordinator authentication and high availability
-- distributed TextSearch
-- backup/restore drills and deletion propagation
-- node and availability-zone failure drills
-- monitoring, alerting, log retention, and SLO dashboards
-- Ansible Vault or an external secret manager
+- Preserve this profile as a measured independent-shard capacity lab.
+- Do not add shard replication, placement, rebalancing, and distributed graph
+  traversal before one full-replica generation exceeds a measured resource or
+  QPS limit.
+- Qualify PostgreSQL-led full replicas and generation-aware AX routing in a
+  separate topology.
+- Keep coordinator bearer/workspace propagation, TLS/mTLS, distributed
+  `TextSearch`, backup/restore, deletion propagation, monitoring, and secret
+  management as blockers for any production use of this shard profile.
 
 Exit criterion: the private lab exception (`auth.mode=disabled` inside
-WireGuard) is removed before production exposure.
+WireGuard) is never presented as production exposure, and evidence determines
+whether a later sharded-replica design is necessary.

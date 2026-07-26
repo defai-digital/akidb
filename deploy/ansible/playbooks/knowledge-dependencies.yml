@@ -1,0 +1,9 @@
+---
+- name: Reconcile lab PostgreSQL and MinIO dependencies
+  hosts: akidb_knowledge_dependencies
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: knowledge_dependencies
+      when: akidb_knowledge_manage_lab_dependencies | bool

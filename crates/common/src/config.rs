@@ -155,7 +155,8 @@ fn default_import_plan_ttl_seconds() -> u64 {
     300
 }
 
-/// Phase 2 single-node immutable generation serving.
+/// Immutable generation serving with an optional Phase 3 PostgreSQL replica
+/// control loop.
 ///
 /// Enabling this replaces the mutable gRPC data path. It does not enable HA,
 /// sharding, PostgreSQL control-plane authority, or automatic failover.
@@ -197,6 +198,14 @@ pub struct GenerationServingConfig {
     pub max_graph_nodes: u64,
     #[serde(default = "default_generation_max_edges")]
     pub max_graph_edges: u64,
+    /// Free bytes that must remain after the estimated immutable shadow build.
+    #[serde(default = "default_generation_minimum_free_bytes_after_build")]
+    pub minimum_free_bytes_after_build: u64,
+    /// Conservative disk amplification applied to bundle + vector payload.
+    #[serde(default = "default_generation_build_overhead_percent")]
+    pub estimated_build_overhead_percent: u16,
+    #[serde(default)]
+    pub replica_control: GenerationReplicaControlConfig,
 }
 
 impl Default for GenerationServingConfig {
@@ -217,8 +226,111 @@ impl Default for GenerationServingConfig {
             max_vectors: default_generation_max_vectors(),
             max_graph_nodes: default_generation_max_nodes(),
             max_graph_edges: default_generation_max_edges(),
+            minimum_free_bytes_after_build: default_generation_minimum_free_bytes_after_build(),
+            estimated_build_overhead_percent: default_generation_build_overhead_percent(),
+            replica_control: GenerationReplicaControlConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplicaPostgresTlsMode {
+    Require,
+    Disable,
+}
+
+fn default_replica_postgres_tls_mode() -> ReplicaPostgresTlsMode {
+    ReplicaPostgresTlsMode::Require
+}
+
+/// PostgreSQL authority and replica-admission settings.
+///
+/// The connection URL is resolved only from the named environment variable so
+/// database credentials do not need to be written into the AkiDB TOML file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationReplicaControlConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_replica_postgres_url_env")]
+    pub postgres_url_env: String,
+    #[serde(default = "default_replica_postgres_tls_mode")]
+    pub postgres_tls_mode: ReplicaPostgresTlsMode,
+    #[serde(default)]
+    pub postgres_ca_certificate_path: Option<String>,
+    /// Routable private gRPC endpoint advertised to the gateway/control plane.
+    #[serde(default)]
+    pub endpoint: String,
+    /// Stable availability-zone, rack, or host failure domain.
+    #[serde(default)]
+    pub failure_domain: String,
+    #[serde(default = "default_replica_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    #[serde(default = "default_replica_heartbeat_interval_ms")]
+    pub heartbeat_interval_ms: u64,
+    #[serde(default = "default_replica_index_format_version")]
+    pub index_format_version: String,
+    #[serde(default = "default_supported_graph_schema_versions")]
+    pub supported_graph_schema_versions: Vec<String>,
+    /// Periodically scan and retain only active/previous/staged generations.
+    #[serde(default)]
+    pub generation_gc_enabled: bool,
+    #[serde(default = "default_generation_gc_interval_ms")]
+    pub generation_gc_interval_ms: u64,
+    #[serde(default = "default_generation_gc_minimum_age_ms")]
+    pub generation_gc_minimum_age_ms: u64,
+    /// Report candidates and audit the run without deleting local directories.
+    #[serde(default = "default_true")]
+    pub generation_gc_dry_run: bool,
+}
+
+impl Default for GenerationReplicaControlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            postgres_url_env: default_replica_postgres_url_env(),
+            postgres_tls_mode: default_replica_postgres_tls_mode(),
+            postgres_ca_certificate_path: None,
+            endpoint: String::new(),
+            failure_domain: String::new(),
+            poll_interval_ms: default_replica_poll_interval_ms(),
+            heartbeat_interval_ms: default_replica_heartbeat_interval_ms(),
+            index_format_version: default_replica_index_format_version(),
+            supported_graph_schema_versions: default_supported_graph_schema_versions(),
+            generation_gc_enabled: false,
+            generation_gc_interval_ms: default_generation_gc_interval_ms(),
+            generation_gc_minimum_age_ms: default_generation_gc_minimum_age_ms(),
+            generation_gc_dry_run: true,
+        }
+    }
+}
+
+fn default_replica_postgres_url_env() -> String {
+    "AKIDB_KNOWLEDGE_POSTGRES_URL".to_string()
+}
+
+fn default_replica_poll_interval_ms() -> u64 {
+    1_000
+}
+
+fn default_replica_heartbeat_interval_ms() -> u64 {
+    5_000
+}
+
+fn default_replica_index_format_version() -> String {
+    "akidb-generation-v1".to_string()
+}
+
+fn default_supported_graph_schema_versions() -> Vec<String> {
+    vec!["ax.knowledge-graph.v1".to_string()]
+}
+
+fn default_generation_gc_interval_ms() -> u64 {
+    60 * 60 * 1_000
+}
+
+fn default_generation_gc_minimum_age_ms() -> u64 {
+    24 * 60 * 60 * 1_000
 }
 
 fn default_generation_root() -> String {
@@ -259,6 +371,14 @@ fn default_generation_max_nodes() -> u64 {
 
 fn default_generation_max_edges() -> u64 {
     50_000_000
+}
+
+fn default_generation_minimum_free_bytes_after_build() -> u64 {
+    1024 * 1024 * 1024
+}
+
+fn default_generation_build_overhead_percent() -> u16 {
+    200
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

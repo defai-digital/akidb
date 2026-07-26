@@ -5,14 +5,15 @@ use crate::auth::{self, AuthContext};
 use crate::collections::{CollectionMeta, CollectionRegistry, SharedCollectionRegistry};
 use crate::filter::MetadataFilter;
 use crate::proto::{
-    akidb_server::Akidb, CollectionInfo, CreateCollectionRequest, CreateCollectionResponse,
-    DeleteRequest, DeleteResponse, DeleteStatus, DropCollectionRequest, DropCollectionResponse,
-    GetClusterStateRequest, GetClusterStateResponse, GetCollectionRequest, GetCollectionResponse,
-    GetRequest, GetResponse, HealthRequest, HealthResponse, InsertBatchRequest,
-    InsertBatchResponse, InsertRequest, InsertResponse, ListCollectionsRequest,
-    ListCollectionsResponse, SearchBatchRequest, SearchBatchResponse, SearchRequest,
-    SearchResponse, SearchResult, TextSearchRequest, UpdateRequest, UpdateResponse, UpdateStatus,
-    Vector, VisibilityInfo,
+    akidb_server::Akidb, CollectionInfo, ContextPackItemV1, ContextPackV1, CreateCollectionRequest,
+    CreateCollectionResponse, DeleteRequest, DeleteResponse, DeleteStatus, DropCollectionRequest,
+    DropCollectionResponse, GetClusterStateRequest, GetClusterStateResponse, GetCollectionRequest,
+    GetCollectionResponse, GetRequest, GetResponse, GraphEdgeEvidence, GraphExpansionEvidence,
+    HealthRequest, HealthResponse, InsertBatchRequest, InsertBatchResponse, InsertRequest,
+    InsertResponse, ListCollectionsRequest, ListCollectionsResponse, RetrievalCitationV1,
+    RetrievalDiagnostics, SearchBatchRequest, SearchBatchResponse, SearchRequest, SearchResponse,
+    SearchResult, TextSearchRequest, UpdateRequest, UpdateResponse, UpdateStatus, Vector,
+    VisibilityInfo,
 };
 use akidb_common::config::{AclConfig, FilterMode, FilterSettings};
 use akidb_common::{AkiDbError, VectorId};
@@ -38,7 +39,20 @@ use tracing::{debug, info, instrument, warn};
 
 const MAX_PACK_TOKEN_BUDGET: u32 = 100_000;
 const MAX_SQL_POSTFILTER_CANDIDATES: usize = 100_000;
+const DEFAULT_GRAPH_DEPTH: u32 = 1;
+const MAX_GRAPH_DEPTH: u32 = 3;
+const DEFAULT_GRAPH_PER_SEED_FANOUT: u32 = 16;
+const MAX_GRAPH_PER_SEED_FANOUT: u32 = 256;
+const DEFAULT_GRAPH_EXPANDED_NODES: u32 = 64;
+const MAX_GRAPH_EXPANDED_NODES: u32 = 1_024;
+const MAX_GRAPH_SEEDS: usize = 16;
+const GRAPH_HOP_DECAY: f32 = 0.85;
 const GRAPH_PROJECTION_EDGE_IDS: &str = "_projection_edge_ids";
+
+struct BuiltContextPack {
+    legacy_text: String,
+    wire: ContextPackV1,
+}
 
 const FILE_REFERENCE_SUFFIXES: &[&str] = &[
     ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".json", ".toml", ".yaml", ".yml", ".proto",
@@ -459,6 +473,27 @@ where
                 ));
             }
         }
+        if let Some(depth) = req.graph_max_depth {
+            if depth == 0 || depth > MAX_GRAPH_DEPTH {
+                return Err(Status::invalid_argument(format!(
+                    "graph_max_depth must be between 1 and {MAX_GRAPH_DEPTH}"
+                )));
+            }
+        }
+        if let Some(fanout) = req.graph_per_seed_fanout {
+            if fanout == 0 || fanout > MAX_GRAPH_PER_SEED_FANOUT {
+                return Err(Status::invalid_argument(format!(
+                    "graph_per_seed_fanout must be between 1 and {MAX_GRAPH_PER_SEED_FANOUT}"
+                )));
+            }
+        }
+        if let Some(nodes) = req.graph_max_expanded_nodes {
+            if nodes == 0 || nodes > MAX_GRAPH_EXPANDED_NODES {
+                return Err(Status::invalid_argument(format!(
+                    "graph_max_expanded_nodes must be between 1 and {MAX_GRAPH_EXPANDED_NODES}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -780,10 +815,15 @@ where
             .unwrap_or_else(|| id.as_str());
         let mut citation = Citation::new(source_uri);
 
-        if let Some(version) = ["source_version", "content_hash"]
-            .iter()
-            .find_map(|key| metadata.get(key).and_then(serde_json::Value::as_str))
-            .filter(|value| !value.is_empty())
+        if let Some(version) = [
+            "source_version",
+            "document_version",
+            "doc_version",
+            "content_hash",
+        ]
+        .iter()
+        .find_map(|key| metadata.get(key).and_then(serde_json::Value::as_str))
+        .filter(|value| !value.is_empty())
         {
             citation = citation.with_version(version);
         }
@@ -801,6 +841,51 @@ where
             citation = citation.with_span(start, end);
         }
         citation
+    }
+
+    fn retrieval_citation_for_vector(&self, id: &VectorId) -> RetrievalCitationV1 {
+        let metadata = self
+            .load_metadata_value(id)
+            .unwrap_or(serde_json::Value::Null);
+        let string_value = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|key| metadata.get(key).and_then(serde_json::Value::as_str))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let offset = |keys: &[&str]| {
+            keys.iter().find_map(|key| {
+                metadata.get(key).and_then(|value| match value {
+                    serde_json::Value::Number(number) => number.as_u64(),
+                    serde_json::Value::String(value) => value.parse::<u64>().ok(),
+                    _ => None,
+                })
+            })
+        };
+        let document_version = string_value(&["document_version", "doc_version", "source_version"]);
+        let content_hash = string_value(&["content_hash", "chunk_hash"]);
+        let mut source_version = string_value(&["source_version"]);
+        if source_version.is_empty() {
+            source_version = document_version.clone();
+        }
+        if source_version.is_empty() {
+            source_version = content_hash.clone();
+        }
+        let mut source_uri = string_value(&["source_uri", "document_key", "file"]);
+        if source_uri.is_empty() {
+            source_uri = id.to_string();
+        }
+        RetrievalCitationV1 {
+            chunk_id: id.to_string(),
+            document_id: string_value(&["document_id", "doc_id"]),
+            document_version,
+            source_uri,
+            source_version,
+            content_hash,
+            start_offset: offset(&["start_offset", "offset"]),
+            end_offset: offset(&["end_offset"]),
+            generation_id: string_value(&["generation_id"]),
+        }
     }
 
     fn metadata_value_from_bytes(metadata: &[u8]) -> serde_json::Value {
@@ -978,61 +1063,23 @@ where
     fn build_context_pack(
         &self,
         response_results: &[SearchResult],
-        metadata_filter: Option<&MetadataFilter>,
-        top_k: usize,
+        graph_expanded_ids: Option<&HashSet<VectorId>>,
         budget: usize,
-    ) -> String {
+    ) -> BuiltContextPack {
         let docs = self.documents.read();
-        let mut seen = HashSet::new();
-        let mut matched: Vec<MatchedChunk> = response_results
+        let direct_ids: HashSet<VectorId> = response_results
+            .iter()
+            .map(|result| VectorId::new(&result.id))
+            .collect();
+        let matched: Vec<MatchedChunk> = response_results
             .iter()
             .map(|r| {
                 let parent_id = Self::parent_id_from_metadata(&r.metadata);
                 let id = VectorId::new(&r.id);
-                seen.insert(id.clone());
                 let text = docs.get(&id).cloned().unwrap_or_default();
                 MatchedChunk::new(id, parent_id, text, r.score)
             })
             .collect();
-
-        if let Some(graph) = &self.graph_index {
-            for result in response_results {
-                let workspace_id = Self::workspace_id_from_metadata(&result.metadata);
-                let seed = Self::chunk_node_id(&workspace_id, &VectorId::new(&result.id));
-                match graph.related_chunks(&seed, top_k.saturating_mul(2).max(1)) {
-                    Ok(chunks) => {
-                        for chunk in chunks {
-                            let id = chunk.vector_id;
-                            if !seen.insert(id.clone()) {
-                                continue;
-                            }
-                            if let Some(metadata_filter) = metadata_filter {
-                                if !self.metadata_matches_filter(&id, metadata_filter) {
-                                    continue;
-                                }
-                            }
-                            let Some(text) = docs.get(&id).cloned() else {
-                                continue;
-                            };
-                            if text.is_empty() {
-                                continue;
-                            }
-                            let metadata = self.load_metadata_string(&id);
-                            let parent_id = Self::parent_id_from_metadata(&metadata);
-                            matched.push(MatchedChunk::new(
-                                id,
-                                parent_id,
-                                text,
-                                result.score * 0.85,
-                            ));
-                        }
-                    }
-                    Err(e) => {
-                        warn!(seed = %seed, error = %e, "graph context expansion failed");
-                    }
-                }
-            }
-        }
 
         let mut passages =
             expand_to_parents(&matched, |pid| docs.get(&VectorId::new(pid)).cloned());
@@ -1040,7 +1087,42 @@ where
         for passage in &mut passages {
             passage.citation = self.citation_for_vector(&passage.id);
         }
-        pack(&passages, &PackerConfig::new(budget)).text
+        let packed = pack(&passages, &PackerConfig::new(budget));
+        let items = packed
+            .included
+            .iter()
+            .filter_map(|id| {
+                passages
+                    .iter()
+                    .find(|passage| passage.id == *id)
+                    .map(|passage| ContextPackItemV1 {
+                        chunk_id: id.to_string(),
+                        text: passage.text.clone(),
+                        score: passage.score,
+                        reason: if graph_expanded_ids.is_some_and(|ids| ids.contains(id)) {
+                            "graph_expansion".to_string()
+                        } else if direct_ids.contains(id) {
+                            "direct_match".to_string()
+                        } else {
+                            "parent_expansion".to_string()
+                        },
+                        citation: Some(self.retrieval_citation_for_vector(id)),
+                    })
+            })
+            .collect();
+        let used_tokens = u32::try_from(packed.used_tokens).unwrap_or(u32::MAX);
+        let token_budget = u32::try_from(budget).unwrap_or(u32::MAX);
+        BuiltContextPack {
+            legacy_text: packed.text.clone(),
+            wire: ContextPackV1 {
+                schema_version: "akidb.context-pack.v1".to_string(),
+                items,
+                token_budget,
+                used_tokens,
+                truncated: !packed.dropped.is_empty(),
+                text: packed.text,
+            },
+        }
     }
 
     fn sql_metadata_text_search(
@@ -1099,16 +1181,20 @@ where
             })
             .take(req.top_k as usize)
             .collect();
-        let context_pack = if req.pack {
-            self.build_context_pack(
+        let built_context_pack = if req.pack {
+            Some(self.build_context_pack(
                 &results,
-                scoped_filter,
-                req.top_k as usize,
+                None,
                 req.pack_token_budget.unwrap_or(1024) as usize,
-            )
+            ))
         } else {
-            String::new()
+            None
         };
+        let context_pack = built_context_pack
+            .as_ref()
+            .map(|pack| pack.legacy_text.clone())
+            .unwrap_or_default();
+        let context_pack_v1 = built_context_pack.map(|pack| pack.wire);
         let latency_us = started_at.elapsed().as_micros() as u64;
 
         Ok(Response::new(SearchResponse {
@@ -1121,6 +1207,25 @@ where
             degraded_mode: false,
             context_pack,
             serving_generation: None,
+            context_pack_v1,
+            diagnostics: req.include_diagnostics.then(|| RetrievalDiagnostics {
+                requested_mode: Self::retrieval_mode_name(RetrievalMode::StructuredSql).to_string(),
+                resolved_mode: Self::retrieval_mode_name(RetrievalMode::StructuredSql).to_string(),
+                planner_reasons: vec!["structured SQL retrieval requested".to_string()],
+                dense_candidates: 0,
+                lexical_candidates: 0,
+                filtered_candidates: 0,
+                filter_applied: scoped_filter.is_some(),
+                rerank_applied: false,
+                diversity_applied: false,
+                graph_depth: 0,
+                graph_per_seed_fanout: 0,
+                graph_max_expanded_nodes: 0,
+                graph_expanded_nodes: 0,
+                graph_truncated: false,
+                graph_hop_decay: 0.0,
+                graph_expansions: Vec::new(),
+            }),
         }))
     }
 
@@ -1172,6 +1277,55 @@ where
 
     fn chunk_node_id(workspace_id: &str, vector_id: &VectorId) -> GraphNodeId {
         Self::scoped_graph_node_id(workspace_id, format!("chunk:{}", vector_id.as_str()))
+    }
+
+    fn graph_edge_evidence(edge: &GraphEdge) -> GraphEdgeEvidence {
+        let string_property = |name: &str| {
+            edge.properties
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let evidence_chunk_ids = edge
+            .properties
+            .get("evidence_chunk_ids")
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let confidence = edge
+            .properties
+            .get("confidence")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|value| value.is_finite())
+            .map(|value| value as f32)
+            .unwrap_or_default();
+        GraphEdgeEvidence {
+            edge_id: edge.id.to_string(),
+            predicate: string_property("predicate"),
+            source_uri: string_property("source_uri"),
+            source_version: string_property("source_version"),
+            evidence_chunk_ids,
+            confidence,
+        }
+    }
+
+    fn retrieval_mode_name(mode: RetrievalMode) -> &'static str {
+        match mode {
+            RetrievalMode::Auto => "auto",
+            RetrievalMode::Vector => "vector",
+            RetrievalMode::Bm25 => "bm25",
+            RetrievalMode::Hybrid => "hybrid",
+            RetrievalMode::Graph => "graph",
+            RetrievalMode::GraphHybrid => "graph_hybrid",
+            RetrievalMode::StructuredSql => "structured_sql",
+        }
     }
 
     fn graph_seed_nodes_from_query(query: &str, workspace_id: &str) -> Vec<GraphNodeId> {
@@ -2115,6 +2269,8 @@ where
             degraded_mode: false,
             context_pack: String::new(),
             serving_generation: None,
+            context_pack_v1: None,
+            diagnostics: None,
         }))
     }
 
@@ -2543,6 +2699,8 @@ where
                 degraded_mode: false,
                 context_pack: String::new(),
                 serving_generation: None,
+                context_pack_v1: None,
+                diagnostics: None,
             });
         }
 
@@ -2778,6 +2936,8 @@ where
         } else {
             Vec::new()
         };
+        let dense_candidate_count = dense.len();
+        let lexical_candidate_count = lexical.len();
 
         // Base ranked list: hybrid fusion (dense + lexical via RRF) or dense-only.
         // An empty lexical index degrades hybrid cleanly to dense ranking.
@@ -2806,37 +2966,92 @@ where
                 .collect()
         };
 
+        let candidates_before_filter = ranked.len();
         if let Some(metadata_filter) = &metadata_filter {
             ranked.retain(|s| self.metadata_matches_filter(&s.id, metadata_filter));
         }
+        let filtered_candidates = candidates_before_filter.saturating_sub(ranked.len());
+
+        let graph_depth = req
+            .graph_max_depth
+            .unwrap_or_else(|| u32::from(planner_trace.graph_depth.max(DEFAULT_GRAPH_DEPTH as u8)))
+            as u8;
+        let graph_per_seed_fanout = req
+            .graph_per_seed_fanout
+            .unwrap_or(DEFAULT_GRAPH_PER_SEED_FANOUT) as usize;
+        let graph_max_expanded_nodes =
+            req.graph_max_expanded_nodes
+                .unwrap_or(DEFAULT_GRAPH_EXPANDED_NODES) as usize;
+        let mut graph_expansions = Vec::new();
+        let mut graph_expanded_ids = HashSet::<VectorId>::new();
+        let mut graph_truncated = false;
 
         if planner_trace.graph_enabled {
             if let Some(graph) = &self.graph_index {
                 let mut seen: HashSet<VectorId> = ranked.iter().map(|s| s.id.clone()).collect();
-                let graph_limit = top_k.saturating_mul(2).max(1);
-                let graph_seed_score = ranked.first().map(|s| s.score + 0.0001).unwrap_or(1.0);
+                let base_result_seeds: Vec<ScoredId> =
+                    ranked.iter().take(MAX_GRAPH_SEEDS).cloned().collect();
+                let graph_seed_score = ranked
+                    .iter()
+                    .map(|item| item.score)
+                    .filter(|score| score.is_finite())
+                    .fold(None, |best: Option<f32>, score| {
+                        Some(best.map_or(score, |current| current.max(score)))
+                    })
+                    // An exact file/symbol query seed is authoritative enough
+                    // to beat the best semantic seed at hop one; subsequent
+                    // hops still decay by GRAPH_HOP_DECAY.
+                    .map(|score| score / GRAPH_HOP_DECAY + 0.0001)
+                    .unwrap_or(1.0);
 
-                for seed_node in Self::graph_seed_nodes_from_query(&req.text, &ctx.workspace_id) {
+                for seed_node in Self::graph_seed_nodes_from_query(&req.text, &ctx.workspace_id)
+                    .into_iter()
+                    .take(MAX_GRAPH_SEEDS)
+                {
+                    let remaining =
+                        graph_max_expanded_nodes.saturating_sub(graph_expanded_ids.len());
+                    if remaining == 0 {
+                        graph_truncated = true;
+                        break;
+                    }
                     let graph_request = RelatedChunksRequest::new(seed_node.clone())
-                        .with_max_depth(planner_trace.graph_depth.max(1))
-                        .with_per_hop_limit(graph_limit.saturating_mul(8))
-                        .with_limit(graph_limit);
-                    match graph.related_chunks_with_depth(graph_request) {
+                        .with_max_depth(graph_depth)
+                        .with_per_hop_limit(graph_per_seed_fanout)
+                        .with_limit(remaining);
+                    match graph.related_chunks_with_trace(graph_request) {
                         Ok(chunks) => {
                             for chunk in chunks {
                                 let id = chunk.vector_id;
-                                if !seen.insert(id.clone()) {
-                                    if let Some(existing) = ranked.iter_mut().find(|s| s.id == id) {
-                                        existing.score = existing.score.max(graph_seed_score);
-                                    }
+                                if !graph_expanded_ids.insert(id.clone()) {
                                     continue;
                                 }
+                                let score =
+                                    graph_seed_score * GRAPH_HOP_DECAY.powi(i32::from(chunk.hop));
                                 if let Some(metadata_filter) = &metadata_filter {
                                     if !self.metadata_matches_filter(&id, metadata_filter) {
                                         continue;
                                     }
                                 }
-                                ranked.push(ScoredId::new(id, graph_seed_score));
+                                if req.include_diagnostics {
+                                    graph_expansions.push(GraphExpansionEvidence {
+                                        result_id: id.to_string(),
+                                        seed_id: seed_node.to_string(),
+                                        hop: u32::from(chunk.hop),
+                                        score_contribution: score,
+                                        path: chunk
+                                            .path_edges
+                                            .iter()
+                                            .map(Self::graph_edge_evidence)
+                                            .collect(),
+                                    });
+                                }
+                                if !seen.insert(id.clone()) {
+                                    if let Some(existing) = ranked.iter_mut().find(|s| s.id == id) {
+                                        existing.score = existing.score.max(score);
+                                    }
+                                    continue;
+                                }
+                                ranked.push(ScoredId::new(id, score));
                             }
                         }
                         Err(e) => {
@@ -2845,26 +3060,51 @@ where
                     }
                 }
 
-                let seeds = ranked.clone();
-                for seed in seeds {
+                for seed in base_result_seeds {
+                    let remaining =
+                        graph_max_expanded_nodes.saturating_sub(graph_expanded_ids.len());
+                    if remaining == 0 {
+                        graph_truncated = true;
+                        break;
+                    }
                     let seed_node = Self::chunk_node_id(&ctx.workspace_id, &seed.id);
                     let graph_request = RelatedChunksRequest::new(seed_node.clone())
-                        .with_max_depth(planner_trace.graph_depth.max(1))
-                        .with_per_hop_limit(graph_limit.saturating_mul(8))
-                        .with_limit(graph_limit);
-                    match graph.related_chunks_with_depth(graph_request) {
+                        .with_max_depth(graph_depth)
+                        .with_per_hop_limit(graph_per_seed_fanout)
+                        .with_limit(remaining);
+                    match graph.related_chunks_with_trace(graph_request) {
                         Ok(chunks) => {
                             for chunk in chunks {
                                 let id = chunk.vector_id;
-                                if !seen.insert(id.clone()) {
+                                if !graph_expanded_ids.insert(id.clone()) {
                                     continue;
                                 }
+                                let score = seed.score * GRAPH_HOP_DECAY.powi(i32::from(chunk.hop));
                                 if let Some(metadata_filter) = &metadata_filter {
                                     if !self.metadata_matches_filter(&id, metadata_filter) {
                                         continue;
                                     }
                                 }
-                                ranked.push(ScoredId::new(id, seed.score * 0.85));
+                                if req.include_diagnostics {
+                                    graph_expansions.push(GraphExpansionEvidence {
+                                        result_id: id.to_string(),
+                                        seed_id: seed.id.to_string(),
+                                        hop: u32::from(chunk.hop),
+                                        score_contribution: score,
+                                        path: chunk
+                                            .path_edges
+                                            .iter()
+                                            .map(Self::graph_edge_evidence)
+                                            .collect(),
+                                    });
+                                }
+                                if seen.insert(id.clone()) {
+                                    ranked.push(ScoredId::new(id, score));
+                                } else if let Some(existing) =
+                                    ranked.iter_mut().find(|item| item.id == id)
+                                {
+                                    existing.score = existing.score.max(score);
+                                }
                             }
                         }
                         Err(e) => {
@@ -2878,6 +3118,9 @@ where
                         .unwrap_or(std::cmp::Ordering::Equal)
                         .then_with(|| a.id.as_str().cmp(b.id.as_str()))
                 });
+                if graph_expanded_ids.len() >= graph_max_expanded_nodes {
+                    graph_truncated = true;
+                }
             }
         }
 
@@ -2916,7 +3159,12 @@ where
         }
 
         // Keep a larger pool before score/group cuts so threshold/group_by can select.
-        let pool_cap = top_k.saturating_mul(8).max(top_k);
+        let graph_pool_cap = if planner_trace.graph_enabled {
+            top_k.saturating_add(graph_max_expanded_nodes)
+        } else {
+            top_k
+        };
+        let pool_cap = top_k.saturating_mul(8).max(top_k).max(graph_pool_cap);
         ranked.truncate(pool_cap);
         let mapped: Vec<SearchResult> = ranked
             .iter()
@@ -2927,27 +3175,96 @@ where
             })
             .collect();
         let response_results = self.apply_score_and_group(
-            mapped,
+            mapped.clone(),
             top_k,
             req.score_threshold,
             &req.group_by,
             req.group_size,
         );
+        let response_ids: HashSet<&str> = response_results
+            .iter()
+            .map(|result| result.id.as_str())
+            .collect();
+        let pack_candidates = if req.pack {
+            let candidates: Vec<SearchResult> = mapped
+                .into_iter()
+                .filter(|result| {
+                    response_ids.contains(result.id.as_str())
+                        || graph_expanded_ids.contains(&VectorId::new(&result.id))
+                })
+                .collect();
+            self.apply_score_and_group(
+                candidates,
+                pool_cap,
+                req.score_threshold,
+                &req.group_by,
+                req.group_size,
+            )
+        } else {
+            Vec::new()
+        };
 
         // Optionally assemble a source-grounded, citation-bearing context pack
         // (PACK-*). Matched child chunks are expanded to their parent context
         // (CHUNK-003) via the `parent_id` metadata convention, deduped by parent,
         // then assembled within the token budget.
-        let context_pack = if req.pack {
-            self.build_context_pack(
-                &response_results,
-                metadata_filter.as_deref(),
-                top_k,
+        let built_context_pack = if req.pack {
+            Some(self.build_context_pack(
+                &pack_candidates,
+                Some(&graph_expanded_ids),
                 req.pack_token_budget.unwrap_or(1024) as usize,
-            )
+            ))
         } else {
-            String::new()
+            None
         };
+        let context_pack = built_context_pack
+            .as_ref()
+            .map(|pack| pack.legacy_text.clone())
+            .unwrap_or_default();
+        let context_pack_v1 = built_context_pack.map(|pack| pack.wire);
+        let diagnostic_ids: HashSet<&str> = response_results
+            .iter()
+            .chain(pack_candidates.iter())
+            .map(|result| result.id.as_str())
+            .collect();
+        graph_expansions.retain(|expansion| diagnostic_ids.contains(expansion.result_id.as_str()));
+        let diagnostics = req.include_diagnostics.then(|| RetrievalDiagnostics {
+            requested_mode: requested_mode
+                .map(Self::retrieval_mode_name)
+                .unwrap_or("auto")
+                .to_string(),
+            resolved_mode: Self::retrieval_mode_name(planner_trace.mode).to_string(),
+            planner_reasons: planner_trace.reasons.clone(),
+            dense_candidates: u32::try_from(dense_candidate_count).unwrap_or(u32::MAX),
+            lexical_candidates: u32::try_from(lexical_candidate_count).unwrap_or(u32::MAX),
+            filtered_candidates: u32::try_from(filtered_candidates).unwrap_or(u32::MAX),
+            filter_applied: metadata_filter.is_some(),
+            rerank_applied: req.rerank,
+            diversity_applied: req.diversity,
+            graph_depth: if planner_trace.graph_enabled {
+                u32::from(graph_depth)
+            } else {
+                0
+            },
+            graph_per_seed_fanout: if planner_trace.graph_enabled {
+                u32::try_from(graph_per_seed_fanout).unwrap_or(u32::MAX)
+            } else {
+                0
+            },
+            graph_max_expanded_nodes: if planner_trace.graph_enabled {
+                u32::try_from(graph_max_expanded_nodes).unwrap_or(u32::MAX)
+            } else {
+                0
+            },
+            graph_expanded_nodes: u32::try_from(graph_expanded_ids.len()).unwrap_or(u32::MAX),
+            graph_truncated,
+            graph_hop_decay: if planner_trace.graph_enabled {
+                GRAPH_HOP_DECAY
+            } else {
+                0.0
+            },
+            graph_expansions,
+        });
 
         let elapsed = start.elapsed();
         let latency_us = elapsed.as_micros() as u64;
@@ -2969,6 +3286,8 @@ where
             degraded_mode: false,
             context_pack,
             serving_generation: None,
+            context_pack_v1,
+            diagnostics,
         }))
     }
 }
@@ -3038,6 +3357,10 @@ mod tests {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }
     }
 
@@ -3490,6 +3813,10 @@ mod tests {
                     score_threshold: None,
                     group_by: String::new(),
                     group_size: None,
+                    graph_max_depth: None,
+                    graph_per_seed_fanout: None,
+                    graph_max_expanded_nodes: None,
+                    include_diagnostics: false,
                 }))
                 .await
                 .expect_err("text_search should reject wrong collection"),

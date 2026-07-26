@@ -1,0 +1,6 @@
+---
+- name: Restart AX knowledge gateway
+  ansible.builtin.systemd_service:
+    name: ax-knowledge-gateway
+    state: restarted
+    daemon_reload: true

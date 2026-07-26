@@ -18,10 +18,11 @@ pub use generation_bundle::{
     KnowledgeBundleReadLimits, KnowledgeBundleSummary,
 };
 pub use generation_layout::{
-    BundleInstallOutcome, GenerationBuildJournal, GenerationBuildPhase, GenerationLayoutError,
-    GenerationPointer, GenerationPointerSet, GenerationPrepareOutcome, GenerationStore,
-    MaterializationEvidence, PreparedGeneration, ReadyGeneration, ReadyGenerationMarker,
-    GENERATION_LAYOUT_SCHEMA_VERSION,
+    BundleInstallOutcome, GenerationBuildJournal, GenerationBuildPhase, GenerationGcEntry,
+    GenerationGcEvidence, GenerationLayoutError, GenerationPointer, GenerationPointerSet,
+    GenerationPrepareOutcome, GenerationRevisionMarker, GenerationStore, MaterializationEvidence,
+    PreparedGeneration, PreparedGenerationRevision, ReadyGeneration, ReadyGenerationMarker,
+    ReplicaVolumeClaimOutcome, ReplicaVolumeOwner, GENERATION_LAYOUT_SCHEMA_VERSION,
 };
 pub use id_mapping::{IdMapping, IdMappingEntry};
 pub use serving_state::{
@@ -29,15 +30,28 @@ pub use serving_state::{
     ServingStateRecord, ServingStateStore, StageGenerationOutcome, SERVING_STATE_SCHEMA_VERSION,
 };
 pub use snapshot::{
+    // Cleanup types
+    cleanup_orphaned_uploads,
+    CleanupConfig,
+    CleanupResult,
+    // Resumable upload types
+    CompletedPart,
     // Backend types
-    LocalSnapshotBackend, S3SnapshotBackend, SnapshotBackend, SnapshotFile, SnapshotManager,
+    LocalSnapshotBackend,
+    ResumableUploadConfig,
+    ResumableUploader,
+    S3SnapshotBackend,
+    SnapshotBackend,
+    SnapshotCleanup,
+    SnapshotFile,
+    SnapshotManager,
     SnapshotMetadata,
     // State machine types
-    SnapshotState, SnapshotStateMachine, SnapshotStateRecord, UploadCheckpoint,
-    // Resumable upload types
-    CompletedPart, ResumableUploadConfig, ResumableUploader, SnapshotUploadExecutor,
-    // Cleanup types
-    cleanup_orphaned_uploads, CleanupConfig, CleanupResult, SnapshotCleanup,
+    SnapshotState,
+    SnapshotStateMachine,
+    SnapshotStateRecord,
+    SnapshotUploadExecutor,
+    UploadCheckpoint,
 };
 pub use tag_index::{TagCondition, TagFilter, TagIndex, TagIndexStats, TagOperator};
 pub use wal::{WalEntry, WriteAheadLog};

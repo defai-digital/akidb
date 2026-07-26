@@ -15,6 +15,7 @@ use akidb_contracts::{
 use parking_lot::Mutex;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -32,7 +33,9 @@ const BUNDLE_FILE: &str = "bundle.object";
 const JOURNAL_FILE: &str = "build-journal.json";
 const MATERIALIZATION_FILE: &str = "materialization.json";
 const READY_FILE: &str = "READY.json";
+const REVISION_FILE: &str = "REVISION.json";
 const POINTER_SET_FILE: &str = "pointers.json";
+const REPLICA_OWNER_FILE: &str = "REPLICA_OWNER.json";
 
 type LayoutResult<T> = std::result::Result<T, GenerationLayoutError>;
 
@@ -149,6 +152,42 @@ pub struct ReadyGenerationMarker {
     pub node_count: u64,
     pub edge_count: u64,
     pub ready_at_ms: u64,
+    /// Deterministic digest of the logical materialized state. Base
+    /// generations created before revision replay may omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GenerationRevisionMarker {
+    pub schema_version: u32,
+    pub workspace_id: String,
+    pub collection: String,
+    pub generation_id: String,
+    pub manifest_sha256: String,
+    pub bundle_sha256: String,
+    pub applied_sequence: u64,
+    pub input_digest: String,
+    pub materialization_digest: String,
+    pub record_count: u64,
+    pub node_count: u64,
+    pub edge_count: u64,
+    pub ready_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplicaVolumeOwner {
+    pub schema_version: u32,
+    pub replica_id: String,
+    pub claimed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplicaVolumeClaimOutcome {
+    Claimed,
+    AlreadyOwned,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +209,31 @@ pub struct GenerationPointerSet {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<GenerationPointer>,
     pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GenerationGcEntry {
+    pub generation_id: String,
+    pub directory: String,
+    pub updated_at_ms: u64,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GenerationGcEvidence {
+    pub dry_run: bool,
+    pub scanned: u64,
+    pub retained_generation_ids: Vec<String>,
+    pub retained: Vec<GenerationGcEntry>,
+    pub too_young: Vec<GenerationGcEntry>,
+    pub candidates: Vec<GenerationGcEntry>,
+    pub deleted: Vec<GenerationGcEntry>,
+    pub reclaimable_bytes: u64,
+    pub deleted_bytes: u64,
+    pub minimum_age_ms: u64,
+    pub completed_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +305,44 @@ pub struct ReadyGeneration {
     pub directory: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreparedGenerationRevision {
+    manifest: KnowledgeGenerationManifest,
+    manifest_sha256: String,
+    bundle_sha256: String,
+    applied_sequence: u64,
+    input_digest: String,
+    parent_dir: PathBuf,
+    building_dir: PathBuf,
+    ready_dir: PathBuf,
+}
+
+impl PreparedGenerationRevision {
+    pub fn manifest(&self) -> &KnowledgeGenerationManifest {
+        &self.manifest
+    }
+
+    pub fn manifest_sha256(&self) -> &str {
+        &self.manifest_sha256
+    }
+
+    pub fn applied_sequence(&self) -> u64 {
+        self.applied_sequence
+    }
+
+    pub fn input_digest(&self) -> &str {
+        &self.input_digest
+    }
+
+    pub fn building_dir(&self) -> &Path {
+        &self.building_dir
+    }
+
+    pub fn rocksdb_dir(&self) -> PathBuf {
+        self.building_dir.join("rocksdb")
+    }
+}
+
 impl ReadyGeneration {
     pub fn bundle_path(&self) -> PathBuf {
         self.directory.join(BUNDLE_FILE)
@@ -287,6 +389,77 @@ impl GenerationStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Permanently bind this generation root to one stable replica identity.
+    ///
+    /// A different identity is never allowed to adopt an existing volume. A
+    /// replacement replica must use a blank volume and rebuild from canonical
+    /// bundle plus ledger state.
+    pub fn claim_replica_volume(
+        &self,
+        replica_id: &str,
+        claimed_at_ms: u64,
+    ) -> LayoutResult<ReplicaVolumeClaimOutcome> {
+        let _guard = self.transition_lock.lock();
+        validate_timestamp(claimed_at_ms)?;
+        if replica_id.trim().is_empty()
+            || replica_id.trim() != replica_id
+            || replica_id.len() > 1_024
+            || replica_id.chars().any(char::is_control)
+        {
+            return Err(GenerationLayoutError::Conflict(
+                "replica_id must be non-empty canonical text of at most 1024 bytes".to_string(),
+            ));
+        }
+        let path = self.root.join(REPLICA_OWNER_FILE);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                let owner = ReplicaVolumeOwner {
+                    schema_version: GENERATION_LAYOUT_SCHEMA_VERSION,
+                    replica_id: replica_id.to_string(),
+                    claimed_at_ms,
+                };
+                let mut bytes =
+                    serde_json::to_vec(&owner).map_err(|source| GenerationLayoutError::Json {
+                        path: path.clone(),
+                        source,
+                    })?;
+                bytes.push(b'\n');
+                if let Err(source) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+                    drop(file);
+                    let _ = fs::remove_file(&path);
+                    return Err(GenerationLayoutError::Io {
+                        operation: "write replica volume owner",
+                        path,
+                        source,
+                    });
+                }
+                sync_dir(&self.root)?;
+                Ok(ReplicaVolumeClaimOutcome::Claimed)
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+                let owner: ReplicaVolumeOwner = read_json(&path)?;
+                if owner.schema_version != GENERATION_LAYOUT_SCHEMA_VERSION {
+                    return Err(GenerationLayoutError::Conflict(format!(
+                        "replica volume owner schema {} is unsupported",
+                        owner.schema_version
+                    )));
+                }
+                if owner.replica_id != replica_id {
+                    return Err(GenerationLayoutError::Conflict(format!(
+                        "generation volume belongs to replica {}, not {}",
+                        owner.replica_id, replica_id
+                    )));
+                }
+                Ok(ReplicaVolumeClaimOutcome::AlreadyOwned)
+            }
+            Err(source) => Err(GenerationLayoutError::Io {
+                operation: "claim replica volume owner",
+                path,
+                source,
+            }),
+        }
     }
 
     /// Validate exact manifest bytes and create or resume one shadow directory.
@@ -656,6 +829,160 @@ impl GenerationStore {
         self.load_ready_at(&paths.ready_dir, scope, generation_id)
     }
 
+    /// Create an isolated shadow directory for one post-bundle mutation
+    /// checkpoint. The immutable base generation remains untouched.
+    pub fn prepare_revision(
+        &self,
+        scope: &KnowledgeScope,
+        generation_id: &str,
+        applied_sequence: u64,
+        input_digest: &str,
+    ) -> LayoutResult<Option<PreparedGenerationRevision>> {
+        let _guard = self.transition_lock.lock();
+        scope.validate()?;
+        validate_digest(input_digest)?;
+        self.ensure_scope_paths_for_scope(scope)?;
+        let paths = self.paths(scope, generation_id);
+        let base = self.load_ready_at(&paths.ready_dir, scope, generation_id)?;
+        if applied_sequence <= base.marker.applied_sequence {
+            return Err(GenerationLayoutError::InvalidTransition(format!(
+                "revision checkpoint {applied_sequence} must exceed immutable base {}",
+                base.marker.applied_sequence
+            )));
+        }
+        let parent_dir = revision_parent(&paths);
+        ensure_child_dir(&paths.generations_dir, &parent_dir)?;
+        let ready_dir = parent_dir.join(revision_name(applied_sequence));
+        if ready_dir.exists() {
+            let existing =
+                self.load_revision_at(&base, &ready_dir, applied_sequence, Some(input_digest))?;
+            if existing.marker.materialization_digest.is_none() {
+                return Err(GenerationLayoutError::CorruptState(
+                    "ready revision lacks a materialization digest".to_string(),
+                ));
+            }
+            return Ok(None);
+        }
+        let building_dir = parent_dir.join(format!(
+            "{}.building.{}",
+            revision_name(applied_sequence),
+            Uuid::new_v4()
+        ));
+        create_dir(&building_dir)?;
+        sync_dir(&parent_dir)?;
+        Ok(Some(PreparedGenerationRevision {
+            manifest: base.manifest,
+            manifest_sha256: base.marker.manifest_sha256,
+            bundle_sha256: base.marker.bundle_sha256,
+            applied_sequence,
+            input_digest: input_digest.to_string(),
+            parent_dir,
+            building_dir,
+            ready_dir,
+        }))
+    }
+
+    /// Seal and atomically publish a fully verified mutation-tail revision.
+    pub fn finalize_revision(
+        &self,
+        prepared: &PreparedGenerationRevision,
+        record_count: u64,
+        node_count: u64,
+        edge_count: u64,
+        materialization_digest: &str,
+        ready_at_ms: u64,
+    ) -> LayoutResult<ReadyGeneration> {
+        let _guard = self.transition_lock.lock();
+        validate_timestamp(ready_at_ms)?;
+        validate_digest(materialization_digest)?;
+        reject_symlink_or_non_directory(&prepared.building_dir)?;
+        reject_symlink_or_non_directory(&prepared.rocksdb_dir())?;
+        let marker = GenerationRevisionMarker {
+            schema_version: GENERATION_LAYOUT_SCHEMA_VERSION,
+            workspace_id: prepared.manifest.workspace_id.clone(),
+            collection: prepared.manifest.collection.clone(),
+            generation_id: prepared.manifest.generation_id.clone(),
+            manifest_sha256: prepared.manifest_sha256.clone(),
+            bundle_sha256: prepared.bundle_sha256.clone(),
+            applied_sequence: prepared.applied_sequence,
+            input_digest: prepared.input_digest.clone(),
+            materialization_digest: materialization_digest.to_string(),
+            record_count,
+            node_count,
+            edge_count,
+            ready_at_ms,
+        };
+        validate_revision_marker(&marker, prepared, materialization_digest)?;
+        atomic_write_json(&prepared.building_dir, REVISION_FILE, &marker)?;
+        sync_tree(&prepared.building_dir)?;
+        if prepared.ready_dir.exists() {
+            let base_paths =
+                self.paths(&prepared.manifest.scope(), &prepared.manifest.generation_id);
+            let base = self.load_ready_at(
+                &base_paths.ready_dir,
+                &prepared.manifest.scope(),
+                &prepared.manifest.generation_id,
+            )?;
+            let existing = self.load_revision_at(
+                &base,
+                &prepared.ready_dir,
+                prepared.applied_sequence,
+                Some(&prepared.input_digest),
+            )?;
+            remove_dir_all_checked(&prepared.building_dir)?;
+            return Ok(existing);
+        }
+        fs::rename(&prepared.building_dir, &prepared.ready_dir).map_err(|source| {
+            GenerationLayoutError::Io {
+                operation: "publish generation revision",
+                path: prepared.ready_dir.clone(),
+                source,
+            }
+        })?;
+        sync_dir(&prepared.parent_dir)?;
+        let base_paths = self.paths(&prepared.manifest.scope(), &prepared.manifest.generation_id);
+        let base = self.load_ready_at(
+            &base_paths.ready_dir,
+            &prepared.manifest.scope(),
+            &prepared.manifest.generation_id,
+        )?;
+        self.load_revision_at(
+            &base,
+            &prepared.ready_dir,
+            prepared.applied_sequence,
+            Some(&prepared.input_digest),
+        )
+    }
+
+    /// Load either the immutable bundle checkpoint or an atomically sealed
+    /// mutation-tail revision for the exact applied sequence.
+    pub fn load_materialized(
+        &self,
+        scope: &KnowledgeScope,
+        generation_id: &str,
+        applied_sequence: u64,
+    ) -> LayoutResult<ReadyGeneration> {
+        let _guard = self.transition_lock.lock();
+        scope.validate()?;
+        let paths = self.paths(scope, generation_id);
+        let base = self.load_ready_at(&paths.ready_dir, scope, generation_id)?;
+        if applied_sequence == base.marker.applied_sequence {
+            return Ok(base);
+        }
+        if applied_sequence < base.marker.applied_sequence {
+            return Err(GenerationLayoutError::NotReady(format!(
+                "generation {generation_id} has no materialization before base sequence {}",
+                base.marker.applied_sequence
+            )));
+        }
+        self.load_revision_at(
+            &base,
+            &revision_parent(&paths).join(revision_name(applied_sequence)),
+            applied_sequence,
+            None,
+        )
+    }
+
     /// Atomically refresh the whole active/previous filesystem cache from one
     /// authoritative RocksDB record, avoiding mixed pointer generations.
     pub fn reconcile_pointer_set(
@@ -732,6 +1059,152 @@ impl GenerationStore {
             self.validate_pointer_target(scope, pointer)?;
         }
         Ok(Some(pointers))
+    }
+
+    /// Collect immutable generation directories that are no longer referenced
+    /// by the active/previous/staged serving state.
+    ///
+    /// Callers supply every generation that can still become visible. An
+    /// empty retained set is rejected, malformed directory entries fail
+    /// closed, and dry-run returns the same candidates without deleting them.
+    pub fn garbage_collect_scope(
+        &self,
+        scope: &KnowledgeScope,
+        retained_generation_ids: &BTreeSet<String>,
+        minimum_age_ms: u64,
+        now_ms: u64,
+        dry_run: bool,
+    ) -> LayoutResult<GenerationGcEvidence> {
+        let _guard = self.transition_lock.lock();
+        scope.validate()?;
+        validate_timestamp(now_ms)?;
+        if minimum_age_ms == 0 {
+            return Err(GenerationLayoutError::Conflict(
+                "generation GC minimum age must be greater than zero".to_string(),
+            ));
+        }
+        if retained_generation_ids.is_empty() {
+            return Err(GenerationLayoutError::Conflict(
+                "generation GC requires at least one retained generation".to_string(),
+            ));
+        }
+        for generation_id in retained_generation_ids {
+            if generation_id.trim().is_empty() || generation_id.trim() != generation_id {
+                return Err(GenerationLayoutError::Conflict(
+                    "retained generation IDs must be canonical non-empty text".to_string(),
+                ));
+            }
+        }
+
+        let paths = self.ensure_scope_paths_for_scope(scope)?;
+        let mut entries = fs::read_dir(&paths.generations_dir)
+            .map_err(|source| GenerationLayoutError::Io {
+                operation: "list generation GC candidates",
+                path: paths.generations_dir.clone(),
+                source,
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| GenerationLayoutError::Io {
+                operation: "read generation GC candidate",
+                path: paths.generations_dir.clone(),
+                source,
+            })?;
+        entries.sort_by_key(|entry| entry.file_name());
+
+        let mut retained = Vec::new();
+        let mut too_young = Vec::new();
+        let mut candidates = Vec::new();
+        for entry in entries {
+            let directory = entry.path();
+            let file_type =
+                entry
+                    .file_type()
+                    .map_err(|source| GenerationLayoutError::Io {
+                        operation: "inspect generation GC candidate",
+                        path: directory.clone(),
+                        source,
+                    })?;
+            if file_type.is_symlink() {
+                return Err(GenerationLayoutError::SymbolicLink(directory));
+            }
+            if !file_type.is_dir() {
+                return Err(GenerationLayoutError::NotDirectory(directory));
+            }
+            let manifest_bytes =
+                read_bounded_file(&directory.join(MANIFEST_FILE), MAX_MANIFEST_BYTES)?;
+            let manifest: KnowledgeGenerationManifest =
+                serde_json::from_slice(&manifest_bytes).map_err(|source| {
+                    GenerationLayoutError::Json {
+                        path: directory.join(MANIFEST_FILE),
+                        source,
+                    }
+                })?;
+            manifest.validate()?;
+            if manifest.scope() != *scope {
+                return Err(GenerationLayoutError::CorruptState(format!(
+                    "generation GC candidate {} belongs to another scope",
+                    directory.display()
+                )));
+            }
+            let expected = self.paths(scope, &manifest.generation_id);
+            if directory != expected.ready_dir && directory != expected.building_dir {
+                return Err(GenerationLayoutError::CorruptState(format!(
+                    "generation GC candidate {} has an unexpected directory name",
+                    directory.display()
+                )));
+            }
+            let journal: GenerationBuildJournal =
+                read_json(&directory.join(JOURNAL_FILE))?;
+            let manifest_digest = digest_bytes(&manifest_bytes);
+            validate_journal(&journal, &manifest, &manifest_digest)?;
+            let evidence = GenerationGcEntry {
+                generation_id: manifest.generation_id.clone(),
+                directory: directory
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| {
+                        GenerationLayoutError::CorruptState(
+                            "generation GC directory name is not UTF-8".to_string(),
+                        )
+                    })?
+                    .to_string(),
+                updated_at_ms: journal.updated_at_ms,
+                size_bytes: directory_size_checked(&directory)?,
+            };
+            if retained_generation_ids.contains(&manifest.generation_id) {
+                retained.push(evidence);
+            } else if now_ms.saturating_sub(journal.updated_at_ms) < minimum_age_ms {
+                too_young.push(evidence);
+            } else {
+                candidates.push(evidence);
+            }
+        }
+
+        let reclaimable_bytes = sum_gc_entry_bytes(&candidates)?;
+        let mut deleted = Vec::new();
+        if !dry_run {
+            for candidate in &candidates {
+                remove_dir_all_checked(&paths.generations_dir.join(&candidate.directory))?;
+                deleted.push(candidate.clone());
+            }
+            if !deleted.is_empty() {
+                sync_dir(&paths.generations_dir)?;
+            }
+        }
+        let deleted_bytes = sum_gc_entry_bytes(&deleted)?;
+        Ok(GenerationGcEvidence {
+            dry_run,
+            scanned: (retained.len() + too_young.len() + candidates.len()) as u64,
+            retained_generation_ids: retained_generation_ids.iter().cloned().collect(),
+            retained,
+            too_young,
+            candidates,
+            deleted,
+            reclaimable_bytes,
+            deleted_bytes,
+            minimum_age_ms,
+            completed_at_ms: now_ms,
+        })
     }
 
     fn ensure_scope_paths(
@@ -916,18 +1389,68 @@ impl GenerationStore {
         })
     }
 
+    fn load_revision_at(
+        &self,
+        base: &ReadyGeneration,
+        directory: &Path,
+        applied_sequence: u64,
+        expected_input_digest: Option<&str>,
+    ) -> LayoutResult<ReadyGeneration> {
+        if !directory.exists() {
+            return Err(GenerationLayoutError::NotReady(format!(
+                "{} at sequence {applied_sequence}",
+                base.manifest.generation_id
+            )));
+        }
+        reject_symlink_or_non_directory(directory)?;
+        reject_symlink_or_non_directory(&directory.join("rocksdb"))?;
+        let marker: GenerationRevisionMarker = read_json(&directory.join(REVISION_FILE))?;
+        validate_revision_marker_against_base(&marker, base, applied_sequence)?;
+        if expected_input_digest.is_some_and(|expected| marker.input_digest != expected) {
+            return Err(GenerationLayoutError::Conflict(format!(
+                "generation {} sequence {} was built from a different mutation input",
+                base.manifest.generation_id, applied_sequence
+            )));
+        }
+        Ok(ReadyGeneration {
+            manifest: base.manifest.clone(),
+            marker: ReadyGenerationMarker {
+                schema_version: marker.schema_version,
+                workspace_id: marker.workspace_id,
+                collection: marker.collection,
+                generation_id: marker.generation_id,
+                manifest_sha256: marker.manifest_sha256,
+                bundle_sha256: marker.bundle_sha256,
+                bundle_size_bytes: base.marker.bundle_size_bytes,
+                applied_sequence: marker.applied_sequence,
+                record_count: marker.record_count,
+                node_count: marker.node_count,
+                edge_count: marker.edge_count,
+                ready_at_ms: marker.ready_at_ms,
+                materialization_digest: Some(marker.materialization_digest),
+            },
+            directory: directory.to_path_buf(),
+        })
+    }
+
     fn pointer_for(
         &self,
         scope: &KnowledgeScope,
         generation: &GenerationServingState,
     ) -> LayoutResult<GenerationPointer> {
-        let ready = self.load_ready_at(
-            &self
-                .paths(scope, &generation.manifest.generation_id)
-                .ready_dir,
-            scope,
-            &generation.manifest.generation_id,
-        )?;
+        let paths = self.paths(scope, &generation.manifest.generation_id);
+        let base =
+            self.load_ready_at(&paths.ready_dir, scope, &generation.manifest.generation_id)?;
+        let ready = if generation.applied_sequence == base.marker.applied_sequence {
+            base
+        } else {
+            self.load_revision_at(
+                &base,
+                &revision_parent(&paths).join(revision_name(generation.applied_sequence)),
+                generation.applied_sequence,
+                None,
+            )?
+        };
         if ready.marker.manifest_sha256 != generation.manifest_sha256
             || ready.marker.applied_sequence != generation.applied_sequence
         {
@@ -949,11 +1472,18 @@ impl GenerationStore {
         pointer: &GenerationPointer,
     ) -> LayoutResult<()> {
         validate_digest(&pointer.manifest_sha256)?;
-        let ready = self.load_ready_at(
-            &self.paths(scope, &pointer.generation_id).ready_dir,
-            scope,
-            &pointer.generation_id,
-        )?;
+        let paths = self.paths(scope, &pointer.generation_id);
+        let base = self.load_ready_at(&paths.ready_dir, scope, &pointer.generation_id)?;
+        let ready = if pointer.applied_sequence == base.marker.applied_sequence {
+            base
+        } else {
+            self.load_revision_at(
+                &base,
+                &revision_parent(&paths).join(revision_name(pointer.applied_sequence)),
+                pointer.applied_sequence,
+                None,
+            )?
+        };
         if ready.marker.manifest_sha256 != pointer.manifest_sha256
             || ready.marker.applied_sequence != pointer.applied_sequence
         {
@@ -1003,6 +1533,7 @@ fn ready_marker(
         node_count: evidence.node_count,
         edge_count: evidence.edge_count,
         ready_at_ms,
+        materialization_digest: None,
     }
 }
 
@@ -1102,8 +1633,70 @@ fn validate_ready_marker(
             "ready marker differs from generation manifest".to_string(),
         ));
     }
+    if let Some(digest) = &marker.materialization_digest {
+        validate_digest(digest)?;
+    }
     validate_timestamp(marker.ready_at_ms)?;
     Ok(())
+}
+
+fn validate_revision_marker(
+    marker: &GenerationRevisionMarker,
+    prepared: &PreparedGenerationRevision,
+    materialization_digest: &str,
+) -> LayoutResult<()> {
+    if marker.schema_version != GENERATION_LAYOUT_SCHEMA_VERSION
+        || marker.workspace_id != prepared.manifest.workspace_id
+        || marker.collection != prepared.manifest.collection
+        || marker.generation_id != prepared.manifest.generation_id
+        || marker.manifest_sha256 != prepared.manifest_sha256
+        || marker.bundle_sha256 != prepared.bundle_sha256
+        || marker.applied_sequence != prepared.applied_sequence
+        || marker.input_digest != prepared.input_digest
+        || marker.materialization_digest != materialization_digest
+    {
+        return Err(GenerationLayoutError::CorruptState(
+            "revision marker differs from the prepared revision".to_string(),
+        ));
+    }
+    if marker.applied_sequence <= prepared.manifest.target_sequence
+        || marker.applied_sequence > akidb_contracts::MAX_SAFE_JSON_INTEGER
+    {
+        return Err(GenerationLayoutError::CorruptState(
+            "revision checkpoint must be JSON-safe and exceed the immutable target".to_string(),
+        ));
+    }
+    validate_digest(&marker.manifest_sha256)?;
+    validate_digest(&marker.bundle_sha256)?;
+    validate_digest(&marker.input_digest)?;
+    validate_digest(&marker.materialization_digest)?;
+    validate_timestamp(marker.ready_at_ms)
+}
+
+fn validate_revision_marker_against_base(
+    marker: &GenerationRevisionMarker,
+    base: &ReadyGeneration,
+    applied_sequence: u64,
+) -> LayoutResult<()> {
+    if marker.schema_version != GENERATION_LAYOUT_SCHEMA_VERSION
+        || marker.workspace_id != base.manifest.workspace_id
+        || marker.collection != base.manifest.collection
+        || marker.generation_id != base.manifest.generation_id
+        || marker.manifest_sha256 != base.marker.manifest_sha256
+        || marker.bundle_sha256 != base.marker.bundle_sha256
+        || marker.applied_sequence != applied_sequence
+        || applied_sequence <= base.marker.applied_sequence
+        || applied_sequence > akidb_contracts::MAX_SAFE_JSON_INTEGER
+    {
+        return Err(GenerationLayoutError::CorruptState(
+            "revision marker identity/checkpoint differs from its immutable base".to_string(),
+        ));
+    }
+    validate_digest(&marker.manifest_sha256)?;
+    validate_digest(&marker.bundle_sha256)?;
+    validate_digest(&marker.input_digest)?;
+    validate_digest(&marker.materialization_digest)?;
+    validate_timestamp(marker.ready_at_ms)
 }
 
 fn validate_marker_evidence(
@@ -1173,6 +1766,30 @@ fn validate_digest(value: &str) -> LayoutResult<()> {
 
 fn digest_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn revision_parent(paths: &GenerationPaths) -> PathBuf {
+    let generation_key = paths
+        .ready_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("g-invalid");
+    paths
+        .generations_dir
+        .join(format!("{generation_key}.revisions"))
+}
+
+fn revision_name(applied_sequence: u64) -> String {
+    format!("s-{applied_sequence:020}")
+}
+
+fn remove_dir_all_checked(path: &Path) -> LayoutResult<()> {
+    reject_symlink_or_non_directory(path)?;
+    fs::remove_dir_all(path).map_err(|source| GenerationLayoutError::Io {
+        operation: "remove superseded revision shadow",
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn verify_bundle_file(path: &Path, reference: &ImmutableObjectReference) -> LayoutResult<()> {
@@ -1522,6 +2139,72 @@ fn sync_tree(root: &Path) -> LayoutResult<()> {
     Ok(())
 }
 
+fn directory_size_checked(root: &Path) -> LayoutResult<u64> {
+    reject_symlink_or_non_directory(root)?;
+    let mut total = 0_u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).map_err(|source| {
+            GenerationLayoutError::Io {
+                operation: "scan generation directory size",
+                path: directory.clone(),
+                source,
+            }
+        })? {
+            let entry = entry.map_err(|source| GenerationLayoutError::Io {
+                operation: "read generation directory size entry",
+                path: directory.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|source| GenerationLayoutError::Io {
+                    operation: "inspect generation directory size entry",
+                    path: path.clone(),
+                    source,
+                })?;
+            if file_type.is_symlink() {
+                return Err(GenerationLayoutError::SymbolicLink(path));
+            }
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if file_type.is_file() {
+                total = total
+                    .checked_add(
+                        entry
+                            .metadata()
+                            .map_err(|source| GenerationLayoutError::Io {
+                                operation: "measure generation file",
+                                path: path.clone(),
+                                source,
+                            })?
+                            .len(),
+                    )
+                    .ok_or_else(|| {
+                        GenerationLayoutError::CorruptState(
+                            "generation directory byte count overflowed".to_string(),
+                        )
+                    })?;
+            } else {
+                return Err(GenerationLayoutError::NotRegularFile(path));
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn sum_gc_entry_bytes(entries: &[GenerationGcEntry]) -> LayoutResult<u64> {
+    entries
+        .iter()
+        .try_fold(0_u64, |total, entry| total.checked_add(entry.size_bytes))
+        .ok_or_else(|| {
+            GenerationLayoutError::CorruptState(
+                "generation GC byte count overflowed".to_string(),
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1539,6 +2222,27 @@ mod tests {
         let manifest: KnowledgeGenerationManifest = serde_json::from_slice(&bytes).unwrap();
         let digest = digest_bytes(&bytes);
         (bytes, manifest, digest)
+    }
+
+    fn fixture_for_generation(
+        generation_id: &str,
+    ) -> (Vec<u8>, KnowledgeGenerationManifest, String, Vec<u8>) {
+        let bundle = std::str::from_utf8(BUNDLE)
+            .unwrap()
+            .replace("generation-bundle-fixture", generation_id)
+            .into_bytes();
+        let mut manifest: KnowledgeGenerationManifest =
+            serde_json::from_str(MANIFEST).unwrap();
+        manifest.generation_id = generation_id.to_string();
+        manifest.bundle.uri = format!(
+            "s3://knowledge/generations/{generation_id}/{}/bundle.ndjson",
+            digest_bytes(&bundle)
+        );
+        manifest.bundle.sha256 = digest_bytes(&bundle);
+        manifest.bundle.size_bytes = bundle.len() as u64;
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let digest = digest_bytes(&bytes);
+        (bytes, manifest, digest, bundle)
     }
 
     fn prepare_store() -> (
@@ -1566,6 +2270,31 @@ mod tests {
             .record_materialization(prepared, &summary, manifest.target_sequence, 4)
             .unwrap();
         store.finalize_ready(prepared, 5).unwrap()
+    }
+
+    fn complete_bytes(
+        store: &GenerationStore,
+        prepared: &PreparedGeneration,
+        manifest: &KnowledgeGenerationManifest,
+        bundle: &[u8],
+        timestamp: u64,
+    ) -> ReadyGeneration {
+        store
+            .install_bundle(prepared, bundle, timestamp)
+            .unwrap();
+        store
+            .mark_materializing(prepared, timestamp + 1)
+            .unwrap();
+        let summary = consume_knowledge_bundle(bundle, manifest, |_| Ok(())).unwrap();
+        store
+            .record_materialization(
+                prepared,
+                &summary,
+                manifest.target_sequence,
+                timestamp + 2,
+            )
+            .unwrap();
+        store.finalize_ready(prepared, timestamp + 3).unwrap()
     }
 
     #[test]
@@ -1776,6 +2505,84 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(loaded, written);
+    }
+
+    #[test]
+    fn generation_gc_is_dry_run_first_and_never_removes_retained_or_young_state() {
+        let (temporary, store, prepared, manifest) = prepare_store();
+        complete(&store, &prepared, &manifest);
+
+        let (orphan_bytes, orphan, orphan_digest, orphan_bundle) =
+            fixture_for_generation("generation-orphan-fixture");
+        let orphan_prepared = store
+            .prepare(&orphan_bytes, &orphan_digest, 10)
+            .unwrap();
+        complete_bytes(&store, &orphan_prepared, &orphan, &orphan_bundle, 11);
+
+        let (young_bytes, young, young_digest, _) =
+            fixture_for_generation("generation-young-fixture");
+        let young_prepared = store.prepare(&young_bytes, &young_digest, 950).unwrap();
+
+        let retained = BTreeSet::from([manifest.generation_id.clone()]);
+        let dry_run = store
+            .garbage_collect_scope(&manifest.scope(), &retained, 100, 1_000, true)
+            .unwrap();
+        assert!(dry_run.dry_run);
+        assert_eq!(dry_run.scanned, 3);
+        assert_eq!(dry_run.retained[0].generation_id, manifest.generation_id);
+        assert_eq!(dry_run.too_young[0].generation_id, young.generation_id);
+        assert_eq!(dry_run.candidates[0].generation_id, orphan.generation_id);
+        assert!(dry_run.deleted.is_empty());
+        assert!(orphan_prepared.ready_dir().exists());
+
+        let applied = store
+            .garbage_collect_scope(&manifest.scope(), &retained, 100, 1_000, false)
+            .unwrap();
+        assert_eq!(applied.deleted[0].generation_id, orphan.generation_id);
+        assert_eq!(applied.deleted_bytes, applied.reclaimable_bytes);
+        assert!(!orphan_prepared.ready_dir().exists());
+        assert!(prepared.ready_dir().exists());
+        assert!(young_prepared.building_dir().exists());
+
+        drop(store);
+        drop(temporary);
+    }
+
+    #[test]
+    fn generation_gc_rejects_an_empty_retention_barrier() {
+        let (_temporary, store, _prepared, manifest) = prepare_store();
+        let error = store
+            .garbage_collect_scope(&manifest.scope(), &BTreeSet::new(), 100, 1_000, true)
+            .unwrap_err();
+        assert!(matches!(error, GenerationLayoutError::Conflict(_)));
+    }
+
+    #[test]
+    fn replica_volume_owner_is_stable_and_idempotent() {
+        let temporary = tempdir().unwrap();
+        let store = GenerationStore::open(temporary.path()).unwrap();
+        assert_eq!(
+            store.claim_replica_volume("replica-a", 10).unwrap(),
+            ReplicaVolumeClaimOutcome::Claimed
+        );
+        assert_eq!(
+            store.claim_replica_volume("replica-a", 20).unwrap(),
+            ReplicaVolumeClaimOutcome::AlreadyOwned
+        );
+        let owner: ReplicaVolumeOwner =
+            read_json(&temporary.path().join(REPLICA_OWNER_FILE)).unwrap();
+        assert_eq!(owner.replica_id, "replica-a");
+        assert_eq!(owner.claimed_at_ms, 10);
+    }
+
+    #[test]
+    fn replica_volume_cannot_be_adopted_by_another_identity() {
+        let temporary = tempdir().unwrap();
+        let store = GenerationStore::open(temporary.path()).unwrap();
+        store.claim_replica_volume("replica-a", 10).unwrap();
+        let error = store.claim_replica_volume("replica-b", 20).unwrap_err();
+        assert!(matches!(error, GenerationLayoutError::Conflict(_)));
+        assert!(error.to_string().contains("belongs to replica replica-a"));
     }
 
     #[cfg(unix)]

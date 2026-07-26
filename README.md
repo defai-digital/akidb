@@ -1,20 +1,31 @@
 # AkiDB
 
-**A portable retrieval database for private AI systems.**
+**A portable retrieval engine for private AI systems.**
 
 AkiDB combines durable vector storage, hybrid search, graph-aware retrieval,
 and context assembly in one Rust service. It is designed for local and
 on-premises RAG, agent memory, code intelligence, and other workloads where
 source data should stay under the operator's control.
 
+AkiDB has two deliberately different data-lifecycle profiles:
+
+- **Mutable standalone:** clients write vectors and records directly to one
+  AkiDB service. This is the primary supported profile.
+- **Immutable generation serving:** AX Fabric publishes a complete,
+  checksum-addressed knowledge generation and AkiDB materializes a disposable
+  local retrieval projection. PostgreSQL-led full-replica convergence and the
+  generation-aware AX read gateway are implemented; the Linux AMD64 cell is
+  qualified separately from the primary Mac profile.
+
 AkiDB v0.10.0 supports macOS 26 on Apple Silicon and Ubuntu 24.04 or newer on
-AMD64 and ARM64. The default runtime is CPU-portable; CUDA, NVIDIA GPU, and
-Thor-specific paths are not required.
+AMD64. The default runtime is CPU-portable. Linux ARM64, macOS Intel, CUDA,
+NVIDIA GPU, and Thor-specific paths are not supported release targets.
 
 > **Project status:** the standalone database is the primary supported
-> deployment. The multi-shard coordinator, ingestion stack, and Ansible
-> cluster workflow are available for evaluation and qualification, but they do
-> not yet provide automatic replication, failover, or rebalancing.
+> deployment. Immutable generation serving adds independently rebuilt full
+> replicas, quorum activation, and generation-aware read failover. It is not a
+> consensus database: canonical data remains in MinIO/OpenWiki and PostgreSQL.
+> The existing multi-shard coordinator remains a separate capacity path.
 
 ## Why AkiDB
 
@@ -30,12 +41,14 @@ core retrieval path behind one API and one operational boundary:
   graph-expanded chunk retrieval without an external graph service.
 - **Structured filtering:** typed metadata and tag filters, plus an optional
   SQLite metadata index; PostgreSQL support is feature-gated.
-- **Durable local state:** RocksDB-backed vectors, metadata, graph state, ID
-  mappings, local snapshot inventory, and rebuild state.
+- **Two durability models:** RocksDB-backed mutable standalone state, or
+  immutable knowledge generations rebuilt from canonical MinIO artifacts and
+  control records.
 - **Agent-ready interfaces:** gRPC, Python and TypeScript SDKs, an MCP stdio
   server, a terminal UI, and JSON-oriented operations commands.
 - **Local-first security:** loopback-first defaults, bearer-token and workspace
-  controls, redacted management output, and no cloud control plane.
+  controls, redacted management output, and an optional, separately secured
+  PostgreSQL control plane for the replica profile.
 
 ## Supported platforms
 
@@ -43,22 +56,17 @@ core retrieval path behind one API and one operational boundary:
 | --- | --- | --- | --- |
 | macOS 26 | Apple Silicon (`arm64`, M2 or newer) | Supported | Release archive or source build |
 | Ubuntu 24.04+ | AMD64 (`x86_64`) | Supported | Release archive, source build, Docker, and qualified Ansible artifact workflow |
-| Ubuntu 24.04+ | ARM64 (`aarch64`) | Supported | Release archive or source build |
 
-All supported targets use the portable HNSW backend. A homogeneous operating
-system and architecture is recommended within a shard group. macOS Intel,
-older Ubuntu releases, CUDA/NVIDIA acceleration, and other Linux
-distributions are outside the tested support matrix.
-
-The Ubuntu ARM64 runtime is supported for standalone servers, coordinators, and
-shards. The checksum-pinned Ansible cluster artifact and the opt-in immutable
-generation-serving qualification gate remain AMD64-specific; see
-[Platform Support](docs/platform/SUPPORT.md) for the exact runtime, CI,
-container, and deployment matrix.
+Both supported targets use the portable HNSW backend. Linux ARM64 (including
+NVIDIA Thor), macOS Intel, Ubuntu older than 24.04, CUDA/NVIDIA acceleration,
+and other Linux distributions are outside the release support matrix. Thor
+may be used for isolated experiments, but those results do not change the
+supported platforms without a separate qualification decision. See
+[Platform Support](docs/platform/SUPPORT.md) for the exact matrix.
 
 ## Architecture
 
-### Service boundary
+### Retrieval core
 
 ```text
 Applications and agents
@@ -87,12 +95,17 @@ Applications and agents
        OpenAI-compatible embedding endpoint
 ```
 
-The server owns the storage and retrieval lifecycle. Vectors and metadata are
-persisted in RocksDB; the HNSW and lexical indexes are rebuilt from durable
-state at startup. The native graph index shares the storage boundary, so graph
-expansion does not require a second database. Text-to-vector conversion stays
-behind an OpenAI-compatible embedding interface and can be disabled when
-clients provide vectors directly.
+The same retrieval core is used by both lifecycle profiles. In mutable
+standalone mode, vectors and metadata are persisted in RocksDB and the HNSW
+and lexical indexes are rebuilt from durable local state at startup. In
+generation mode, a manifest binds vector, lexical, payload, and graph data to
+one immutable generation; AkiDB builds that generation in a shadow directory
+and atomically changes the local serving pointer only after verification. The
+native graph index shares the retrieval boundary, so graph expansion does not
+require a second database.
+
+Text-to-vector conversion stays behind an OpenAI-compatible embedding
+interface and can be disabled when clients provide vectors directly.
 
 ### Retrieval path
 
@@ -113,13 +126,55 @@ from explicit request controls and query signals. Metadata filters are applied
 through the same path, and packed context remains tied to the returned source
 chunks.
 
+### Agentic knowledge-serving design
+
+The target knowledge-serving cell separates canonical data, publication
+authority, local retrieval state, and request routing:
+
+```text
+OpenWiki + source objects
+            │
+            ▼
+  AX Fabric ingestion/distillation
+            │
+            ├── immutable logical bundles ──► MinIO
+            └── generation + outbox ────────► HA PostgreSQL
+                                                │
+                              ┌─────────────────┼─────────────────┐
+                              ▼                 ▼                 ▼
+                         AkiDB replica 1    AkiDB replica 2    [replica 3]
+                         local RocksDB,     local RocksDB,      recommended
+                         HNSW/BM25/graph    HNSW/BM25/graph
+                              └─────────────────┬─────────────────┘
+                                                ▼
+                                  AX retrieval gateway
+                                                │
+                                                ▼
+                                         Agents / GenAI
+```
+
+MinIO and OpenWiki remain canonical. PostgreSQL is the publication and ordered
+checkpoint authority. Each AkiDB node owns an independent, rebuildable full
+copy on local storage; live RocksDB or index files are never shared between
+replicas. NATS may later accelerate notifications, but it is not the
+correctness authority. Immediate agent/session memory stays on a strongly
+consistent path rather than relying on asynchronous index convergence.
+
+The checked-in implementation covers the full diagram: authoritative
+publication, independent materialization/checkpoints, quorum activation,
+bounded GraphRAG evidence, and read-only gateway failover. See the
+[knowledge-serving architecture](docs/architecture/knowledge-serving.md) for
+the ownership, consistency, and release boundaries.
+
 ### Deployment shapes
 
-| Shape | Components | Intended use |
+| Shape | Components | Status and intended use |
 | --- | --- | --- |
-| Standalone | One `akidb` server and local storage | Primary supported path for local RAG, agent memory, development, and single-node deployments |
-| Multi-shard | Coordinator plus two or more shard servers | Fan-out search, capacity experiments, and qualified private-network clusters |
-| Ingestion stack | Upload gateway, parsers, NATS, MinIO, ingestion workers, embedding service, and AkiDB | Document-processing and integration workflows |
+| Mutable standalone | One `akidb` server and local storage | Primary supported path for local RAG, agent memory, development, and single-node deployments |
+| Immutable single node | MinIO plus one generation-enabled AkiDB server | Opt-in atomic-publication preview; no replication or failover |
+| Full-replica cell | HA PostgreSQL, MinIO, three independent AkiDB replicas, and two or more AX gateways | Qualified Ubuntu AMD64 knowledge-serving profile; PostgreSQL and object-store HA remain external deployment responsibilities |
+| Multi-shard | Coordinator plus two or more independent shard servers | Fan-out search, capacity experiments, and qualified private-network clusters; not the HA replica design |
+| Ingestion stack | Upload gateway, parsers, NATS, MinIO, ingestion workers, embedding service, and AkiDB | Document-processing and integration workflows; its NATS stream is separate from knowledge-generation authority |
 
 The coordinator merges results across shards and applies backpressure, but it
 is not yet a replication layer. The current coordinator also does not forward
@@ -142,7 +197,7 @@ xcode-select --install
 brew install cmake protobuf
 ```
 
-On Ubuntu 24.04 or newer, on either AMD64 or ARM64:
+On Ubuntu 24.04 or newer on AMD64:
 
 ```bash
 sudo apt-get update
@@ -240,6 +295,8 @@ reference.
 | --- | --- |
 | `server` | Bind address, gRPC port, and transport settings |
 | `auth` / `auth.acl` | Loopback policy, bearer token source, default workspace, and workspace enforcement |
+| `generation_serving` | Opt-in immutable generation paths, publication credential, S3 limits, and generation materialization |
+| `generation_serving.replica_control` | Disabled-by-default PostgreSQL replica-worker settings for the in-development convergence profile |
 | `index` | HNSW construction/search settings, metric, precision, filtering, and rebuild thresholds |
 | `storage` | RocksDB and snapshot-related paths; WAL settings are reserved for the not-yet-wired server WAL path |
 | `sql` | Optional SQLite or feature-gated PostgreSQL metadata index |
@@ -253,8 +310,13 @@ Security defaults and requirements:
   `auth.mode = "disabled"` is explicitly selected for an isolated network.
 - Pass tokens through `AKIDB_AUTH_TOKEN` or a mode-`0600` file referenced by
   `AKIDB_AUTH_TOKEN_FILE`; never commit tokens or inventories.
-- Built-in server TLS is not wired in v0.10.0. Terminate TLS at a trusted local
-  proxy or use a private encrypted overlay for remote traffic.
+- Single-node generation publication requires a distinct
+  `AKIDB_GENERATION_CONTROL_TOKEN`; PostgreSQL replica mode removes that local
+  control API and reads its database URL only from the configured environment
+  variable, with verified TLS by default.
+- Built-in server TLS is supported. The knowledge-cell profile also uses an
+  encrypted private overlay, HTTPS at the gateway and MinIO, and verified
+  PostgreSQL TLS.
 - Real Ansible inventories, vault-password files, SSH keys, and local agent
   instructions are gitignored and rejected by the CI sensitive-file policy.
 
@@ -345,6 +407,8 @@ akidb/
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [Knowledge-serving architecture](docs/architecture/knowledge-serving.md)
+- [Immutable generation serving](docs/development/generation-serving-preview.md)
 - [Platform support](docs/platform/SUPPORT.md)
 - [Operations runbook](docs/runbooks/operations.md)
 - [Ansible cluster deployment](deploy/ansible/README.md)
@@ -354,16 +418,23 @@ akidb/
 
 ## Current limitations
 
-- No automatic shard replication, failover, placement, or rebalancing.
-- Coordinator authentication/workspace propagation to shards is not complete.
-- Built-in gRPC TLS is not active in the server binary.
+- Immutable generation serving provides PostgreSQL-led full-replica
+  convergence and generation-aware read failover. It does not make PostgreSQL
+  or MinIO highly available; production must supply those durable HA services.
+- Privileged single-node publication accepts self-contained base generations
+  with `target_sequence == base_sequence`. The in-development PostgreSQL
+  worker can rebuild a deterministic post-bundle revision from an ordered
+  mutation tail, but multi-replica convergence is not yet a qualified release
+  claim.
+- The multi-shard coordinator is not a replication layer and does not provide
+  automatic placement, failover, or rebalancing.
+- Coordinator authentication/workspace propagation to shards is not complete,
+  which is one reason it is not the agent-facing HA gateway.
 - The storage crate includes WAL primitives, but the server write path does not
   yet use the configured WAL.
 - The native BM25 index is rebuilt in memory from persisted records.
-- The Docker image, checksum-pinned Ansible artifact, and immutable
-  generation-serving qualification gate are currently AMD64-only even though
-  the native Ubuntu runtime supports ARM64.
-- NVIDIA Thor and CUDA builds are unsupported.
+- Linux release artifacts and the knowledge-serving cell are AMD64-only.
+- Linux ARM64, NVIDIA Thor, and CUDA builds are unsupported release paths.
 - Four-Mac Thunderbolt validation tooling defines an experimental evidence
   path; it is not the primary product topology or a production-readiness claim.
 

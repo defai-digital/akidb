@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 
-use akidb_contracts::KnowledgeScope;
+use akidb_contracts::{KnowledgeMutation, KnowledgeScope};
 use akidb_storage::{
     GenerationLayoutError, GenerationServingState, LocalGenerationState, ReadyGeneration,
     RocksDbBackend, ServingStateError, ServingStateRecord, ServingStateStore,
@@ -131,10 +131,9 @@ impl GenerationController {
         updated_at_ms: u64,
     ) -> Result<GenerationPublication, GenerationControlError> {
         let _transition = self.transition_lock.lock();
-        let prepared =
-            self.materializer
-                .store()
-                .prepare(manifest_bytes, manifest_sha256, updated_at_ms)?;
+        let prepared = self
+            .materializer
+            .prepare(manifest_bytes, manifest_sha256, updated_at_ms)?;
         let manifest = prepared.manifest().clone();
         let scope = manifest.scope();
 
@@ -354,6 +353,86 @@ impl GenerationController {
         Ok(after)
     }
 
+    /// Atomically install a fully sealed post-bundle revision into whichever
+    /// local role currently retains the generation.
+    pub fn install_revision(
+        &self,
+        runtime: ReadyGenerationRuntime,
+        mutations: &[KnowledgeMutation],
+        updated_at_ms: u64,
+    ) -> Result<ServingStateRecord, GenerationControlError> {
+        let _transition = self.transition_lock.lock();
+        let scope = runtime.ready.manifest.scope();
+        let generation_id = runtime.ready.manifest.generation_id.clone();
+        let target_sequence = runtime.ready.marker.applied_sequence;
+        let manifest_sha256 = runtime.ready.marker.manifest_sha256.clone();
+        let before = self.required_state(&scope)?;
+        let retained = generation_by_id(&before, &generation_id).ok_or_else(|| {
+            GenerationControlError::InconsistentState(format!(
+                "sealed revision belongs to unretained generation {generation_id}"
+            ))
+        })?;
+        ensure_same_generation(retained, &runtime.ready.manifest, &manifest_sha256)?;
+        if target_sequence < retained.applied_sequence {
+            return Err(GenerationControlError::InconsistentState(format!(
+                "revision checkpoint {target_sequence} precedes local checkpoint {}",
+                retained.applied_sequence
+            )));
+        }
+        if target_sequence == retained.applied_sequence {
+            self.ensure_runtime_cache(&before)?;
+            return Ok(before);
+        }
+        self.ensure_runtime_cache(&before)?;
+        let next = Arc::new(runtime);
+
+        // The runtime write lock is held across the durable state commit. Old
+        // requests may finish on their Arc; new requests obtain only the
+        // complete revised checkpoint.
+        {
+            let mut runtimes = self.runtimes.write();
+            let runtime_set = runtimes.get_mut(&scope).ok_or_else(|| {
+                GenerationControlError::InconsistentState(
+                    "runtime cache disappeared during revision install".to_string(),
+                )
+            })?;
+            self.state.commit_generation_revision(
+                &scope,
+                &generation_id,
+                &manifest_sha256,
+                target_sequence,
+                mutations,
+                updated_at_ms,
+            )?;
+            if before
+                .active
+                .as_ref()
+                .is_some_and(|generation| generation.manifest.generation_id == generation_id)
+            {
+                runtime_set.active = Some(next);
+            } else if before
+                .previous
+                .as_ref()
+                .is_some_and(|generation| generation.manifest.generation_id == generation_id)
+            {
+                runtime_set.previous = Some(next);
+            } else if before
+                .staged
+                .as_ref()
+                .is_some_and(|generation| generation.manifest.generation_id == generation_id)
+            {
+                runtime_set.staged = Some(next);
+            } else {
+                return Err(GenerationControlError::InconsistentState(
+                    "revision role disappeared before commit".to_string(),
+                ));
+            }
+        }
+        let after = self.required_state(&scope)?;
+        self.reconcile_pointer_cache(&after);
+        Ok(after)
+    }
+
     /// Restore active and rollback runtimes from durable serving state after a
     /// process restart. No state transition is performed.
     pub fn restore_scope(
@@ -439,11 +518,17 @@ impl GenerationController {
             return Ok(None);
         };
         if let Some(existing) = self.cached_runtime(scope, &generation.manifest.generation_id) {
-            return Ok(Some(existing));
+            if existing.ready.marker.applied_sequence == generation.applied_sequence {
+                return Ok(Some(existing));
+            }
         }
+        let ready = self.materializer.store().load_materialized(
+            scope,
+            &generation.manifest.generation_id,
+            generation.applied_sequence,
+        )?;
         Ok(Some(Arc::new(
-            self.materializer
-                .open_ready(scope, &generation.manifest.generation_id)?,
+            self.materializer.open_ready_generation(ready)?,
         )))
     }
 
@@ -538,7 +623,10 @@ fn bounded_control_failure(error: &GenerationMaterializerError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use akidb_contracts::KnowledgeGenerationManifest;
+    use akidb_contracts::{
+        KnowledgeGenerationManifest, KnowledgeMutation, KnowledgeOperation,
+        KNOWLEDGE_SCHEMA_VERSION,
+    };
     use akidb_faiss::{SearchParams, VectorIndex};
     use akidb_storage::GenerationStore;
     use serde_json::Value;
@@ -844,6 +932,83 @@ mod tests {
         let state = harness.state.load(&scope).unwrap().unwrap();
         assert_eq!(state.active.unwrap().manifest.generation_id, "generation-a");
         assert_eq!(state.staged.unwrap().state, LocalGenerationState::Failed);
+    }
+
+    #[test]
+    fn sealed_revision_swaps_active_runtime_and_restores_after_restart() {
+        let harness = Harness::new();
+        let first = publish(
+            &harness.controller,
+            "generation-a",
+            None,
+            [1.0, 0.0, 0.0],
+            1,
+        );
+        let scope = first.scope();
+        harness
+            .controller
+            .activate(
+                &scope,
+                "generation-a",
+                &ExpectedActiveGeneration::NoActive,
+                2,
+            )
+            .unwrap();
+        let mutation = KnowledgeMutation {
+            schema_version: KNOWLEDGE_SCHEMA_VERSION,
+            mutation_id: "delete-chunk-a".to_string(),
+            workspace_id: scope.workspace_id.clone(),
+            collection: scope.collection.clone(),
+            generation_id: first.generation_id.clone(),
+            sequence: first.target_sequence + 1,
+            operation: KnowledgeOperation::Delete,
+            chunk_id: "chunk-a".to_string(),
+            payload: None,
+            created_at_ms: 1_784_995_200_011,
+        };
+        let materialized = crate::MaterializedKnowledgeMutation {
+            mutation: mutation.clone(),
+            payload: None,
+        };
+        let source = harness
+            .controller
+            .ready_runtime(&scope, &first.generation_id)
+            .unwrap();
+        let runtime = harness
+            .materializer
+            .materialize_revision_from_runtime(&source, std::slice::from_ref(&materialized), 3)
+            .unwrap();
+        drop(source);
+        let state = harness
+            .controller
+            .install_revision(runtime, std::slice::from_ref(&mutation), 4)
+            .unwrap();
+        assert_eq!(state.active.as_ref().unwrap().applied_sequence, 11);
+        assert_eq!(
+            harness
+                .controller
+                .active_runtime(&scope)
+                .unwrap()
+                .index
+                .stats()
+                .active_vectors,
+            0
+        );
+
+        let Harness {
+            _temporary,
+            materializer,
+            state,
+            controller,
+        } = harness;
+        drop(controller);
+        let restored = GenerationController::new(materializer, state);
+        restored.restore_scope(&scope).unwrap();
+        let runtime = restored.active_runtime(&scope).unwrap();
+        assert_eq!(runtime.ready.marker.applied_sequence, 11);
+        assert_eq!(runtime.index.stats().active_vectors, 0);
+        drop(runtime);
+        drop(_temporary);
     }
 
     #[test]

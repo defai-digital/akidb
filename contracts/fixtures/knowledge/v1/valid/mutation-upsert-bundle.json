@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "mutation_id": "mutation-bundle-11",
+  "workspace_id": "workspace-a",
+  "collection": "knowledge",
+  "generation_id": "generation-bundle-fixture",
+  "sequence": 11,
+  "operation": "upsert",
+  "chunk_id": "chunk-a",
+  "payload": {
+    "uri": "s3://knowledge/mutations/mutation-bundle-11.json",
+    "sha256": "311caa343f65b6359b7a5541e99a3d1039f4df5c13837b636463958f65931cbd",
+    "size_bytes": 1072
+  },
+  "created_at_ms": 1784995200011
+}

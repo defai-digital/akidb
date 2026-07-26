@@ -7,17 +7,38 @@
 //! - Resource utilization
 
 use prometheus::{
-    Counter, CounterVec, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, IntCounterVec,
-    IntGauge, IntGaugeVec, Opts, Registry,
+    Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec,
+    IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
 };
 use std::sync::OnceLock;
 
 /// Global metrics registry
 static METRICS: OnceLock<AkiDbMetrics> = OnceLock::new();
+static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
 /// Get the global metrics instance
 pub fn metrics() -> &'static AkiDbMetrics {
     METRICS.get_or_init(AkiDbMetrics::new)
+}
+
+pub fn registry() -> &'static Registry {
+    REGISTRY.get_or_init(|| {
+        let registry = Registry::new();
+        metrics()
+            .register(&registry)
+            .expect("AkiDB metric registration must be valid");
+        registry
+    })
+}
+
+pub fn export_metrics() -> String {
+    let encoder = TextEncoder::new();
+    let families = registry().gather();
+    let mut output = Vec::new();
+    if encoder.encode(&families, &mut output).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 /// AkiDB metrics
@@ -118,6 +139,25 @@ pub struct AkiDbMetrics {
     pub governor_deferrals_total: IntCounterVec,
     /// Whether governor can accept new tasks
     pub governor_can_accept_tasks: IntGauge,
+
+    // ============================================
+    // Immutable Generation Replica Metrics
+    // ============================================
+    pub generation_active_info: IntGaugeVec,
+    pub replica_applied_sequence: GaugeVec,
+    pub replica_lag: GaugeVec,
+    pub generation_build_seconds: HistogramVec,
+    pub generation_verify_failures_total: IntCounterVec,
+    pub mutation_apply_total: IntCounterVec,
+    pub mutation_gap_total: IntCounterVec,
+    pub replica_route_ready: IntGaugeVec,
+    pub replica_rebuild_seconds: HistogramVec,
+    pub generation_disk_available_bytes: GaugeVec,
+    pub generation_disk_required_bytes: GaugeVec,
+    pub generation_disk_admission_rejections_total: IntCounterVec,
+    pub generation_gc_runs_total: IntCounterVec,
+    pub generation_gc_candidates: IntGaugeVec,
+    pub generation_gc_deleted_bytes_total: IntCounterVec,
 }
 
 impl AkiDbMetrics {
@@ -387,6 +427,129 @@ impl AkiDbMetrics {
                 "Whether governor can accept new tasks (1=yes, 0=no)",
             )
             .unwrap(),
+
+            generation_active_info: IntGaugeVec::new(
+                Opts::new(
+                    "akidb_generation_active_info",
+                    "Active immutable generation identity (value is always 1)",
+                ),
+                &["replica_id", "workspace", "collection", "generation_id"],
+            )
+            .unwrap(),
+            replica_applied_sequence: GaugeVec::new(
+                Opts::new(
+                    "akidb_replica_applied_sequence",
+                    "Latest durable mutation sequence reported by this replica",
+                ),
+                &["replica_id", "workspace", "collection"],
+            )
+            .unwrap(),
+            replica_lag: GaugeVec::new(
+                Opts::new(
+                    "akidb_replica_lag",
+                    "Authoritative sequence minus replica applied sequence",
+                ),
+                &["replica_id", "workspace", "collection"],
+            )
+            .unwrap(),
+            generation_build_seconds: HistogramVec::new(
+                HistogramOpts::new(
+                    "akidb_generation_build_seconds",
+                    "Immutable generation build duration",
+                )
+                .buckets(vec![1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 3600.0]),
+                &["replica_id", "outcome"],
+            )
+            .unwrap(),
+            generation_verify_failures_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_generation_verify_failures_total",
+                    "Generation build or verification failures",
+                ),
+                &["replica_id", "reason"],
+            )
+            .unwrap(),
+            mutation_apply_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_mutation_apply_total",
+                    "Mutation-tail entries processed by outcome",
+                ),
+                &["replica_id", "outcome"],
+            )
+            .unwrap(),
+            mutation_gap_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_mutation_gap_total",
+                    "Detected ordered mutation gaps",
+                ),
+                &["replica_id"],
+            )
+            .unwrap(),
+            replica_route_ready: IntGaugeVec::new(
+                Opts::new(
+                    "akidb_replica_route_ready",
+                    "Whether the local checkpoint is safe for gateway routing",
+                ),
+                &["replica_id", "workspace", "collection"],
+            )
+            .unwrap(),
+            replica_rebuild_seconds: HistogramVec::new(
+                HistogramOpts::new(
+                    "akidb_replica_rebuild_seconds",
+                    "Blank-volume or replacement replica rebuild duration",
+                )
+                .buckets(vec![5.0, 30.0, 60.0, 300.0, 900.0, 3600.0, 14400.0]),
+                &["replica_id", "outcome"],
+            )
+            .unwrap(),
+            generation_disk_available_bytes: GaugeVec::new(
+                Opts::new(
+                    "akidb_generation_disk_available_bytes",
+                    "Available bytes observed at generation admission",
+                ),
+                &["replica_id"],
+            )
+            .unwrap(),
+            generation_disk_required_bytes: GaugeVec::new(
+                Opts::new(
+                    "akidb_generation_disk_required_bytes",
+                    "Estimated shadow-build bytes plus required reserve",
+                ),
+                &["replica_id"],
+            )
+            .unwrap(),
+            generation_disk_admission_rejections_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_generation_disk_admission_rejections_total",
+                    "Generation builds rejected for insufficient disk headroom",
+                ),
+                &["replica_id"],
+            )
+            .unwrap(),
+            generation_gc_runs_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_generation_gc_runs_total",
+                    "Immutable generation retention scans by outcome",
+                ),
+                &["replica_id", "mode"],
+            )
+            .unwrap(),
+            generation_gc_candidates: IntGaugeVec::new(
+                Opts::new(
+                    "akidb_generation_gc_candidates",
+                    "Old unreferenced immutable generation directories",
+                ),
+                &["replica_id"],
+            )
+            .unwrap(),
+            generation_gc_deleted_bytes_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_generation_gc_deleted_bytes_total",
+                    "Bytes removed by safe immutable generation retention",
+                ),
+                &["replica_id"],
+            )
+            .unwrap(),
         }
     }
 
@@ -430,6 +593,21 @@ impl AkiDbMetrics {
             self.governor_memory_mb,
             self.governor_deferrals_total,
             self.governor_can_accept_tasks,
+            self.generation_active_info,
+            self.replica_applied_sequence,
+            self.replica_lag,
+            self.generation_build_seconds,
+            self.generation_verify_failures_total,
+            self.mutation_apply_total,
+            self.mutation_gap_total,
+            self.replica_route_ready,
+            self.replica_rebuild_seconds,
+            self.generation_disk_available_bytes,
+            self.generation_disk_required_bytes,
+            self.generation_disk_admission_rejections_total,
+            self.generation_gc_runs_total,
+            self.generation_gc_candidates,
+            self.generation_gc_deleted_bytes_total,
         )
     }
 
@@ -456,6 +634,59 @@ impl AkiDbMetrics {
     /// Record SLO breach
     pub fn record_slo_breach(&self, breach_type: &str) {
         self.slo_breaches.with_label_values(&[breach_type]).inc();
+    }
+
+    pub fn set_active_generation(
+        &self,
+        replica_id: &str,
+        workspace: &str,
+        collection: &str,
+        generation_id: &str,
+    ) {
+        self.generation_active_info.reset();
+        self.generation_active_info
+            .with_label_values(&[replica_id, workspace, collection, generation_id])
+            .set(1);
+    }
+
+    pub fn update_replica_checkpoint(
+        &self,
+        replica_id: &str,
+        workspace: &str,
+        collection: &str,
+        applied_sequence: u64,
+        required_sequence: u64,
+        route_ready: bool,
+    ) {
+        self.replica_applied_sequence
+            .with_label_values(&[replica_id, workspace, collection])
+            .set(applied_sequence as f64);
+        self.replica_lag
+            .with_label_values(&[replica_id, workspace, collection])
+            .set(required_sequence.saturating_sub(applied_sequence) as f64);
+        self.replica_route_ready
+            .with_label_values(&[replica_id, workspace, collection])
+            .set(i64::from(route_ready));
+    }
+
+    pub fn observe_generation_build(&self, replica_id: &str, outcome: &str, seconds: f64) {
+        self.generation_build_seconds
+            .with_label_values(&[replica_id, outcome])
+            .observe(seconds);
+    }
+
+    pub fn observe_disk_admission(
+        &self,
+        replica_id: &str,
+        available_bytes: u64,
+        required_bytes: u64,
+    ) {
+        self.generation_disk_available_bytes
+            .with_label_values(&[replica_id])
+            .set(available_bytes as f64);
+        self.generation_disk_required_bytes
+            .with_label_values(&[replica_id])
+            .set(required_bytes as f64);
     }
 
     // ============================================

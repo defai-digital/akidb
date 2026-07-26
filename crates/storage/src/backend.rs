@@ -1,7 +1,7 @@
 //! Storage backend trait and implementations
 
 use crate::{AkiDbError, Result};
-use rocksdb::{Options, WriteBatch, DB};
+use rocksdb::{checkpoint::Checkpoint, Options, WriteBatch, DB};
 use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
@@ -96,6 +96,21 @@ impl RocksDbBackend {
     /// Get the underlying RocksDB handle (for advanced operations)
     pub fn inner(&self) -> &DB {
         &self.db
+    }
+
+    /// Create a consistent RocksDB checkpoint suitable for a shadow
+    /// generation revision. RocksDB may hard-link immutable SST files, while
+    /// subsequent writes create independent manifests/WALs in the target.
+    pub fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        self.flush()?;
+        let checkpoint = Checkpoint::new(self.inner()).map_err(|error| {
+            AkiDbError::StorageError(format!(
+                "Failed to create RocksDB checkpoint handle: {error}"
+            ))
+        })?;
+        checkpoint.create_checkpoint(path).map_err(|error| {
+            AkiDbError::StorageError(format!("Failed to create RocksDB checkpoint: {error}"))
+        })
     }
 }
 

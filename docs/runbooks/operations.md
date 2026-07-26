@@ -2,12 +2,24 @@
 
 ## Supported Environment
 
-AkiDB is supported on macOS 26 Apple Silicon and Ubuntu 24.04+ on AMD64 and
-ARM64. Use the CPU-portable path for all builds and tests. Thor, CUDA, NVIDIA
-GPU, and Kubernetes production procedures are outside the active support
-scope. The checked-in Ansible cluster and immutable generation-serving
-qualification profiles are AMD64-specific; see `docs/platform/SUPPORT.md` for
-packaging-specific limits.
+AkiDB is supported on macOS 26 Apple Silicon and Ubuntu 24.04+ on AMD64. Use
+the CPU-portable path for all builds and tests. Linux ARM64, Thor, CUDA,
+NVIDIA GPU, and Kubernetes production procedures are outside the active
+support scope. See `docs/platform/SUPPORT.md` for packaging-specific limits.
+
+## Runtime Profiles
+
+| Profile | Write and recovery authority | Operational status |
+| --- | --- | --- |
+| Mutable standalone | Direct AkiDB writes; local RocksDB and snapshots | Primary supported profile |
+| Immutable single node | MinIO bundle plus privileged local generation control | Opt-in atomic-publication preview |
+| PostgreSQL-led full replicas | AX Fabric PostgreSQL control state plus immutable MinIO bundles | Supported Ubuntu AMD64 knowledge-serving profile |
+| Multi-shard coordinator | Independent shard-local state | Qualification/capacity path, not replication |
+
+Do not mix recovery procedures between these profiles. In particular, a
+mutable snapshot is not a generation backup, and independent shards are not
+interchangeable generation replicas. See the
+[knowledge-serving architecture](../architecture/knowledge-serving.md).
 
 ## Native Build And Validation
 
@@ -91,10 +103,54 @@ sidecar on port 8000, and skips `TextSearch` when that variable is absent.
 For `Qwen3-Embedding-0.6B`, also set `AX_ENGINE_MODEL=Qwen/Qwen3-Embedding-0.6B`
 and `EMBEDDING_DIMENSIONS=1024`.
 
+## Immutable Generation Serving
+
+Build and start the single-node publication preview with:
+
+```bash
+cargo build --release -p akidb-server --features generation-s3
+./target/release/akidb-server --config config/default.toml
+```
+
+`generation_serving.enabled` must be true, the server must not use
+`--standalone`, and the generation, control, and download paths must be
+distinct. Use a read-only MinIO credential on the replica and keep the
+generation-control bearer token separate from the read data-plane token.
+This privileged gRPC control service is exposed only when
+`generation_serving.replica_control.enabled` is false.
+
+The PostgreSQL replica worker uses the `generation-postgres` feature:
+
+```bash
+cargo build --release -p akidb-server --features generation-postgres
+```
+
+Database credentials are resolved only from the environment variable named by
+`generation_serving.replica_control.postgres_url_env`. Keep PostgreSQL TLS in
+`require` mode outside loopback-only development. Each data volume is bound to
+one stable `replica_id`; never point a second identity at an existing
+generation root. In this profile `GenerationManagement` is not exposed;
+PostgreSQL is the publication authority.
+
+The worker rebuilds a complete local revision from the immutable base bundle
+plus every ordered mutation through the required checkpoint. Upserts reference
+bounded checksum-addressed payloads in MinIO; deletes have no payload. A
+duplicate is idempotent, while a sequence gap, identity conflict, invalid
+payload, or cross-replica digest/count mismatch blocks readiness and must not
+be bypassed.
+
+During a PostgreSQL or MinIO outage, do not delete or deactivate a known-good
+local generation merely because publication cannot progress. Existing reads
+are designed to remain local; new build, checkpoint, and activation work
+pauses. A failed shadow build must not disturb the active pointer.
+
+The full configuration, current limitations, and focused checks are in
+[Immutable Generation Serving](../development/generation-serving-preview.md).
+
 ## Maintenance
 
-Create a manual snapshot through the admin API when available, then verify the
-snapshot in MinIO:
+For mutable standalone mode, create a manual snapshot through the admin API
+when available, then verify the snapshot in MinIO:
 
 ```bash
 mc ls local/akidb-snapshots/
@@ -102,6 +158,13 @@ mc ls local/akidb-snapshots/
 
 For local data recovery, stop traffic, restore the RocksDB and snapshot data,
 restart services, and run a health check plus a known-query validation.
+
+For generation mode, do not restore or copy a live RocksDB/HNSW directory from
+another replica. Isolate the failed volume, provision blank local generation
+and control paths for the intended stable replica identity, and rebuild from
+the authoritative manifest/bundle and checkpoint state. This replacement
+workflow is automated by the knowledge-cell Ansible playbooks and documented
+in [Knowledge Serving Operations](knowledge-serving.md).
 
 ## Capacity And Performance
 
@@ -112,6 +175,10 @@ Track:
 - Tombstone ratio.
 - RocksDB and snapshot disk growth.
 - Ingestion queue depth and backpressure.
+- Active/staged generation identity and manifest digest when generation mode
+  is enabled.
+- Replica checkpoint, build state, heartbeat age, and ready-replica count for
+  the PostgreSQL convergence profile.
 
 If latency rises, reduce ingestion concurrency, compact tombstones, or split
 hot collections across additional qualified shards.

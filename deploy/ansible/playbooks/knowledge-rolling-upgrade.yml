@@ -1,0 +1,119 @@
+---
+- import_playbook: knowledge-preflight.yml
+
+- name: Stage the new AkiDB artifact without changing running replicas
+  hosts: akidb_knowledge_replicas
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    akidb_release_id: "{{ akidb_knowledge_release_id }}"
+    akidb_artifact_path: "{{ akidb_knowledge_artifact_path }}"
+    akidb_artifact_sha256: "{{ akidb_knowledge_artifact_sha256 }}"
+  roles:
+    - role: release
+
+- name: Roll stateless AX gateways one at a time
+  hosts: ax_knowledge_gateways
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: knowledge_gateway_release
+    - role: knowledge_gateway
+
+- name: Drain, upgrade, verify, and re-admit each full replica
+  hosts: akidb_knowledge_replicas
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Upgrade one replica inside a fail-closed drain block
+      block:
+        - name: Drain replica from both gateways
+          ansible.builtin.command:
+            argv:
+              - "{{ ax_gateway_install_root }}/current/bin/node"
+              - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+              - knowledge-control
+              - --postgres-ca
+              - "{{ ax_gateway_config_root }}/tls/ca.crt"
+              - --postgres-server-name
+              - "{{ ax_knowledge_postgres_server_name }}"
+              - drain
+              - --workspace
+              - "{{ akidb_knowledge_workspace }}"
+              - --collection
+              - "{{ akidb_knowledge_collection }}"
+              - --replica
+              - "{{ akidb_knowledge_replica_id }}"
+              - --actor
+              - ansible-rolling-upgrade
+          environment:
+            AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+          delegate_to: "{{ groups['ax_knowledge_gateways'][0] }}"
+          become: true
+          become_user: "{{ ax_gateway_user }}"
+          changed_when: true
+          no_log: true
+
+        - name: Reconcile the new full-replica release
+          ansible.builtin.include_role:
+            name: knowledge_replica
+
+        - name: Require upgraded replica generation readiness
+          ansible.builtin.command:
+            argv:
+              - "{{ akidb_install_root }}/current/bin/akidb"
+              - health
+              - --server
+              - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_server_port }}"
+              - --tls-ca
+              - "{{ akidb_config_root }}/tls/ca.crt"
+              - --require-ready
+          environment:
+            AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+            AKIDB_WORKSPACE: "{{ akidb_knowledge_workspace }}"
+          changed_when: false
+          register: upgraded_replica_ready
+          retries: 30
+          delay: 3
+          until: upgraded_replica_ready.rc == 0
+
+        - name: Re-admit upgraded replica
+          ansible.builtin.command:
+            argv:
+              - "{{ ax_gateway_install_root }}/current/bin/node"
+              - "{{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js"
+              - knowledge-control
+              - --postgres-ca
+              - "{{ ax_gateway_config_root }}/tls/ca.crt"
+              - --postgres-server-name
+              - "{{ ax_knowledge_postgres_server_name }}"
+              - drain
+              - --workspace
+              - "{{ akidb_knowledge_workspace }}"
+              - --collection
+              - "{{ akidb_knowledge_collection }}"
+              - --replica
+              - "{{ akidb_knowledge_replica_id }}"
+              - --clear
+              - --actor
+              - ansible-rolling-upgrade
+          environment:
+            AX_KNOWLEDGE_POSTGRES_URL: "{{ ax_knowledge_postgres_url }}"
+          delegate_to: "{{ groups['ax_knowledge_gateways'][0] }}"
+          become: true
+          become_user: "{{ ax_gateway_user }}"
+          changed_when: true
+          no_log: true
+      rescue:
+        - name: Leave failed replica drained and stop the rollout
+          ansible.builtin.fail:
+            msg: >-
+              {{ inventory_hostname }} failed its upgrade/readiness gate and
+              remains drained. Repair or roll it back before continuing.
+
+- import_playbook: knowledge-verify.yml

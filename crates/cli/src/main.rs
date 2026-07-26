@@ -11,7 +11,7 @@ use akidb_proto::HealthRequest;
 use akidb_storage::RocksDbBackend;
 use serde_json::json;
 use tonic::metadata::{Ascii, MetadataValue};
-use tonic::transport::Endpoint;
+use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tonic::Request;
 
 /// AkiDB command line interface.
@@ -60,6 +60,14 @@ struct HealthArgs {
     /// Connection and RPC timeout.
     #[arg(long, default_value_t = 5)]
     timeout_seconds: u64,
+
+    /// PEM CA used to verify a TLS-enabled AkiDB server.
+    #[arg(long)]
+    tls_ca: Option<PathBuf>,
+
+    /// Certificate DNS name override (defaults to the endpoint host).
+    #[arg(long)]
+    tls_domain: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -167,15 +175,31 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_health(args: HealthArgs) -> anyhow::Result<()> {
+    let tls_enabled = args.server.starts_with("https://") || args.tls_ca.is_some();
     let endpoint = if args.server.starts_with("http://") || args.server.starts_with("https://") {
         args.server.clone()
+    } else if tls_enabled {
+        format!("https://{}", args.server)
     } else {
         format!("http://{}", args.server)
     };
     let timeout = Duration::from_secs(args.timeout_seconds);
-    let channel = Endpoint::from_shared(endpoint)?
+    let mut endpoint = Endpoint::from_shared(endpoint)?
         .connect_timeout(timeout)
-        .timeout(timeout)
+        .timeout(timeout);
+    if tls_enabled {
+        let domain = args
+            .tls_domain
+            .clone()
+            .or_else(|| endpoint.uri().host().map(str::to_string))
+            .ok_or_else(|| anyhow::anyhow!("TLS endpoint has no certificate domain"))?;
+        let mut tls = ClientTlsConfig::new().domain_name(domain);
+        if let Some(ca_path) = args.tls_ca {
+            tls = tls.ca_certificate(Certificate::from_pem(std::fs::read(ca_path)?));
+        }
+        endpoint = endpoint.tls_config(tls)?;
+    }
+    let channel = endpoint
         .connect()
         .await?;
     let mut client = AkidbClient::new(channel);

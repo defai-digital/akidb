@@ -14,6 +14,7 @@ pub use error::{GraphError, GraphResult};
 pub use model::{
     DeleteNodeResult, Direction, EdgeKind, GraphEdge, GraphEdgeId, GraphMutationBatch,
     GraphNeighbor, GraphNode, GraphNodeId, GraphPath, GraphStats, NodeKind, RelatedChunk,
+    RelatedChunkTrace,
 };
 pub use native::NativeGraphIndex;
 pub use query::{

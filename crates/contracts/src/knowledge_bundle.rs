@@ -10,8 +10,8 @@ use crate::error::{ContractResult, ContractViolation, ContractViolationKind};
 use crate::knowledge::{
     deserialize_present_value, validate_identifier, validate_nonempty_text,
     validate_safe_json_integer, validate_schema_version, validate_sha256, validate_timestamp,
-    violation, KnowledgeGenerationManifest, KnowledgeScope, MAX_EMBEDDING_DIMENSIONS,
-    MAX_GRAPH_SCHEMA_BYTES, MAX_ID_BYTES, MAX_MODEL_ID_BYTES,
+    violation, KnowledgeGenerationManifest, KnowledgeMutation, KnowledgeOperation, KnowledgeScope,
+    MAX_EMBEDDING_DIMENSIONS, MAX_GRAPH_SCHEMA_BYTES, MAX_ID_BYTES, MAX_MODEL_ID_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -25,6 +25,8 @@ const MAX_CHUNK_TEXT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTEXT_HEADINGS_BYTES: usize = 64 * 1024;
 const MAX_JSON_PROPERTIES_BYTES: usize = 1024 * 1024;
 const MAX_EVIDENCE_CHUNKS: usize = 64;
+const MAX_MUTATION_GRAPH_NODES: usize = 4_096;
+const MAX_MUTATION_GRAPH_EDGES: usize = 16_384;
 
 /// Header that must be the first line of a knowledge bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,6 +373,172 @@ impl KnowledgeBundleEdge {
     }
 }
 
+/// Complete logical payload for one immutable upsert mutation object.
+///
+/// A payload replaces one visible chunk projection and may upsert the graph
+/// nodes and evidence-bearing edges derived from that chunk. Every edge must
+/// cite the mutated chunk, which makes a later delete deterministic without
+/// requiring an unbounded reverse provenance scan outside the local graph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KnowledgeMutationPayload {
+    pub schema_version: u32,
+    pub workspace_id: String,
+    pub collection: String,
+    pub generation_id: String,
+    pub mutation_id: String,
+    pub sequence: u64,
+    pub record: KnowledgeBundleRecord,
+    pub nodes: Vec<KnowledgeBundleNode>,
+    pub edges: Vec<KnowledgeBundleEdge>,
+}
+
+impl KnowledgeMutationPayload {
+    pub fn validate_against(
+        &self,
+        mutation: &KnowledgeMutation,
+        manifest: &KnowledgeGenerationManifest,
+    ) -> ContractResult<()> {
+        validate_schema_version(self.schema_version)?;
+        mutation.validate()?;
+        manifest.validate()?;
+        if mutation.operation != KnowledgeOperation::Upsert {
+            return Err(violation(
+                "operation",
+                "mutation payloads may only be used by upsert operations",
+                ContractViolationKind::InvalidFormat,
+            ));
+        }
+        for (field, actual, expected) in [
+            (
+                "workspace_id",
+                self.workspace_id.as_str(),
+                mutation.workspace_id.as_str(),
+            ),
+            (
+                "collection",
+                self.collection.as_str(),
+                mutation.collection.as_str(),
+            ),
+            (
+                "generation_id",
+                self.generation_id.as_str(),
+                mutation.generation_id.as_str(),
+            ),
+            (
+                "mutation_id",
+                self.mutation_id.as_str(),
+                mutation.mutation_id.as_str(),
+            ),
+        ] {
+            require_equal(field, actual, expected)?;
+        }
+        if mutation.scope() != manifest.scope() || mutation.generation_id != manifest.generation_id
+        {
+            return Err(violation(
+                "generation_id",
+                "mutation identity does not match the generation manifest",
+                ContractViolationKind::InvalidFormat,
+            ));
+        }
+        if self.sequence != mutation.sequence {
+            return Err(mismatch("sequence", self.sequence, mutation.sequence));
+        }
+        if self.record.chunk_id != mutation.chunk_id {
+            return Err(violation(
+                "record.chunk_id",
+                "record chunk_id does not match the mutation",
+                ContractViolationKind::InvalidFormat,
+            ));
+        }
+
+        let header = KnowledgeBundleHeader {
+            schema_version: manifest.schema_version,
+            workspace_id: manifest.workspace_id.clone(),
+            collection: manifest.collection.clone(),
+            generation_id: manifest.generation_id.clone(),
+            embedding_model_id: manifest.embedding_model_id.clone(),
+            embedding_dimensions: manifest.embedding_dimensions,
+            graph_schema_version: manifest.graph_schema_version.clone(),
+            base_sequence: manifest.base_sequence,
+            record_count: 1,
+            node_count: self.nodes.len() as u64,
+            edge_count: self.edges.len() as u64,
+        };
+        self.record.validate(&header)?;
+
+        if self.nodes.len() > MAX_MUTATION_GRAPH_NODES {
+            return Err(ContractViolation::exceeds_maximum(
+                "nodes",
+                self.nodes.len(),
+                MAX_MUTATION_GRAPH_NODES,
+            ));
+        }
+        if self.edges.len() > MAX_MUTATION_GRAPH_EDGES {
+            return Err(ContractViolation::exceeds_maximum(
+                "edges",
+                self.edges.len(),
+                MAX_MUTATION_GRAPH_EDGES,
+            ));
+        }
+        let mut previous_node: Option<&str> = None;
+        let mut chunk_node_count = 0_usize;
+        for node in &self.nodes {
+            node.validate()?;
+            if previous_node.is_some_and(|previous| previous >= node.node_id.as_str()) {
+                return Err(violation(
+                    "nodes",
+                    "mutation nodes must be strictly sorted and unique by node_id",
+                    ContractViolationKind::InvalidFormat,
+                ));
+            }
+            previous_node = Some(&node.node_id);
+            if node.kind == KnowledgeNodeKind::Chunk {
+                if node.node_id != mutation.chunk_id {
+                    return Err(violation(
+                        "nodes",
+                        "a mutation payload cannot replace another chunk node",
+                        ContractViolationKind::InvalidFormat,
+                    ));
+                }
+                chunk_node_count += 1;
+            }
+        }
+        if chunk_node_count != 1 {
+            return Err(violation(
+                "nodes",
+                "an upsert payload requires exactly one matching chunk node",
+                ContractViolationKind::InvalidFormat,
+            ));
+        }
+
+        let mut previous_edge: Option<&str> = None;
+        for edge in &self.edges {
+            edge.validate()?;
+            if previous_edge.is_some_and(|previous| previous >= edge.edge_id.as_str()) {
+                return Err(violation(
+                    "edges",
+                    "mutation edges must be strictly sorted and unique by edge_id",
+                    ContractViolationKind::InvalidFormat,
+                ));
+            }
+            previous_edge = Some(&edge.edge_id);
+            if edge
+                .evidence_chunk_ids
+                .binary_search(&mutation.chunk_id)
+                .is_err()
+            {
+                return Err(violation(
+                    "edges.evidence_chunk_ids",
+                    "every mutation edge must cite the mutated chunk",
+                    ContractViolationKind::InvalidFormat,
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One line in the ordered NDJSON generation stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "entry_type", rename_all = "snake_case", deny_unknown_fields)]
@@ -601,6 +769,50 @@ mod tests {
         }
     }
 
+    fn mutation() -> KnowledgeMutation {
+        KnowledgeMutation {
+            schema_version: KNOWLEDGE_SCHEMA_VERSION,
+            mutation_id: "mutation-a".to_string(),
+            workspace_id: "workspace-a".to_string(),
+            collection: "knowledge".to_string(),
+            generation_id: "generation-a".to_string(),
+            sequence: 11,
+            operation: KnowledgeOperation::Upsert,
+            chunk_id: "chunk-a".to_string(),
+            payload: Some(crate::ImmutableObjectReference {
+                uri: "s3://knowledge/mutations/mutation-a.json".to_string(),
+                sha256: DIGEST.to_string(),
+                size_bytes: 1_024,
+            }),
+            created_at_ms: 1_784_995_200_001,
+        }
+    }
+
+    fn mutation_payload() -> KnowledgeMutationPayload {
+        KnowledgeMutationPayload {
+            schema_version: KNOWLEDGE_SCHEMA_VERSION,
+            workspace_id: "workspace-a".to_string(),
+            collection: "knowledge".to_string(),
+            generation_id: "generation-a".to_string(),
+            mutation_id: "mutation-a".to_string(),
+            sequence: 11,
+            record: record(),
+            nodes: vec![
+                KnowledgeBundleNode {
+                    node_id: "chunk-a".to_string(),
+                    kind: KnowledgeNodeKind::Chunk,
+                    properties: Map::new(),
+                },
+                KnowledgeBundleNode {
+                    node_id: "entity-a".to_string(),
+                    kind: KnowledgeNodeKind::Entity,
+                    properties: Map::new(),
+                },
+            ],
+            edges: vec![edge()],
+        }
+    }
+
     #[test]
     fn header_and_record_match_manifest() {
         header().validate_against(&manifest()).unwrap();
@@ -644,5 +856,56 @@ mod tests {
         let mut explicit_null = value;
         explicit_null["record"]["context_headings"] = Value::Null;
         assert!(serde_json::from_value::<KnowledgeBundleEntry>(explicit_null).is_err());
+    }
+
+    #[test]
+    fn mutation_payload_is_bound_to_exact_ordered_chunk_projection() {
+        mutation_payload()
+            .validate_against(&mutation(), &manifest())
+            .unwrap();
+
+        let mut wrong_evidence = mutation_payload();
+        wrong_evidence.edges[0].evidence_chunk_ids = vec!["chunk-other".to_string()];
+        assert_eq!(
+            wrong_evidence
+                .validate_against(&mutation(), &manifest())
+                .unwrap_err()
+                .field,
+            "edges.evidence_chunk_ids"
+        );
+
+        let mut unsorted = mutation_payload();
+        unsorted.nodes.swap(0, 1);
+        assert_eq!(
+            unsorted
+                .validate_against(&mutation(), &manifest())
+                .unwrap_err()
+                .field,
+            "nodes"
+        );
+    }
+
+    #[test]
+    fn shared_mutation_payload_fixture_matches_manifest_and_contract() {
+        let manifest: KnowledgeGenerationManifest = serde_json::from_str(include_str!(
+            "../../../contracts/fixtures/knowledge/v1/valid/bundle-manifest.json"
+        ))
+        .unwrap();
+        let mutation: KnowledgeMutation = serde_json::from_str(include_str!(
+            "../../../contracts/fixtures/knowledge/v1/valid/mutation-upsert-bundle.json"
+        ))
+        .unwrap();
+        let payload: KnowledgeMutationPayload = serde_json::from_str(include_str!(
+            "../../../contracts/fixtures/knowledge/v1/valid/mutation-payload-upsert.json"
+        ))
+        .unwrap();
+        payload.validate_against(&mutation, &manifest).unwrap();
+        assert_eq!(
+            mutation.payload.as_ref().unwrap().size_bytes,
+            include_bytes!(
+                "../../../contracts/fixtures/knowledge/v1/valid/mutation-payload-upsert.json"
+            )
+            .len() as u64
+        );
     }
 }

@@ -68,8 +68,6 @@ jobs:
         include:
           - name: Ubuntu 24.04 AMD64
             os: ubuntu-24.04
-          - name: Ubuntu 24.04 ARM64
-            os: ubuntu-24.04-arm
           - name: macOS 26 ARM64
             os: macos-26
     steps:
@@ -169,6 +167,56 @@ jobs:
         env:
           CARGO_TARGET_DIR: target
         run: ./scripts/test-generation-serving-minio.sh
+
+  # Phase 3 correctness gate: three independent blank replica volumes rebuild
+  # the same bundle + mutation tail through the PostgreSQL authority.
+  replica-convergence:
+    name: PostgreSQL replica convergence (Ubuntu 24.04 AMD64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: akidb_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: phase3-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d akidb_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            libclang-dev \
+            libssl-dev \
+            pkg-config \
+            protobuf-compiler
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run three-replica convergence and replacement gate
+        env:
+          AKIDB_KNOWLEDGE_POSTGRES_URL: >-
+            postgres://postgres:phase3-ci-only@127.0.0.1:5432/akidb_test
+        run: >-
+          cargo test -p akidb-grpc --features generation-postgres
+          three_blank_replicas_converge_rebuild_and_isolate_a_gap
+          -- --ignored --nocapture
 
   # Security audit
   security:

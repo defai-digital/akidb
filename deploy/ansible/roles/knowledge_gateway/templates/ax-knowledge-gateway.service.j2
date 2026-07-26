@@ -1,0 +1,30 @@
+[Unit]
+Description=AX generation-aware knowledge retrieval gateway
+After=network-online.target wg-quick@{{ akidb_wireguard_interface }}.service
+Wants=network-online.target
+Requires=wg-quick@{{ akidb_wireguard_interface }}.service
+
+[Service]
+Type=simple
+User={{ ax_gateway_user }}
+Group={{ ax_gateway_group }}
+UMask=0027
+EnvironmentFile={{ ax_gateway_config_root }}/gateway.env
+ExecStart={{ ax_gateway_install_root }}/current/bin/node {{ ax_gateway_install_root }}/current/app/dist/knowledge-gateway.js knowledge-gateway --workspace {{ akidb_knowledge_workspace }} --collection {{ akidb_knowledge_collection }} --host {{ akidb_overlay_address }} --port {{ akidb_knowledge_gateway_port }} --postgres-ca {{ ax_gateway_config_root }}/tls/ca.crt --postgres-server-name {{ ax_knowledge_postgres_server_name }} --akidb-ca {{ ax_gateway_config_root }}/tls/ca.crt --tls-cert {{ ax_gateway_config_root }}/tls/server.crt --tls-key {{ ax_gateway_config_root }}/tls/server.key
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=60
+TimeoutStopSec=30
+LimitNOFILE=262144
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadOnlyPaths={{ ax_gateway_install_root }} {{ ax_gateway_config_root }}
+
+[Install]
+WantedBy=multi-user.target

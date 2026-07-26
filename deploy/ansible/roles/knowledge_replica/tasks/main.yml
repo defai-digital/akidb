@@ -1,0 +1,167 @@
+---
+- name: Require stable replica identity and failure domain
+  ansible.builtin.assert:
+    that:
+      - akidb_knowledge_replica_id is defined
+      - akidb_knowledge_replica_id | length > 0
+      - akidb_knowledge_failure_domain is defined
+      - akidb_knowledge_failure_domain | length > 0
+
+- name: Create immutable-generation data directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ akidb_user }}"
+    group: "{{ akidb_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ akidb_data_root }}/generations"
+      mode: "0750"
+    - path: "{{ akidb_data_root }}/generation-control"
+      mode: "0750"
+    - path: "{{ akidb_data_root }}/generation-downloads"
+      mode: "0700"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Create replica TLS directory
+  ansible.builtin.file:
+    path: "{{ akidb_config_root }}/tls"
+    state: directory
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0750"
+
+- name: Install trusted knowledge-cell CA
+  ansible.builtin.copy:
+    src: "{{ akidb_knowledge_pki_dir }}/ca.crt"
+    dest: "{{ akidb_config_root }}/tls/ca.crt"
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0644"
+  notify: Restart AkiDB knowledge replica
+
+- name: Install knowledge-cell CA into the host trust store
+  ansible.builtin.copy:
+    src: "{{ akidb_knowledge_pki_dir }}/ca.crt"
+    dest: /usr/local/share/ca-certificates/akidb-knowledge-cell.crt
+    owner: root
+    group: root
+    mode: "0644"
+  register: akidb_knowledge_system_ca
+
+- name: Refresh host CA trust
+  ansible.builtin.command:
+    argv: [update-ca-certificates]
+  changed_when: true
+  when: akidb_knowledge_system_ca.changed
+
+- name: Install replica TLS certificate
+  ansible.builtin.copy:
+    src: "{{ akidb_knowledge_pki_dir }}/hosts/{{ inventory_hostname }}.crt"
+    dest: "{{ akidb_config_root }}/tls/server.crt"
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0644"
+  notify: Restart AkiDB knowledge replica
+
+- name: Install replica TLS private key
+  ansible.builtin.copy:
+    src: "{{ akidb_knowledge_pki_dir }}/hosts/{{ inventory_hostname }}.key"
+    dest: "{{ akidb_config_root }}/tls/server.key"
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart AkiDB knowledge replica
+
+- name: Install scoped AkiDB credentials
+  ansible.builtin.copy:
+    content: "{{ item.value }}\n"
+    dest: "{{ akidb_config_root }}/{{ item.file }}"
+    owner: "{{ akidb_user }}"
+    group: "{{ akidb_group }}"
+    mode: "0600"
+  loop:
+    - file: knowledge-read.token
+      value: "{{ akidb_knowledge_read_token }}"
+    - file: knowledge-control.token
+      value: "{{ akidb_knowledge_control_token }}"
+  loop_control:
+    label: "{{ item.file }}"
+  no_log: true
+  notify: Restart AkiDB knowledge replica
+
+- name: Install protected replica environment
+  ansible.builtin.copy:
+    content: >-
+      AKIDB_KNOWLEDGE_POSTGRES_URL="{{ ax_knowledge_postgres_url
+      | replace('\\', '\\\\') | replace('"', '\\"') }}"
+    dest: "{{ akidb_config_root }}/knowledge-replica.env"
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart AkiDB knowledge replica
+
+- name: Create protected versioned replica configuration directory
+  ansible.builtin.file:
+    path: "{{ akidb_config_root }}/releases/{{ akidb_knowledge_release_id }}"
+    state: directory
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0750"
+
+- name: Render versioned full-replica configuration
+  ansible.builtin.template:
+    src: akidb-knowledge.toml.j2
+    dest: "{{ akidb_config_root }}/releases/{{ akidb_knowledge_release_id }}/akidb-knowledge.toml"
+    owner: root
+    group: "{{ akidb_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart AkiDB knowledge replica
+
+- name: Activate full-replica configuration
+  ansible.builtin.file:
+    src: "{{ akidb_config_root }}/releases/{{ akidb_knowledge_release_id }}/akidb-knowledge.toml"
+    dest: "{{ akidb_config_root }}/akidb-knowledge.toml"
+    state: link
+    force: true
+  notify: Restart AkiDB knowledge replica
+
+- name: Activate immutable AkiDB release
+  ansible.builtin.file:
+    src: "{{ akidb_install_root }}/releases/{{ akidb_knowledge_release_id }}"
+    dest: "{{ akidb_install_root }}/current"
+    state: link
+    force: true
+  notify: Restart AkiDB knowledge replica
+
+- name: Install knowledge-replica systemd unit
+  ansible.builtin.template:
+    src: akidb-knowledge-replica.service.j2
+    dest: /etc/systemd/system/akidb-knowledge-replica.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart AkiDB knowledge replica
+
+- name: Start knowledge replica
+  ansible.builtin.systemd_service:
+    name: akidb-knowledge-replica
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending replica restart
+  ansible.builtin.meta: flush_handlers
+
+- name: Require the replica process to remain active
+  ansible.builtin.command:
+    argv: [systemctl, is-active, akidb-knowledge-replica.service]
+  changed_when: false
+  register: akidb_knowledge_replica_active
+  retries: 10
+  delay: 2
+  until: akidb_knowledge_replica_active.stdout | trim == 'active'

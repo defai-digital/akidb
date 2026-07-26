@@ -8,11 +8,28 @@ fi
 
 release_id="${1:-$(git rev-parse HEAD)}"
 output_dir="${2:-dist}"
+build_jobs="${AKIDB_BUILD_JOBS:-2}"
 
 if [[ ! "$release_id" =~ ^[A-Za-z0-9._-]{7,64}$ ]]; then
   echo "release id must be 7-64 characters from A-Z, a-z, 0-9, dot, underscore, or dash" >&2
   exit 1
 fi
+if [[ ! "$build_jobs" =~ ^[1-9][0-9]*$ ]]; then
+  echo "AKIDB_BUILD_JOBS must be a positive integer" >&2
+  exit 1
+fi
+
+# Bundled RocksDB is a memory-heavy C++ build. Pin the portable Clang path and
+# a conservative default job count so newer Ubuntu compiler baselines produce
+# the same artifact reliably on the 8-vCPU/32-GiB qualification profile.
+export CC="${CC:-clang}"
+export CXX="${CXX:-clang++}"
+export AKIDB_GIT_COMMIT="${AKIDB_GIT_COMMIT:-$(git rev-parse HEAD)}"
+# RocksDB 8.10 assumes fixed-width integer types are transitively included.
+# Clang on Ubuntu 26.04 no longer provides that accidental include for every
+# translation unit, so inject the standard header while the bundled dependency
+# remains pinned to this release.
+export CXXFLAGS="${CXXFLAGS:+${CXXFLAGS} }-include cstdint"
 
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
@@ -22,12 +39,14 @@ chmod 0755 "$staging_dir"
 
 if [[ "${AKIDB_SKIP_BUILD:-0}" != "1" ]]; then
   cargo build --locked --release \
+    --jobs "$build_jobs" \
     -p akidb-coordinator \
     -p akidb-cli \
     -p akidb-benchmark
   cargo build --locked --release \
+    --jobs "$build_jobs" \
     -p akidb-server \
-    --features generation-s3
+    --features generation-postgres
 fi
 
 install -d "$staging_dir/bin"
@@ -64,7 +83,8 @@ printf '%s\n' \
   "  \"release_id\": \"$release_id\"," \
   "  \"version\": \"$cargo_version\"," \
   '  "target": "x86_64-unknown-linux-gnu",' \
-  '  "akidb_server_features": ["generation-s3"],' \
+  '  "akidb_server_features": ["generation-postgres"],' \
+  "  \"build_jobs\": $build_jobs," \
   "  \"source_date_epoch\": $source_epoch" \
   '}' >"$staging_dir/manifest.json"
 

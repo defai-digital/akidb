@@ -32,6 +32,7 @@ akidb_wireguard_interface: wg0
 akidb_wireguard_port: 51820
 akidb_manage_wireguard: true
 akidb_manage_ufw: true
+akidb_manage_overlay_hosts: true
 akidb_ssh_port: 22
 
 akidb_index_type: HNSW
@@ -53,3 +54,77 @@ akidb_coordinator_pool_size: 4
 akidb_coordinator_max_concurrent: 1000
 akidb_coordinator_rate_limit: 0
 akidb_coordinator_max_queue_depth: 5000
+
+# PostgreSQL-authoritative full-replica knowledge cell. These values are
+# separate from the legacy independent-shard profile above.
+akidb_knowledge_workspace: "{{ lookup('env', 'AKIDB_KNOWLEDGE_WORKSPACE') | default('qualification', true) }}"
+akidb_knowledge_collection: "{{ lookup('env', 'AKIDB_KNOWLEDGE_COLLECTION') | default('knowledge', true) }}"
+akidb_knowledge_server_port: 50061
+akidb_knowledge_gateway_port: 8443
+akidb_knowledge_metrics_port: 9091
+akidb_knowledge_min_ready_replicas: 2
+akidb_knowledge_min_failure_domains: 2
+akidb_knowledge_heartbeat_ttl_ms: 15000
+
+akidb_knowledge_release_id: "{{ lookup('env', 'AKIDB_RELEASE_ID') }}"
+akidb_knowledge_artifact_path: "{{ lookup('env', 'AKIDB_ARTIFACT_PATH') }}"
+akidb_knowledge_artifact_sha256: "{{ lookup('env', 'AKIDB_ARTIFACT_SHA256') }}"
+ax_gateway_release_id: "{{ lookup('env', 'AX_GATEWAY_RELEASE_ID') }}"
+ax_gateway_artifact_path: "{{ lookup('env', 'AX_GATEWAY_ARTIFACT_PATH') }}"
+ax_gateway_artifact_sha256: "{{ lookup('env', 'AX_GATEWAY_ARTIFACT_SHA256') }}"
+
+ax_gateway_user: ax-knowledge
+ax_gateway_group: ax-knowledge
+ax_gateway_install_root: /opt/ax-knowledge-gateway
+ax_gateway_config_root: /etc/ax-knowledge-gateway
+
+# Secrets must come from an Ansible vault or environment in the qualification
+# lab. They are never written to inventory or immutable release archives.
+akidb_knowledge_read_token: "{{ lookup('env', 'AKIDB_AUTH_TOKEN') }}"
+akidb_knowledge_control_token: "{{ lookup('env', 'AKIDB_GENERATION_CONTROL_TOKEN') }}"
+ax_knowledge_gateway_token: "{{ lookup('env', 'AX_KNOWLEDGE_GATEWAY_TOKEN') }}"
+ax_knowledge_postgres_url: "{{ lookup('env', 'AX_KNOWLEDGE_POSTGRES_URL') }}"
+ax_knowledge_postgres_server_name: "{{ groups['akidb_knowledge_dependencies'][0] }}"
+akidb_knowledge_minio_root_access_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_ROOT_ACCESS_KEY') }}"
+akidb_knowledge_minio_root_secret_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_ROOT_SECRET_KEY') }}"
+akidb_knowledge_minio_access_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_READ_ACCESS_KEY') }}"
+akidb_knowledge_minio_secret_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_READ_SECRET_KEY') }}"
+ax_knowledge_minio_publish_access_key: "{{ lookup('env', 'AX_KNOWLEDGE_MINIO_PUBLISH_ACCESS_KEY') }}"
+ax_knowledge_minio_publish_secret_key: "{{ lookup('env', 'AX_KNOWLEDGE_MINIO_PUBLISH_SECRET_KEY') }}"
+akidb_knowledge_minio_bucket: knowledge-generations
+
+# A lab CA can be created by scripts/generate-knowledge-cell-pki.sh. Production
+# deployments supply certificates from their established PKI.
+akidb_knowledge_pki_dir: "{{ lookup('env', 'AKIDB_KNOWLEDGE_PKI_DIR') }}"
+
+# Admission floor includes room for the active generation and one shadow build.
+# Inventory may raise this for the 1M/5M qualification tiers.
+akidb_knowledge_min_available_disk_mb: 51200
+akidb_knowledge_max_vectors: 10000000
+akidb_knowledge_max_graph_nodes: 20000000
+akidb_knowledge_max_graph_edges: 50000000
+akidb_knowledge_minimum_free_bytes_after_build: 26843545600
+akidb_knowledge_estimated_build_overhead_percent: 200
+akidb_knowledge_poll_interval_ms: 1000
+akidb_knowledge_heartbeat_interval_ms: 5000
+akidb_knowledge_index_format_version: akidb-generation-v1
+akidb_knowledge_graph_schema_versions:
+  - ax.knowledge-graph.v1
+akidb_knowledge_generation_gc_enabled: true
+akidb_knowledge_generation_gc_interval_ms: 3600000
+akidb_knowledge_generation_gc_minimum_age_ms: 86400000
+akidb_knowledge_generation_gc_dry_run: false
+
+# Lab dependency host. Production normally points the same replica/gateway
+# roles at managed HA PostgreSQL and durable S3/MinIO.
+akidb_knowledge_manage_lab_dependencies: false
+akidb_knowledge_postgres_database: ax_knowledge
+akidb_knowledge_postgres_user: ax_knowledge
+akidb_knowledge_postgres_password: "{{ lookup('env', 'AKIDB_KNOWLEDGE_POSTGRES_PASSWORD') }}"
+akidb_knowledge_postgres_port: 5432
+akidb_knowledge_minio_port: 9000
+akidb_knowledge_minio_console_port: 9001
+akidb_knowledge_minio_url: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_URL') }}"
+akidb_knowledge_minio_sha256: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_SHA256') }}"
+akidb_knowledge_mc_url: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MC_URL') }}"
+akidb_knowledge_mc_sha256: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MC_SHA256') }}"

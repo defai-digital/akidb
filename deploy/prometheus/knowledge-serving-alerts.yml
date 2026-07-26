@@ -1,0 +1,88 @@
+groups:
+  - name: akidb-knowledge-serving
+    interval: 30s
+    rules:
+      - alert: AkiDBKnowledgeReplicaQuorumLost
+        expr: min(akidb_gateway_eligible_replicas) < 2
+        for: 2m
+        labels:
+          severity: critical
+          service: akidb-knowledge
+        annotations:
+          summary: Fewer than two knowledge replicas are eligible
+          runbook: docs/runbooks/knowledge-serving.md#replica-quorum
+
+      - alert: AkiDBKnowledgeRouteFailureBudgetBurn
+        expr: |
+          sum(rate(akidb_gateway_route_failures_total[5m]))
+          /
+          clamp_min(sum(rate(akidb_gateway_requests_total[5m])), 0.001)
+          > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          service: akidb-knowledge
+        annotations:
+          summary: Knowledge routing failures exceed the 1% short-window budget
+          runbook: docs/runbooks/knowledge-serving.md#gateway-failover
+
+      - alert: AkiDBKnowledgeEvidenceMismatch
+        expr: increase(akidb_gateway_evidence_mismatches_total[10m]) > 0
+        labels:
+          severity: critical
+          service: akidb-knowledge
+        annotations:
+          summary: A replica returned generation evidence that violated the route barrier
+          runbook: docs/runbooks/knowledge-serving.md#evidence-mismatch
+
+      - alert: AkiDBKnowledgeControlCacheStale
+        expr: max(akidb_gateway_control_age_seconds) > 30
+        for: 5m
+        labels:
+          severity: warning
+          service: akidb-knowledge
+        annotations:
+          summary: Gateways have used a stale PostgreSQL route snapshot for over 30 seconds
+          runbook: docs/runbooks/knowledge-serving.md#control-plane-outage
+
+      - alert: AkiDBKnowledgeReplicaLag
+        expr: max by (replica_id) (akidb_replica_lag) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: akidb-knowledge
+        annotations:
+          summary: A knowledge replica is behind the authoritative sequence
+          runbook: docs/runbooks/knowledge-serving.md#replica-lag
+
+      - alert: AkiDBKnowledgeDiskAdmissionRejected
+        expr: increase(akidb_generation_disk_admission_rejections_total[15m]) > 0
+        labels:
+          severity: critical
+          service: akidb-knowledge
+        annotations:
+          summary: A generation build was rejected before exhausting disk
+          runbook: docs/runbooks/knowledge-serving.md#disk-pressure
+
+      - alert: AkiDBKnowledgeBuildFailures
+        expr: increase(akidb_generation_verify_failures_total[15m]) > 0
+        labels:
+          severity: warning
+          service: akidb-knowledge
+        annotations:
+          summary: A generation failed materialization or verification
+          runbook: docs/runbooks/knowledge-serving.md#generation-build-failure
+
+      - alert: AkiDBKnowledgeRouteLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(akidb_gateway_route_latency_seconds_bucket[5m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: akidb-knowledge
+        annotations:
+          summary: Knowledge gateway p95 route latency exceeds 500 ms
+          runbook: docs/runbooks/knowledge-serving.md#latency

@@ -41,6 +41,27 @@ impl<S: StorageBackend> NativeGraphIndex<S> {
         Ok(serde_json::from_slice(bytes)?)
     }
 
+    /// Return every canonical node in deterministic key order.
+    ///
+    /// Generation-revision validation uses this to compute a logical digest
+    /// without hashing RocksDB's engine-specific files or secondary indexes.
+    pub fn all_nodes(&self) -> GraphResult<Vec<GraphNode>> {
+        self.storage
+            .scan_prefix_limited(keys::node_prefix(), None)?
+            .into_iter()
+            .map(|(_, value)| Self::deserialize::<GraphNode>(&value))
+            .collect()
+    }
+
+    /// Return every canonical edge in deterministic key order.
+    pub fn all_edges(&self) -> GraphResult<Vec<GraphEdge>> {
+        self.storage
+            .scan_prefix_limited(keys::edge_prefix(), None)?
+            .into_iter()
+            .map(|(_, value)| Self::deserialize::<GraphEdge>(&value))
+            .collect()
+    }
+
     fn edge_refs_for_prefix(
         &self,
         prefix: &[u8],

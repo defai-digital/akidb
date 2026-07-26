@@ -1,0 +1,98 @@
+---
+- name: Create AX gateway immutable-release roots
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ ax_gateway_install_root }}"
+    - "{{ ax_gateway_install_root }}/releases"
+    - "{{ ax_gateway_install_root }}/.artifacts"
+
+- name: Inspect installed AX gateway release marker
+  ansible.builtin.stat:
+    path: "{{ ax_gateway_install_root }}/releases/{{ ax_gateway_release_id }}/.artifact.sha256"
+  register: ax_gateway_release_marker
+
+- name: Read installed AX gateway release marker
+  ansible.builtin.slurp:
+    path: "{{ ax_gateway_install_root }}/releases/{{ ax_gateway_release_id }}/.artifact.sha256"
+  register: ax_gateway_release_marker_content
+  when: ax_gateway_release_marker.stat.exists
+
+- name: Reject a reused gateway release id with different content
+  ansible.builtin.assert:
+    that:
+      - (ax_gateway_release_marker_content.content | b64decode | trim) == ax_gateway_artifact_sha256
+    fail_msg: >-
+      AX gateway release {{ ax_gateway_release_id }} already has a different
+      checksum and cannot be overwritten.
+  when: ax_gateway_release_marker.stat.exists
+
+- name: Create immutable AX gateway release directory
+  ansible.builtin.file:
+    path: "{{ ax_gateway_install_root }}/releases/{{ ax_gateway_release_id }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not ax_gateway_release_marker.stat.exists
+
+- name: Upload checksum-pinned AX gateway artifact
+  ansible.builtin.copy:
+    src: "{{ ax_gateway_artifact_path }}"
+    dest: "{{ ax_gateway_install_root }}/.artifacts/ax-gateway-{{ ax_gateway_release_id }}.tar.gz"
+    owner: root
+    group: root
+    mode: "0644"
+  when: not ax_gateway_release_marker.stat.exists
+
+- name: Verify uploaded AX gateway artifact checksum
+  ansible.builtin.stat:
+    path: "{{ ax_gateway_install_root }}/.artifacts/ax-gateway-{{ ax_gateway_release_id }}.tar.gz"
+    checksum_algorithm: sha256
+  register: ax_gateway_remote_artifact
+  when: not ax_gateway_release_marker.stat.exists
+
+- name: Require AX gateway checksum match
+  ansible.builtin.assert:
+    that:
+      - ax_gateway_remote_artifact.stat.checksum == ax_gateway_artifact_sha256 | lower
+  when: not ax_gateway_release_marker.stat.exists
+
+- name: Expand immutable AX gateway artifact
+  ansible.builtin.unarchive:
+    src: "{{ ax_gateway_install_root }}/.artifacts/ax-gateway-{{ ax_gateway_release_id }}.tar.gz"
+    dest: "{{ ax_gateway_install_root }}/releases/{{ ax_gateway_release_id }}"
+    remote_src: true
+    owner: root
+    group: root
+  when: not ax_gateway_release_marker.stat.exists
+
+- name: Inspect AX gateway runtime and entry point
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ ax_gateway_install_root }}/releases/{{ ax_gateway_release_id }}/bin/node"
+    - "{{ ax_gateway_install_root }}/releases/{{ ax_gateway_release_id }}/app/dist/knowledge-gateway.js"
+  register: ax_gateway_release_files
+
+- name: Require executable AX gateway release files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.executable
+  loop: "{{ ax_gateway_release_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Seal AX gateway release with its checksum
+  ansible.builtin.copy:
+    content: "{{ ax_gateway_artifact_sha256 }}\n"
+    dest: "{{ ax_gateway_install_root }}/releases/{{ ax_gateway_release_id }}/.artifact.sha256"
+    owner: root
+    group: root
+    mode: "0444"
+  when: not ax_gateway_release_marker.stat.exists

@@ -1,15 +1,18 @@
 # AkiDB Security Review
 
-**Version:** 1.1
-**Date:** 2026-07-05
+**Version:** 1.2
+**Date:** 2026-07-25
 **Status:** Baseline Review (partial refresh)
 **Classification:** Public baseline
 
 > **Notice:** This review was originally written in January 2026 when the vector
-> index was FAISS-based. The codebase has since migrated to HNSW (usearch) and
-> ax-engine embeddings. Several recommendation code samples are aspirational
-> templates, not current implementations. Treat open items as a backlog, not as
-> a current-state audit.
+> index was FAISS-based. The codebase has since migrated to HNSW (usearch),
+> bearer-authenticated gRPC, and ax-engine embeddings. This refresh corrects
+> the service-boundary and transport status, but several recommendation code
+> samples remain aspirational templates. Treat open items as a backlog, not as
+> a complete current-state audit. The immutable replica threat boundary is
+> summarized in the [knowledge-serving
+> architecture](../architecture/knowledge-serving.md).
 
 ## Executive Summary
 
@@ -26,6 +29,8 @@ yet been refreshed against current code.
 ### In Scope
 
 - AkiDB core services (coordinator, shards)
+- Immutable generation materializer and privileged control API
+- PostgreSQL replica worker and AX read-gateway boundary
 - Ingestion orchestrator (Rust)
 - Document parser service (Python)
 - Upload gateway (Python)
@@ -40,6 +45,7 @@ yet been refreshed against current code.
 - Physical security of Mac hardware
 - Client application security
 - Third-party library vulnerabilities (covered by Dependabot)
+- Operation of an external managed PostgreSQL HA service
 
 ## Security Assessment
 
@@ -49,7 +55,10 @@ yet been refreshed against current code.
 
 | Component | Authentication | Authorization |
 |-----------|----------------|---------------|
-| AkiDB gRPC | None | None |
+| AkiDB gRPC | Bearer token from environment or mode-0600 file; optional only on loopback | Workspace filtering, but credentials are not yet bound to an allowlist of workspaces |
+| Generation Management gRPC | Separate required bearer token | Workspace/collection validation plus checksum and compare-and-swap controls |
+| AX knowledge gateway | Separate required bearer token over HTTPS | One configured workspace/collection and generation/checkpoint barriers |
+| PostgreSQL replica control | Database credential from a named environment variable; verified TLS by default | External least-privilege database role is required |
 | Upload Gateway | None | None |
 | MinIO | Username/Password | IAM Policies |
 | NATS | None | None |
@@ -60,20 +69,21 @@ yet been refreshed against current code.
 
 | Risk | Severity | Status |
 |------|----------|--------|
-| Unauthenticated gRPC access | High | Open |
+| Unauthenticated non-loopback AkiDB gRPC | High | Mitigated unless an operator explicitly selects `auth.mode = "disabled"` |
+| Bearer credential not bound to allowed workspace set | High | Open |
+| Built-in gRPC TLS lacks optional client-certificate identity | Medium | Server TLS implemented; mTLS remains open |
 | Unauthenticated upload endpoint | High | Open |
 | Default MinIO credentials | Critical | Mitigated |
 | No NATS authentication | Medium | Open |
 
 #### Recommendations
 
-1. **gRPC Authentication**
-   ```rust
-   // Implement mTLS for gRPC
-   let tls_config = ServerTlsConfig::new()
-       .identity(Identity::from_pem(cert, key))
-       .client_ca_root(ca_cert);
-   ```
+1. **AkiDB Service Identity**
+
+   Keep bearer authentication enabled, use built-in TLS, bind deployments to
+   the intended workspace, and keep coordinator, shard,
+   generation-management, and replica endpoints private. Add client
+   certificate identity if a deployment requires mTLS.
 
 2. **API Gateway with Auth**
    ```yaml
@@ -103,6 +113,9 @@ yet been refreshed against current code.
 |-----------|---------|------------|
 | Vectors | HNSW Index (usearch) | None |
 | Metadata | RocksDB | None |
+| Immutable generation projection | Local RocksDB/HNSW/BM25/graph paths | None; rely on encrypted host volume |
+| Generation bundle | MinIO | Server-side encryption is deployment policy |
+| Publication/checkpoint authority | PostgreSQL | Encryption is deployment policy |
 | Documents | MinIO | Server-side (optional) |
 | Ingestion state | SQLite | None |
 | Optional SQL metadata | SQLite/PostgreSQL | None |
@@ -111,8 +124,10 @@ yet been refreshed against current code.
 
 | Connection | Protocol | Encryption |
 |------------|----------|------------|
-| Client → Coordinator | gRPC | None (TLS optional) |
-| Coordinator → Shards | gRPC | None |
+| Client → AkiDB | gRPC | Built-in TLS; qualified knowledge cell also uses an encrypted private overlay |
+| Coordinator → Shards | gRPC | No TLS; qualified lab uses WireGuard |
+| Replica → PostgreSQL | PostgreSQL protocol | Verified TLS by default; plaintext restricted to loopback development |
+| Replica → MinIO | S3-compatible HTTPS | Configurable; TLS required for remote deployments |
 | Ingestion → NATS | TCP | None |
 | Ingestion → MinIO | HTTP | None |
 | Ingestion → Embedding | HTTP | None |
@@ -241,8 +256,8 @@ yet been refreshed against current code.
 |--------|---------|----------|
 | MinIO credentials | Environment file | Manual |
 | Grafana password | Environment file | Manual |
-| TLS certificates | Not implemented | N/A |
-| API keys | Not implemented | N/A |
+| TLS certificates | Restricted host files supplied by deployment PKI | External PKI rotation |
+| AkiDB/gateway bearer tokens | Restricted environment/token files | Manual or external secret manager |
 
 #### Recommendations
 
@@ -344,9 +359,9 @@ yet been refreshed against current code.
 
 | ID | Description | Mitigation | Status |
 |----|-------------|------------|--------|
-| SEC-002 | No gRPC authentication | Implement mTLS | Open |
+| SEC-002 | A generic bearer credential is not a multi-workspace allowlist | Use one scoped knowledge-cell deployment per workspace/collection; add credential allowlists before shared multi-tenant service | Mitigated for qualified cell; open for shared multi-tenant use |
 | SEC-003 | No upload authentication | Add API gateway | Open |
-| SEC-004 | No TLS on internal traffic | Enable TLS | Open |
+| SEC-004 | Legacy Compose/coordinator paths may use plaintext internal traffic | Keep those paths isolated; knowledge cell uses gRPC/HTTPS/PostgreSQL TLS plus WireGuard | Mitigated for qualified cell |
 
 ### Medium
 
@@ -362,6 +377,30 @@ yet been refreshed against current code.
 |----|-------------|------------|--------|
 | SEC-008 | Exposed metrics endpoints | Network segmentation | Open |
 | SEC-009 | No rate limiting | Add rate limiter | Open |
+
+## Knowledge-Cell Release Assessment
+
+The bounded Ubuntu AMD64 knowledge-cell profile has no accepted Critical or
+High blocker:
+
+- AkiDB gRPC, gateway HTTP, MinIO, and PostgreSQL links use verified TLS;
+- WireGuard and host firewall rules keep service listeners off public
+  interfaces;
+- read, generation-control, gateway, MinIO root, MinIO read-only, and MinIO
+  publisher credentials are distinct;
+- replicas receive read-only object access, while the publisher is limited to
+  the `ax-fabric/` prefix;
+- the cell is configured for one authenticated workspace/collection, and
+  traversal/routing never broadens that scope;
+- checksum-addressed immutable bundles, exact generation evidence, quorum
+  activation, and audit records protect the publication boundary;
+- services run as dedicated system users with systemd filesystem hardening.
+
+Production operators must still provide encrypted local volumes, managed HA
+PostgreSQL, durable HA object storage, PKI/secret rotation, and monitoring
+retention. The upload gateway, legacy coordinator, and Compose/NATS findings
+above are separate profiles and are not silently inherited into the qualified
+knowledge cell.
 
 ## Compliance Checklist
 

@@ -30,8 +30,8 @@ max_source_bytes = 104857600
 max_expanded_bytes = 536870912
 plan_ttl_seconds = 300
 
-# Phase 2 single-node immutable publication preview. This replaces the mutable
-# gRPC data path when enabled; it does not enable HA or multi-replica failover.
+# Immutable generation serving. Without replica_control this remains the
+# Phase 2 single-node preview; automatic client failover is a later phase.
 [generation_serving]
 enabled = false
 # Required and stable for the lifetime of the local data volume when enabled.
@@ -53,6 +53,28 @@ max_bundle_size_bytes = 53687091200
 max_vectors = 10000000
 max_graph_nodes = 20000000
 max_graph_edges = 50000000
+# Reject a generation before building if the estimated shadow would leave less
+# than this reserve. Qualification inventory should raise it for larger tiers.
+minimum_free_bytes_after_build = 1073741824
+estimated_build_overhead_percent = 200
+
+[generation_serving.replica_control]
+enabled = false
+# Database credentials are read only from this environment variable.
+postgres_url_env = "AKIDB_KNOWLEDGE_POSTGRES_URL"
+# require (production default) | disable (loopback-only development/tests)
+postgres_tls_mode = "require"
+# postgres_ca_certificate_path = "/etc/akidb/certs/postgres-ca.pem"
+endpoint = ""
+failure_domain = ""
+poll_interval_ms = 1000
+heartbeat_interval_ms = 5000
+index_format_version = "akidb-generation-v1"
+supported_graph_schema_versions = ["ax.knowledge-graph.v1"]
+generation_gc_enabled = false
+generation_gc_interval_ms = 3600000
+generation_gc_minimum_age_ms = 86400000
+generation_gc_dry_run = true
 
 [index]
 index_type = "HNSW"

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use akidb_common::config::{AclConfig, FilterSettings};
-use akidb_contracts::KnowledgeScope;
+use akidb_contracts::{KnowledgeMutation, KnowledgeScope};
 use akidb_faiss::{DistanceMetric, HnswIndex, VectorPrecision};
 use akidb_storage::{RocksDbBackend, ServingStateRecord};
 use parking_lot::Mutex;
@@ -59,6 +59,7 @@ struct RuntimeCacheKey {
     scope: KnowledgeScope,
     generation_id: String,
     manifest_sha256: String,
+    applied_sequence: u64,
 }
 
 /// Generation-aware immutable implementation of the public `Akidb` service.
@@ -109,6 +110,25 @@ impl GenerationDataPlane {
             })?;
         self.service_for_runtime(&runtime);
         Ok(())
+    }
+
+    /// Install a sealed mutation-tail runtime under the same atomic read
+    /// barrier used by generation activation, then prewarm the revised
+    /// lexical/document service.
+    pub fn install_revision(
+        &self,
+        runtime: ReadyGenerationRuntime,
+        mutations: &[KnowledgeMutation],
+        updated_at_ms: u64,
+    ) -> Result<ServingStateRecord, GenerationControlError> {
+        let scope = runtime.ready.manifest.scope();
+        let generation_id = runtime.ready.manifest.generation_id.clone();
+        let record = self
+            .controller
+            .install_revision(runtime, mutations, updated_at_ms)?;
+        self.prepare_generation(&scope, &generation_id)?;
+        self.prune_scope(&record);
+        Ok(record)
     }
 
     /// Prewarm the complete data service, then atomically activate it.
@@ -236,17 +256,27 @@ impl GenerationDataPlane {
         let scope = record.scope();
         let mut retained = Vec::with_capacity(3);
         if let Some(generation) = &record.active {
-            retained.push(generation.manifest.generation_id.as_str());
+            retained.push((
+                generation.manifest.generation_id.as_str(),
+                generation.applied_sequence,
+            ));
         }
         if let Some(generation) = &record.previous {
-            retained.push(generation.manifest.generation_id.as_str());
+            retained.push((
+                generation.manifest.generation_id.as_str(),
+                generation.applied_sequence,
+            ));
         }
         if let Some(generation) = &record.staged {
-            retained.push(generation.manifest.generation_id.as_str());
+            retained.push((
+                generation.manifest.generation_id.as_str(),
+                generation.applied_sequence,
+            ));
         }
-        self.services
-            .lock()
-            .retain(|key, _| key.scope != scope || retained.contains(&key.generation_id.as_str()));
+        self.services.lock().retain(|key, _| {
+            key.scope != scope
+                || retained.contains(&(key.generation_id.as_str(), key.applied_sequence))
+        });
     }
 
     fn immutable_write_error() -> Status {
@@ -261,6 +291,7 @@ fn runtime_cache_key(runtime: &ReadyGenerationRuntime) -> RuntimeCacheKey {
         scope: runtime.ready.manifest.scope(),
         generation_id: runtime.ready.manifest.generation_id.clone(),
         manifest_sha256: runtime.ready.marker.manifest_sha256.clone(),
+        applied_sequence: runtime.ready.marker.applied_sequence,
     }
 }
 

@@ -131,6 +131,10 @@ async fn search(
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -169,6 +173,10 @@ async fn test_text_search_rejects_whitespace_only_query() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect_err("whitespace-only TextSearch should be rejected");
@@ -248,6 +256,10 @@ async fn test_hybrid_top_k_above_pool_cap_does_not_panic() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("hybrid top_k above the default pool cap should not panic")
@@ -292,6 +304,10 @@ async fn test_hybrid_rejects_zero_fusion_weights() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect_err("zero fusion weights should be rejected");
@@ -325,6 +341,10 @@ async fn test_retrieval_mode_vector_overrides_hybrid_flag() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -360,6 +380,10 @@ async fn test_retrieval_mode_bm25_does_not_require_embedding_provider() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 text_search should not require an embedder")
@@ -393,6 +417,10 @@ async fn test_invalid_retrieval_mode_error_lists_sql_modes() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect_err("invalid retrieval_mode should be rejected");
@@ -439,10 +467,14 @@ async fn test_bm25_metadata_filter_applies_before_top_k_cutoff() {
             filter: br#"{"tenant_id":"b"}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "bm25".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 filter search failed")
@@ -497,10 +529,14 @@ async fn test_bm25_tag_filter_applies_before_top_k_cutoff() {
                 })),
             }),
             retrieval_mode: "bm25".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 tag filter search failed")
@@ -539,10 +575,14 @@ async fn test_text_search_rejects_unknown_tag_operator() {
                 })),
             }),
             retrieval_mode: "bm25".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect_err("unknown tag operator should be rejected");
@@ -596,10 +636,14 @@ async fn test_bm25_tag_filter_matches_nested_metadata_path() {
                 })),
             }),
             retrieval_mode: "bm25".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 nested tag filter search failed")
@@ -646,10 +690,14 @@ async fn test_retrieval_mode_sql_uses_metadata_adapter_without_embedder() {
             filter: br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("sql text_search should not require an embedder")
@@ -683,10 +731,14 @@ async fn test_retrieval_mode_sql_uses_metadata_adapter_without_embedder() {
             filter: br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("sql text_search should still succeed after delete")
@@ -731,10 +783,14 @@ async fn test_retrieval_mode_sql_matches_null_metadata_filter() {
             filter: br#"{"tenant_id":"defai","deleted_at":null}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("sql null filter text_search should succeed")
@@ -781,10 +837,14 @@ async fn test_retrieval_mode_sql_applies_nested_legacy_metadata_filter() {
             filter: br#"{"contract":{"customer":"HGC","year":2025}}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("sql nested metadata text_search should succeed")
@@ -831,10 +891,14 @@ async fn test_retrieval_mode_sql_preserves_literal_dotted_legacy_filter_key() {
             filter: br#"{"contract.year":2025}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("sql literal dotted metadata filter should succeed")
@@ -889,10 +953,14 @@ async fn test_retrieval_mode_sql_empty_object_filter_requires_object_value() {
             filter: br#"{"contract":{}}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("sql empty object metadata filter should succeed")
@@ -939,10 +1007,14 @@ async fn test_retrieval_mode_sql_array_filter_uses_post_filter_before_top_k_cuto
             filter: br#"{"tags":["rust","rag"]}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("sql array metadata filter should succeed")
@@ -997,10 +1069,14 @@ async fn test_retrieval_mode_sql_applies_tag_filter_before_top_k_cutoff() {
                 })),
             }),
             retrieval_mode: "sql".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("sql tag_filter text_search should succeed")
@@ -1039,10 +1115,14 @@ async fn test_retrieval_mode_sql_pack_builds_context() {
             filter: br#"{"customer":"HGC","year":2025}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("sql pack text_search should succeed")
@@ -1100,10 +1180,14 @@ async fn test_rebuild_sql_metadata_index_removes_deleted_vectors() {
             filter: br#"{"tenant_id":"defai","customer":"HGC","year":2025}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "sql".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("sql text_search after rebuild should succeed")
@@ -1193,6 +1277,10 @@ async fn test_insert_upsert_empty_text_removes_stale_bm25_document() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 search failed")
@@ -1221,6 +1309,10 @@ async fn test_insert_upsert_empty_text_removes_stale_bm25_document() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 search after upsert failed")
@@ -1280,6 +1372,10 @@ async fn test_batch_insert_upsert_empty_text_removes_stale_bm25_document() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 search after batch upsert failed")
@@ -1351,6 +1447,10 @@ async fn test_batch_insert_rejects_invalid_vectors_without_indexing_text() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 search after partial batch insert failed")
@@ -1385,6 +1485,10 @@ async fn test_pack_returns_cited_context() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -1429,6 +1533,10 @@ async fn test_pack_respects_token_budget() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -1463,6 +1571,10 @@ async fn test_no_pack_leaves_context_empty() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -1495,6 +1607,10 @@ async fn test_text_search_accepts_long_multibyte_query() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("long multibyte text_search should not panic")
@@ -1592,6 +1708,10 @@ async fn test_rebuild_lexical_index_removes_stale_in_memory_text() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 search failed")
@@ -1623,6 +1743,10 @@ async fn test_rebuild_lexical_index_removes_stale_in_memory_text() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 search after rebuild failed")
@@ -1682,6 +1806,10 @@ async fn test_rebuild_lexical_index_skips_deleted_vectors_with_stale_text() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("bm25 search after rebuild failed")
@@ -1729,6 +1857,10 @@ async fn test_rerank_promotes_query_term_match() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -1768,6 +1900,10 @@ async fn test_diversity_demotes_near_duplicate() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -1803,9 +1939,13 @@ async fn test_diversity_rejects_invalid_mmr_lambda() {
                 filter: vec![],
                 tag_filter: None,
                 retrieval_mode: String::new(),
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+                score_threshold: None,
+                group_by: String::new(),
+                group_size: None,
+                graph_max_depth: None,
+                graph_per_seed_fanout: None,
+                graph_max_expanded_nodes: None,
+                include_diagnostics: false,
             }))
             .await
             .expect_err("invalid mmr_lambda should be rejected");
@@ -1835,10 +1975,14 @@ async fn pack_for(
         mmr_lambda: None,
         filter: vec![],
         tag_filter: None,
-        retrieval_mode: String::new(),
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+        retrieval_mode: "graph_hybrid".into(),
+        score_threshold: None,
+        group_by: String::new(),
+        group_size: None,
+        graph_max_depth: None,
+        graph_per_seed_fanout: None,
+        graph_max_expanded_nodes: None,
+        include_diagnostics: false,
     }))
     .await
     .expect("text_search failed")
@@ -2016,6 +2160,10 @@ async fn test_graph_mode_returns_graph_expanded_results() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -2023,6 +2171,204 @@ async fn test_graph_mode_returns_graph_expanded_results() {
 
     let got: Vec<&str> = resp.results.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(got, vec!["anchor", "related"]);
+}
+
+#[tokio::test]
+async fn test_graph_depth_defaults_to_one_and_explicit_two_hops_returns_evidence() {
+    let (svc, graph) = setup_with_graph();
+    insert(
+        &svc,
+        "anchor",
+        vec![1.0, 0.0, 0.0],
+        "needle anchor text",
+        b"",
+    )
+    .await;
+    insert(
+        &svc,
+        "terminal",
+        vec![0.0, 0.0, 1.0],
+        "two hop terminal context",
+        b"",
+    )
+    .await;
+
+    graph
+        .upsert_node(GraphNode::new("chunk:anchor", NodeKind::Chunk))
+        .unwrap();
+    graph
+        .upsert_node(GraphNode::new("entity:invoice-7", NodeKind::Entity))
+        .unwrap();
+    graph
+        .upsert_node(GraphNode::new("chunk:terminal", NodeKind::Chunk))
+        .unwrap();
+    for edge in [
+        GraphEdge::new(
+            "anchor-invoice",
+            "chunk:anchor",
+            "entity:invoice-7",
+            EdgeKind::Mentions,
+        ),
+        GraphEdge::new(
+            "invoice-terminal",
+            "entity:invoice-7",
+            "chunk:terminal",
+            EdgeKind::RelatedTo,
+        ),
+    ] {
+        graph
+            .upsert_edge(
+                edge.with_property("predicate", serde_json::json!("references"))
+                    .with_property(
+                        "source_uri",
+                        serde_json::json!("s3://knowledge/invoice-7.pdf"),
+                    )
+                    .with_property("source_version", serde_json::json!("etag-7"))
+                    .with_property("evidence_chunk_ids", serde_json::json!(["chunk:anchor"]))
+                    .with_property("confidence", serde_json::json!(1.0)),
+            )
+            .unwrap();
+    }
+
+    let request = |graph_max_depth| {
+        Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 2,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: false,
+            pack_token_budget: None,
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "graph".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
+            graph_max_depth,
+            graph_per_seed_fanout: Some(8),
+            graph_max_expanded_nodes: Some(8),
+            include_diagnostics: true,
+        })
+    };
+
+    let one_hop = svc
+        .text_search(request(None))
+        .await
+        .expect("one-hop graph search failed")
+        .into_inner();
+    let one_hop_diagnostics = one_hop.diagnostics.expect("diagnostics required");
+    assert_eq!(one_hop_diagnostics.graph_depth, 1);
+    assert!(
+        one_hop_diagnostics
+            .graph_expansions
+            .iter()
+            .all(|expansion| expansion.result_id != "terminal"),
+        "the default one-hop traversal must not claim two-hop evidence"
+    );
+
+    let two_hop = svc
+        .text_search(request(Some(2)))
+        .await
+        .expect("two-hop graph search failed")
+        .into_inner();
+    assert!(two_hop.results.iter().any(|result| result.id == "terminal"));
+    let diagnostics = two_hop.diagnostics.expect("diagnostics required");
+    assert_eq!(diagnostics.graph_depth, 2);
+    assert_eq!(diagnostics.graph_max_expanded_nodes, 8);
+    let terminal = diagnostics
+        .graph_expansions
+        .iter()
+        .find(|expansion| expansion.result_id == "terminal")
+        .expect("terminal expansion evidence required");
+    assert_eq!(terminal.hop, 2);
+    assert_eq!(terminal.path.len(), 2);
+    assert!(terminal.score_contribution.is_finite());
+    assert!(terminal.score_contribution >= 0.0);
+    assert!(terminal.path.iter().all(|edge| {
+        edge.source_uri == "s3://knowledge/invoice-7.pdf"
+            && edge.source_version == "etag-7"
+            && edge.evidence_chunk_ids == ["chunk:anchor"]
+            && (edge.confidence - 1.0).abs() < f32::EPSILON
+    }));
+}
+
+#[tokio::test]
+async fn test_context_pack_v1_preserves_canonical_versioned_citation() {
+    let svc = setup();
+    insert(
+        &svc,
+        "chunk-a",
+        vec![1.0, 0.0, 0.0],
+        "needle grounded context",
+        br#"{
+            "document_id":"doc-a",
+            "document_version":"revision-7",
+            "source_uri":"s3://knowledge/doc-a",
+            "source_version":"etag-7",
+            "content_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "start_offset":10,
+            "end_offset":33,
+            "generation_id":"generation-a"
+        }"#,
+    )
+    .await;
+
+    let response = svc
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "needle".into(),
+            top_k: 1,
+            nprobe: None,
+            hybrid: false,
+            dense_weight: None,
+            lexical_weight: None,
+            pack: true,
+            pack_token_budget: Some(64),
+            rerank: false,
+            diversity: false,
+            mmr_lambda: None,
+            filter: vec![],
+            tag_filter: None,
+            retrieval_mode: "vector".into(),
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: true,
+        }))
+        .await
+        .expect("packed search failed")
+        .into_inner();
+
+    let pack = response.context_pack_v1.expect("typed pack required");
+    assert_eq!(pack.schema_version, "akidb.context-pack.v1");
+    assert_eq!(pack.text, response.context_pack);
+    assert!(pack.used_tokens <= pack.token_budget);
+    assert_eq!(pack.items.len(), 1);
+    let item = &pack.items[0];
+    assert_eq!(item.chunk_id, "chunk-a");
+    assert_eq!(item.reason, "direct_match");
+    let citation = item.citation.as_ref().expect("citation required");
+    assert_eq!(citation.document_id, "doc-a");
+    assert_eq!(citation.document_version, "revision-7");
+    assert_eq!(citation.source_uri, "s3://knowledge/doc-a");
+    assert_eq!(citation.source_version, "etag-7");
+    assert_eq!(citation.content_hash, "c".repeat(64));
+    assert_eq!(citation.start_offset, Some(10));
+    assert_eq!(citation.end_offset, Some(33));
+    assert_eq!(citation.generation_id, "generation-a");
+    let diagnostics = response.diagnostics.expect("diagnostics required");
+    assert_eq!(diagnostics.resolved_mode, "vector");
+    assert_eq!(diagnostics.graph_depth, 0);
+    assert!(diagnostics.graph_expansions.is_empty());
 }
 
 #[tokio::test]
@@ -2065,6 +2411,10 @@ async fn test_auto_graph_query_expands_file_metadata_seed() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -2119,6 +2469,10 @@ async fn test_auto_graph_query_expands_symbol_metadata_seed() {
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -2479,10 +2833,14 @@ async fn test_text_search_applies_legacy_metadata_filter_to_hybrid_results() {
             filter: br#"{"tenant":"a"}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: String::new(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -2529,10 +2887,14 @@ async fn test_text_search_applies_nested_legacy_metadata_filter() {
             filter: br#"{"contract":{"year":2025}}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: String::new(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")
@@ -2579,10 +2941,14 @@ async fn test_text_search_filter_blocks_graph_expanded_context() {
             filter: br#"{"tenant":"a"}"#.to_vec(),
             tag_filter: None,
             retrieval_mode: "graph_hybrid".into(),
-        
+
             score_threshold: None,
             group_by: String::new(),
             group_size: None,
+            graph_max_depth: None,
+            graph_per_seed_fanout: None,
+            graph_max_expanded_nodes: None,
+            include_diagnostics: false,
         }))
         .await
         .expect("text_search failed")

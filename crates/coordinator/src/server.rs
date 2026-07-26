@@ -453,6 +453,8 @@ impl Akidb for CoordinatorService {
             degraded_mode: partial,
             context_pack: String::new(),
             serving_generation: None,
+            context_pack_v1: None,
+            diagnostics: None,
         }))
     }
 
