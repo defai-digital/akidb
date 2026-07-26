@@ -67,14 +67,15 @@ requires active-plus-shadow headroom.
 
 | Artifact | Release ID | SHA-256 |
 | --- | --- | --- |
-| AkiDB Linux AMD64 qualification build | `328dbf124b8370a2acb99c6179a4ea766feea82d` | `ae7b930861dbc9703d9ee563c59a31740f1a3462d8ad456cb1ff5f75bc6e758b` |
+| AkiDB Linux AMD64 qualification build | `6ef800ac5f3680fa41698e93d9bb3ae979a319b2` | `1d07f6cc1b72c445d7a5d3bf77076b1303f7ae9c57a6df4df45ab6b1c11b03a7` |
 | AX knowledge gateway Linux AMD64 build | `214ad4d41d0f60aa4a16d93316806cd0fcc343fc` | `b96e18e39e408ab355accee02389197d35b5134f0ddd711f63776bd811f5d75a` |
 | Backup archive | `qualification-20260725-01` | `17f74f7e7abfc6318a931ce141ad1e9d82f7c13d595f04230bf9dfb06d863b0c` |
 
 The two release IDs are the exact source commit SHAs. The final artifacts were
-rebuilt from those committed trees, checksum-verified before deployment,
+produced from those committed trees, checksum-verified before deployment,
 rolled across the cell, and then reconciled by a second complete Ansible site
-run with zero changes and zero failures.
+run with zero changes and zero failures. The final AkiDB archive also passed
+GitHub build-provenance attestation verification before deployment.
 
 The final AkiDB build upgrades tonic, prost, and rustls-webpki beyond the
 RustSec-affected dependency set and explicitly selects the portable ring
@@ -85,6 +86,14 @@ the installed prior release restored all three replicas before the corrected
 commit-derived artifact was rebuilt and deployed. The corrected production
 feature set, workspace tests, startup smoke, rolling deployment, golden
 queries, and final convergence checks all passed.
+
+The first CI packaging attempt exposed a Clang 18 compiler crash while
+generating numkong dynamic-dispatch code. The artifact script now defaults to
+the Ubuntu LTS GCC/G++ toolchain, while retaining explicit `CC`/`CXX`
+overrides for separate compiler qualification. The replacement workflow built
+the complete immutable archive, executed each Linux binary on Ubuntu 24.04,
+verified its checksum and manifest, attached provenance, and uploaded it. That
+CI-produced archive is the release rolled across all three replicas.
 
 The active authority state after all drills was:
 
@@ -146,10 +155,12 @@ generation-stable citations.
 | BM25 | 100/400 (25%) | 0/300 (0%) | 0 | 0 | 0 |
 | Graph | 400/400 (100%) | 300/300 (100%) | 0 | 0 | 0 |
 
-The golden graph request returned HTTP 200, used one replica attempt, expanded
-48 nodes within the configured limit, packed 10 cited items, and returned
-canonical `s3://` source identity, source version, content hash, chunk ID,
-document ID, offsets, generation ID, and per-edge evidence paths.
+The final golden graph request returned HTTP 200 through both gateways. Each
+used one replica attempt, returned 10 hits, expanded 48 nodes within the
+configured limit, packed 10 cited items, and returned canonical `s3://` source
+identity, source version, content hash, chunk ID, document ID, offsets,
+generation ID, and per-edge evidence paths. The two measured route latencies
+were 35 ms and 30 ms.
 
 The lab intentionally disabled an embedding endpoint. Explicit `hybrid` and
 `graph_hybrid` requests therefore failed closed with a provider-not-configured
