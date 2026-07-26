@@ -9,8 +9,18 @@ license.workspace = true
 name = "akidb-bench"
 path = "src/main.rs"
 
+[[bin]]
+name = "akidb-ann-bench"
+path = "src/ann.rs"
+
+[[bin]]
+name = "akidb-graph-bench"
+path = "src/graph.rs"
+
 [dependencies]
+akidb-graph = { path = "../graph" }
 akidb-proto = { path = "../proto" }
+akidb-storage = { path = "../storage" }
 
 tokio.workspace = true
 tonic.workspace = true
@@ -18,7 +28,11 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 rand = "0.8"
 rand_distr = "0.4"
 indicatif = "0.17"
+
+[dev-dependencies]
+tempfile.workspace = true

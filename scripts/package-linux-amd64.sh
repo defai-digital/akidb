@@ -51,7 +51,14 @@ if [[ "${AKIDB_SKIP_BUILD:-0}" != "1" ]]; then
 fi
 
 install -d "$staging_dir/bin"
-for binary in akidb akidb-server akidb-coordinator akidb-bench; do
+for binary in \
+  akidb \
+  akidb-server \
+  akidb-coordinator \
+  akidb-bench \
+  akidb-ann-bench \
+  akidb-graph-bench
+do
   install -m 0755 "target/release/$binary" "$staging_dir/bin/$binary"
 done
 

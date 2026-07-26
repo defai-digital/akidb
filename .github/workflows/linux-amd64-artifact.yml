@@ -63,6 +63,8 @@ jobs:
           verify/bin/akidb-server --version
           verify/bin/akidb-coordinator --version
           verify/bin/akidb-bench --version
+          verify/bin/akidb-ann-bench --version
+          verify/bin/akidb-graph-bench --version
           sudo -u nobody verify/bin/akidb-server --version
           python3 - <<'PY'
           import json

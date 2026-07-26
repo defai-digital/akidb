@@ -270,6 +270,9 @@ jobs:
       - name: Four-Mac evidence pipeline smoke
         run: ./scripts/smoke-four-mac-validation.sh
 
+      - name: Knowledge gateway load-driver tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+
   # Python service tests
   python-test:
     name: Python Tests
@@ -292,14 +295,13 @@ jobs:
 
       - name: Run tests
         working-directory: services/${{ matrix.service }}
-        run: |
-          pytest tests/ -v || true
+        run: pytest tests/ -v
 
       - name: Run ruff
         working-directory: services/${{ matrix.service }}
         run: |
           pip install ruff
-          ruff check . || true
+          ruff check .
 
   # Test ingestion orchestrator crate
   test-ingestion:

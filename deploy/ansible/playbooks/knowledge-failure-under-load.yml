@@ -1,0 +1,257 @@
+---
+- name: Validate destructive qualification inputs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    readiness_fixture: "{{ lookup('env', 'AKIDB_READINESS_FIXTURE') }}"
+    readiness_gate: "{{ lookup('env', 'AKIDB_READINESS_GATE') }}"
+    readiness_output_dir: "{{ lookup('env', 'AKIDB_READINESS_OUTPUT_DIR') }}"
+    readiness_run_id: "{{ lookup('env', 'AKIDB_READINESS_RUN_ID') }}"
+    readiness_fault_replica: "{{ lookup('env', 'AKIDB_READINESS_FAULT_REPLICA') }}"
+    readiness_fault_confirm: "{{ lookup('env', 'AKIDB_READINESS_FAULT_CONFIRM') }}"
+  tasks:
+    - name: Require explicit, bounded fault authorization
+      ansible.builtin.assert:
+        that:
+          - readiness_fault_confirm == 'yes-stop-one-qualification-replica'
+          - readiness_fault_replica in groups['akidb_knowledge_replicas']
+          - readiness_run_id is match('^[A-Za-z0-9._-]{7,96}$')
+          - readiness_fixture | length > 0
+          - readiness_gate | length > 0
+          - readiness_output_dir | length > 0
+
+    - name: Inspect fixture, gate, and driver
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ readiness_fixture }}"
+        - "{{ readiness_gate }}"
+        - "{{ playbook_dir }}/../../../scripts/knowledge_gateway_load.py"
+      register: readiness_inputs
+
+    - name: Require every local input file
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+      loop: "{{ readiness_inputs.results }}"
+
+    - name: Create controller evidence directory
+      ansible.builtin.file:
+        path: "{{ readiness_output_dir }}"
+        state: directory
+        mode: "0750"
+
+- name: Stage and start traffic before fault injection
+  hosts: ax_knowledge_gateways[0]
+  become: true
+  gather_facts: false
+  vars:
+    readiness_fixture: "{{ lookup('env', 'AKIDB_READINESS_FIXTURE') }}"
+    readiness_gate: "{{ lookup('env', 'AKIDB_READINESS_GATE') }}"
+    readiness_run_id: "{{ lookup('env', 'AKIDB_READINESS_RUN_ID') }}"
+    readiness_duration_seconds: "{{ lookup('env', 'AKIDB_READINESS_DURATION_SECONDS') | default('120', true) | int }}"
+    readiness_concurrency: "{{ lookup('env', 'AKIDB_READINESS_CONCURRENCY') | default('16', true) | int }}"
+    readiness_target_qps: "{{ lookup('env', 'AKIDB_READINESS_TARGET_QPS') | default('25', true) | int }}"
+    readiness_warmup_requests: "{{ lookup('env', 'AKIDB_READINESS_WARMUP_REQUESTS') | default('100', true) | int }}"
+    readiness_remote_dir: "/var/tmp/akidb-readiness/{{ readiness_run_id }}"
+    readiness_remote_output: "{{ readiness_remote_dir }}/report.json"
+  tasks:
+    - name: Require enough time to observe healthy, failed, and recovered states
+      ansible.builtin.assert:
+        that:
+          - readiness_duration_seconds | int >= 90
+          - readiness_duration_seconds | int <= 86400
+          - readiness_concurrency | int >= 2
+          - readiness_concurrency | int <= 4096
+          - readiness_target_qps | int > 0
+
+    - name: Build the two-gateway argument vector
+      ansible.builtin.set_fact:
+        readiness_gateway_arguments: >-
+          {{
+            (readiness_gateway_arguments | default([]))
+            + [
+              '--gateway',
+              'https://'
+              ~ hostvars[item].akidb_overlay_address
+              ~ ':'
+              ~ (akidb_knowledge_gateway_port | string)
+            ]
+          }}
+      loop: "{{ groups['ax_knowledge_gateways'] }}"
+
+    - name: Create protected remote evidence directory
+      ansible.builtin.file:
+        path: "{{ readiness_remote_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Stage load driver, fixture, and gate
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ readiness_remote_dir }}/{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - src: "{{ playbook_dir }}/../../../scripts/knowledge_gateway_load.py"
+          dest: knowledge_gateway_load.py
+          mode: "0700"
+        - src: "{{ readiness_fixture }}"
+          dest: fixture.json
+          mode: "0600"
+        - src: "{{ readiness_gate }}"
+          dest: gate.json
+          mode: "0600"
+
+    - name: Start paced traffic asynchronously
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'python3',
+              readiness_remote_dir ~ '/knowledge_gateway_load.py'
+            ]
+            + readiness_gateway_arguments
+            + [
+              '--fixture', readiness_remote_dir ~ '/fixture.json',
+              '--gate', readiness_remote_dir ~ '/gate.json',
+              '--ca-file', ax_gateway_config_root ~ '/tls/ca.crt',
+              '--duration-seconds', readiness_duration_seconds | string,
+              '--concurrency', readiness_concurrency | string,
+              '--target-qps', readiness_target_qps | string,
+              '--warmup-requests', readiness_warmup_requests | string,
+              '--output', readiness_remote_output
+            ]
+          }}
+      environment:
+        AX_KNOWLEDGE_GATEWAY_TOKEN: "{{ ax_knowledge_gateway_token }}"
+      async: "{{ readiness_duration_seconds | int + 300 }}"
+      poll: 0
+      register: readiness_async_job
+      changed_when: false
+      no_log: true
+
+    - name: Retain async job identity for the final evidence play
+      ansible.builtin.set_fact:
+        readiness_async_job_id: "{{ readiness_async_job.ansible_job_id }}"
+        readiness_remote_evidence: "{{ readiness_remote_output }}"
+
+- name: Stop and recover exactly one full replica while traffic continues
+  hosts: "{{ lookup('env', 'AKIDB_READINESS_FAULT_REPLICA') }}"
+  become: true
+  gather_facts: false
+  vars:
+    readiness_fault_hold_seconds: "{{ lookup('env', 'AKIDB_READINESS_FAULT_HOLD_SECONDS') | default('30', true) | int }}"
+  tasks:
+    - name: Wait for measured healthy traffic
+      ansible.builtin.wait_for:
+        timeout: 15
+      delegate_to: localhost
+      become: false
+
+    - name: Require a bounded fault interval
+      ansible.builtin.assert:
+        that:
+          - readiness_fault_hold_seconds | int >= 10
+          - readiness_fault_hold_seconds | int <= 120
+
+    - name: Inject and recover the replica process fault
+      block:
+        - name: Stop one qualification replica
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: stopped
+
+        - name: Hold the single-replica fault
+          ansible.builtin.wait_for:
+            timeout: "{{ readiness_fault_hold_seconds }}"
+          delegate_to: localhost
+          become: false
+      always:
+        - name: Restore the qualification replica
+          ansible.builtin.systemd_service:
+            name: akidb-knowledge-replica
+            state: started
+
+    - name: Wait for exact generation readiness after recovery
+      ansible.builtin.command:
+        argv:
+          - "{{ akidb_install_root }}/current/bin/akidb"
+          - health
+          - --server
+          - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_server_port }}"
+          - --tls-ca
+          - "{{ akidb_config_root }}/tls/ca.crt"
+          - --require-ready
+      environment:
+        AKIDB_AUTH_TOKEN_FILE: "{{ akidb_config_root }}/knowledge-read.token"
+        AKIDB_WORKSPACE: "{{ akidb_knowledge_workspace }}"
+      changed_when: false
+      register: recovered_replica
+      retries: 30
+      delay: 2
+      until: recovered_replica.rc == 0
+
+- name: Collect and validate fault-under-load evidence
+  hosts: ax_knowledge_gateways[0]
+  become: true
+  gather_facts: false
+  vars:
+    readiness_output_dir: "{{ lookup('env', 'AKIDB_READINESS_OUTPUT_DIR') }}"
+    readiness_run_id: "{{ lookup('env', 'AKIDB_READINESS_RUN_ID') }}"
+    readiness_fault_replica_id: >-
+      {{
+        hostvars[lookup('env', 'AKIDB_READINESS_FAULT_REPLICA')]
+        .akidb_knowledge_replica_id
+      }}
+    readiness_remote_dir: "/var/tmp/akidb-readiness/{{ readiness_run_id }}"
+  tasks:
+    - name: Wait for the paced load job to finish
+      ansible.builtin.async_status:
+        jid: "{{ readiness_async_job_id }}"
+      register: readiness_execution
+      until: readiness_execution.finished
+      retries: 900
+      delay: 2
+      failed_when: false
+      no_log: true
+
+    - name: Read retained remote evidence
+      ansible.builtin.slurp:
+        src: "{{ readiness_remote_evidence }}"
+      register: readiness_report
+
+    - name: Parse fault-under-load evidence
+      ansible.builtin.set_fact:
+        readiness_report_json: >-
+          {{ readiness_report.content | b64decode | from_json }}
+
+    - name: Fetch machine-readable fault evidence
+      ansible.builtin.fetch:
+        src: "{{ readiness_remote_evidence }}"
+        dest: "{{ readiness_output_dir }}/{{ readiness_run_id }}.json"
+        flat: true
+
+    - name: Require uninterrupted reads and observed failover
+      ansible.builtin.assert:
+        that:
+          - readiness_execution.rc == 0
+          - readiness_report_json.verdict.status == 'pass'
+          - readiness_report_json.measured.failures == 0
+          - readiness_report_json.measured.route_replicas | length >= 2
+          - >-
+            readiness_report_json.warmup.route_replicas
+            .get(readiness_fault_replica_id, 0) > 0
+          - readiness_report_json.measured.route_failovers >= 1
+        fail_msg: >-
+          Replica fault-under-load qualification failed. Inspect
+          {{ readiness_output_dir }}/{{ readiness_run_id }}.json.
+
+    - name: Remove staged remote workload files
+      ansible.builtin.file:
+        path: "{{ readiness_remote_dir }}"
+        state: absent

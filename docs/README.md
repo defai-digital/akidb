@@ -6,16 +6,16 @@ Canonical documents:
 - [Agentic Knowledge-Serving Architecture](architecture/knowledge-serving.md)
 
 > Detailed Product Requirements, Architecture Decision Records, research, and
-> technical specifications are maintained in the internal-only `ax-internal/`
-> and `.internal/` packs. They are intentionally excluded from the public
-> repository; the public architecture summary above is authoritative for
-> released capability claims.
+> technical specifications are maintained in the internal-only `.internal/`
+> pack. They are intentionally excluded from the public repository; the public
+> architecture summary above is authoritative for released capability claims.
 
 Supporting documents:
 
 - [Development Notes](development/AGENT_CONFIGS.md)
 - [Native GraphRAG Productization Plan](development/native-graphrag-plan.md)
 - [Immutable Generation Serving](development/generation-serving-preview.md)
+- [Market-Aligned Product Readiness Qualification](quality/market-readiness-qualification.md)
 - [One-Mac Benchmark](quality/one-mac-benchmark.md)
 - [Four-Mac Cell Validation](quality/four-mac-cell-validation.md)
 - [Four-Mac Evidence Manifest](quality/four-mac-evidence-manifest.md)

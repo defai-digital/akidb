@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "max_error_rate": 0.0,
+  "max_contract_failures": 0,
+  "min_evidence_recall": 1.0,
+  "min_document_recall": 1.0,
+  "min_citation_correctness": 1.0,
+  "max_p95_ms": 250.0,
+  "max_p99_ms": 500.0,
+  "max_end_to_end_p99_ms": 750.0,
+  "min_achieved_qps": 25.0,
+  "min_route_replicas": 1,
+  "min_route_failovers": 0,
+  "require_all_gateways": true,
+  "require_zero_stale_routes": true,
+  "require_security_probes": false
+}

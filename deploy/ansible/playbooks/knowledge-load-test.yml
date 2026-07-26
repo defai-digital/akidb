@@ -1,0 +1,171 @@
+---
+- name: Validate knowledge-gateway load-test inputs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    readiness_fixture: "{{ lookup('env', 'AKIDB_READINESS_FIXTURE') }}"
+    readiness_gate: "{{ lookup('env', 'AKIDB_READINESS_GATE') }}"
+    readiness_output_dir: "{{ lookup('env', 'AKIDB_READINESS_OUTPUT_DIR') }}"
+    readiness_run_id: "{{ lookup('env', 'AKIDB_READINESS_RUN_ID') }}"
+  tasks:
+    - name: Require bounded release-evidence inputs
+      ansible.builtin.assert:
+        that:
+          - readiness_run_id is match('^[A-Za-z0-9._-]{7,96}$')
+          - readiness_fixture | length > 0
+          - readiness_gate | length > 0
+          - readiness_output_dir | length > 0
+
+    - name: Inspect fixture, gate, and driver
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ readiness_fixture }}"
+        - "{{ readiness_gate }}"
+        - "{{ playbook_dir }}/../../../scripts/knowledge_gateway_load.py"
+      register: readiness_inputs
+
+    - name: Require every local input file
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+      loop: "{{ readiness_inputs.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Create controller evidence directory
+      ansible.builtin.file:
+        path: "{{ readiness_output_dir }}"
+        state: directory
+        mode: "0750"
+
+- name: Run the reproducible gateway workload from the private overlay
+  hosts: ax_knowledge_gateways[0]
+  become: true
+  gather_facts: false
+  vars:
+    readiness_fixture: "{{ lookup('env', 'AKIDB_READINESS_FIXTURE') }}"
+    readiness_gate: "{{ lookup('env', 'AKIDB_READINESS_GATE') }}"
+    readiness_output_dir: "{{ lookup('env', 'AKIDB_READINESS_OUTPUT_DIR') }}"
+    readiness_run_id: "{{ lookup('env', 'AKIDB_READINESS_RUN_ID') }}"
+    readiness_requests: "{{ lookup('env', 'AKIDB_READINESS_REQUESTS') | default('1000', true) | int }}"
+    readiness_duration_seconds: "{{ lookup('env', 'AKIDB_READINESS_DURATION_SECONDS') | default('0', true) | int }}"
+    readiness_concurrency: "{{ lookup('env', 'AKIDB_READINESS_CONCURRENCY') | default('8', true) | int }}"
+    readiness_target_qps: "{{ lookup('env', 'AKIDB_READINESS_TARGET_QPS') | default('25', true) | int }}"
+    readiness_warmup_requests: "{{ lookup('env', 'AKIDB_READINESS_WARMUP_REQUESTS') | default('100', true) | int }}"
+    readiness_security_probes: "{{ lookup('env', 'AKIDB_READINESS_SECURITY_PROBES') | default('false', true) | bool }}"
+    readiness_remote_dir: "/var/tmp/akidb-readiness/{{ readiness_run_id }}"
+    readiness_remote_output: "{{ readiness_remote_dir }}/report.json"
+  tasks:
+    - name: Validate bounded workload parameters
+      ansible.builtin.assert:
+        that:
+          - readiness_requests | int > 0
+          - readiness_duration_seconds | int >= 0
+          - readiness_concurrency | int >= 1
+          - readiness_concurrency | int <= 4096
+          - readiness_target_qps | int >= 0
+          - readiness_warmup_requests | int >= 0
+
+    - name: Build the two-gateway argument vector
+      ansible.builtin.set_fact:
+        readiness_gateway_arguments: >-
+          {{
+            (readiness_gateway_arguments | default([]))
+            + [
+              '--gateway',
+              'https://'
+              ~ hostvars[item].akidb_overlay_address
+              ~ ':'
+              ~ (akidb_knowledge_gateway_port | string)
+            ]
+          }}
+      loop: "{{ groups['ax_knowledge_gateways'] }}"
+
+    - name: Create protected remote evidence directory
+      ansible.builtin.file:
+        path: "{{ readiness_remote_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Stage load driver, fixture, and gate
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ readiness_remote_dir }}/{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - src: "{{ playbook_dir }}/../../../scripts/knowledge_gateway_load.py"
+          dest: knowledge_gateway_load.py
+          mode: "0700"
+        - src: "{{ readiness_fixture }}"
+          dest: fixture.json
+          mode: "0600"
+        - src: "{{ readiness_gate }}"
+          dest: gate.json
+          mode: "0600"
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Build bounded load-driver arguments
+      ansible.builtin.set_fact:
+        readiness_driver_arguments: >-
+          {{
+            [
+              'python3',
+              readiness_remote_dir ~ '/knowledge_gateway_load.py'
+            ]
+            + readiness_gateway_arguments
+            + [
+              '--fixture', readiness_remote_dir ~ '/fixture.json',
+              '--gate', readiness_remote_dir ~ '/gate.json',
+              '--ca-file', ax_gateway_config_root ~ '/tls/ca.crt',
+              '--concurrency', readiness_concurrency | string,
+              '--target-qps', readiness_target_qps | string,
+              '--warmup-requests', readiness_warmup_requests | string,
+              '--output', readiness_remote_output
+            ]
+            + (
+              ['--duration-seconds', readiness_duration_seconds | string]
+              if readiness_duration_seconds | int > 0
+              else ['--requests', readiness_requests | string]
+            )
+            + (
+              ['--security-probes']
+              if readiness_security_probes | bool
+              else []
+            )
+          }}
+
+    - name: Execute the gateway qualification workload
+      ansible.builtin.command:
+        argv: "{{ readiness_driver_arguments }}"
+      environment:
+        AX_KNOWLEDGE_GATEWAY_TOKEN: "{{ ax_knowledge_gateway_token }}"
+      register: readiness_execution
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Fetch machine-readable qualification evidence
+      ansible.builtin.fetch:
+        src: "{{ readiness_remote_output }}"
+        dest: "{{ readiness_output_dir }}/{{ readiness_run_id }}.json"
+        flat: true
+
+    - name: Require a passing release verdict
+      ansible.builtin.assert:
+        that:
+          - readiness_execution.rc == 0
+        fail_msg: >-
+          Knowledge gateway qualification failed. Inspect
+          {{ readiness_output_dir }}/{{ readiness_run_id }}.json.
+
+    - name: Remove staged remote workload files
+      ansible.builtin.file:
+        path: "{{ readiness_remote_dir }}"
+        state: absent

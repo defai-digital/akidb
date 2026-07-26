@@ -1,0 +1,445 @@
+# Market-Aligned Product Readiness Qualification
+
+Status: active release gate
+
+Supported targets: macOS Apple Silicon and Ubuntu 24.04-or-later AMD64
+
+Unsupported targets: Linux ARM64, CUDA, NVIDIA Thor, and older Linux distributions
+
+## Decision
+
+AkiDB is ready for release only when one immutable release candidate passes
+three independent evidence lanes:
+
+1. **Vector retrieval:** exact-ground-truth ANN quality and performance using
+   public datasets and market-standard metrics.
+2. **Bounded graph retrieval:** exact known-answer graph operations and
+   GraphRAG evidence quality for the graph contract AkiDB actually exposes.
+3. **Serving system:** security, generation consistency, sustained load,
+   restart, backup/restore, and failure-under-load behavior for a complete
+   knowledge-serving cell.
+
+Passing a synthetic throughput test alone is not a release verdict. A report
+must identify the source dataset, immutable AkiDB artifact, configuration,
+hardware, driver location, warm-up, concurrency, query count, and all gate
+values.
+
+## What "market comparable" means
+
+The vector lane follows the methodology common to
+[VectorDBBench](https://github.com/zilliztech/VectorDBBench),
+[ANN-Benchmarks](https://github.com/erikbern/ann-benchmarks), the
+[Weaviate ANN benchmark](https://docs.weaviate.io/weaviate/benchmarks/ann),
+and the [Milvus index guidance](https://milvus.io/docs/index-explained.md):
+
+- use public vectors with exact neighbor ground truth;
+- report Recall@K together with throughput and latency;
+- include import/build time and final storage size;
+- test multiple concurrency and index-search breadth settings;
+- include filtered workloads and insertion while searching;
+- use a separate client and server with the same network placement; and
+- compare products on identical hardware, data, distance metric, top-k, and
+  recall band.
+
+Vendor-published numbers are context, not parity evidence. AkiDB, Milvus, and
+Weaviate must be rerun by us on the same isolated qualification hosts.
+
+The graph lane is intentionally narrower. AkiDB provides a bounded retrieval
+graph, not a general Cypher/GQL database. It applies known-answer, persistence,
+concurrency, mutation-integrity, and percentile-latency principles from the
+[LDBC benchmark suite](https://ldbcouncil.org/benchmarks/) to AkiDB's shipped
+API. Passing this lane must never be described as LDBC, SNB, Graphalytics,
+Cypher, or general graph-database compliance.
+
+## Reference AMD64 topology
+
+The repeatable qualification topology is:
+
+```text
+node 1: AkiDB replica 1 + knowledge gateway 1
+node 2: AkiDB replica 2 + knowledge gateway 2
+node 3: AkiDB replica 3
+node 4: load driver + qualification dependencies
+```
+
+All nodes must run Ubuntu 24.04 or later on AMD64. Record the exact image,
+kernel, CPU model, vCPU count, RAM, disk model, filesystem, mount options, and
+network path in the evidence manifest.
+
+For the current 1M and 10M qualification tiers, each data node needs at least:
+
+- 8 vCPU;
+- 32 GiB RAM;
+- 320 GB local NVMe; and
+- 1 Gbit/s private networking.
+
+The preferred capacity configuration remains 16 vCPU, 64 GiB RAM, and 500 GB
+local NVMe per data node. Extra CPU is not required for correctness; it reduces
+index-build time, raises concurrent-query capacity, and leaves headroom for
+compaction, checkpointing, and rebuild traffic. A 100M-vector qualification
+must use a separately sized disk budget derived from measured bytes per vector.
+
+For fair single-engine comparisons, use one isolated server host and one
+isolated client host. Do not run PostgreSQL, MinIO, gateways, or a competing
+database on the benchmark server during that run. Run each product separately,
+recreate the data volume between products, and retain resource telemetry.
+
+The three AkiDB data nodes in the knowledge-serving cell are full replicas of
+one logical shard. This topology validates read availability; it must not be
+represented as a horizontally sharded cluster.
+
+## Lane A: vector retrieval
+
+### Public datasets
+
+The minimum release matrix is:
+
+| Tier | Dataset | Purpose |
+| --- | --- | --- |
+| A1 | SIFT1M, 128 dimensions, L2 | Public exact-ground-truth compatibility |
+| A2 | GIST1M, 960 dimensions, L2 | High-dimensional public ANN behavior |
+| A3 | Public 768-dimensional embedding corpus | Current private-RAG shape |
+| A4 | Public 1536-dimensional embedding corpus | Larger embedding shape |
+| A5 | 10M vectors at a supported dimension | Capacity and build/restart behavior |
+
+Every converted file is SHA-256 identified. The preparation utility
+`scripts/convert_ann_benchmarks_hdf5.py` converts ANN-Benchmarks HDF5 data into
+streaming `fvecs`/`ivecs`; the release benchmark binary does not depend on
+Python, HDF5, or NumPy.
+
+### Query matrix
+
+For every dataset, run at least:
+
+- top-k: 10 and 100;
+- search breadth: 32, 64, 128, and 256 where supported;
+- concurrency: 1, 8, 32, and 64;
+- 1,000 warm-up queries; and
+- at least 10,000 measured requests per point.
+
+Use `akidb-ann-bench` to record:
+
+- exact Recall@K;
+- successful and failed requests;
+- QPS;
+- mean, P50, P95, P99, and maximum latency;
+- import duration and vectors/second;
+- before/after health counts; and
+- dataset path, byte count, and SHA-256.
+
+The server must start from an empty, isolated data directory for a load run.
+Any pre-existing active vector causes the harness to fail closed.
+
+### Filter and mixed-workload matrix
+
+Test exact metadata filters at approximately 1%, 5%, and 50% selectivity.
+Each result must satisfy the filter, and filtered Recall@K must use separately
+computed exact ground truth. Also run:
+
+- search while inserting at 10% and 50% of measured ingest capacity;
+- update and delete while searching;
+- process restart after index build;
+- WAL recovery after an unclean stop; and
+- snapshot restore followed by the full query set.
+
+### Absolute vector gates
+
+The chosen production configuration must meet all of these:
+
+- insert failures: 0;
+- measured query failures: 0;
+- Recall@10: at least 0.95;
+- Recall@100: at least 0.95;
+- returned filter violations: 0;
+- missing or duplicate IDs after restart: 0;
+- dataset and health counts exactly reconcile; and
+- all recovery runs reproduce the same accuracy result.
+
+Latency and QPS are configuration-specific and must be published as a Pareto
+curve, never as a single best number obtained at a lower recall setting.
+
+### Competitor parity gate
+
+Run current stable Milvus and Weaviate releases on the same isolated server
+shape. Record exact image/version digests and tune only documented production
+settings. At a common Recall@10 of at least 0.95:
+
+- AkiDB QPS must be at least 70% of the median competitor QPS;
+- AkiDB P99 must be no more than 150% of median competitor P99;
+- AkiDB build time must be no more than 200% of the median; and
+- AkiDB final on-disk bytes must be no more than 200% of the median.
+
+These relative limits define "similar" for the first AMD64 release. A failed
+relative performance gate is a release blocker unless the release explicitly
+narrows its published scale or workload claim.
+
+## Lane B: bounded graph and GraphRAG
+
+### Native graph kernel
+
+`akidb-graph-bench` materializes a deterministic persistent topology:
+
+```text
+Document --contains--> Chunk --mentions--> Entity
+```
+
+It then closes and reopens RocksDB before running a concurrent mix of:
+
+- filtered one-hop neighbors;
+- two-hop paths;
+- bounded path existence;
+- related chunks;
+- negative paths;
+- cross-workspace atomic rejection;
+- excessive-depth rejection; and
+- node deletion with incident-edge cleanup.
+
+Run at these minimum sizes:
+
+| Tier | Documents | Chunks/document | Entities | Approximate nodes |
+| --- | ---: | ---: | ---: | ---: |
+| G1 | 10,000 | 4 | 1,000 | 51,000 |
+| G2 | 100,000 | 4 | 10,000 | 510,000 |
+| G3 | 1,000,000 | 4 | 100,000 | 5,100,000 |
+
+Run 10,000 known-answer queries for G1 and at least 100,000 for G2/G3 at
+concurrency 1, 8, 32, and 64.
+
+Native graph release gates are:
+
+- known-answer accuracy: 1.0;
+- query and integrity errors: 0;
+- persistent node and edge counts: exact;
+- cross-workspace mutation acceptance: 0;
+- graph depth above the product limit accepted: 0;
+- orphan incident edges after deletion: 0; and
+- local-NVMe P99 at G2/concurrency 8: no more than 50 ms.
+
+### GraphRAG quality
+
+Use at least 100 human-reviewed or deterministically generated enterprise-style
+questions covering email threads, attachments, tickets, products, invoices,
+contracts, versions, and evidence citations. Compare:
+
+1. vector only;
+2. vector + BM25 + metadata;
+3. hybrid + one-hop graph;
+4. hybrid + two-hop graph; and
+5. hybrid + graph + rerank.
+
+Report Evidence Recall@K, multi-hop answer accuracy, relationship precision and
+recall, entity-resolution accuracy, citation correctness, graph-expansion token
+cost, and hallucination rate.
+
+The GraphRAG release configuration must have:
+
+- expected evidence recall: 1.0 for deterministic known-answer cases;
+- expected document recall: 1.0 for deterministic known-answer cases;
+- citation correctness: 1.0;
+- forbidden evidence returned: 0;
+- cross-workspace or ACL leakage: 0;
+- stale generation routes: 0; and
+- no regression versus hybrid-only retrieval on single-hop questions.
+
+The graph feature passes only if it materially improves the multi-hop set over
+hybrid-only retrieval. The result must state the absolute delta and confidence
+interval, not only that the graph path is faster.
+
+## Lane C: complete serving system
+
+### Correctness and security
+
+The gateway harness validates both HTTPS gateways, exact generation/manifest
+evidence, minimum mutation sequence, bounded graph options, typed/legacy
+context agreement, citations, and forbidden evidence. Security probes require:
+
+- health is intentionally available without credentials;
+- ready and search reject missing or incorrect credentials;
+- unsupported content type is rejected;
+- workspace override is rejected;
+- graph depth above the bound is rejected;
+- a query over 16 KiB is rejected before routing; and
+- a request body over 1 MiB is rejected.
+
+All expected statuses must match on both gateways.
+
+### Load levels
+
+Run the following sequence without rebuilding data:
+
+| Stage | Duration | Traffic |
+| --- | --- | --- |
+| correctness | at least 2 complete fixture passes | closed loop |
+| baseline | 10 minutes | 25 QPS |
+| step | 5 minutes each | 25, 50, 100, 200, then saturation |
+| steady | 2 hours | 70% of sustainable QPS |
+| soak | 24 hours | 50% of sustainable QPS |
+
+The harness reports service latency and schedule-to-completion latency so
+client backlog cannot hide coordinated omission. Sustainable QPS is the
+highest step with zero contract failures, error rate no more than 0.01%, and
+P99 within the published service objective.
+
+### Failure matrix
+
+Inject one bounded fault at a time while paced traffic is already running:
+
+- stop each AkiDB replica process in turn;
+- SIGKILL one replica during a write and verify WAL recovery;
+- reboot one replica host;
+- stop each gateway in turn behind the client/load-balancer path;
+- interrupt one replica's PostgreSQL control-plane connection;
+- make one replica's MinIO source temporarily unavailable;
+- fill a dedicated test volume to its configured watermark;
+- replace one replica from a blank volume;
+- restore from a backup to a separate path; and
+- roll forward and roll back one immutable artifact.
+
+Every action must identify one exact qualification target, have a bounded hold
+time, and use an `always` recovery block. The single-replica process fault gate
+requires zero failed reads, at least two serving replicas in the measured
+report, at least one request-level retry, exact generation readiness after
+recovery, and no stale route.
+
+### Serving-system gates
+
+- correctness/security run: 0 failed requests and 0 failed probes;
+- two-hour steady run: error rate at most 0.01%, 0 contract failures;
+- 24-hour soak: 0 data/citation/tenant correctness errors;
+- single-replica fault: 0 failed reads and at least one observed retry;
+- single-gateway fault: 0 failed reads through the published client path;
+- blank rebuild: exact manifest, generation, sequence, vector count, and graph
+  count;
+- backup/restore: full known-answer suite passes from the restored path; and
+- cross-tenant leakage: exactly 0 in every phase.
+
+The lab's PostgreSQL and MinIO may remain single-node only for AkiDB process
+qualification. A production-HA claim additionally requires managed or
+independently qualified HA PostgreSQL and object storage.
+
+## Phased execution plan
+
+### Phase 0 — Reproducible candidate
+
+- CI passes on macOS ARM64 and Ubuntu 24.04 AMD64.
+- Release tag equals the Cargo workspace version.
+- Linux artifact uses the `generation-postgres` feature.
+- Required binaries are present; packaging may not ignore missing binaries.
+- Artifact SHA-256 and build provenance attestation are retained.
+
+Exit: one immutable candidate is selected; no source rebuild is allowed during
+the remaining phases.
+
+### Phase 1 — Deterministic correctness
+
+- Run unit/integration/doc/Python tests.
+- Run native graph G1 and gateway known-answer/security gates.
+- Verify idempotent ingest, delete propagation, restart, and generation
+  consistency.
+
+Exit: all correctness gates pass with zero leakage and zero contract failures.
+
+### Phase 2 — Market vector qualification
+
+- Run SIFT1M, GIST1M, 768d, and 1536d matrices.
+- Run filter and mixed insert/search matrices.
+- Repeat matched Milvus and Weaviate runs.
+- Publish recall/throughput/latency Pareto tables and resource telemetry.
+
+Exit: absolute accuracy and competitor-parity gates pass.
+
+### Phase 3 — Graph and GraphRAG qualification
+
+- Run G1/G2/G3 native graph matrices.
+- Run the multi-hop GraphRAG evaluation against all retrieval baselines.
+- Verify provenance, ACL enforcement at each hop, and deletion propagation.
+
+Exit: graph accuracy gates pass and multi-hop quality shows a material,
+statistically reported improvement.
+
+### Phase 4 — Load, recovery, and HA
+
+- Determine saturation and sustainable QPS.
+- Run two-hour steady and 24-hour soak.
+- Complete every failure, blank-rebuild, rolling-upgrade, rollback, and
+  backup/restore drill.
+
+Exit: availability and recovery gates pass for all three replicas and both
+gateways.
+
+### Phase 5 — Release decision
+
+- Generate a single evidence manifest containing artifact, configuration,
+  dataset, inventory, and report SHA-256 values.
+- Review every required gate; no missing report is treated as a pass.
+- Publish supported OS/architecture, tested capacity, and explicit exclusions.
+- Create the release only from the already-qualified artifact.
+
+Exit: the release verdict is `pass`. Any missing, stale, mismatched, or failed
+evidence keeps the candidate in `not-ready` state.
+
+## Reproducible commands
+
+Convert an official ANN-Benchmarks HDF5 dataset:
+
+```bash
+python3 scripts/convert_ann_benchmarks_hdf5.py \
+  --input /qualification/sift-128-euclidean.hdf5 \
+  --output-dir /qualification/sift1m
+```
+
+Run exact-ground-truth ANN qualification against an isolated L2 server:
+
+```bash
+akidb-ann-bench \
+  --server https://10.77.0.13:50061 \
+  --dataset-name sift-128-euclidean \
+  --train-fvecs /qualification/sift1m/train.fvecs \
+  --query-fvecs /qualification/sift1m/test.fvecs \
+  --neighbors-ivecs /qualification/sift1m/neighbors.ivecs \
+  --metric l2 \
+  --collection sift1m \
+  --workspace qualification \
+  --top-k 10 \
+  --nprobe 128 \
+  --concurrency 8 \
+  --warmup-queries 1000 \
+  --min-recall 0.95 \
+  --output-json /qualification/evidence/sift1m-c8-n128.json
+```
+
+Run the native graph G1 gate:
+
+```bash
+akidb-graph-bench \
+  --data-dir /qualification/graph-g1 \
+  --documents 10000 \
+  --chunks-per-document 4 \
+  --entities 1000 \
+  --queries 10000 \
+  --concurrency 8 \
+  --min-accuracy 1 \
+  --max-p99-ms 50 \
+  --output-json /qualification/evidence/graph-g1-c8.json
+```
+
+Run gateway correctness and security from the Ansible controller:
+
+```bash
+ansible-playbook \
+  -i inventories/lab/hosts.yml \
+  playbooks/knowledge-load-test.yml
+```
+
+Run one explicitly authorized replica fault under load:
+
+```bash
+AKIDB_READINESS_FAULT_REPLICA=akidb-amd64-1 \
+AKIDB_READINESS_FAULT_CONFIRM=yes-stop-one-qualification-replica \
+ansible-playbook \
+  -i inventories/lab/hosts.yml \
+  playbooks/knowledge-failure-under-load.yml
+```
+
+Credentials remain environment-only and must never appear in inventory,
+fixtures, reports, shell history, or committed evidence.

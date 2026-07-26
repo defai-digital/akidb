@@ -44,13 +44,17 @@ dependencies = [
 name = "akidb-benchmark"
 version = "0.10.0"
 dependencies = [
+ "akidb-graph",
  "akidb-proto",
+ "akidb-storage",
  "clap",
  "indicatif",
  "rand 0.8.6",
  "rand_distr",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "tonic 0.12.3",
  "tracing",

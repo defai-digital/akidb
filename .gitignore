@@ -21,10 +21,7 @@ Thumbs.db
 # Local AI/agent tool configuration
 AGENTS.md
 CLAUDE.md
-/ax-internal/
-/.ax-internal/
 /.internal/
-/docs/archive/ax-internal/
 /.ax-grok/
 /.claude/
 /.gemini/
