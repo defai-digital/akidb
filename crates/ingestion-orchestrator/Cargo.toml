@@ -42,8 +42,8 @@ aws-sdk-s3 = { version = "1.137", default-features = false, features = ["default
 aws-config = { version = "1.8", default-features = false, features = ["default-https-client", "rt-tokio", "credentials-process"] }
 
 # gRPC client for AkiDB
-tonic = { version = "0.11", features = ["transport"] }
-prost = "0.12"
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
 
 # AkiDB gRPC types (generated client)
 akidb-proto = { path = "../proto" }

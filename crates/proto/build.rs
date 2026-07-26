@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(true)
         .build_client(true)
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["proto/akidb.proto"], &["proto/"])?;
+        .compile_protos(&["proto/akidb.proto"], &["proto/"])?;
 
     Ok(())
 }
