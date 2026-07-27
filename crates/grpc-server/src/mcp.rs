@@ -10,6 +10,8 @@
 //! - `pack` — hybrid retrieval assembled into a cited context pack.
 //! - `memory_write` — store an agent-memory entry (embedded + indexed).
 //! - `memory_read` — retrieve memory, optionally scoped to a conversation.
+//! - `memory_remember` — commit typed authoritative Memory preview data.
+//! - `memory_recall` — retrieve typed authoritative Memory preview data.
 //! - `status` — index statistics.
 //!
 //! [`handle_request`] is the pure request→response core (testable without I/O);
@@ -21,21 +23,114 @@ use akidb_faiss::VectorIndex;
 use akidb_retrieval::{MemoryEntry, MemoryKind};
 use akidb_storage::StorageBackend;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tonic::Request;
 
 use crate::proto::akidb_server::Akidb;
+use crate::proto::memory_content;
+use crate::proto::memory_service_server::MemoryService;
 use crate::proto::{
-    tag_filter::FilterType, tag_value::Value as TagVal, InsertRequest, SearchRequest, TagCondition,
-    TagFilter, TagOperator, TagValue, TextSearchRequest,
+    tag_filter::FilterType, tag_value::Value as TagVal, InsertRequest, MemoryContent,
+    MemoryEpistemicFormation, MemoryEvidenceInput, MemoryRecallRequest, MemoryRememberRequest,
+    MemoryRequestContext, MemoryScopeInput, MemorySensitivity, MemoryTextFact, SearchRequest,
+    TagCondition, TagFilter, TagOperator, TagValue, TextSearchRequest,
 };
 use crate::service::AkiDbService;
+use crate::MemoryAuthContext;
+use crate::MemoryServiceImpl;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const COLLECTION: &str = "default";
 
+/// One startup-authenticated principal session for the authoritative Memory
+/// MCP preview. Tool arguments may narrow these defaults but never replace the
+/// credential-derived maximum grants held in `auth_context`.
+#[derive(Clone)]
+pub struct AuthoritativeMemoryMcp<S: StorageBackend> {
+    service: Arc<MemoryServiceImpl<S>>,
+    auth_context: MemoryAuthContext,
+    workspace_id: String,
+    namespace: String,
+    request_purpose: String,
+    delegated_agent_id: Option<String>,
+}
+
+impl<S: StorageBackend> AuthoritativeMemoryMcp<S> {
+    pub fn new(
+        service: Arc<MemoryServiceImpl<S>>,
+        auth_context: MemoryAuthContext,
+        workspace_id: String,
+        namespace: String,
+        request_purpose: String,
+        delegated_agent_id: Option<String>,
+    ) -> Result<Self, String> {
+        for (field, value) in [
+            ("workspace_id", workspace_id.as_str()),
+            ("namespace", namespace.as_str()),
+            ("request_purpose", request_purpose.as_str()),
+        ] {
+            if value.trim().is_empty() || value.trim() != value {
+                return Err(format!("{field} must be non-empty and trimmed"));
+            }
+        }
+        if delegated_agent_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty() || value.trim() != value)
+        {
+            return Err("delegated_agent_id must be non-empty and trimmed".to_string());
+        }
+        Ok(Self {
+            service,
+            auth_context,
+            workspace_id,
+            namespace,
+            request_purpose,
+            delegated_agent_id,
+        })
+    }
+
+    fn context(
+        &self,
+        namespace: String,
+        request_purpose: String,
+        delegated_agent_id: Option<String>,
+        idempotency_key: Option<String>,
+    ) -> MemoryRequestContext {
+        MemoryRequestContext {
+            workspace_id: self.workspace_id.clone(),
+            namespace,
+            request_purpose,
+            delegated_agent_id,
+            idempotency_key,
+            request_id: Some(format!("mcp_{}", uuid::Uuid::now_v7().simple())),
+            scope_narrowing: None,
+        }
+    }
+
+    fn authenticated_request<T>(&self, body: T) -> Request<T> {
+        let mut request = Request::new(body);
+        request.extensions_mut().insert(self.auth_context.clone());
+        request
+    }
+}
+
 /// Handle one JSON-RPC message. Returns the response JSON string, or `None` for
 /// notifications (which take no response) and unparseable input that lacks an id.
 pub async fn handle_request<I, S>(service: &AkiDbService<I, S>, raw: &str) -> Option<String>
+where
+    I: VectorIndex + 'static,
+    S: StorageBackend + 'static,
+{
+    handle_request_with_memory(service, None, raw).await
+}
+
+/// Handle one JSON-RPC message with the optional authoritative Memory preview
+/// tools enabled for a startup-authenticated principal session.
+pub async fn handle_request_with_memory<I, S>(
+    service: &AkiDbService<I, S>,
+    memory: Option<&AuthoritativeMemoryMcp<S>>,
+    raw: &str,
+) -> Option<String>
 where
     I: VectorIndex + 'static,
     S: StorageBackend + 'static,
@@ -56,11 +151,14 @@ where
     match method {
         "initialize" => Some(ok_response(id, initialize_result())),
         "ping" => Some(ok_response(id, json!({}))),
-        "tools/list" => Some(ok_response(id, json!({ "tools": tool_definitions() }))),
+        "tools/list" => Some(ok_response(
+            id,
+            json!({ "tools": tool_definitions(memory.is_some()) }),
+        )),
         "tools/call" => {
             let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-            match call_tool(service, name, &args).await {
+            match call_tool(service, memory, name, &args).await {
                 Ok(text) => Some(ok_response(
                     id,
                     json!({ "content": [{ "type": "text", "text": text }], "isError": false }),
@@ -91,8 +189,9 @@ fn initialize_result() -> Value {
     })
 }
 
-fn tool_definitions() -> Value {
-    json!([
+fn tool_definitions(authoritative_memory: bool) -> Value {
+    let mut tools = vec![
+        json!(
         {
             "name": "search",
             "description": "Hybrid (dense + lexical) retrieval; returns ranked ids and scores.",
@@ -107,7 +206,8 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["query"]
             }
-        },
+        }),
+        json!(
         {
             "name": "pack",
             "description": "Retrieve and assemble a source-grounded, cited context pack.",
@@ -122,10 +222,11 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["query"]
             }
-        },
+        }),
+        json!(
         {
             "name": "memory_write",
-            "description": "Store an agent-memory entry (embedded and indexed for retrieval).",
+            "description": "LEGACY DOCUMENT MEMORY: store a metadata-backed entry in the vector collection.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -141,10 +242,11 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["id", "text"]
             }
-        },
+        }),
+        json!(
         {
             "name": "memory_read",
-            "description": "Retrieve agent memory, optionally scoped to a conversation_id and workspace.",
+            "description": "LEGACY DOCUMENT MEMORY: retrieve metadata-backed entries from the vector collection.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -156,17 +258,70 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["query"]
             }
-        },
+        }),
+        json!(
         {
             "name": "status",
             "description": "Index statistics (active/total/tombstoned vectors, dimensions).",
             "inputSchema": { "type": "object", "properties": {} }
-        }
-    ])
+        }),
+    ];
+    if authoritative_memory {
+        tools.extend([
+            json!({
+                "name": "memory_remember",
+                "description": "EXPERIMENTAL AUTHORITATIVE MEMORY PREVIEW: commit one typed immutable text fact.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "entity_key": { "type": "string" },
+                        "predicate": { "type": "string" },
+                        "text": { "type": "string" },
+                        "idempotency_key": { "type": "string" },
+                        "reason": { "type": "string" },
+                        "source_id": {
+                            "type": "string",
+                            "description": "Optional opaque source event ID; defaults to the idempotency key."
+                        },
+                        "namespace": { "type": "string" },
+                        "request_purpose": { "type": "string" },
+                        "delegated_agent_id": { "type": "string" },
+                        "data_subject_id": { "type": "string" },
+                        "session_id": { "type": "string" },
+                        "task_id": { "type": "string" },
+                        "sensitivity": {
+                            "type": "string",
+                            "enum": ["public", "internal", "confidential", "restricted"]
+                        }
+                    },
+                    "required": ["entity_key", "predicate", "text", "idempotency_key", "reason"]
+                }
+            }),
+            json!({
+                "name": "memory_recall",
+                "description": "EXPERIMENTAL AUTHORITATIVE MEMORY PREVIEW: bounded structured/BM25 recall with a retained snapshot.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "predicate": { "type": "string" },
+                        "entity_key": { "type": "string" },
+                        "namespace": { "type": "string" },
+                        "request_purpose": { "type": "string" },
+                        "delegated_agent_id": { "type": "string" },
+                        "max_items": { "type": "integer" },
+                        "max_context_tokens": { "type": "integer" }
+                    }
+                }
+            }),
+        ]);
+    }
+    Value::Array(tools)
 }
 
 async fn call_tool<I, S>(
     service: &AkiDbService<I, S>,
+    memory: Option<&AuthoritativeMemoryMcp<S>>,
     name: &str,
     args: &Value,
 ) -> Result<String, String>
@@ -179,6 +334,16 @@ where
         "pack" => tool_pack(service, args).await,
         "memory_write" => tool_memory_write(service, args).await,
         "memory_read" => tool_memory_read(service, args).await,
+        "memory_remember" => {
+            let session =
+                memory.ok_or_else(|| "authoritative Memory preview is not enabled".to_string())?;
+            tool_memory_remember(session, args).await
+        }
+        "memory_recall" => {
+            let session =
+                memory.ok_or_else(|| "authoritative Memory preview is not enabled".to_string())?;
+            tool_memory_recall(session, args).await
+        }
         "status" => Ok(tool_status(service)),
         _ => Err(format!("unknown tool: {name}")),
     }
@@ -423,6 +588,230 @@ where
     Ok(serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string()))
 }
 
+fn authoritative_memory_selectors<S: StorageBackend>(
+    session: &AuthoritativeMemoryMcp<S>,
+    args: &Value,
+) -> Result<(String, String, Option<String>), String> {
+    let namespace = arg_str(args, "namespace")?.unwrap_or_else(|| session.namespace.clone());
+    let request_purpose =
+        arg_str(args, "request_purpose")?.unwrap_or_else(|| session.request_purpose.clone());
+    let delegated_agent_id = match arg_str(args, "delegated_agent_id")? {
+        Some(value) => Some(value),
+        None => session.delegated_agent_id.clone(),
+    };
+    Ok((namespace, request_purpose, delegated_agent_id))
+}
+
+fn memory_sensitivity(args: &Value) -> Result<MemorySensitivity, String> {
+    match arg_str(args, "sensitivity")?.as_deref() {
+        None | Some("internal") => Ok(MemorySensitivity::Internal),
+        Some("public") => Ok(MemorySensitivity::Public),
+        Some("confidential") => Ok(MemorySensitivity::Confidential),
+        Some("restricted") => Ok(MemorySensitivity::Restricted),
+        Some(value) => Err(format!("unknown sensitivity: {value}")),
+    }
+}
+
+async fn tool_memory_remember<S>(
+    session: &AuthoritativeMemoryMcp<S>,
+    args: &Value,
+) -> Result<String, String>
+where
+    S: StorageBackend + 'static,
+{
+    let entity_key = required_str(args, "entity_key")?;
+    let predicate = required_str(args, "predicate")?;
+    let text = required_str(args, "text")?;
+    let idempotency_key = required_str(args, "idempotency_key")?;
+    let reason = required_str(args, "reason")?;
+    let content_sha256 = sha256_hex(text.as_bytes());
+    let source_id = arg_str(args, "source_id")?.unwrap_or_else(|| idempotency_key.clone());
+    let (namespace, request_purpose, delegated_agent_id) =
+        authoritative_memory_selectors(session, args)?;
+    let request = MemoryRememberRequest {
+        context: Some(session.context(
+            namespace,
+            request_purpose.clone(),
+            delegated_agent_id.clone(),
+            Some(idempotency_key),
+        )),
+        scope: Some(MemoryScopeInput {
+            entity_key,
+            data_subject_id: arg_str(args, "data_subject_id")?,
+            owner_agent_id: delegated_agent_id,
+            session_id: arg_str(args, "session_id")?,
+            task_id: arg_str(args, "task_id")?,
+            sensitivity: memory_sensitivity(args)? as i32,
+            allowed_purposes: vec![request_purpose],
+        }),
+        predicate,
+        content: Some(MemoryContent {
+            value: Some(memory_content::Value::TextFact(MemoryTextFact {
+                text,
+                language: None,
+            })),
+        }),
+        valid_from_ms: None,
+        valid_to_ms: None,
+        valid_from_unix_nanos: None,
+        valid_to_unix_nanos: None,
+        epistemic_formation: MemoryEpistemicFormation::MemoryFormationAgentStatement as i32,
+        confidence: None,
+        evidence: vec![MemoryEvidenceInput {
+            source_plane: "mcp-tool".to_string(),
+            source_id,
+            source_version: None,
+            observed_at_ms: None,
+            observed_at_unix_nanos: None,
+            content_sha256,
+            source_principal_id: None,
+        }],
+        expected_head_version_ids: Vec::new(),
+        reason,
+        compiler_artifact_id: None,
+        derivation: None,
+    };
+    let receipt = session
+        .service
+        .remember(session.authenticated_request(request))
+        .await
+        .map_err(|error| error.message().to_string())?
+        .into_inner();
+    Ok(json!({
+        "profile": "authoritative_memory_developer_preview",
+        "mutation_id": receipt.mutation_id,
+        "assertion_id": receipt.assertion_id,
+        "version_ids": receipt.version_ids,
+        "commit_sequence": receipt.commit_sequence,
+        "durability": receipt.durability,
+        "projection_status": receipt.projection_status,
+        "visible_sequence": receipt.visibility.as_ref().map(|value| value.visible_sequence),
+        "duplicate": receipt.duplicate,
+    })
+    .to_string())
+}
+
+async fn tool_memory_recall<S>(
+    session: &AuthoritativeMemoryMcp<S>,
+    args: &Value,
+) -> Result<String, String>
+where
+    S: StorageBackend + 'static,
+{
+    let query_text = arg_str(args, "query")?;
+    let predicate = arg_str(args, "predicate")?;
+    let entity_key = arg_str(args, "entity_key")?;
+    if query_text.is_none() && predicate.is_none() && entity_key.is_none() {
+        return Err("memory_recall requires 'query', 'predicate', or 'entity_key'".to_string());
+    }
+    let max_items = arg_u32(args, "max_items", 10)?;
+    let max_context_tokens = match args.get("max_context_tokens") {
+        Some(_) => Some(arg_u32(args, "max_context_tokens", 1_024)?),
+        None => None,
+    };
+    let (namespace, request_purpose, delegated_agent_id) =
+        authoritative_memory_selectors(session, args)?;
+    let response = session
+        .service
+        .recall(session.authenticated_request(MemoryRecallRequest {
+            context: Some(session.context(namespace, request_purpose, delegated_agent_id, None)),
+            query_text,
+            structured_predicates: predicate.into_iter().collect(),
+            entity_keys: entity_key.into_iter().collect(),
+            max_items,
+            max_context_tokens,
+            deterministic: true,
+            include_explanation_summary: true,
+            canonical_at_sequence: None,
+            temporal_query: None,
+            include_conflicts: false,
+            recipe: None,
+        }))
+        .await
+        .map_err(|error| error.message().to_string())?
+        .into_inner();
+    let items = response
+        .items
+        .iter()
+        .map(|item| {
+            json!({
+                "assertion_id": item.assertion_id,
+                "version_id": item.version_id,
+                "namespace": item.namespace,
+                "entity_key": item.entity_key,
+                "predicate": item.predicate,
+                "content": memory_content_json(item.content.as_ref()),
+                "state": item.state,
+                "source_assurance": item.source_assurance,
+                "decision_authority": item.decision_authority,
+                "score": item.score,
+                "score_signals": item.score_signals,
+                "reason": item.reason,
+                "committed_sequence": item.committed_sequence,
+                "evidence": item.evidence.iter().map(|evidence| json!({
+                    "evidence_id": evidence.evidence_id,
+                    "source_plane": evidence.source_plane,
+                    "source_id": evidence.source_id,
+                    "content_sha256": evidence.content_sha256,
+                    "source_assurance": evidence.source_assurance,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "profile": "authoritative_memory_developer_preview",
+        "items": items,
+        "rendered_context": response.rendered_context,
+        "snapshot_id": response.snapshot_id,
+        "commit_sequence": response.visibility.as_ref().map(|value| value.commit_sequence),
+        "visible_sequence": response.visibility.as_ref().map(|value| value.visible_sequence),
+        "partial_status": response.partial_status,
+        "policy_decision_id": response.policy_decision_id,
+    })
+    .to_string())
+}
+
+fn memory_content_json(content: Option<&MemoryContent>) -> Value {
+    match content.and_then(|content| content.value.as_ref()) {
+        Some(memory_content::Value::TextFact(value)) => {
+            json!({"kind": "text_fact", "text": value.text, "language": value.language})
+        }
+        Some(memory_content::Value::StructuredFact(value)) => json!({
+            "kind": "structured_fact",
+            "schema_id": value.schema_id,
+            "canonical_json_utf8": String::from_utf8_lossy(&value.canonical_json),
+        }),
+        Some(memory_content::Value::Procedure(value)) => json!({
+            "kind": "procedure",
+            "title": value.title,
+            "ordered_steps": value.ordered_steps,
+            "preconditions": value.preconditions,
+            "failure_recovery": value.failure_recovery,
+        }),
+        Some(memory_content::Value::Preference(value)) => json!({
+            "kind": "preference",
+            "value": value.value,
+            "context": value.context,
+        }),
+        Some(memory_content::Value::EpisodeReference(value)) => json!({
+            "kind": "episode_reference",
+            "event_ids": value.event_ids,
+            "summary": value.summary,
+        }),
+        None => Value::Null,
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write;
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
+}
+
 fn tool_status<I, S>(service: &AkiDbService<I, S>) -> String
 where
     I: VectorIndex + 'static,
@@ -450,6 +839,18 @@ where
     I: VectorIndex + 'static,
     S: StorageBackend + 'static,
 {
+    run_stdio_with_memory(service, None).await
+}
+
+/// Run MCP stdio with optional authoritative Memory preview tools.
+pub async fn run_stdio_with_memory<I, S>(
+    service: Arc<AkiDbService<I, S>>,
+    memory: Option<Arc<AuthoritativeMemoryMcp<S>>>,
+) -> std::io::Result<()>
+where
+    I: VectorIndex + 'static,
+    S: StorageBackend + 'static,
+{
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
@@ -458,7 +859,7 @@ where
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(resp) = handle_request(&service, &line).await {
+        if let Some(resp) = handle_request_with_memory(&service, memory.as_deref(), &line).await {
             stdout.write_all(resp.as_bytes()).await?;
             stdout.write_all(b"\n").await?;
             stdout.flush().await?;

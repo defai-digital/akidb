@@ -7,6 +7,7 @@
 | Target deployments | Single user: Mac Studio or AMD64 PC. Enterprise: Mac Studio cluster target or AMD64 cloud cluster. Also supported: Mac Mini/MacBook standalone | [Platform Support](platform/SUPPORT.md) |
 | Mutable standalone server | Primary supported profile for single-user targets | [Platform Support](platform/SUPPORT.md) |
 | Immutable single-node generation serving | Opt-in preview | [Immutable Generation Serving](development/generation-serving-preview.md) |
+| Authoritative agent Memory | Experimental single-process developer preview; bitemporal/history APIs implemented but not production or system-of-record qualified | [Authoritative Memory Developer Preview](development/authoritative-memory-preview.md) |
 | PostgreSQL-led full-replica knowledge cell | Implemented; Ubuntu AMD64 qualified for a bounded envelope; Mac Studio cluster is an intended enterprise path | [Agentic Knowledge-Serving Architecture](architecture/knowledge-serving.md), [Ubuntu AMD64 qualification](quality/linux-amd64-knowledge-cell-qualification.md) |
 | Market-aligned ANN / graph / competitor parity | Active release gate; automation ready, full evidence verdict not complete | [Market-Readiness Qualification](quality/market-readiness-qualification.md) |
 | Multi-shard coordinator | Capacity / fan-out path only; not HA replication | [Ansible deployment](../deploy/ansible/README.md) |
@@ -23,6 +24,7 @@
 - [Platform Support](platform/SUPPORT.md)
 - [Agentic Knowledge-Serving Architecture](architecture/knowledge-serving.md)
 - [Immutable Generation Serving](development/generation-serving-preview.md)
+- [Authoritative Memory Developer Preview](development/authoritative-memory-preview.md)
 - [Native GraphRAG Productization Plan](development/native-graphrag-plan.md)
 - [ADR index](adr/README.md)
 
@@ -47,3 +49,4 @@
 ## Development notes
 
 - [Agent Configs](development/AGENT_CONFIGS.md)
+- [Authoritative Memory Developer Preview](development/authoritative-memory-preview.md)

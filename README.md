@@ -270,6 +270,46 @@ The SDKs cover vector CRUD, batch operations, collections, vector and text
 search, cluster state, health, and agent-memory calls. `TextSearch` requires an
 embedding endpoint; vector APIs do not.
 
+### Authoritative Memory developer preview
+
+Authoritative Memory is an **experimental developer preview** with one
+authoritative workspace per process. The implementation exposes immutable
+history, valid-time and system-time queries, exact retained replay, and
+plan-then-execute deletion, but those surfaces are not yet a production or
+system-of-record qualification. No HA or fleet claim is made. Its canonical
+ledger is separate from the legacy metadata-backed `memory_write`/`memory_read`
+helpers.
+
+Start the no-cloud/no-embedding profile:
+
+```bash
+./scripts/akidb-memory-preview.sh
+```
+
+The script creates separate mode-0600 legacy and principal token files below
+`data/memory-preview/` without printing either token. In another terminal,
+install the Python SDK and run the real incident-replay ritual:
+
+```bash
+python3 -m venv sdks/python/.venv
+sdks/python/.venv/bin/pip install -e sdks/python
+sdks/python/.venv/bin/python scripts/agentic_memory_incident_replay.py
+```
+
+The demonstration commits an incorrect procedure, retains the recall that
+would have led to a wrong action, commits a successor correction, verifies
+later recall changed, and exactly replays the original snapshot.
+
+For MCP-capable agents, the same profile exposes explicitly named
+`memory_remember` and `memory_recall` tools:
+
+```bash
+./scripts/akidb-memory-preview.sh --mcp
+```
+
+The existing `memory_write` and `memory_read` MCP tools remain labeled
+`LEGACY DOCUMENT MEMORY`.
+
 ### Run as an MCP server
 
 ```bash
@@ -309,7 +349,9 @@ reference.
 | Section | Purpose |
 | --- | --- |
 | `server` | Bind address, gRPC port, and transport settings |
-| `auth` / `auth.acl` | Loopback policy, bearer token source, default workspace, and workspace enforcement |
+| `auth` / `auth.acl` | Loopback policy, legacy bearer token source, default workspace, and workspace enforcement |
+| `auth.memory` / `auth.principals` | Disabled-by-default authoritative Memory workspace, versioned identities, credentials, scope ceilings, and capabilities |
+| `memory` | Experimental authoritative ledger path, bounded recall limits, snapshots, and explicit retention declarations |
 | `generation_serving` | Opt-in immutable generation paths, publication credential, S3 limits, and generation materialization |
 | `generation_serving.replica_control` | Disabled-by-default PostgreSQL replica-worker settings for the Ubuntu AMD64 knowledge-serving profile |
 | `index` | HNSW construction/search settings, metric, precision, filtering, and rebuild thresholds |
@@ -325,6 +367,10 @@ Security defaults and requirements:
   `auth.mode = "disabled"` is explicitly selected for an isolated network.
 - Pass tokens through `AKIDB_AUTH_TOKEN` or a mode-`0600` file referenced by
   `AKIDB_AUTH_TOKEN_FILE`; never commit tokens or inventories.
+- Authoritative Memory uses a separately registered principal credential and
+  derives its workspace, namespace, purpose, sensitivity, entity, subject,
+  session, task, agent, and capability ceilings from that server-side grant.
+  Client fields can only narrow it.
 - Single-node generation publication requires a distinct
   `AKIDB_GENERATION_CONTROL_TOKEN`; PostgreSQL replica mode removes that local
   control API and reads its database URL only from the configured environment
@@ -424,6 +470,7 @@ akidb/
 - [Documentation index](docs/README.md)
 - [Knowledge-serving architecture](docs/architecture/knowledge-serving.md)
 - [Immutable generation serving](docs/development/generation-serving-preview.md)
+- [Authoritative Memory developer preview](docs/development/authoritative-memory-preview.md)
 - [Platform support](docs/platform/SUPPORT.md)
 - [Operations runbook](docs/runbooks/operations.md)
 - [Knowledge-serving runbook](docs/runbooks/knowledge-serving.md)
@@ -466,6 +513,11 @@ akidb/
 - Four-Mac Thunderbolt validation tooling defines an experimental evidence
   path for Mac clustering; the enterprise design centers on Mac Studio or
   AMD64 cloud full-replica cells.
+- Authoritative Memory is an experimental, single-process developer preview.
+  Its immutable ledger, bitemporal/history APIs, retained replay, and
+  reviewable deletion workflow are implemented for evaluation, but are not a
+  production, system-of-record, multi-tenant, HA, or fleet qualification. See
+  the [preview boundary](docs/development/authoritative-memory-preview.md).
 
 ## Contributing
 

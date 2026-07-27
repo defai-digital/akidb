@@ -158,6 +158,32 @@ pub struct AkiDbMetrics {
     pub generation_gc_runs_total: IntCounterVec,
     pub generation_gc_candidates: IntGaugeVec,
     pub generation_gc_deleted_bytes_total: IntCounterVec,
+
+    // ============================================
+    // Authoritative Memory Metrics
+    // ============================================
+    /// Canonical memory mutations by outcome and durability.
+    pub memory_commit_total: IntCounterVec,
+    /// End-to-end canonical memory mutation latency.
+    pub memory_commit_latency_seconds: HistogramVec,
+    /// Latest canonical sequence applied by each mandatory memory projection.
+    pub memory_projection_applied_sequence: GaugeVec,
+    /// Canonical-to-projection sequence lag.
+    pub memory_projection_lag_sequences: GaugeVec,
+    /// Ordered projection gaps detected while applying the memory outbox.
+    pub memory_projection_gap_total: IntCounterVec,
+    /// End-to-end recall latency for a bounded recipe and outcome.
+    pub memory_recall_latency_seconds: HistogramVec,
+    /// Recall snapshot persistence attempts by outcome.
+    pub memory_recall_snapshot_total: IntCounterVec,
+    /// Scoped authorization decisions by known capability and outcome.
+    pub memory_authorization_decision_total: IntCounterVec,
+    /// Quarantined memory candidates by bounded reason class.
+    pub memory_quarantine_total: IntCounterVec,
+    /// Recall replay attempts by mode and outcome.
+    pub memory_replay_total: IntCounterVec,
+    /// Reviewed deletion operations by stage and outcome.
+    pub memory_deletion_total: IntCounterVec,
 }
 
 impl AkiDbMetrics {
@@ -550,6 +576,103 @@ impl AkiDbMetrics {
                 &["replica_id"],
             )
             .unwrap(),
+
+            memory_commit_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_memory_commit_total",
+                    "Canonical memory mutations by outcome and durability",
+                ),
+                &["result", "durability"],
+            )
+            .unwrap(),
+            memory_commit_latency_seconds: HistogramVec::new(
+                HistogramOpts::new(
+                    "akidb_memory_commit_latency_seconds",
+                    "End-to-end canonical memory mutation latency",
+                )
+                .buckets(vec![
+                    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
+                    5.0,
+                ]),
+                &["durability"],
+            )
+            .unwrap(),
+            memory_projection_applied_sequence: GaugeVec::new(
+                Opts::new(
+                    "akidb_memory_projection_applied_sequence",
+                    "Latest canonical sequence applied by a mandatory memory projection",
+                ),
+                &["projection"],
+            )
+            .unwrap(),
+            memory_projection_lag_sequences: GaugeVec::new(
+                Opts::new(
+                    "akidb_memory_projection_lag_sequences",
+                    "Canonical sequence minus memory projection applied sequence",
+                ),
+                &["projection"],
+            )
+            .unwrap(),
+            memory_projection_gap_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_memory_projection_gap_total",
+                    "Ordered memory projection gaps detected while applying the outbox",
+                ),
+                &["projection"],
+            )
+            .unwrap(),
+            memory_recall_latency_seconds: HistogramVec::new(
+                HistogramOpts::new(
+                    "akidb_memory_recall_latency_seconds",
+                    "End-to-end memory recall latency",
+                )
+                .buckets(vec![
+                    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
+                    5.0,
+                ]),
+                &["recipe", "result"],
+            )
+            .unwrap(),
+            memory_recall_snapshot_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_memory_recall_snapshot_total",
+                    "Memory recall snapshot persistence attempts by outcome",
+                ),
+                &["result"],
+            )
+            .unwrap(),
+            memory_authorization_decision_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_memory_authorization_decision_total",
+                    "Scoped memory authorization decisions by capability and outcome",
+                ),
+                &["capability", "result"],
+            )
+            .unwrap(),
+            memory_quarantine_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_memory_quarantine_total",
+                    "Memory candidates quarantined by bounded reason class",
+                ),
+                &["reason_class"],
+            )
+            .unwrap(),
+            memory_replay_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_memory_replay_total",
+                    "Memory recall replay attempts by mode and outcome",
+                ),
+                &["mode", "result"],
+            )
+            .unwrap(),
+            memory_deletion_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_memory_deletion_total",
+                    "Reviewed memory deletion operations by stage and outcome",
+                ),
+                &["stage", "result"],
+            )
+            .unwrap(),
         }
     }
 
@@ -608,6 +731,17 @@ impl AkiDbMetrics {
             self.generation_gc_runs_total,
             self.generation_gc_candidates,
             self.generation_gc_deleted_bytes_total,
+            self.memory_commit_total,
+            self.memory_commit_latency_seconds,
+            self.memory_projection_applied_sequence,
+            self.memory_projection_lag_sequences,
+            self.memory_projection_gap_total,
+            self.memory_recall_latency_seconds,
+            self.memory_recall_snapshot_total,
+            self.memory_authorization_decision_total,
+            self.memory_quarantine_total,
+            self.memory_replay_total,
+            self.memory_deletion_total,
         )
     }
 
@@ -884,5 +1018,263 @@ impl AkiDbMetrics {
         self.governor_deferrals_total
             .with_label_values(&[reason])
             .inc();
+    }
+
+    // ============================================
+    // Authoritative Memory Metric Helpers
+    // ============================================
+
+    pub fn record_memory_commit(&self, result: &str, durability: &str, latency_secs: f64) {
+        let result = bounded_commit_result(result);
+        let durability = bounded_durability(durability);
+        self.memory_commit_total
+            .with_label_values(&[result, durability])
+            .inc();
+        self.memory_commit_latency_seconds
+            .with_label_values(&[durability])
+            .observe(latency_secs);
+    }
+
+    pub fn set_memory_projection_state(
+        &self,
+        projection: &str,
+        applied_sequence: u64,
+        canonical_sequence: u64,
+    ) {
+        let projection = bounded_projection(projection);
+        self.memory_projection_applied_sequence
+            .with_label_values(&[projection])
+            .set(applied_sequence as f64);
+        self.memory_projection_lag_sequences
+            .with_label_values(&[projection])
+            .set(canonical_sequence.saturating_sub(applied_sequence) as f64);
+    }
+
+    pub fn record_memory_projection_gap(&self, projection: &str) {
+        self.memory_projection_gap_total
+            .with_label_values(&[bounded_projection(projection)])
+            .inc();
+    }
+
+    pub fn record_memory_recall(&self, recipe: &str, result: &str, latency_secs: f64) {
+        self.memory_recall_latency_seconds
+            .with_label_values(&[bounded_recall_recipe(recipe), bounded_recall_result(result)])
+            .observe(latency_secs);
+    }
+
+    pub fn record_memory_recall_snapshot(&self, result: &str) {
+        self.memory_recall_snapshot_total
+            .with_label_values(&[bounded_snapshot_result(result)])
+            .inc();
+    }
+
+    pub fn record_memory_authorization(&self, capability: &str, result: &str) {
+        self.memory_authorization_decision_total
+            .with_label_values(&[
+                bounded_memory_capability(capability),
+                bounded_authorization_result(result),
+            ])
+            .inc();
+    }
+
+    pub fn record_memory_quarantine(&self, reason_class: &str) {
+        self.memory_quarantine_total
+            .with_label_values(&[bounded_quarantine_reason(reason_class)])
+            .inc();
+    }
+
+    pub fn record_memory_replay(&self, mode: &str, result: &str) {
+        self.memory_replay_total
+            .with_label_values(&[bounded_replay_mode(mode), bounded_replay_result(result)])
+            .inc();
+    }
+
+    pub fn record_memory_deletion(&self, stage: &str, result: &str) {
+        self.memory_deletion_total
+            .with_label_values(&[
+                bounded_deletion_stage(stage),
+                bounded_deletion_result(result),
+            ])
+            .inc();
+    }
+}
+
+fn bounded_commit_result(value: &str) -> &'static str {
+    match value {
+        "committed" => "committed",
+        "duplicate" => "duplicate",
+        _ => "error",
+    }
+}
+
+fn bounded_durability(value: &str) -> &'static str {
+    match value {
+        "synced" | "SYNCED" => "synced",
+        _ => "unknown",
+    }
+}
+
+fn bounded_projection(value: &str) -> &'static str {
+    match value {
+        "canonical:preview-v2" => "canonical:preview-v2",
+        "structured:preview-v2" => "structured:preview-v2",
+        "lexical:unicode-alnum-bm25-v2" => "lexical:unicode-alnum-bm25-v2",
+        _ => "unknown",
+    }
+}
+
+fn bounded_recall_recipe(value: &str) -> &'static str {
+    match value {
+        "preview-bounded-bm25-v1" => "preview-bounded-bm25-v1",
+        _ => "unknown",
+    }
+}
+
+fn bounded_recall_result(value: &str) -> &'static str {
+    match value {
+        "success" => "success",
+        _ => "error",
+    }
+}
+
+fn bounded_snapshot_result(value: &str) -> &'static str {
+    match value {
+        "success" => "success",
+        _ => "error",
+    }
+}
+
+fn bounded_memory_capability(value: &str) -> &'static str {
+    match value {
+        "memory.observe" => "memory.observe",
+        "memory.propose" => "memory.propose",
+        "memory.remember" => "memory.remember",
+        "memory.read" => "memory.read",
+        "memory.recall" => "memory.recall",
+        "memory.replay" => "memory.replay",
+        "memory.correct" => "memory.correct",
+        "memory.retract" => "memory.retract",
+        "memory.forget" => "memory.forget",
+        "memory.history" => "memory.history",
+        "memory.export" => "memory.export",
+        "memory.delete.plan" => "memory.delete.plan",
+        "memory.delete.execute" => "memory.delete.execute",
+        _ => "unknown",
+    }
+}
+
+fn bounded_authorization_result(value: &str) -> &'static str {
+    match value {
+        "allowed" => "allowed",
+        _ => "denied",
+    }
+}
+
+fn bounded_quarantine_reason(value: &str) -> &'static str {
+    match value {
+        "context_firewall" => "context_firewall",
+        _ => "other",
+    }
+}
+
+fn bounded_replay_mode(value: &str) -> &'static str {
+    match value {
+        "exact_retained" => "exact_retained",
+        "reexecute" => "reexecute",
+        _ => "invalid",
+    }
+}
+
+fn bounded_replay_result(value: &str) -> &'static str {
+    match value {
+        "success" => "success",
+        "exact_match" => "exact_match",
+        "mismatch" => "mismatch",
+        "expected_nondeterminism" => "expected_nondeterminism",
+        "artifact_expired" => "artifact_expired",
+        _ => "error",
+    }
+}
+
+fn bounded_deletion_stage(value: &str) -> &'static str {
+    match value {
+        "plan" => "plan",
+        "execute" => "execute",
+        _ => "unknown",
+    }
+}
+
+fn bounded_deletion_result(value: &str) -> &'static str {
+    match value {
+        "success" => "success",
+        "duplicate" => "duplicate",
+        _ => "error",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_metrics_export_required_content_free_families() {
+        let metrics = AkiDbMetrics::new();
+        let registry = Registry::new();
+        metrics.register(&registry).unwrap();
+
+        metrics.record_memory_commit("committed", "SYNCED", 0.01);
+        metrics.set_memory_projection_state("canonical:preview-v2", 4, 7);
+        metrics.record_memory_projection_gap("structured:preview-v2");
+        metrics.record_memory_recall("preview-bounded-bm25-v1", "success", 0.02);
+        metrics.record_memory_recall_snapshot("success");
+        metrics.record_memory_authorization("memory.recall", "allowed");
+        metrics.record_memory_quarantine("context_firewall");
+        metrics.record_memory_replay("reexecute", "exact_match");
+        metrics.record_memory_deletion("execute", "success");
+
+        let mut output = Vec::new();
+        TextEncoder::new()
+            .encode(&registry.gather(), &mut output)
+            .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        for family in [
+            "akidb_memory_commit_total",
+            "akidb_memory_commit_latency_seconds",
+            "akidb_memory_projection_applied_sequence",
+            "akidb_memory_projection_lag_sequences",
+            "akidb_memory_projection_gap_total",
+            "akidb_memory_recall_latency_seconds",
+            "akidb_memory_recall_snapshot_total",
+            "akidb_memory_authorization_decision_total",
+            "akidb_memory_quarantine_total",
+            "akidb_memory_replay_total",
+            "akidb_memory_deletion_total",
+        ] {
+            assert!(output.contains(family), "missing metric family {family}");
+        }
+    }
+
+    #[test]
+    fn memory_metric_labels_reject_unbounded_values() {
+        let metrics = AkiDbMetrics::new();
+        let registry = Registry::new();
+        metrics.register(&registry).unwrap();
+        let secret = "secret-workspace-query-and-principal";
+
+        metrics.record_memory_authorization(secret, secret);
+        metrics.record_memory_quarantine(secret);
+        metrics.record_memory_replay(secret, secret);
+        metrics.record_memory_deletion(secret, secret);
+        metrics.record_memory_recall(secret, secret, 0.0);
+        metrics.set_memory_projection_state(secret, 0, 0);
+
+        let mut output = Vec::new();
+        TextEncoder::new()
+            .encode(&registry.gather(), &mut output)
+            .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(!output.contains(secret));
+        assert!(output.contains("capability=\"unknown\""));
+        assert!(output.contains("projection=\"unknown\""));
     }
 }

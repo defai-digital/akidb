@@ -8,6 +8,36 @@ port = 8080
 grpc_port = 50051
 tls_enabled = false
 
+[auth]
+mode = "loopback_optional"
+token_file = "./data/auth.token"
+authorization_epoch = 1
+
+[auth.acl]
+default_workspace = "default"
+enforce_workspace = true
+
+[auth.memory]
+workspace_id = "default"
+allow_legacy_principal = false
+allow_unauthenticated_loopback = false
+
+[memory]
+enabled = false
+rocksdb_path = "./data/memory-rocksdb"
+max_recall_items = 100
+max_candidates = 5000
+default_context_token_budget = 1024
+snapshot_max_bytes = 4194304
+
+[memory.retention]
+raw_event_seconds = 0
+memory_version_seconds = 0
+compiler_artifact_seconds = 0
+index_artifact_seconds = 0
+audit_seconds = 0
+snapshot_seconds = 0
+
 [index]
 index_type = "HNSW"
 hnsw_m = 16

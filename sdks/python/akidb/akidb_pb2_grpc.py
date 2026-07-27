@@ -670,6 +670,784 @@ class Akidb(object):
             _registered_method=True)
 
 
+class MemoryServiceStub(object):
+    """============================================
+    Authoritative Agent Memory (experimental)
+    ============================================
+
+    This service is disabled by default and is independent from the legacy
+    metadata-backed memory_write/memory_read helpers.
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.GetMemoryCapabilities = channel.unary_unary(
+                '/akidb.v1.MemoryService/GetMemoryCapabilities',
+                request_serializer=akidb__pb2.GetMemoryCapabilitiesRequest.SerializeToString,
+                response_deserializer=akidb__pb2.GetMemoryCapabilitiesResponse.FromString,
+                _registered_method=True)
+        self.Observe = channel.unary_unary(
+                '/akidb.v1.MemoryService/Observe',
+                request_serializer=akidb__pb2.MemoryObserveRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryObserveReceipt.FromString,
+                _registered_method=True)
+        self.Propose = channel.unary_unary(
+                '/akidb.v1.MemoryService/Propose',
+                request_serializer=akidb__pb2.MemoryProposeRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryMutationReceipt.FromString,
+                _registered_method=True)
+        self.Commit = channel.unary_unary(
+                '/akidb.v1.MemoryService/Commit',
+                request_serializer=akidb__pb2.MemoryCommitRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryMutationReceipt.FromString,
+                _registered_method=True)
+        self.Remember = channel.unary_unary(
+                '/akidb.v1.MemoryService/Remember',
+                request_serializer=akidb__pb2.MemoryRememberRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryMutationReceipt.FromString,
+                _registered_method=True)
+        self.Get = channel.unary_unary(
+                '/akidb.v1.MemoryService/Get',
+                request_serializer=akidb__pb2.MemoryGetRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryGetResponse.FromString,
+                _registered_method=True)
+        self.Recall = channel.unary_unary(
+                '/akidb.v1.MemoryService/Recall',
+                request_serializer=akidb__pb2.MemoryRecallRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryRecallResponse.FromString,
+                _registered_method=True)
+        self.ExplainRecall = channel.unary_unary(
+                '/akidb.v1.MemoryService/ExplainRecall',
+                request_serializer=akidb__pb2.MemoryExplainRecallRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryExplainRecallResponse.FromString,
+                _registered_method=True)
+        self.ReplayRecall = channel.unary_unary(
+                '/akidb.v1.MemoryService/ReplayRecall',
+                request_serializer=akidb__pb2.MemoryReplayRecallRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryReplayRecallResponse.FromString,
+                _registered_method=True)
+        self.Correct = channel.unary_unary(
+                '/akidb.v1.MemoryService/Correct',
+                request_serializer=akidb__pb2.MemoryCorrectRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryMutationReceipt.FromString,
+                _registered_method=True)
+        self.Retract = channel.unary_unary(
+                '/akidb.v1.MemoryService/Retract',
+                request_serializer=akidb__pb2.MemoryRetractRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryMutationReceipt.FromString,
+                _registered_method=True)
+        self.Forget = channel.unary_unary(
+                '/akidb.v1.MemoryService/Forget',
+                request_serializer=akidb__pb2.MemoryForgetRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryMutationReceipt.FromString,
+                _registered_method=True)
+        self.ListHistory = channel.unary_unary(
+                '/akidb.v1.MemoryService/ListHistory',
+                request_serializer=akidb__pb2.MemoryListHistoryRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryListHistoryResponse.FromString,
+                _registered_method=True)
+        self.Export = channel.unary_stream(
+                '/akidb.v1.MemoryService/Export',
+                request_serializer=akidb__pb2.MemoryExportRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryExportRecord.FromString,
+                _registered_method=True)
+        self.PlanDeletion = channel.unary_unary(
+                '/akidb.v1.MemoryService/PlanDeletion',
+                request_serializer=akidb__pb2.MemoryPlanDeletionRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryDeletionPlan.FromString,
+                _registered_method=True)
+        self.ExecuteDeletion = channel.unary_unary(
+                '/akidb.v1.MemoryService/ExecuteDeletion',
+                request_serializer=akidb__pb2.MemoryExecuteDeletionRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryDeletionExecutionReceipt.FromString,
+                _registered_method=True)
+        self.Reinforce = channel.unary_unary(
+                '/akidb.v1.MemoryService/Reinforce',
+                request_serializer=akidb__pb2.MemoryReinforceRequest.SerializeToString,
+                response_deserializer=akidb__pb2.MemoryMutationReceipt.FromString,
+                _registered_method=True)
+
+
+class MemoryServiceServicer(object):
+    """============================================
+    Authoritative Agent Memory (experimental)
+    ============================================
+
+    This service is disabled by default and is independent from the legacy
+    metadata-backed memory_write/memory_read helpers.
+    """
+
+    def GetMemoryCapabilities(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Observe(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Propose(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Commit(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Remember(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Get(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Recall(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ExplainRecall(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReplayRecall(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Correct(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Retract(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Forget(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListHistory(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Export(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PlanDeletion(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ExecuteDeletion(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Reinforce(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_MemoryServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'GetMemoryCapabilities': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetMemoryCapabilities,
+                    request_deserializer=akidb__pb2.GetMemoryCapabilitiesRequest.FromString,
+                    response_serializer=akidb__pb2.GetMemoryCapabilitiesResponse.SerializeToString,
+            ),
+            'Observe': grpc.unary_unary_rpc_method_handler(
+                    servicer.Observe,
+                    request_deserializer=akidb__pb2.MemoryObserveRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryObserveReceipt.SerializeToString,
+            ),
+            'Propose': grpc.unary_unary_rpc_method_handler(
+                    servicer.Propose,
+                    request_deserializer=akidb__pb2.MemoryProposeRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryMutationReceipt.SerializeToString,
+            ),
+            'Commit': grpc.unary_unary_rpc_method_handler(
+                    servicer.Commit,
+                    request_deserializer=akidb__pb2.MemoryCommitRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryMutationReceipt.SerializeToString,
+            ),
+            'Remember': grpc.unary_unary_rpc_method_handler(
+                    servicer.Remember,
+                    request_deserializer=akidb__pb2.MemoryRememberRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryMutationReceipt.SerializeToString,
+            ),
+            'Get': grpc.unary_unary_rpc_method_handler(
+                    servicer.Get,
+                    request_deserializer=akidb__pb2.MemoryGetRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryGetResponse.SerializeToString,
+            ),
+            'Recall': grpc.unary_unary_rpc_method_handler(
+                    servicer.Recall,
+                    request_deserializer=akidb__pb2.MemoryRecallRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryRecallResponse.SerializeToString,
+            ),
+            'ExplainRecall': grpc.unary_unary_rpc_method_handler(
+                    servicer.ExplainRecall,
+                    request_deserializer=akidb__pb2.MemoryExplainRecallRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryExplainRecallResponse.SerializeToString,
+            ),
+            'ReplayRecall': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReplayRecall,
+                    request_deserializer=akidb__pb2.MemoryReplayRecallRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryReplayRecallResponse.SerializeToString,
+            ),
+            'Correct': grpc.unary_unary_rpc_method_handler(
+                    servicer.Correct,
+                    request_deserializer=akidb__pb2.MemoryCorrectRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryMutationReceipt.SerializeToString,
+            ),
+            'Retract': grpc.unary_unary_rpc_method_handler(
+                    servicer.Retract,
+                    request_deserializer=akidb__pb2.MemoryRetractRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryMutationReceipt.SerializeToString,
+            ),
+            'Forget': grpc.unary_unary_rpc_method_handler(
+                    servicer.Forget,
+                    request_deserializer=akidb__pb2.MemoryForgetRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryMutationReceipt.SerializeToString,
+            ),
+            'ListHistory': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListHistory,
+                    request_deserializer=akidb__pb2.MemoryListHistoryRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryListHistoryResponse.SerializeToString,
+            ),
+            'Export': grpc.unary_stream_rpc_method_handler(
+                    servicer.Export,
+                    request_deserializer=akidb__pb2.MemoryExportRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryExportRecord.SerializeToString,
+            ),
+            'PlanDeletion': grpc.unary_unary_rpc_method_handler(
+                    servicer.PlanDeletion,
+                    request_deserializer=akidb__pb2.MemoryPlanDeletionRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryDeletionPlan.SerializeToString,
+            ),
+            'ExecuteDeletion': grpc.unary_unary_rpc_method_handler(
+                    servicer.ExecuteDeletion,
+                    request_deserializer=akidb__pb2.MemoryExecuteDeletionRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryDeletionExecutionReceipt.SerializeToString,
+            ),
+            'Reinforce': grpc.unary_unary_rpc_method_handler(
+                    servicer.Reinforce,
+                    request_deserializer=akidb__pb2.MemoryReinforceRequest.FromString,
+                    response_serializer=akidb__pb2.MemoryMutationReceipt.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'akidb.v1.MemoryService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('akidb.v1.MemoryService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class MemoryService(object):
+    """============================================
+    Authoritative Agent Memory (experimental)
+    ============================================
+
+    This service is disabled by default and is independent from the legacy
+    metadata-backed memory_write/memory_read helpers.
+    """
+
+    @staticmethod
+    def GetMemoryCapabilities(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/GetMemoryCapabilities',
+            akidb__pb2.GetMemoryCapabilitiesRequest.SerializeToString,
+            akidb__pb2.GetMemoryCapabilitiesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Observe(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Observe',
+            akidb__pb2.MemoryObserveRequest.SerializeToString,
+            akidb__pb2.MemoryObserveReceipt.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Propose(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Propose',
+            akidb__pb2.MemoryProposeRequest.SerializeToString,
+            akidb__pb2.MemoryMutationReceipt.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Commit(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Commit',
+            akidb__pb2.MemoryCommitRequest.SerializeToString,
+            akidb__pb2.MemoryMutationReceipt.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Remember(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Remember',
+            akidb__pb2.MemoryRememberRequest.SerializeToString,
+            akidb__pb2.MemoryMutationReceipt.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Get(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Get',
+            akidb__pb2.MemoryGetRequest.SerializeToString,
+            akidb__pb2.MemoryGetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Recall(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Recall',
+            akidb__pb2.MemoryRecallRequest.SerializeToString,
+            akidb__pb2.MemoryRecallResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ExplainRecall(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/ExplainRecall',
+            akidb__pb2.MemoryExplainRecallRequest.SerializeToString,
+            akidb__pb2.MemoryExplainRecallResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReplayRecall(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/ReplayRecall',
+            akidb__pb2.MemoryReplayRecallRequest.SerializeToString,
+            akidb__pb2.MemoryReplayRecallResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Correct(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Correct',
+            akidb__pb2.MemoryCorrectRequest.SerializeToString,
+            akidb__pb2.MemoryMutationReceipt.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Retract(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Retract',
+            akidb__pb2.MemoryRetractRequest.SerializeToString,
+            akidb__pb2.MemoryMutationReceipt.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Forget(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Forget',
+            akidb__pb2.MemoryForgetRequest.SerializeToString,
+            akidb__pb2.MemoryMutationReceipt.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListHistory(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/ListHistory',
+            akidb__pb2.MemoryListHistoryRequest.SerializeToString,
+            akidb__pb2.MemoryListHistoryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Export(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Export',
+            akidb__pb2.MemoryExportRequest.SerializeToString,
+            akidb__pb2.MemoryExportRecord.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PlanDeletion(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/PlanDeletion',
+            akidb__pb2.MemoryPlanDeletionRequest.SerializeToString,
+            akidb__pb2.MemoryDeletionPlan.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ExecuteDeletion(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/ExecuteDeletion',
+            akidb__pb2.MemoryExecuteDeletionRequest.SerializeToString,
+            akidb__pb2.MemoryDeletionExecutionReceipt.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Reinforce(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.MemoryService/Reinforce',
+            akidb__pb2.MemoryReinforceRequest.SerializeToString,
+            akidb__pb2.MemoryMutationReceipt.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
 class IngestionServiceStub(object):
     """============================================
     Ingestion Service

@@ -45,6 +45,7 @@ uuid.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+prost.workspace = true
 async-trait.workspace = true
 url.workspace = true
 aws-sdk-s3 = { version = "1.137", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }

@@ -7,6 +7,9 @@ from .client import (
     GetResult,
     HealthStatus,
     InsertResult,
+    MemoryContext,
+    MemoryScope,
+    MemoryTemporal,
     SearchHit,
     TextSearchResult,
     UpdateResult,
@@ -26,6 +29,12 @@ from .errors import (
     UnauthenticatedError,
     UnavailableError,
 )
+from .unified import (
+    UnifiedRecallArtifact,
+    UnifiedRecallCoordinator,
+    UnifiedReplayError,
+    UnifiedReplayResult,
+)
 
 __all__ = [
     "AkiDBClient",
@@ -34,6 +43,9 @@ __all__ = [
     "GetResult",
     "HealthStatus",
     "InsertResult",
+    "MemoryContext",
+    "MemoryScope",
+    "MemoryTemporal",
     "SearchHit",
     "TextSearchResult",
     "UpdateResult",
@@ -50,5 +62,9 @@ __all__ = [
     "ResourceExhaustedError",
     "UnauthenticatedError",
     "UnavailableError",
+    "UnifiedRecallArtifact",
+    "UnifiedRecallCoordinator",
+    "UnifiedReplayError",
+    "UnifiedReplayResult",
 ]
 __version__ = "0.10.0"

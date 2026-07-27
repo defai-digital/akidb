@@ -74,6 +74,7 @@ dependencies = [
  "anyhow",
  "clap",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tonic 0.12.3",
 ]
@@ -108,7 +109,9 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
+ "unicode-normalization",
  "url",
 ]
 
@@ -214,6 +217,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "prometheus",
+ "prost 0.13.5",
  "reqwest",
  "rustls-tokio-postgres",
  "serde",
@@ -372,6 +376,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "unicode-normalization",
  "url",
  "urlencoding",
  "uuid",

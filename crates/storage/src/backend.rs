@@ -1,7 +1,9 @@
 //! Storage backend trait and implementations
 
 use crate::{AkiDbError, Result};
-use rocksdb::{checkpoint::Checkpoint, Options, WriteBatch, DB};
+use rocksdb::{
+    checkpoint::Checkpoint, Direction, IteratorMode, Options, WriteBatch, WriteOptions, DB,
+};
 use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
@@ -22,6 +24,16 @@ pub trait StorageBackend: Send + Sync {
 
     /// Batch write operations
     fn write_batch(&self, operations: Vec<BatchOperation>) -> Result<()>;
+
+    /// Atomically write a batch and synchronously persist its WAL record.
+    ///
+    /// Implementations that provide a native synced batch must override this
+    /// method. The default is safe for test/simple backends but cannot make
+    /// `write_batch` plus `flush` one storage-engine acknowledgement boundary.
+    fn write_batch_sync(&self, operations: Vec<BatchOperation>) -> Result<()> {
+        self.write_batch(operations)?;
+        self.flush()
+    }
 
     /// Get all keys with a prefix
     ///
@@ -47,6 +59,28 @@ pub trait StorageBackend: Send + Sync {
         }
     }
 
+    /// Get keys under `prefix` ordered strictly after `start_exclusive`.
+    ///
+    /// The default preserves correctness for simple/test backends. Persistent
+    /// engines should override this with an ordered seek so incremental
+    /// consumers do not repeatedly scan an entire historical prefix.
+    fn scan_prefix_from_limited(
+        &self,
+        prefix: &[u8],
+        start_exclusive: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_prefix_limited(prefix, None)?
+            .into_iter()
+            .filter(|(key, _)| key.as_slice() > start_exclusive)
+            .take(limit)
+            .collect())
+    }
+
     /// Count keys with a prefix without requiring callers to retain values.
     ///
     /// Backends should override this to stream over their native iterator.
@@ -60,6 +94,7 @@ pub trait StorageBackend: Send + Sync {
 }
 
 /// Batch operation type
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchOperation {
     Put { key: Vec<u8>, value: Vec<u8> },
     Delete { key: Vec<u8> },
@@ -156,6 +191,23 @@ impl StorageBackend for RocksDbBackend {
             .map_err(|e| AkiDbError::StorageError(format!("RocksDB batch write error: {}", e)))
     }
 
+    fn write_batch_sync(&self, operations: Vec<BatchOperation>) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        for operation in operations {
+            match operation {
+                BatchOperation::Put { key, value } => batch.put(key, value),
+                BatchOperation::Delete { key } => batch.delete(key),
+            }
+        }
+
+        let mut options = WriteOptions::default();
+        options.set_sync(true);
+        options.disable_wal(false);
+        self.db.write_opt(batch, &options).map_err(|error| {
+            AkiDbError::StorageError(format!("RocksDB synced batch write error: {error}"))
+        })
+    }
+
     fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         // FIX BUG-061: Default limit to 100,000 entries to prevent unbounded memory
         // For truly unlimited scans, use scan_prefix_limited(prefix, None)
@@ -196,6 +248,37 @@ impl StorageBackend for RocksDbBackend {
             }
         }
 
+        Ok(results)
+    }
+
+    fn scan_prefix_from_limited(
+        &self,
+        prefix: &[u8],
+        start_exclusive: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut results = Vec::with_capacity(limit.min(1024));
+        let iter = self
+            .db
+            .iterator(IteratorMode::From(start_exclusive, Direction::Forward));
+        for item in iter {
+            let (key, value) = item.map_err(|error| {
+                AkiDbError::StorageError(format!("RocksDB range scan error: {error}"))
+            })?;
+            if !key.starts_with(prefix) {
+                break;
+            }
+            if key.as_ref() == start_exclusive {
+                continue;
+            }
+            results.push((key.to_vec(), value.to_vec()));
+            if results.len() == limit {
+                break;
+            }
+        }
         Ok(results)
     }
 
@@ -273,6 +356,28 @@ mod tests {
     }
 
     #[test]
+    fn test_rocksdb_synced_batch() {
+        let dir = tempdir().unwrap();
+        let backend = RocksDbBackend::open(dir.path()).unwrap();
+
+        backend
+            .write_batch_sync(vec![
+                BatchOperation::Put {
+                    key: b"sync1".to_vec(),
+                    value: b"value1".to_vec(),
+                },
+                BatchOperation::Put {
+                    key: b"sync2".to_vec(),
+                    value: b"value2".to_vec(),
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(backend.get(b"sync1").unwrap(), Some(b"value1".to_vec()));
+        assert_eq!(backend.get(b"sync2").unwrap(), Some(b"value2".to_vec()));
+    }
+
+    #[test]
     fn test_rocksdb_scan_prefix() {
         let dir = tempdir().unwrap();
         let backend = RocksDbBackend::open(dir.path()).unwrap();
@@ -286,5 +391,34 @@ mod tests {
         assert_eq!(results.len(), 3);
         assert_eq!(backend.count_prefix(b"prefix:").unwrap(), 3);
         assert_eq!(backend.count_prefix(b"missing:").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_rocksdb_scan_prefix_from_is_exclusive_and_bounded() {
+        let dir = tempdir().unwrap();
+        let backend = RocksDbBackend::open(dir.path()).unwrap();
+        for suffix in [b"a", b"b", b"c", b"d"] {
+            let mut key = b"ordered:".to_vec();
+            key.extend_from_slice(suffix);
+            backend.put(&key, suffix).unwrap();
+        }
+        backend.put(b"other:z", b"z").unwrap();
+
+        let results = backend
+            .scan_prefix_from_limited(b"ordered:", b"ordered:b", 2)
+            .unwrap();
+        assert_eq!(
+            results.into_iter().map(|(key, _)| key).collect::<Vec<_>>(),
+            vec![b"ordered:c".to_vec(), b"ordered:d".to_vec()]
+        );
+
+        let from_missing = backend
+            .scan_prefix_from_limited(b"ordered:", b"ordered:bb", 1)
+            .unwrap();
+        assert_eq!(from_missing[0].0, b"ordered:c");
+        assert!(backend
+            .scan_prefix_from_limited(b"ordered:", b"ordered:a", 0)
+            .unwrap()
+            .is_empty());
     }
 }

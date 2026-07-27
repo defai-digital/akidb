@@ -29,6 +29,7 @@ chrono.workspace = true
 url.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
+unicode-normalization.workspace = true
 urlencoding = "2.1"
 zstd = "0.13"
 

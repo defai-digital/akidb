@@ -16,6 +16,9 @@ pub struct AkiDbConfig {
     /// Authentication and request authorization (v3.1 trust).
     #[serde(default)]
     pub auth: AuthConfig,
+    /// Authoritative Memory profile. Disabled by default.
+    #[serde(default)]
+    pub memory: MemoryServiceConfig,
     /// Read/plan-only operations console settings.
     #[serde(default)]
     pub management: ManagementConfig,
@@ -75,10 +78,23 @@ pub struct AuthConfig {
     /// Workspace ACL settings.
     #[serde(default)]
     pub acl: AclConfig,
+    /// Versioned principal and credential registry for authoritative Memory.
+    #[serde(default)]
+    pub principals: Vec<PrincipalConfig>,
+    /// Authorization epoch. Increment to invalidate cached grant decisions.
+    #[serde(default = "default_authorization_epoch")]
+    pub authorization_epoch: u64,
+    /// Memory-specific fail-closed and one-workspace settings.
+    #[serde(default)]
+    pub memory: MemoryAuthorizationConfig,
 }
 
 fn default_token_file() -> String {
     "./data/auth.token".to_string()
+}
+
+fn default_authorization_epoch() -> u64 {
+    1
 }
 
 impl Default for AuthConfig {
@@ -88,6 +104,194 @@ impl Default for AuthConfig {
             token_file: default_token_file(),
             token: None,
             acl: AclConfig::default(),
+            principals: Vec::new(),
+            authorization_epoch: default_authorization_epoch(),
+            memory: MemoryAuthorizationConfig::default(),
+        }
+    }
+}
+
+/// Authenticated identity category. It informs audit and default operational
+/// policy; it does not grant capabilities by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalKind {
+    User,
+    #[default]
+    Service,
+    Agent,
+    Administrator,
+}
+
+/// One independently rotatable bearer credential for a principal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrincipalCredentialConfig {
+    pub credential_id: String,
+    /// Inline tokens are supported for tests/bootstrap; prefer file or env.
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub token_file: Option<String>,
+    #[serde(default)]
+    pub token_env: Option<String>,
+    #[serde(default = "default_true")]
+    pub active: bool,
+    #[serde(default)]
+    pub not_before_ms: Option<u64>,
+    #[serde(default)]
+    pub expires_at_ms: Option<u64>,
+}
+
+/// Versioned principal grants. Client request values can only narrow these
+/// maximums.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrincipalConfig {
+    pub principal_id: String,
+    #[serde(default)]
+    pub kind: PrincipalKind,
+    #[serde(default = "default_true")]
+    pub active: bool,
+    #[serde(default = "default_grant_version")]
+    pub grant_version: u64,
+    #[serde(default)]
+    pub credentials: Vec<PrincipalCredentialConfig>,
+    #[serde(default)]
+    pub workspaces: Vec<String>,
+    #[serde(default)]
+    pub namespaces: Vec<String>,
+    #[serde(default)]
+    pub agent_ids: Vec<String>,
+    /// Permit delegated agents acting for this principal to access records
+    /// without an owner_agent_id. False keeps ownerless/shared memory behind
+    /// an explicit administrator-authored grant.
+    #[serde(default)]
+    pub allow_shared_memory: bool,
+    /// Entity keys or administrator-authored `**` wildcard available to this
+    /// principal. Request selectors may only narrow this ceiling.
+    #[serde(default)]
+    pub entity_keys: Vec<String>,
+    /// Privacy/data-subject IDs or `**`. Unscoped records remain separately
+    /// representable and are not treated as matching a requested subject.
+    #[serde(default)]
+    pub data_subject_ids: Vec<String>,
+    /// Session IDs or `**` available to this principal.
+    #[serde(default)]
+    pub session_ids: Vec<String>,
+    /// Task IDs or `**` available to this principal.
+    #[serde(default)]
+    pub task_ids: Vec<String>,
+    /// Allowed record classifications: public, internal, confidential, and
+    /// restricted. Unknown values fail server startup.
+    #[serde(default)]
+    pub sensitivities: Vec<String>,
+    #[serde(default)]
+    pub purposes: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+fn default_grant_version() -> u64 {
+    1
+}
+
+/// Memory authorization is stricter than the legacy vector data-plane ACL.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryAuthorizationConfig {
+    /// The only authoritative Memory workspace served by this process during
+    /// preview. Empty inherits `auth.acl.default_workspace`.
+    #[serde(default)]
+    pub workspace_id: String,
+    /// Explicit migration escape hatch. When false (default), the legacy
+    /// global token has no Memory capabilities.
+    #[serde(default)]
+    pub allow_legacy_principal: bool,
+    /// Tests only. An unauthenticated loopback caller otherwise has no Memory
+    /// capabilities even when the legacy data plane is loopback-optional.
+    #[serde(default)]
+    pub allow_unauthenticated_loopback: bool,
+}
+
+/// Authoritative Memory service runtime. Disabled by default while the product
+/// remains experimental and independently gated from the legacy vector data
+/// plane.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryServiceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_memory_rocksdb_path")]
+    pub rocksdb_path: String,
+    #[serde(default = "default_memory_max_recall_items")]
+    pub max_recall_items: usize,
+    #[serde(default = "default_memory_max_candidates")]
+    pub max_candidates: usize,
+    #[serde(default = "default_memory_context_token_budget")]
+    pub default_context_token_budget: usize,
+    #[serde(default = "default_memory_snapshot_max_bytes")]
+    pub snapshot_max_bytes: usize,
+    /// Declared retention windows. Zero means indefinite retention. Finite
+    /// windows fail startup until the corresponding verified GC executor is
+    /// available, preventing configuration from promising unenforced erasure.
+    #[serde(default)]
+    pub retention: MemoryRetentionConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryRetentionConfig {
+    #[serde(default)]
+    pub raw_event_seconds: u64,
+    #[serde(default)]
+    pub memory_version_seconds: u64,
+    #[serde(default)]
+    pub compiler_artifact_seconds: u64,
+    #[serde(default)]
+    pub index_artifact_seconds: u64,
+    #[serde(default)]
+    pub audit_seconds: u64,
+    #[serde(default)]
+    pub snapshot_seconds: u64,
+}
+
+impl MemoryRetentionConfig {
+    pub fn is_indefinite(&self) -> bool {
+        self.raw_event_seconds == 0
+            && self.memory_version_seconds == 0
+            && self.compiler_artifact_seconds == 0
+            && self.index_artifact_seconds == 0
+            && self.audit_seconds == 0
+            && self.snapshot_seconds == 0
+    }
+}
+
+fn default_memory_rocksdb_path() -> String {
+    "./data/memory-rocksdb".to_string()
+}
+
+fn default_memory_max_recall_items() -> usize {
+    100
+}
+
+fn default_memory_max_candidates() -> usize {
+    5_000
+}
+
+fn default_memory_context_token_budget() -> usize {
+    1_024
+}
+
+fn default_memory_snapshot_max_bytes() -> usize {
+    4 * 1024 * 1024
+}
+
+impl Default for MemoryServiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rocksdb_path: default_memory_rocksdb_path(),
+            max_recall_items: default_memory_max_recall_items(),
+            max_candidates: default_memory_max_candidates(),
+            default_context_token_budget: default_memory_context_token_budget(),
+            snapshot_max_bytes: default_memory_snapshot_max_bytes(),
+            retention: MemoryRetentionConfig::default(),
         }
     }
 }

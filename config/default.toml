@@ -14,10 +14,68 @@ tls_enabled = false
 mode = "loopback_optional"
 token_file = "./data/auth.token"
 # token = "set-explicitly-or-use-AKIDB_AUTH_TOKEN"
+authorization_epoch = 1
 
 [auth.acl]
 default_workspace = "default"
 enforce_workspace = true
+
+[auth.memory]
+# Authoritative Memory is one workspace per process during the experimental
+# and developer-preview profiles. Empty inherits auth.acl.default_workspace.
+workspace_id = "default"
+allow_legacy_principal = false
+allow_unauthenticated_loopback = false
+
+# Example principal. Uncomment and use a private file or environment variable;
+# never commit a credential token.
+# [[auth.principals]]
+# principal_id = "service:coding-agent"
+# kind = "service"
+# active = true
+# grant_version = 1
+# workspaces = ["default"]
+# namespaces = ["repo/**"]
+# agent_ids = ["agent:codex"]
+# allow_shared_memory = false
+# entity_keys = ["service:ingestion", "repo:akidb"]
+# data_subject_ids = ["**"]
+# session_ids = ["**"]
+# task_ids = ["**"]
+# sensitivities = ["public", "internal"]
+# purposes = ["debugging"]
+# capabilities = [
+#   "memory.observe", "memory.propose", "memory.remember", "memory.read",
+#   "memory.recall", "memory.correct", "memory.retract", "memory.forget",
+#   "memory.history", "memory.export", "memory.replay",
+#   "memory.delete.plan", "memory.delete.execute",
+# ]
+#
+# [[auth.principals.credentials]]
+# credential_id = "coding-agent-local"
+# token_env = "AKIDB_MEMORY_PRINCIPAL_TOKEN"
+# active = true
+
+[memory]
+# Disabled by default. Enabling this exposes an experimental, separately
+# authenticated MemoryService; it does not change legacy memory_write/read.
+enabled = false
+rocksdb_path = "./data/memory-rocksdb"
+max_recall_items = 100
+max_candidates = 5000
+default_context_token_budget = 1024
+snapshot_max_bytes = 4194304
+
+[memory.retention]
+# Zero is an explicit indefinite window. Finite values fail startup until a
+# verified GC executor exists; source/subject deletion remains separately
+# enforced by checksum-bound plans and non-resurrection tombstones.
+raw_event_seconds = 0
+memory_version_seconds = 0
+compiler_artifact_seconds = 0
+index_artifact_seconds = 0
+audit_seconds = 0
+snapshot_seconds = 0
 
 [management]
 audit_max_entries = 1000

@@ -2,12 +2,17 @@
 
 use std::sync::Arc;
 
+use akidb_common::config::{
+    AclConfig, AuthConfig, AuthMode, MemoryAuthorizationConfig, MemoryServiceConfig,
+    PrincipalConfig, PrincipalCredentialConfig, PrincipalKind,
+};
 use akidb_faiss::{HnswConfig, HnswIndex};
 use akidb_graph::{EdgeKind, GraphEdge, GraphIndex, GraphNode, NativeGraphIndex, NodeKind};
-use akidb_grpc::mcp::handle_request;
-use akidb_grpc::{AkiDbService, EmbeddingProvider};
-use akidb_storage::{IdMapping, RocksDbBackend};
+use akidb_grpc::mcp::{handle_request, handle_request_with_memory, AuthoritativeMemoryMcp};
+use akidb_grpc::{AkiDbService, AuthRuntime, EmbeddingProvider, MemoryServiceImpl};
+use akidb_storage::{IdMapping, MemoryLedger, RocksDbBackend};
 use serde_json::Value;
+use tonic::metadata::{MetadataMap, MetadataValue};
 
 const DIMS: usize = 3;
 
@@ -49,6 +54,100 @@ async fn call(svc: &AkiDbService<HnswIndex, RocksDbBackend>, raw: &str) -> Value
     serde_json::from_str(&resp).unwrap()
 }
 
+fn setup_authoritative_memory() -> (
+    AkiDbService<HnswIndex, RocksDbBackend>,
+    AuthoritativeMemoryMcp<RocksDbBackend>,
+) {
+    const TOKEN: &str = "mcp-authoritative-memory-token-0001";
+    let service = setup();
+    let directory = tempfile::tempdir().unwrap().keep();
+    let auth = AuthConfig {
+        mode: AuthMode::Required,
+        token_file: directory.join("legacy.token").display().to_string(),
+        token: Some("separate-legacy-token".to_string()),
+        acl: AclConfig {
+            default_workspace: "workspace-a".to_string(),
+            enforce_workspace: true,
+        },
+        principals: vec![PrincipalConfig {
+            principal_id: "service:mcp-agent".to_string(),
+            kind: PrincipalKind::Service,
+            active: true,
+            grant_version: 1,
+            credentials: vec![PrincipalCredentialConfig {
+                credential_id: "mcp-agent-test".to_string(),
+                token: Some(TOKEN.to_string()),
+                token_file: None,
+                token_env: None,
+                active: true,
+                not_before_ms: None,
+                expires_at_ms: None,
+            }],
+            workspaces: vec!["workspace-a".to_string()],
+            namespaces: vec!["repo/**".to_string()],
+            agent_ids: vec!["agent:mcp".to_string()],
+            allow_shared_memory: false,
+            entity_keys: vec!["service:ingestion".to_string()],
+            data_subject_ids: vec!["**".to_string()],
+            session_ids: vec!["**".to_string()],
+            task_ids: vec!["**".to_string()],
+            sensitivities: vec!["internal".to_string()],
+            purposes: vec!["debugging".to_string()],
+            capabilities: vec![
+                "memory.remember".to_string(),
+                "memory.recall".to_string(),
+                "memory.replay".to_string(),
+            ],
+        }],
+        authorization_epoch: 1,
+        memory: MemoryAuthorizationConfig {
+            workspace_id: "workspace-a".to_string(),
+            allow_legacy_principal: false,
+            allow_unauthenticated_loopback: false,
+        },
+    };
+    let runtime = AuthRuntime::bootstrap(auth, "127.0.0.1").unwrap();
+    let mut metadata = MetadataMap::new();
+    metadata.insert(
+        "authorization",
+        MetadataValue::try_from(format!("Bearer {TOKEN}")).unwrap(),
+    );
+    let auth_context = runtime.authorize_memory(&metadata).unwrap();
+    let backend = Arc::new(RocksDbBackend::open(directory.join("memory-rocksdb")).unwrap());
+    let ledger = Arc::new(MemoryLedger::new(backend, runtime.memory_access_verifier()));
+    let memory = Arc::new(
+        MemoryServiceImpl::new(
+            ledger,
+            runtime.memory_system_access_proof().unwrap(),
+            MemoryServiceConfig::default(),
+            false,
+            false,
+        )
+        .unwrap(),
+    );
+    let session = AuthoritativeMemoryMcp::new(
+        memory,
+        auth_context,
+        "workspace-a".to_string(),
+        "repo/akidb".to_string(),
+        "debugging".to_string(),
+        Some("agent:mcp".to_string()),
+    )
+    .unwrap();
+    (service, session)
+}
+
+async fn call_with_memory(
+    svc: &AkiDbService<HnswIndex, RocksDbBackend>,
+    memory: &AuthoritativeMemoryMcp<RocksDbBackend>,
+    raw: &str,
+) -> Value {
+    let response = handle_request_with_memory(svc, Some(memory), raw)
+        .await
+        .expect("expected a response");
+    serde_json::from_str(&response).unwrap()
+}
+
 #[tokio::test]
 async fn test_initialize_reports_server_info() {
     let svc = setup();
@@ -79,6 +178,77 @@ async fn test_tools_list_exposes_the_tool_surface() {
 }
 
 #[tokio::test]
+async fn test_authoritative_memory_tools_are_explicit_and_round_trip() {
+    let (service, memory) = setup_authoritative_memory();
+    let listed = call_with_memory(
+        &service,
+        &memory,
+        r#"{"jsonrpc":"2.0","id":40,"method":"tools/list"}"#,
+    )
+    .await;
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    for name in ["memory_remember", "memory_recall"] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == name),
+            "missing {name}"
+        );
+    }
+    let legacy = tools
+        .iter()
+        .find(|tool| tool["name"] == "memory_write")
+        .unwrap();
+    assert!(legacy["description"].as_str().unwrap().contains("LEGACY"));
+
+    let remembered = call_with_memory(
+        &service,
+        &memory,
+        r#"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"memory_remember","arguments":{"entity_key":"service:ingestion","predicate":"uses recovery procedure","text":"Drain the queue before restart.","idempotency_key":"mcp-remember-1","reason":"operator confirmed"}}}"#,
+    )
+    .await;
+    assert_eq!(remembered["result"]["isError"], false, "{remembered}");
+    let receipt: Value =
+        serde_json::from_str(remembered["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(receipt["profile"], "authoritative_memory_developer_preview");
+    assert_eq!(receipt["commit_sequence"], 1);
+    assert_eq!(receipt["visible_sequence"], 1);
+
+    let recalled = call_with_memory(
+        &service,
+        &memory,
+        r#"{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"queue restart","max_items":5,"max_context_tokens":256}}}"#,
+    )
+    .await;
+    assert_eq!(recalled["result"]["isError"], false, "{recalled}");
+    let result: Value =
+        serde_json::from_str(recalled["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(result["items"].as_array().unwrap().len(), 1);
+    assert!(result["snapshot_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("mem_s_"));
+    assert!(result["rendered_context"]
+        .as_str()
+        .unwrap()
+        .contains("QUOTED MEMORY DATA"));
+}
+
+#[tokio::test]
+async fn test_authoritative_memory_mcp_narrowing_fails_closed() {
+    let (service, memory) = setup_authoritative_memory();
+    let response = call_with_memory(
+        &service,
+        &memory,
+        r#"{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"memory_remember","arguments":{"entity_key":"employee:1","predicate":"salary","text":"restricted","idempotency_key":"mcp-forbidden-1","reason":"test","namespace":"private/payroll"}}}"#,
+    )
+    .await;
+    assert_eq!(response["result"]["isError"], true);
+    assert!(response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("namespace"));
+}
+
+#[tokio::test]
 async fn test_mcp_memory_workspace_isolation() {
     let svc = setup();
 
@@ -95,14 +265,20 @@ async fn test_mcp_memory_workspace_isolation() {
     assert_eq!(va["result"]["isError"], false, "{va}");
     let text_a = va["result"]["content"][0]["text"].as_str().unwrap_or("");
     assert!(text_a.contains("mem-a"), "ws-a should see mem-a: {text_a}");
-    assert!(!text_a.contains("mem-b"), "ws-a must not see mem-b: {text_a}");
+    assert!(
+        !text_a.contains("mem-b"),
+        "ws-a must not see mem-b: {text_a}"
+    );
 
     let read_b = r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"memory_read","arguments":{"query":"secret note","workspace":"ws-b","top_k":10}}}"#;
     let vb = call(&svc, read_b).await;
     assert_eq!(vb["result"]["isError"], false, "{vb}");
     let text_b = vb["result"]["content"][0]["text"].as_str().unwrap_or("");
     assert!(text_b.contains("mem-b"), "ws-b should see mem-b: {text_b}");
-    assert!(!text_b.contains("mem-a"), "ws-b must not see mem-a: {text_b}");
+    assert!(
+        !text_b.contains("mem-a"),
+        "ws-b must not see mem-a: {text_b}"
+    );
 }
 
 #[tokio::test]

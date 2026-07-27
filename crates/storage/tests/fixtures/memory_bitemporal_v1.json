@@ -1,0 +1,58 @@
+{
+  "schema": "akidb.memory-bitemporal-golden.v1",
+  "versions": [
+    {
+      "label": "original",
+      "valid_from_unix_nanos": 100,
+      "valid_to_unix_nanos": 300
+    },
+    {
+      "label": "late_correction",
+      "valid_from_unix_nanos": 50,
+      "valid_to_unix_nanos": 150
+    },
+    {
+      "label": "current",
+      "valid_from_unix_nanos": 150,
+      "valid_to_unix_nanos": 400
+    }
+  ],
+  "retract_after_versions": true,
+  "queries": [
+    {
+      "system_sequence": 0,
+      "valid_at_unix_nanos": 120,
+      "expected_label": null
+    },
+    {
+      "system_sequence": 1,
+      "valid_at_unix_nanos": 120,
+      "expected_label": "original"
+    },
+    {
+      "system_sequence": 1,
+      "valid_at_unix_nanos": 50,
+      "expected_label": null
+    },
+    {
+      "system_sequence": 2,
+      "valid_at_unix_nanos": 75,
+      "expected_label": "late_correction"
+    },
+    {
+      "system_sequence": 2,
+      "valid_at_unix_nanos": 200,
+      "expected_label": null
+    },
+    {
+      "system_sequence": 3,
+      "valid_at_unix_nanos": 200,
+      "expected_label": "current"
+    },
+    {
+      "system_sequence": 4,
+      "valid_at_unix_nanos": 200,
+      "expected_label": null
+    }
+  ]
+}

@@ -1,0 +1,145 @@
+# AkiDB authoritative Memory developer preview.
+#
+# Start through ./scripts/akidb-memory-preview.sh so the principal token file is
+# created with mode 0600. This profile is experimental: bitemporal APIs exist
+# for qualification, but this is not a production, system-of-record, HA, or
+# multi-workspace qualification.
+
+[server]
+host = "127.0.0.1"
+port = 8080
+grpc_port = 50051
+tls_enabled = false
+
+[auth]
+mode = "required"
+token_file = "./data/memory-preview/legacy.token"
+authorization_epoch = 1
+
+[auth.acl]
+default_workspace = "memory-preview"
+enforce_workspace = true
+
+[auth.memory]
+workspace_id = "memory-preview"
+allow_legacy_principal = false
+allow_unauthenticated_loopback = false
+
+[[auth.principals]]
+principal_id = "service:local-memory-preview"
+kind = "service"
+active = true
+grant_version = 1
+workspaces = ["memory-preview"]
+namespaces = ["memory/**"]
+agent_ids = ["agent:local-preview"]
+allow_shared_memory = false
+entity_keys = ["**"]
+data_subject_ids = ["**"]
+session_ids = ["**"]
+task_ids = ["**"]
+sensitivities = ["public", "internal", "confidential", "restricted"]
+purposes = ["agent-memory", "incident-replay"]
+capabilities = [
+  "memory.observe",
+  "memory.propose",
+  "memory.remember",
+  "memory.read",
+  "memory.recall",
+  "memory.correct",
+  "memory.retract",
+  "memory.forget",
+  "memory.history",
+  "memory.export",
+  "memory.replay",
+  "memory.delete.plan",
+  "memory.delete.execute",
+]
+
+[[auth.principals.credentials]]
+credential_id = "local-memory-preview"
+token_file = "./data/memory-preview/principal.token"
+active = true
+
+[memory]
+enabled = true
+rocksdb_path = "./data/memory-preview/memory-rocksdb"
+max_recall_items = 100
+max_candidates = 5000
+default_context_token_budget = 1024
+snapshot_max_bytes = 4194304
+
+[memory.retention]
+raw_event_seconds = 0
+memory_version_seconds = 0
+compiler_artifact_seconds = 0
+index_artifact_seconds = 0
+audit_seconds = 0
+snapshot_seconds = 0
+
+[index]
+index_type = "HNSW"
+hnsw_m = 16
+hnsw_ef_construction = 64
+hnsw_ef_search = 32
+vector_precision = "f32"
+metric = "cosine"
+
+[index.filter]
+mode = "adaptive"
+postfilter_overfetch_factor = 5
+max_postfilter_candidates = 16384
+adaptive_pre_selectivity = 0.20
+
+[index.rebuild]
+tombstone_ratio_trigger = 0.10
+max_duration_seconds = 300
+preferred_hours = [2, 3, 4]
+
+[index.tombstone]
+max_count = 100000
+
+[storage]
+rocksdb_path = "./data/memory-preview/vector-rocksdb"
+wal_enabled = true
+wal_path = "./data/memory-preview/vector-wal"
+
+[storage.minio]
+endpoint = ""
+bucket = ""
+access_key = ""
+secret_key = ""
+use_ssl = false
+
+[sql]
+enabled = false
+backend = "sqlite"
+sqlite_path = "./data/memory-preview/metadata.sqlite"
+
+[observability]
+tracing_enabled = false
+metrics_enabled = false
+metrics_port = 9090
+log_level = "info"
+log_format = "pretty"
+
+[slo.reference]
+dimensions = 8
+vectors_per_shard = 10000
+top_k = 10
+nprobe = 32
+batch_size = 1
+target_p95_ms = 50
+
+[slo.backpressure]
+soft_breach_ms = 50
+hard_breach_ms = 75
+degraded_mode_enabled = true
+
+[embedding]
+enabled = false
+url = "http://127.0.0.1:8081/v1/embeddings"
+model = "none"
+dimensions = 8
+timeout_ms = 10000
+max_batch_size = 32

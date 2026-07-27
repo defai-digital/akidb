@@ -41,6 +41,653 @@ service Akidb {
   rpc DropCollection(DropCollectionRequest) returns (DropCollectionResponse);
 }
 
+// ============================================
+// Authoritative Agent Memory (experimental)
+// ============================================
+
+// This service is disabled by default and is independent from the legacy
+// metadata-backed memory_write/memory_read helpers.
+service MemoryService {
+  rpc GetMemoryCapabilities(GetMemoryCapabilitiesRequest) returns (GetMemoryCapabilitiesResponse);
+  rpc Observe(MemoryObserveRequest) returns (MemoryObserveReceipt);
+  rpc Propose(MemoryProposeRequest) returns (MemoryMutationReceipt);
+  rpc Commit(MemoryCommitRequest) returns (MemoryMutationReceipt);
+  rpc Remember(MemoryRememberRequest) returns (MemoryMutationReceipt);
+  rpc Get(MemoryGetRequest) returns (MemoryGetResponse);
+  rpc Recall(MemoryRecallRequest) returns (MemoryRecallResponse);
+  rpc ExplainRecall(MemoryExplainRecallRequest) returns (MemoryExplainRecallResponse);
+  rpc ReplayRecall(MemoryReplayRecallRequest) returns (MemoryReplayRecallResponse);
+  rpc Correct(MemoryCorrectRequest) returns (MemoryMutationReceipt);
+  rpc Retract(MemoryRetractRequest) returns (MemoryMutationReceipt);
+  rpc Forget(MemoryForgetRequest) returns (MemoryMutationReceipt);
+  rpc ListHistory(MemoryListHistoryRequest) returns (MemoryListHistoryResponse);
+  rpc Export(MemoryExportRequest) returns (stream MemoryExportRecord);
+  rpc PlanDeletion(MemoryPlanDeletionRequest) returns (MemoryDeletionPlan);
+  rpc ExecuteDeletion(MemoryExecuteDeletionRequest) returns (MemoryDeletionExecutionReceipt);
+  rpc Reinforce(MemoryReinforceRequest) returns (MemoryMutationReceipt);
+}
+
+message MemoryRequestContext {
+  string workspace_id = 1;
+  string namespace = 2;
+  string request_purpose = 3;
+  optional string delegated_agent_id = 4;
+  optional string idempotency_key = 5;
+  optional string request_id = 6;
+  MemoryScopeNarrowing scope_narrowing = 7;
+}
+
+enum MemorySensitivity {
+  MEMORY_SENSITIVITY_UNSPECIFIED = 0;
+  MEMORY_SENSITIVITY_PUBLIC = 1;
+  MEMORY_SENSITIVITY_INTERNAL = 2;
+  MEMORY_SENSITIVITY_CONFIDENTIAL = 3;
+  MEMORY_SENSITIVITY_RESTRICTED = 4;
+}
+
+message MemoryScopeNarrowing {
+  repeated string entity_keys = 1;
+  repeated string data_subject_ids = 2;
+  repeated string session_ids = 3;
+  repeated string task_ids = 4;
+  optional MemorySensitivity maximum_sensitivity = 5;
+}
+
+message MemoryScopeInput {
+  string entity_key = 1;
+  optional string data_subject_id = 2;
+  optional string owner_agent_id = 3;
+  optional string session_id = 4;
+  optional string task_id = 5;
+  MemorySensitivity sensitivity = 6;
+  repeated string allowed_purposes = 7;
+}
+
+message MemoryTextFact {
+  string text = 1;
+  optional string language = 2;
+}
+
+message MemoryStructuredFact {
+  string schema_id = 1;
+  bytes canonical_json = 2;
+}
+
+message MemoryProcedure {
+  string title = 1;
+  repeated string ordered_steps = 2;
+  repeated string preconditions = 3;
+  repeated string failure_recovery = 4;
+}
+
+message MemoryPreference {
+  string value = 1;
+  optional string context = 2;
+}
+
+message MemoryEpisodeReference {
+  repeated string event_ids = 1;
+  optional string summary = 2;
+}
+
+message MemoryContent {
+  oneof value {
+    MemoryTextFact text_fact = 1;
+    MemoryStructuredFact structured_fact = 2;
+    MemoryProcedure procedure = 3;
+    MemoryPreference preference = 4;
+    MemoryEpisodeReference episode_reference = 5;
+  }
+}
+
+enum MemoryEpistemicFormation {
+  MEMORY_FORMATION_UNSPECIFIED = 0;
+  MEMORY_FORMATION_DIRECT_OBSERVATION = 1;
+  MEMORY_FORMATION_HUMAN_STATEMENT = 2;
+  MEMORY_FORMATION_AGENT_STATEMENT = 3;
+  MEMORY_FORMATION_MODEL_INFERENCE = 4;
+  MEMORY_FORMATION_DETERMINISTIC_DERIVATION = 5;
+  MEMORY_FORMATION_CONSOLIDATED_SUMMARY = 6;
+}
+
+message MemoryEvidenceInput {
+  string source_plane = 1;
+  string source_id = 2;
+  optional string source_version = 3;
+  optional uint64 observed_at_ms = 4;
+  string content_sha256 = 5;
+  optional string source_principal_id = 6;
+  optional int64 observed_at_unix_nanos = 7;
+}
+
+message MemoryDerivationInput {
+  repeated string input_version_ids = 1;
+  repeated string input_evidence_ids = 2;
+  string operation = 3;
+  optional string compiler_artifact_id = 4;
+  string deterministic_parameters_sha256 = 5;
+}
+
+message MemoryVersionInput {
+  MemoryScopeInput scope = 1;
+  string predicate = 2;
+  MemoryContent content = 3;
+  optional int64 valid_from_ms = 4;
+  optional int64 valid_to_ms = 5;
+  MemoryEpistemicFormation epistemic_formation = 6;
+  optional float confidence = 7;
+  repeated MemoryEvidenceInput evidence = 8;
+  repeated string expected_head_version_ids = 9;
+  string reason = 10;
+  optional int64 valid_from_unix_nanos = 11;
+  optional int64 valid_to_unix_nanos = 12;
+  optional string compiler_artifact_id = 13;
+  optional MemoryDerivationInput derivation = 14;
+}
+
+message MemoryRememberRequest {
+  MemoryRequestContext context = 1;
+  MemoryScopeInput scope = 2;
+  string predicate = 3;
+  MemoryContent content = 4;
+  optional int64 valid_from_ms = 5;
+  optional int64 valid_to_ms = 6;
+  MemoryEpistemicFormation epistemic_formation = 7;
+  optional float confidence = 8;
+  repeated MemoryEvidenceInput evidence = 9;
+  repeated string expected_head_version_ids = 10;
+  string reason = 11;
+  optional int64 valid_from_unix_nanos = 12;
+  optional int64 valid_to_unix_nanos = 13;
+  optional string compiler_artifact_id = 14;
+  optional MemoryDerivationInput derivation = 15;
+}
+
+message MemoryObserveRequest {
+  MemoryRequestContext context = 1;
+  MemoryScopeInput scope = 2;
+  string source_plane = 3;
+  string source_id = 4;
+  optional string source_version = 5;
+  optional uint64 observed_at_ms = 6;
+  string content_sha256 = 7;
+  bytes retained_payload = 8;
+  string reason = 9;
+  optional int64 observed_at_unix_nanos = 10;
+}
+
+message MemoryObserveReceipt {
+  string mutation_id = 1;
+  string observation_id = 2;
+  string evidence_id = 3;
+  uint64 commit_sequence = 4;
+  string durability = 5;
+  string projection_status = 6;
+  optional MemoryVisibilityReceipt visibility = 7;
+  string policy_decision_id = 8;
+  MemoryServerCapabilities capabilities = 9;
+  bool duplicate = 10;
+}
+
+message MemoryProposeRequest {
+  MemoryRequestContext context = 1;
+  MemoryVersionInput candidate = 2;
+}
+
+message MemoryCommitRequest {
+  MemoryRequestContext context = 1;
+  string proposal_version_id = 2;
+  repeated string expected_head_version_ids = 3;
+  string reason = 4;
+}
+
+message MemoryCorrectRequest {
+  MemoryRequestContext context = 1;
+  MemoryVersionInput successor = 2;
+}
+
+message MemoryVisibilityReceipt {
+  string workspace_id = 1;
+  uint64 commit_sequence = 2;
+  string projection_set_id = 3;
+  uint32 projection_set_version = 4;
+  uint64 visible_sequence = 5;
+}
+
+message MemoryServerCapabilities {
+  string profile_status = 1;
+  repeated string supported_rpcs = 2;
+  repeated string supported_temporal_modes = 3;
+  repeated string durability_modes = 4;
+  repeated string active_projection_recipes = 5;
+  string workspace_topology = 6;
+  bool insecure_development_mode = 7;
+  bool dense_retrieval_available = 8;
+  string retention_summary = 9;
+  string active_projection_manifest_sha256 = 10;
+  string policy_manifest_id = 11;
+  string tokenizer_artifact_id = 12;
+  string context_firewall_artifact_id = 13;
+  string server_build_id = 14;
+  MemoryRetentionPolicy retention_policy = 15;
+}
+
+message MemoryRetentionPolicy {
+  uint64 raw_event_seconds = 1;
+  uint64 memory_version_seconds = 2;
+  uint64 compiler_artifact_seconds = 3;
+  uint64 index_artifact_seconds = 4;
+  uint64 audit_seconds = 5;
+  uint64 snapshot_seconds = 6;
+  bool zero_means_indefinite = 7;
+  bool finite_windows_enforced = 8;
+}
+
+message MemoryMutationReceipt {
+  string mutation_id = 1;
+  string assertion_id = 2;
+  repeated string version_ids = 3;
+  uint64 commit_sequence = 4;
+  string durability = 5;
+  string projection_status = 6;
+  optional MemoryVisibilityReceipt visibility = 7;
+  string policy_decision_id = 8;
+  MemoryServerCapabilities capabilities = 9;
+  bool duplicate = 10;
+  MemoryVersionState version_state = 11;
+}
+
+message GetMemoryCapabilitiesRequest {}
+
+message GetMemoryCapabilitiesResponse {
+  MemoryServerCapabilities capabilities = 1;
+}
+
+enum MemoryVersionState {
+  MEMORY_VERSION_STATE_UNSPECIFIED = 0;
+  MEMORY_VERSION_STATE_PROPOSED = 1;
+  MEMORY_VERSION_STATE_QUARANTINED = 2;
+  MEMORY_VERSION_STATE_ACTIVE = 3;
+  MEMORY_VERSION_STATE_SUPERSEDED = 4;
+  MEMORY_VERSION_STATE_RETRACTED = 5;
+  MEMORY_VERSION_STATE_TOMBSTONED = 6;
+}
+
+message MemoryEvidenceRecord {
+  string evidence_id = 1;
+  string source_plane = 2;
+  string source_id = 3;
+  optional string source_version = 4;
+  optional uint64 observed_at_ms = 5;
+  string content_sha256 = 6;
+  optional string source_principal_id = 7;
+  string source_assurance = 8;
+  uint64 created_sequence = 9;
+  optional int64 observed_at_unix_nanos = 10;
+}
+
+message MemoryItem {
+  string assertion_id = 1;
+  string version_id = 2;
+  string namespace = 3;
+  string entity_key = 4;
+  string predicate = 5;
+  MemoryContent content = 6;
+  MemoryVersionState state = 7;
+  optional int64 valid_from_ms = 8;
+  optional int64 valid_to_ms = 9;
+  string epistemic_formation = 10;
+  string source_assurance = 11;
+  string decision_authority = 12;
+  optional float confidence = 13;
+  repeated MemoryEvidenceRecord evidence = 14;
+  uint64 committed_sequence = 15;
+  uint64 committed_at_ms = 16;
+  float score = 17;
+  repeated string score_signals = 18;
+  string reason = 19;
+  optional int64 valid_from_unix_nanos = 20;
+  optional int64 valid_to_unix_nanos = 21;
+  optional string compiler_artifact_id = 22;
+  optional MemoryDerivationRecord derivation = 23;
+  optional MemoryPolicyDecisionRecord policy_decision = 24;
+  repeated MemoryRelationRecord relations = 25;
+  repeated MemoryReinforcementRecord reinforcements = 26;
+}
+
+enum MemoryTemporalMode {
+  MEMORY_TEMPORAL_MODE_UNSPECIFIED = 0;
+  MEMORY_TEMPORAL_MODE_CURRENT = 1;
+  MEMORY_TEMPORAL_MODE_VALID_AT = 2;
+  MEMORY_TEMPORAL_MODE_SYSTEM_AS_OF = 3;
+  MEMORY_TEMPORAL_MODE_VALID_AT_AS_KNOWN_AT = 4;
+}
+
+message MemoryTemporalQuery {
+  MemoryTemporalMode mode = 1;
+  optional int64 valid_at_unix_nanos = 2;
+  optional uint64 commit_sequence = 3;
+}
+
+message MemoryDerivationRecord {
+  string derivation_id = 1;
+  repeated string input_version_ids = 2;
+  repeated string input_evidence_ids = 3;
+  string operation = 4;
+  optional string compiler_artifact_id = 5;
+  string deterministic_parameters_sha256 = 6;
+  string output_version_id = 7;
+  uint64 committed_sequence = 8;
+}
+
+message MemoryPolicyDecisionRecord {
+  string policy_decision_id = 1;
+  string policy_manifest_id = 2;
+  string outcome = 3;
+  string source_assurance = 4;
+  string decision_authority = 5;
+  repeated string reason_codes = 6;
+  string authorization_decision_id = 7;
+  uint64 committed_sequence = 8;
+}
+
+message MemoryRelationRecord {
+  string relation_id = 1;
+  string kind = 2;
+  string from_version_id = 3;
+  string to_version_id = 4;
+  string mutation_id = 5;
+  uint64 committed_sequence = 6;
+}
+
+message MemoryGetRequest {
+  MemoryRequestContext context = 1;
+  oneof target {
+    string assertion_id = 2;
+    string version_id = 3;
+  }
+  optional uint64 canonical_at_sequence = 4;
+  optional MemoryTemporalQuery temporal_query = 5;
+}
+
+message MemoryGetResponse {
+  bool found = 1;
+  optional MemoryItem item = 2;
+  uint64 canonical_sequence = 3;
+  MemoryServerCapabilities capabilities = 4;
+}
+
+message MemoryRecallRequest {
+  MemoryRequestContext context = 1;
+  optional string query_text = 2;
+  repeated string structured_predicates = 3;
+  repeated string entity_keys = 4;
+  uint32 max_items = 5;
+  optional uint32 max_context_tokens = 6;
+  bool deterministic = 7;
+  bool include_explanation_summary = 8;
+  optional uint64 canonical_at_sequence = 9;
+  optional MemoryTemporalQuery temporal_query = 10;
+  bool include_conflicts = 11;
+  optional string recipe = 12;
+}
+
+message MemoryRecallResponse {
+  repeated MemoryItem items = 1;
+  string rendered_context = 2;
+  string snapshot_id = 3;
+  MemoryVisibilityReceipt visibility = 4;
+  repeated string partial_status = 5;
+  string policy_decision_id = 6;
+  MemoryServerCapabilities capabilities = 7;
+}
+
+message MemoryRecallCandidateDecision {
+  string assertion_id = 1;
+  string version_id = 2;
+  bool admitted_to_bounded_pool = 3;
+  bool included_in_response = 4;
+  optional uint32 final_rank = 5;
+  float score = 6;
+  repeated string score_signals = 7;
+  repeated string decision_codes = 8;
+  string content_sha256 = 9;
+}
+
+message MemoryExplainRecallRequest {
+  MemoryRequestContext context = 1;
+  string snapshot_id = 2;
+}
+
+message MemoryExplainRecallResponse {
+  string snapshot_id = 1;
+  uint64 visible_sequence = 2;
+  string projection_set_id = 3;
+  uint32 projection_set_version = 4;
+  string projection_manifest_sha256 = 5;
+  repeated string artifact_ids = 6;
+  repeated MemoryRecallCandidateDecision candidates = 7;
+  string bounded_pool_semantics = 8;
+  string policy_decision_id = 9;
+  string explanation_sha256 = 10;
+}
+
+enum MemoryReplayMode {
+  MEMORY_REPLAY_MODE_UNSPECIFIED = 0;
+  MEMORY_REPLAY_MODE_EXACT_RETAINED = 1;
+  MEMORY_REPLAY_MODE_REEXECUTE = 2;
+}
+
+enum MemoryReplayComparisonStatus {
+  MEMORY_REPLAY_COMPARISON_STATUS_UNSPECIFIED = 0;
+  MEMORY_REPLAY_COMPARISON_STATUS_EXACT_MATCH = 1;
+  MEMORY_REPLAY_COMPARISON_STATUS_MISMATCH = 2;
+  MEMORY_REPLAY_COMPARISON_STATUS_EXPECTED_NONDETERMINISM = 3;
+  MEMORY_REPLAY_COMPARISON_STATUS_ARTIFACT_EXPIRED = 4;
+  MEMORY_REPLAY_COMPARISON_STATUS_POLICY_DENIED = 5;
+  MEMORY_REPLAY_COMPARISON_STATUS_CORRUPTION = 6;
+}
+
+message MemoryReplayRecallRequest {
+  MemoryRequestContext context = 1;
+  string snapshot_id = 2;
+  MemoryReplayMode mode = 3;
+}
+
+message MemoryReplayRecallResponse {
+  MemoryRecallResponse recall = 1;
+  string replay_mode = 2;
+  bool exact_match = 3;
+  string response_sha256 = 4;
+  MemoryReplayComparisonStatus comparison_status = 5;
+  repeated string mismatch_fields = 6;
+  string expected_response_sha256 = 7;
+  string actual_response_sha256 = 8;
+  bool artifacts_retained = 9;
+}
+
+message MemoryForgetRequest {
+  MemoryRequestContext context = 1;
+  oneof target {
+    string assertion_id = 2;
+    string version_id = 3;
+  }
+  repeated string expected_head_version_ids = 4;
+  string reason = 5;
+}
+
+message MemoryRetractRequest {
+  MemoryRequestContext context = 1;
+  oneof target {
+    string assertion_id = 2;
+    string version_id = 3;
+  }
+  repeated string expected_head_version_ids = 4;
+  string reason = 5;
+}
+
+message MemoryAssertionRecord {
+  string assertion_id = 1;
+  string workspace_id = 2;
+  string namespace = 3;
+  string entity_key = 4;
+  string predicate = 5;
+  string kind = 6;
+  uint32 identity_hash_version = 7;
+  string identity_hash = 8;
+  uint64 created_sequence = 9;
+  uint64 created_at_ms = 10;
+}
+
+message MemoryLifecycleTransition {
+  string version_id = 1;
+  MemoryVersionState state = 2;
+  uint64 transition_sequence = 3;
+  string transition_mutation_id = 4;
+}
+
+message MemoryMutationRecord {
+  string mutation_id = 1;
+  string operation = 2;
+  string assertion_id = 3;
+  repeated string input_version_ids = 4;
+  repeated string output_version_ids = 5;
+  repeated string expected_head_version_ids = 6;
+  string principal_id = 7;
+  optional string delegated_agent_id = 8;
+  string authorization_decision_id = 9;
+  string policy_decision_id = 10;
+  string reason = 11;
+  uint64 committed_sequence = 12;
+  uint64 committed_at_ms = 13;
+  string canonical_request_sha256 = 14;
+}
+
+message MemoryListHistoryRequest {
+  MemoryRequestContext context = 1;
+  string assertion_id = 2;
+  optional uint64 from_sequence = 3;
+  optional uint64 to_sequence = 4;
+  uint32 limit = 5;
+}
+
+message MemoryListHistoryResponse {
+  bool found = 1;
+  optional MemoryAssertionRecord assertion = 2;
+  repeated MemoryItem versions = 3;
+  repeated MemoryLifecycleTransition lifecycle_transitions = 4;
+  repeated MemoryMutationRecord mutations = 5;
+  repeated MemoryRelationRecord relations = 6;
+  uint64 canonical_sequence = 7;
+  MemoryServerCapabilities capabilities = 8;
+}
+
+message MemoryExportRequest {
+  MemoryRequestContext context = 1;
+  uint32 limit = 2;
+}
+
+message MemoryExportRecord {
+  string record_type = 1;
+  string record_id = 2;
+  bytes canonical_json = 3;
+  string sha256 = 4;
+}
+
+message MemorySourceDeletionSelector {
+  string source_plane = 1;
+  string source_id = 2;
+}
+
+message MemoryDeletionSelector {
+  oneof selector {
+    MemorySourceDeletionSelector source = 1;
+    string data_subject_id = 2;
+  }
+}
+
+message MemoryPlanDeletionRequest {
+  MemoryRequestContext context = 1;
+  MemoryDeletionSelector selector = 2;
+  string reason = 3;
+  optional uint64 expires_in_seconds = 4;
+}
+
+message MemoryDeletionPlan {
+  string plan_id = 1;
+  string plan_sha256 = 2;
+  uint64 created_sequence = 3;
+  uint64 created_at_ms = 4;
+  uint64 expires_at_ms = 5;
+  repeated string affected_assertion_ids = 6;
+  repeated string affected_version_ids = 7;
+  repeated string affected_evidence_ids = 8;
+  repeated string affected_observation_ids = 9;
+  repeated string affected_snapshot_ids = 10;
+  string selector_type = 11;
+  uint64 total_affected_records = 12;
+  MemoryServerCapabilities capabilities = 13;
+  repeated string affected_reinforcement_ids = 14;
+}
+
+message MemoryExecuteDeletionRequest {
+  MemoryRequestContext context = 1;
+  string plan_id = 2;
+  string plan_sha256 = 3;
+  string reason = 4;
+}
+
+message MemoryDeletionExecutionReceipt {
+  string execution_id = 1;
+  string plan_id = 2;
+  string plan_sha256 = 3;
+  string mutation_id = 4;
+  uint64 commit_sequence = 5;
+  string durability = 6;
+  string projection_status = 7;
+  optional MemoryVisibilityReceipt visibility = 8;
+  string policy_decision_id = 9;
+  bool duplicate = 10;
+  repeated string affected_assertion_ids = 11;
+  repeated string affected_version_ids = 12;
+  repeated string affected_evidence_ids = 13;
+  repeated string affected_observation_ids = 14;
+  repeated string affected_snapshot_ids = 15;
+  repeated string tombstone_ids = 16;
+  MemoryServerCapabilities capabilities = 17;
+  repeated string affected_reinforcement_ids = 18;
+}
+
+enum MemoryReinforcementOutcome {
+  MEMORY_REINFORCEMENT_OUTCOME_UNSPECIFIED = 0;
+  MEMORY_REINFORCEMENT_OUTCOME_SUCCEEDED = 1;
+  MEMORY_REINFORCEMENT_OUTCOME_FAILED = 2;
+  MEMORY_REINFORCEMENT_OUTCOME_NEUTRAL = 3;
+}
+
+message MemoryReinforceRequest {
+  MemoryRequestContext context = 1;
+  string version_id = 2;
+  repeated MemoryEvidenceInput evidence = 3;
+  MemoryReinforcementOutcome outcome = 4;
+  string outcome_id = 5;
+  sint32 utility_micros = 6;
+  string reason = 7;
+}
+
+message MemoryReinforcementRecord {
+  string reinforcement_id = 1;
+  string version_id = 2;
+  repeated string evidence_ids = 3;
+  MemoryReinforcementOutcome outcome = 4;
+  string outcome_id = 5;
+  sint32 utility_micros = 6;
+  string policy_decision_id = 7;
+  string created_by_principal_id = 8;
+  uint64 committed_sequence = 9;
+  uint64 committed_at_ms = 10;
+}
+
 // Collection management (v3.1 schema surface)
 message CreateCollectionRequest {
   string name = 1;

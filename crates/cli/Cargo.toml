@@ -21,5 +21,6 @@ akidb-tui = { path = "../tui" }
 anyhow.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tonic.workspace = true

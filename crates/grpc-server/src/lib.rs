@@ -17,6 +17,7 @@ pub mod generation_management;
 mod ingestion;
 mod management;
 pub mod mcp;
+pub mod memory;
 mod metrics;
 #[cfg(feature = "generation-postgres")]
 pub mod replica_worker;
@@ -25,7 +26,10 @@ mod tags;
 mod webhook;
 
 pub use admin::{AdminServiceImpl, AdminState, RegisteredTask};
-pub use auth::{AuthContext, AuthInterceptor, AuthRuntime};
+pub use auth::{
+    memory_auth_context, AuthContext, AuthInterceptor, AuthRuntime, AuthorizedMemoryContext,
+    MemoryAuthContext, MemoryScopeSelector,
+};
 pub use collections::{CollectionMeta, CollectionRegistry, SharedCollectionRegistry};
 pub use generation::{
     GenerationDiskAdmission, GenerationMaterializer, GenerationMaterializerConfig,
@@ -43,6 +47,7 @@ pub use generation_fetch::{S3GenerationBundleFetcher, S3GenerationBundleFetcherC
 pub use generation_management::GenerationManagementServiceImpl;
 pub use ingestion::IngestionServiceImpl;
 pub use management::{ManagementServiceImpl, ManagementState, StagedObject, StagingRegistry};
+pub use memory::MemoryServiceImpl;
 pub use metrics::{export_metrics, metrics, registry as metrics_registry, AkiDbMetrics};
 #[cfg(feature = "generation-postgres")]
 pub use replica_worker::{PostgresReplicaWorker, ReplicaWorkerConfig, ReplicaWorkerError};

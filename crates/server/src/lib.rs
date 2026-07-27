@@ -13,8 +13,9 @@ use akidb_embedding::ax_engine::AxEngineEmbedding;
 use akidb_faiss::{DistanceMetric, HnswConfig, HnswIndex, VectorIndex, VectorPrecision};
 use akidb_graph::NativeGraphIndex;
 use akidb_grpc::{
-    export_metrics, AdminState, AkiDbService, AuthInterceptor, AuthRuntime, EmbeddingProvider,
-    ManagementServiceImpl, ManagementState, StagingRegistry,
+    export_metrics, mcp::AuthoritativeMemoryMcp, AdminState, AkiDbService, AuthInterceptor,
+    AuthRuntime, EmbeddingProvider, ManagementServiceImpl, ManagementState, MemoryServiceImpl,
+    StagingRegistry,
 };
 #[cfg(feature = "generation-s3")]
 use akidb_grpc::{
@@ -28,12 +29,15 @@ use akidb_proto::akidb_server::AkidbServer;
 #[cfg(feature = "generation-s3")]
 use akidb_proto::generation_management_server::GenerationManagementServer;
 use akidb_proto::management_service_server::ManagementServiceServer;
+use akidb_proto::memory_service_server::MemoryServiceServer;
 #[cfg(feature = "postgres")]
 use akidb_sql::PostgresMetadataIndex;
 use akidb_sql::{SqliteMetadataIndex, POSTGRES_BACKEND, SQLITE_BACKEND};
 #[cfg(feature = "generation-s3")]
 use akidb_storage::{GenerationStore, ServingStateStore};
-use akidb_storage::{IdMapping, LocalSnapshotBackend, RocksDbBackend, SnapshotManager};
+use akidb_storage::{
+    IdMapping, LocalSnapshotBackend, MemoryLedger, RocksDbBackend, SnapshotManager,
+};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::server::conn::http1;
@@ -44,7 +48,7 @@ use hyper_util::rt::TokioIo;
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -144,6 +148,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         info!("Config file not found, using defaults");
         AkiDbConfig::default()
     };
+    if config.memory.enabled {
+        validate_memory_paths(&config)?;
+    }
 
     // Resolve listen address: CLI override, else config (secure loopback default).
     let listen = if args.listen.trim().is_empty() {
@@ -169,6 +176,12 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         None
     };
     if config.generation_serving.enabled {
+        if config.memory.enabled {
+            return Err(
+                "memory.enabled and generation_serving.enabled are separate data-lifecycle profiles and cannot share one process"
+                    .into(),
+            );
+        }
         if args.standalone {
             return Err(
                 "generation serving requires configured immutable S3/MinIO publication; it cannot run with --standalone"
@@ -190,6 +203,15 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let service = build_service(&config)?;
     let data_interceptor = AuthInterceptor::new(auth_runtime.clone());
+    let memory_service = if config.memory.enabled {
+        let memory = build_memory_service(&config, &auth_runtime)?;
+        Some(MemoryServiceServer::with_interceptor(
+            memory,
+            AuthInterceptor::new(auth_runtime.clone()),
+        ))
+    } else {
+        None
+    };
 
     let collections = service.collection_registry();
     let metrics = Arc::new(SimpleMetricsSource::new());
@@ -234,6 +256,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             management,
             management_interceptor,
         ))
+        .add_optional_service(memory_service)
         .serve(addr)
         .await?;
 
@@ -414,6 +437,7 @@ async fn run_generation_server(
                 token_file: generation.control_token_file.clone(),
                 token: generation.control_token.clone(),
                 acl: config.auth.acl.clone(),
+                ..akidb_common::config::AuthConfig::default()
             },
             &addr.ip().to_string(),
         )
@@ -689,11 +713,184 @@ pub async fn run_mcp(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         );
     }
+    if config.memory.enabled {
+        validate_memory_paths(&config)?;
+    }
 
     let service = Arc::new(build_service(&config)?);
-    info!("AkiDB MCP server ready on stdio");
-    akidb_grpc::mcp::run_stdio(service).await?;
+    let memory = if config.memory.enabled {
+        let auth_runtime = AuthRuntime::bootstrap(config.auth.clone(), "127.0.0.1")
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let memory_service = Arc::new(build_memory_service(&config, &auth_runtime)?);
+        let mut authentication = tonic::Request::new(());
+        if let Ok(token) = std::env::var("AKIDB_MCP_AUTH_TOKEN") {
+            let token = token.trim();
+            if !token.is_empty() {
+                authentication
+                    .metadata_mut()
+                    .insert("authorization", format!("Bearer {token}").parse()?);
+            }
+        }
+        let auth_context = auth_runtime
+            .authorize_memory(authentication.metadata())
+            .map_err(|status| {
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "authoritative Memory MCP authentication failed: {}; set AKIDB_MCP_AUTH_TOKEN to a configured principal credential",
+                        status.message()
+                    ),
+                )
+            })?;
+        let workspace_id = if config.auth.memory.workspace_id.trim().is_empty() {
+            config.auth.acl.default_workspace.clone()
+        } else {
+            config.auth.memory.workspace_id.trim().to_string()
+        };
+        let namespace = canonical_mcp_env("AKIDB_MCP_MEMORY_NAMESPACE", "mcp/default")?;
+        let request_purpose = canonical_mcp_env("AKIDB_MCP_MEMORY_PURPOSE", "agent-memory")?;
+        let delegated_agent_id = optional_canonical_mcp_env("AKIDB_MCP_MEMORY_AGENT")?;
+        for capability in ["memory.remember", "memory.recall"] {
+            auth_context
+                .authorize_scope(
+                    &workspace_id,
+                    &namespace,
+                    &request_purpose,
+                    delegated_agent_id.as_deref(),
+                    capability,
+                )
+                .map_err(|status| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "authoritative Memory MCP defaults are outside principal grants for {capability}: {}",
+                            status.message()
+                        ),
+                    )
+                })?;
+        }
+        Some(Arc::new(
+            AuthoritativeMemoryMcp::new(
+                memory_service,
+                auth_context,
+                workspace_id,
+                namespace,
+                request_purpose,
+                delegated_agent_id,
+            )
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?,
+        ))
+    } else {
+        None
+    };
+    info!(
+        authoritative_memory_preview = memory.is_some(),
+        "AkiDB MCP server ready on stdio"
+    );
+    akidb_grpc::mcp::run_stdio_with_memory(service, memory).await?;
     Ok(())
+}
+
+fn canonical_mcp_env(name: &str, default: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let value = std::env::var(name).unwrap_or_else(|_| default.to_string());
+    if value.trim().is_empty() || value.trim() != value {
+        return Err(format!("{name} must be non-empty canonical text").into());
+    }
+    Ok(value)
+}
+
+fn optional_canonical_mcp_env(name: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let Ok(value) = std::env::var(name) else {
+        return Ok(None);
+    };
+    if value.trim().is_empty() || value.trim() != value {
+        return Err(format!("{name} must be non-empty canonical text when set").into());
+    }
+    Ok(Some(value))
+}
+
+fn build_memory_service(
+    config: &AkiDbConfig,
+    auth_runtime: &AuthRuntime,
+) -> Result<MemoryServiceImpl<RocksDbBackend>, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(&config.memory.rocksdb_path)?;
+    let backend = Arc::new(RocksDbBackend::open(&config.memory.rocksdb_path)?);
+    let ledger = Arc::new(MemoryLedger::new(
+        backend,
+        auth_runtime.memory_access_verifier(),
+    ));
+    let system_access_proof = auth_runtime
+        .memory_system_access_proof()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    MemoryServiceImpl::new(
+        ledger,
+        system_access_proof,
+        config.memory.clone(),
+        config.auth.mode == AuthMode::Disabled || config.auth.memory.allow_unauthenticated_loopback,
+        false,
+    )
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error).into())
+}
+
+fn validate_memory_paths(config: &AkiDbConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let memory = future_canonical_path(Path::new(&config.memory.rocksdb_path))?;
+    let storage = PathBuf::from(&config.storage.rocksdb_path);
+    let mut other_paths = vec![
+        ("storage.rocksdb_path", storage.clone()),
+        (
+            "mutable snapshot path",
+            storage
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("snapshots"),
+        ),
+    ];
+    if config.storage.wal_enabled {
+        other_paths.push(("storage.wal_path", PathBuf::from(&config.storage.wal_path)));
+    }
+    if config.sql.enabled && config.sql.backend.eq_ignore_ascii_case(SQLITE_BACKEND) {
+        other_paths.push(("sql.sqlite_path", PathBuf::from(&config.sql.sqlite_path)));
+    }
+    for (label, configured) in other_paths {
+        let other = future_canonical_path(&configured)?;
+        if memory.starts_with(&other) || other.starts_with(&memory) {
+            return Err(format!(
+                "memory.rocksdb_path must not overlap {label}: {} and {}",
+                memory.display(),
+                other.display()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn future_canonical_path(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if path.as_os_str().is_empty() || path.components().any(|part| part == Component::ParentDir) {
+        return Err("configured data paths must be non-empty and contain no '..' traversal".into());
+    }
+    let mut unresolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut suffix = Vec::new();
+    while !unresolved.exists() {
+        let component = unresolved
+            .file_name()
+            .ok_or("configured data path has no resolvable ancestor")?
+            .to_os_string();
+        suffix.push(component);
+        unresolved = unresolved
+            .parent()
+            .ok_or("configured data path has no resolvable parent")?
+            .to_path_buf();
+    }
+    let mut resolved = std::fs::canonicalize(unresolved)?;
+    for component in suffix.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }
 
 /// Build a fully-wired AkiDbService (storage, index, vector reload, embedding
@@ -944,6 +1141,22 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&config.generation_serving.download_path);
+    }
+
+    #[test]
+    fn memory_data_path_must_not_overlap_other_mutable_state() {
+        let base = unique_temp_path("memory-overlap");
+        let mut config = AkiDbConfig::default();
+        config.memory.enabled = true;
+        config.storage.rocksdb_path = base.join("vector").display().to_string();
+        config.storage.wal_path = base.join("wal").display().to_string();
+        config.memory.rocksdb_path = base.join("vector/memory").display().to_string();
+
+        let error = validate_memory_paths(&config).unwrap_err();
+        assert!(error.to_string().contains("must not overlap"));
+
+        config.memory.rocksdb_path = base.join("memory").display().to_string();
+        validate_memory_paths(&config).unwrap();
     }
 
     #[test]
