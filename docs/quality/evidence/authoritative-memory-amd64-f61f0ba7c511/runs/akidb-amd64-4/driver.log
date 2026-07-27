@@ -1,0 +1,24 @@
+   Compiling akidb-common v0.10.0 (/root/akidb-authoritative-memory-source/crates/common)
+   Compiling tinyvec_macros v0.1.1
+   Compiling tinyvec v1.11.0
+   Compiling unicode-normalization v0.1.25
+   Compiling akidb-proto v0.10.0 (/root/akidb-authoritative-memory-source/crates/proto)
+   Compiling akidb-contracts v0.10.0 (/root/akidb-authoritative-memory-source/crates/contracts)
+   Compiling portable-atomic v1.13.1
+   Compiling akidb-faiss v0.10.0 (/root/akidb-authoritative-memory-source/crates/faiss-wrapper)
+   Compiling akidb-storage v0.10.0 (/root/akidb-authoritative-memory-source/crates/storage)
+   Compiling akidb-retrieval v0.10.0 (/root/akidb-authoritative-memory-source/crates/retrieval)
+   Compiling akidb-graph v0.10.0 (/root/akidb-authoritative-memory-source/crates/graph)
+   Compiling unicode-width v0.2.2
+   Compiling akidb-grpc v0.10.0 (/root/akidb-authoritative-memory-source/crates/grpc-server)
+   Compiling console v0.15.11
+   Compiling akidb-embedding v0.10.0 (/root/akidb-authoritative-memory-source/crates/embedding)
+   Compiling number_prefix v0.4.0
+   Compiling indicatif v0.17.11
+   Compiling akidb-server v0.10.0 (/root/akidb-authoritative-memory-source/crates/server)
+   Compiling rand_distr v0.4.3
+   Compiling akidb-benchmark v0.10.0 (/root/akidb-authoritative-memory-source/crates/benchmark)
+    Finished `release` profile [optimized] target(s) in 4m 51s
+qualification evidence: /root/akidb-memory-evidence-f61f0ba7c511/amd64-4-v1000-r4
+qualification evidence: /root/akidb-memory-evidence-f61f0ba7c511/amd64-4-v10000-r4
+qualification evidence: /root/akidb-memory-evidence-f61f0ba7c511/amd64-4-v100000-r4

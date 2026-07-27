@@ -1,0 +1,30 @@
+host_label=akidb-amd64-1
+source_commit=f61f0ba7c5113ac6b061e6684f00d846ef1e2b1a
+source_status=clean
+captured_at=2026-07-27T04:59:49+00:00
+kernel=Linux 7.0.0-28-generic
+architecture=x86_64
+load_average=0.55 1.86 1.91
+root_filesystem=/dev/vda2      ext4   502774388 29849372 451399900       7% /
+process_snapshot_columns=pid,comm,pcpu,pmem
+    PID COMMAND         %CPU %MEM
+ 109892 systemd         41.1  0.0
+  69193 akidb-server     6.4  0.1
+  97924 kworker/u32:1-e  0.0  0.0
+   6937 napi/wg0-0       0.0  0.0
+  87904 kworker/u32:0-f  0.0  0.0
+  89999 kworker/u32:2-f  0.0  0.0
+  67378 MainThread       0.0  0.6
+  81897 kworker/6:0-cgr  0.0  0.0
+ 102628 kworker/0:2-eve  0.0  0.0
+  80689 kworker/6:2-wg-  0.0  0.0
+  76943 kworker/6:3-wg-  0.0  0.0
+  99479 kworker/1:1-eve  0.0  0.0
+  97519 kworker/4:0-wg-  0.0  0.0
+ 102240 kworker/7:1-eve  0.0  0.0
+ 101212 kworker/2:2-wg-  0.0  0.0
+  90584 kworker/0:0-wg-  0.0  0.0
+      1 systemd          0.0  0.0
+  90324 kworker/4:1-wg-  0.0  0.0
+  96330 kworker/5:3-cgr  0.0  0.0
+ 101406 kworker/3:2-wg-  0.0  0.0

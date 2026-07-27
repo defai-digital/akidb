@@ -270,9 +270,14 @@ Passing summaries include the raw run values and a deterministic bootstrap
 interval for every cross-run median; the underlying per-request distributions
 remain in the checksum-bound run reports.
 
-Measured results and their exact claim boundary belong in a separate
-qualification report. Local or dirty-tree smoke results are development
-feedback, not publishable evidence.
+The measured four-host result is published in the
+[Linux AMD64 Authoritative Memory qualification](../quality/linux-amd64-authoritative-memory-qualification.md),
+with its [checksum-bound raw evidence](../quality/evidence/authoritative-memory-amd64-f61f0ba7c511/README.md).
+It passed the bounded 1k/10k/100k synthetic systems profile at exact source
+commit `f61f0ba7c5113ac6b061e6684f00d846ef1e2b1a`. That result does not change the
+experimental, single-process product status or satisfy the external product
+gates below. Local or dirty-tree smoke results remain development feedback,
+not publishable evidence.
 
 ## Current limitations
 

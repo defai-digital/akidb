@@ -1,0 +1,2 @@
+# Preserve checksum-bound qualification logs byte-for-byte.
+docs/quality/evidence/**/*.log binary

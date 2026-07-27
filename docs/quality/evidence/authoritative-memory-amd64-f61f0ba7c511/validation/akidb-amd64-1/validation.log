@@ -1,0 +1,1972 @@
+command=cargo test --workspace --locked -j 2
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling syn v2.0.118
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.228
+   Compiling serde v1.0.228
+   Compiling memchr v2.8.2
+   Compiling jobserver v0.1.34
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v2.0.1
+   Compiling cc v1.2.66
+   Compiling serde_derive v1.0.228
+   Compiling smallvec v1.15.2
+   Compiling once_cell v1.21.4
+   Compiling log v0.4.33
+   Compiling itoa v1.0.18
+   Compiling pin-project-lite v0.2.17
+   Compiling parking_lot_core v0.9.12
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling parking_lot v0.12.5
+   Compiling errno v0.3.14
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.1
+   Compiling tokio-macros v2.7.0
+   Compiling bytes v1.12.0
+   Compiling socket2 v0.6.4
+   Compiling pkg-config v0.3.33
+   Compiling tokio v1.52.3
+   Compiling equivalent v1.0.2
+   Compiling tracing-core v0.1.36
+   Compiling futures-core v0.3.32
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing v0.1.44
+   Compiling autocfg v1.5.1
+   Compiling fnv v1.0.7
+   Compiling foldhash v0.2.0
+   Compiling futures-sink v0.3.32
+   Compiling allocator-api2 v0.2.21
+   Compiling libm v0.2.16
+   Compiling num-traits v0.2.19
+   Compiling subtle v2.6.1
+   Compiling http v1.4.2
+   Compiling slab v0.4.12
+   Compiling futures-channel v0.3.32
+   Compiling version_check v0.9.5
+   Compiling typenum v1.20.1
+   Compiling futures-macro v0.3.32
+   Compiling futures-io v0.3.32
+   Compiling futures-task v0.3.32
+   Compiling tokio-util v0.7.18
+   Compiling futures-util v0.3.32
+   Compiling zeroize_derive v1.5.0
+   Compiling zeroize v1.9.0
+   Compiling http-body v1.0.1
+   Compiling hashbrown v0.17.1
+   Compiling bitflags v2.13.0
+   Compiling regex-syntax v0.8.11
+   Compiling anyhow v1.0.103
+   Compiling percent-encoding v2.3.2
+   Compiling http-body-util v0.1.3
+   Compiling generic-array v0.14.7
+   Compiling indexmap v2.14.0
+   Compiling aho-corasick v1.1.4
+   Compiling either v1.16.0
+   Compiling zmij v1.0.21
+   Compiling getrandom v0.4.3
+   Compiling rand_core v0.10.1
+   Compiling crypto-common v0.1.7
+   Compiling getrandom v0.2.17
+   Compiling zerocopy v0.8.52
+   Compiling serde_json v1.0.150
+   Compiling zerocopy-derive v0.8.52
+   Compiling tower-service v0.3.3
+   Compiling httparse v1.10.1
+   Compiling block-buffer v0.10.4
+   Compiling ryu v1.0.23
+   Compiling digest v0.10.7
+   Compiling cmake v0.1.58
+   Compiling fs_extra v1.3.0
+   Compiling base64 v0.22.1
+   Compiling dunce v1.0.5
+   Compiling aws-lc-sys v0.42.0
+   Compiling async-trait v0.1.89
+   Compiling thiserror v2.0.18
+   Compiling rustls-pki-types v1.15.0
+   Compiling thiserror-impl v2.0.18
+   Compiling ring v0.17.14
+   Compiling lazy_static v1.5.0
+   Compiling aws-lc-rs v1.17.1
+   Compiling try-lock v0.2.5
+   Compiling atomic-waker v1.1.2
+   Compiling h2 v0.4.15
+   Compiling want v0.3.1
+   Compiling httpdate v1.0.3
+   Compiling tower-layer v0.3.3
+   Compiling linux-raw-sys v0.12.1
+   Compiling hyper v1.10.1
+   Compiling sync_wrapper v1.0.2
+   Compiling synstructure v0.13.2
+   Compiling untrusted v0.9.0
+   Compiling ipnet v2.12.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling hyper-util v0.1.20
+   Compiling rustls v0.23.41
+   Compiling zerofrom-derive v0.1.7
+   Compiling regex-automata v0.4.14
+   Compiling thiserror v1.0.69
+   Compiling cpufeatures v0.2.17
+   Compiling regex v1.12.4
+   Compiling zerofrom v0.1.8
+   Compiling yoke-derive v0.8.2
+   Compiling tower v0.5.3
+   Compiling thiserror-impl v1.0.69
+   Compiling fastrand v2.4.1
+   Compiling yoke v0.8.3
+   Compiling zerovec-derive v0.11.3
+   Compiling displaydoc v0.2.6
+   Compiling vcpkg v0.2.15
+   Compiling zerovec v0.11.6
+   Compiling uuid v1.23.4
+   Compiling sha2 v0.10.9
+   Compiling protobuf v3.7.2
+   Compiling protobuf-support v3.7.2
+   Compiling prometheus v0.14.0
+   Compiling mime v0.3.17
+   Compiling tinystr v0.8.3
+   Compiling ppv-lite86 v0.2.21
+   Compiling iana-time-zone v0.1.65
+   Compiling litemap v0.8.2
+   Compiling writeable v0.6.3
+   Compiling icu_locale_core v2.2.0
+   Compiling chrono v0.4.45
+   Compiling rustls-webpki v0.103.13
+   Compiling potential_utf v0.1.5
+   Compiling zerotrie v0.2.4
+   Compiling utf8_iter v1.0.4
+   Compiling icu_properties_data v2.2.0
+   Compiling icu_normalizer_data v2.2.0
+   Compiling icu_collections v2.2.0
+   Compiling icu_provider v2.2.0
+   Compiling itertools v0.14.0
+   Compiling form_urlencoded v1.2.2
+   Compiling tokio-rustls v0.26.4
+   Compiling akidb-common v0.10.0 (/root/akidb-authoritative-memory-source/crates/common)
+   Compiling openssl-probe v0.2.1
+   Compiling icu_normalizer v2.2.0
+   Compiling icu_properties v2.2.0
+   Compiling webpki-roots v1.0.8
+   Compiling rustversion v1.0.22
+   Compiling heck v0.5.0
+   Compiling rustix v1.1.4
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling unicode-width v0.2.2
+   Compiling url v2.5.8
+   Compiling rustls-native-certs v0.8.4
+   Compiling glob v0.3.3
+   Compiling clang-sys v1.8.1
+   Compiling hyper-rustls v0.27.9
+   Compiling minimal-lexical v0.2.1
+   Compiling openssl-sys v0.9.117
+   Compiling tokio-stream v0.1.18
+   Compiling pin-project-internal v1.1.13
+   Compiling pin-project v1.1.13
+   Compiling rand_core v0.6.4
+   Compiling nom v7.1.3
+   Compiling prost-derive v0.13.5
+   Compiling libloading v0.8.9
+   Compiling rustc-hash v2.1.3
+   Compiling cexpr v0.6.0
+   Compiling rand_chacha v0.3.1
+   Compiling hyper-timeout v0.5.2
+   Compiling openssl v0.10.81
+   Compiling shlex v1.3.0
+   Compiling foreign-types-shared v0.1.1
+   Compiling foreign-types v0.3.2
+   Compiling rand v0.8.6
+   Compiling akidb-invariants v0.10.0 (/root/akidb-authoritative-memory-source/crates/invariants)
+   Compiling openssl-macros v0.1.1
+   Compiling deranged v0.5.8
+   Compiling powerfmt v0.2.0
+   Compiling native-tls v0.2.18
+   Compiling num-conv v0.2.2
+   Compiling num_threads v0.1.7
+   Compiling bindgen v0.72.1
+   Compiling strsim v0.11.1
+   Compiling time-core v0.1.9
+   Compiling time v0.3.53
+   Compiling serde_urlencoded v0.7.1
+   Compiling itertools v0.13.0
+   Compiling prettyplease v0.2.37
+   Compiling prost v0.13.5
+   Compiling async-stream-impl v0.3.6
+   Compiling encoding_rs v0.8.35
+   Compiling fixedbitset v0.4.2
+   Compiling petgraph v0.6.5
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling async-stream v0.3.6
+   Compiling tempfile v3.27.0
+   Compiling tokio-native-tls v0.3.1
+   Compiling prost-types v0.13.5
+   Compiling indexmap v1.9.3
+   Compiling bincode v1.3.3
+   Compiling multimap v0.10.1
+   Compiling hyper-tls v0.6.0
+   Compiling prost-build v0.13.5
+   Compiling tower-http v0.6.11
+   Compiling hashbrown v0.12.3
+   Compiling reqwest v0.12.28
+   Compiling tonic-build v0.12.3
+   Compiling axum-core v0.4.5
+   Compiling bzip2-sys v0.1.13+1.0.8
+   Compiling matchit v0.7.3
+   Compiling akidb-proto v0.10.0 (/root/akidb-authoritative-memory-source/crates/proto)
+   Compiling axum v0.7.9
+   Compiling tower v0.4.13
+   Compiling rustls-pemfile v2.2.0
+   Compiling socket2 v0.5.10
+   Compiling byteorder v1.5.0
+   Compiling bindgen v0.69.5
+   Compiling rustc-hash v1.1.0
+   Compiling tonic v0.12.3
+   Compiling libz-sys v1.1.29
+   Compiling itertools v0.12.1
+   Compiling lz4-sys v1.11.1+lz4-1.10.0
+   Compiling tinyvec_macros v0.1.1
+   Compiling lazycell v1.3.0
+   Compiling tinyvec v1.11.0
+   Compiling num-integer v0.1.46
+   Compiling zstd-safe v7.2.4
+   Compiling librocksdb-sys v0.16.0+8.10.0
+   Compiling unicode-normalization v0.1.25
+   Compiling matchers v0.2.0
+   Compiling sharded-slab v0.1.7
+   Compiling tracing-log v0.2.0
+   Compiling tracing-serde v0.2.0
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling urlencoding v2.1.3
+   Compiling anstyle v1.0.14
+   Compiling tracing-subscriber v0.3.23
+   Compiling hmac v0.12.1
+   Compiling ahash v0.8.12
+   Compiling utf8parse v0.2.2
+   Compiling anstyle-parse v1.0.0
+   Compiling zstd v0.13.3
+   Compiling akidb-contracts v0.10.0 (/root/akidb-authoritative-memory-source/crates/contracts)
+   Compiling sha1 v0.10.6
+   Compiling bytemuck v1.25.0
+   Compiling colorchoice v1.0.5
+   Compiling anstyle-query v1.1.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstream v1.0.0
+   Compiling roaring v0.10.12
+   Compiling clap_lex v1.1.0
+   Compiling clap_builder v4.6.0
+   Compiling hashbrown v0.14.5
+   Compiling clap_derive v4.6.1
+   Compiling hex v0.4.3
+   Compiling clap v4.6.1
+   Compiling http v0.2.12
+   Compiling outref v0.5.2
+   Compiling vsimd v0.8.0
+   Compiling base64-simd v0.8.0
+   Compiling http-body v0.4.6
+   Compiling bytes-utils v0.1.4
+   Compiling pin-utils v0.1.0
+   Compiling aws-smithy-types v1.5.0
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling link-cplusplus v1.0.12
+   Compiling unicode-segmentation v1.13.3
+   Compiling toml_write v0.1.2
+   Compiling winnow v0.7.15
+   Compiling scratch v1.0.9
+   Compiling getrandom v0.3.4
+   Compiling toml_edit v0.22.27
+   Compiling libsqlite3-sys v0.31.0
+   Compiling termcolor v1.4.1
+   Compiling siphasher v1.0.3
+   Compiling cxxbridge-flags v1.0.196
+   Compiling foldhash v0.1.5
+   Compiling hashbrown v0.15.5
+   Compiling cxx v1.0.196
+   Compiling phf_shared v0.11.3
+   Compiling codespan-reporting v0.13.1
+   Compiling toml v0.8.23
+   Compiling aws-smithy-async v1.2.14
+   Compiling numkong v7.7.0
+   Compiling aws-smithy-runtime-api-macros v1.0.0
+   Compiling ident_case v1.0.1
+   Compiling darling_core v0.23.0
+   Compiling aws-smithy-runtime-api v1.12.3
+   Compiling cxx-build v1.0.196
+   Compiling hashlink v0.10.0
+   Compiling crc32fast v1.5.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling semver v1.0.28
+   Compiling cpufeatures v0.3.0
+   Compiling fallible-iterator v0.3.0
+   Compiling rusqlite v0.33.0
+   Compiling rustc_version v0.4.1
+   Compiling usearch v2.25.3
+   Compiling darling_macro v0.23.0
+   Compiling phf_generator v0.11.3
+   Compiling cxxbridge-macro v1.0.196
+   Compiling hybrid-array v0.4.13
+   Compiling hashbrown v0.16.1
+   Compiling portable-atomic v1.13.1
+   Compiling darling v0.23.0
+   Compiling futures-executor v0.3.32
+   Compiling cmov v0.5.4
+   Compiling ctutils v0.4.2
+   Compiling futures v0.3.32
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling rand_core v0.9.5
+   Compiling const-oid v0.10.2
+   Compiling digest v0.11.3
+   Compiling rand_chacha v0.9.0
+   Compiling akidb-faiss v0.10.0 (/root/akidb-authoritative-memory-source/crates/faiss-wrapper)
+   Compiling crunchy v0.2.4
+   Compiling rustix v0.38.44
+   Compiling rand v0.9.4
+   Compiling aws-smithy-eventstream v0.60.21
+   Compiling phf_codegen v0.11.3
+   Compiling dashmap v5.5.3
+   Compiling tiny-keccak v2.0.2
+   Compiling linux-raw-sys v0.4.15
+   Compiling aws-smithy-http v0.63.6
+   Compiling aws-smithy-schema v0.1.0
+   Compiling akidb-retrieval v0.10.0 (/root/akidb-authoritative-memory-source/crates/retrieval)
+   Compiling new_debug_unreachable v1.0.6
+   Compiling crossbeam-utils v0.8.21
+   Compiling base64ct v1.8.3
+   Compiling pem-rfc7468 v0.7.0
+   Compiling sha2 v0.11.0
+   Compiling phf_macros v0.11.3
+   Compiling aws-types v1.3.16
+   Compiling aws-credential-types v1.2.14
+   Compiling prost-derive v0.14.4
+   Compiling axum-core v0.5.6
+   Compiling matchit v0.8.4
+   Compiling ucd-trie v0.1.7
+   Compiling crossbeam-epoch v0.9.20
+   Compiling signal-hook v0.3.18
+   Compiling const-oid v0.9.6
+   Compiling der v0.7.10
+   Compiling pest v2.8.7
+   Compiling axum v0.8.9
+   Compiling const-random-macro v0.1.16
+   Compiling prost v0.14.4
+   Compiling phf v0.11.3
+   Compiling hmac v0.13.0
+   Compiling string_cache_codegen v0.5.4
+   Compiling curve25519-dalek v4.1.3
+   Compiling akidb-sql v0.10.0 (/root/akidb-authoritative-memory-source/crates/sql)
+   Compiling chacha20 v0.10.1
+   Compiling aws-smithy-http-client v1.1.13
+   Compiling aws-smithy-observability v0.2.6
+   Compiling castaway v0.2.4
+   Compiling strum_macros v0.28.0
+   Compiling signature v2.2.0
+   Compiling serde_repr v0.1.20
+   Compiling static_assertions v1.1.0
+   Compiling precomputed-hash v0.1.1
+   Compiling mac v0.1.1
+   Compiling instability v0.3.12
+   Compiling futf v0.1.5
+   Compiling compact_str v0.9.1
+   Compiling strum v0.28.0
+   Compiling aws-smithy-runtime v1.11.3
+   Compiling rand v0.10.2
+   Compiling markup5ever v0.14.1
+   Compiling aws-sigv4 v1.4.5
+   Compiling const-random v0.1.18
+   Compiling tonic v0.14.6
+   Compiling pest_meta v2.8.7
+   Compiling spki v0.7.3
+   Compiling unicode-truncate v2.0.1
+   Compiling kasuari v0.4.12
+   Compiling convert_case v0.10.0
+   Compiling akidb-embedding v0.10.0 (/root/akidb-authoritative-memory-source/crates/embedding)
+   Compiling ureq-proto v0.6.0
+   Compiling lru v0.18.0
+   Compiling lzma-sys v0.1.20
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling fs2 v0.4.3
+   Compiling indoc v2.0.7
+   Compiling rayon-core v1.13.0
+   Compiling dtoa v1.0.11
+   Compiling simd-adler32 v0.3.9
+   Compiling xmlparser v0.13.6
+   Compiling critical-section v1.2.0
+   Compiling utf8-zero v0.8.1
+   Compiling bollard-buildkit-proto v0.7.0
+   Compiling utf-8 v0.7.6
+   Compiling tendril v0.4.3
+   Compiling ureq v3.3.0
+   Compiling ratatui-core v0.1.2
+   Compiling aws-smithy-xml v0.60.15
+   Compiling dtoa-short v0.3.5
+   Compiling derive_more-impl v2.1.1
+   Compiling pkcs8 v0.10.2
+   Compiling signal-hook-mio v0.2.5
+   Compiling pest_generator v2.8.7
+   Compiling tonic-prost v0.14.6
+   Compiling dlv-list v0.5.2
+   Compiling aws-runtime v1.7.5
+   Compiling crossbeam-deque v0.8.6
+   Compiling string_cache v0.8.9
+   Compiling ed25519 v2.2.3
+   Compiling prost-types v0.14.4
+   Compiling aws-smithy-json v0.62.7
+   Compiling selectors v0.26.0
+   Compiling num-bigint v0.4.8
+   Compiling arc-swap v1.9.2
+   Compiling half v2.7.1
+   Compiling inout v0.1.4
+   Compiling cssparser-macros v0.6.1
+   Compiling structmeta-derive v0.3.0
+   Compiling crc-catalog v2.5.0
+   Compiling spin v0.10.0
+   Compiling regex-lite v0.1.9
+   Compiling ciborium-io v0.2.2
+   Compiling litrs v1.0.0
+   Compiling bit-vec v0.6.3
+   Compiling base64 v0.21.7
+   Compiling plotters-backend v0.3.7
+   Compiling adler2 v2.0.1
+   Compiling predicates-core v1.0.10
+   Compiling miniz_oxide v0.8.9
+   Compiling plotters-svg v0.3.7
+   Compiling bit-set v0.5.3
+   Compiling document-features v0.2.12
+   Compiling ciborium-ll v0.2.2
+   Compiling crc-fast v1.10.0
+   Compiling crc v3.4.0
+   Compiling structmeta v0.3.0
+   Compiling cssparser v0.34.0
+   Compiling cipher v0.4.4
+   Compiling num-rational v0.4.2
+   Compiling ed25519-dalek v2.2.0
+   Compiling ordered-multimap v0.7.3
+   Compiling pest_derive v2.8.7
+   Compiling signatory v0.27.1
+   Compiling derive_more v2.1.1
+   Compiling md-5 v0.11.0
+   Compiling sha1 v0.11.0
+   Compiling aws-smithy-query v0.60.15
+   Compiling hashlink v0.8.4
+   Compiling num-iter v0.1.45
+   Compiling fxhash v0.2.1
+   Compiling itertools v0.10.5
+   Compiling webpki-roots v0.26.11
+   Compiling servo_arc v0.4.3
+   Compiling line-clipping v0.3.7
+   Compiling num-complex v0.4.6
+   Compiling derive_more v0.99.20
+   Compiling match_token v0.1.0
+   Compiling wait-timeout v0.2.1
+   Compiling bit-vec v0.8.0
+   Compiling zip v2.4.2
+   Compiling same-file v1.0.6
+   Compiling arraydeque v0.5.1
+   Compiling cast v0.3.0
+   Compiling bumpalo v3.20.3
+   Compiling quick-error v1.2.3
+   Compiling termtree v0.5.1
+   Compiling data-encoding v2.11.0
+   Compiling nkeys v0.4.5
+   Compiling predicates-tree v1.0.13
+   Compiling rusty-fork v0.3.1
+   Compiling zopfli v0.8.3
+   Compiling criterion-plot v0.5.0
+   Compiling yaml-rust2 v0.8.1
+   Compiling walkdir v2.5.0
+   Compiling bit-set v0.8.0
+   Compiling html5ever v0.29.1
+   Compiling num v0.4.3
+   Compiling ratatui-widgets v0.3.2
+   Compiling tokio-websockets v0.10.1
+   Compiling aws-sdk-sts v1.107.0
+   Compiling aws-smithy-checksums v0.64.8
+   Compiling xz2 v0.1.7
+   Compiling crossterm v0.29.0
+   Compiling json5 v0.4.1
+   Compiling rust-ini v0.20.0
+   Compiling rayon v1.12.0
+   Compiling bollard-stubs v1.52.1-rc.29.1.3
+   Compiling aes v0.8.4
+   Compiling parse-display-derive v0.9.1
+   Compiling lzma-rs v0.3.0
+   Compiling ciborium v0.2.2
+   Compiling fancy-regex v0.13.0
+   Compiling plotters v0.3.7
+   Compiling flate2 v1.1.9
+   Compiling predicates v3.1.4
+   Compiling ron v0.8.1
+   Compiling rand_xorshift v0.4.0
+   Compiling serde_with_macros v3.21.0
+   Compiling lru v0.16.4
+   Compiling convert_case v0.6.0
+   Compiling hyperlocal v0.9.1
+   Compiling pbkdf2 v0.12.2
+   Compiling bzip2 v0.5.2
+   Compiling nuid v0.5.0
+   Compiling bstr v1.12.3
+   Compiling xattr v1.6.1
+   Compiling getopts v0.2.24
+   Compiling tinytemplate v1.2.1
+   Compiling tryhard v0.5.2
+   Compiling fragile v2.1.0
+   Compiling serde_nanos v0.1.4
+   Compiling mockall_derive v0.12.1
+   Compiling csv-core v0.1.13
+   Compiling is-terminal v0.4.17
+   Compiling oorandom v11.1.5
+   Compiling constant_time_eq v0.3.1
+   Compiling deflate64 v0.1.12
+   Compiling home v0.5.12
+   Compiling downcast v0.11.0
+   Compiling ego-tree v0.10.0
+   Compiling anes v0.1.6
+   Compiling unarray v0.1.4
+   Compiling pathdiff v0.2.3
+   Compiling config v0.14.1
+   Compiling proptest v1.11.0
+   Compiling criterion v0.5.1
+   Compiling scraper v0.23.1
+   Compiling mockall v0.12.1
+   Compiling bollard v0.20.2
+   Compiling csv v1.4.0
+   Compiling async-nats v0.49.1
+   Compiling astral-tokio-tar v0.6.3
+   Compiling tiktoken-rs v0.6.0
+   Compiling aws-sdk-s3 v1.137.0
+   Compiling serde_with v3.21.0
+   Compiling parse-display v0.9.1
+   Compiling ratatui-crossterm v0.1.2
+   Compiling aws-config v1.8.18
+   Compiling ratatui-macros v0.7.2
+   Compiling ferroid v2.0.0
+   Compiling console v0.15.11
+   Compiling docker_credential v1.4.0
+   Compiling quick-xml v0.41.0
+   Compiling etcetera v0.11.0
+   Compiling num_cpus v1.17.0
+   Compiling dotenvy v0.15.7
+   Compiling number_prefix v0.4.0
+   Compiling deadpool-runtime v0.1.4
+   Compiling deadpool v0.12.3
+   Compiling indicatif v0.17.11
+   Compiling testcontainers v0.27.3
+   Compiling ratatui v0.30.2
+   Compiling crossterm v0.28.1
+   Compiling rand_distr v0.4.3
+   Compiling assert-json-diff v2.0.2
+   Compiling wiremock v0.6.5
+   Compiling testcontainers-modules v0.15.0
+   Compiling tokio-test v0.4.5
+   Compiling akidb-tui v0.10.0 (/root/akidb-authoritative-memory-source/crates/tui)
+   Compiling akidb-coordinator v0.10.0 (/root/akidb-authoritative-memory-source/crates/coordinator)
+   Compiling rocksdb v0.22.0
+   Compiling akidb-storage v0.10.0 (/root/akidb-authoritative-memory-source/crates/storage)
+   Compiling akidb-graph v0.10.0 (/root/akidb-authoritative-memory-source/crates/graph)
+   Compiling akidb-grpc v0.10.0 (/root/akidb-authoritative-memory-source/crates/grpc-server)
+   Compiling akidb-ingestion v0.10.0 (/root/akidb-authoritative-memory-source/crates/ingestion-orchestrator)
+   Compiling akidb-server v0.10.0 (/root/akidb-authoritative-memory-source/crates/server)
+   Compiling akidb-cli v0.10.0 (/root/akidb-authoritative-memory-source/crates/cli)
+   Compiling akidb-benchmark v0.10.0 (/root/akidb-authoritative-memory-source/crates/benchmark)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21m 52s
+     Running unittests src/ann.rs (target/debug/deps/akidb_ann_bench-a91eba7edfdbaccd)
+
+running 6 tests
+test tests::derives_exact_filtered_ground_truth_from_ordered_neighbors ... ok
+test tests::validates_ground_truth_bounds_and_uniqueness ... ok
+test tests::computes_standard_recall_at_k ... ok
+test tests::reads_ivecs_and_rejects_negative_ids ... ok
+test tests::maps_dataset_ids_round_trip ... ok
+test tests::reads_fvecs_and_rejects_mixed_dimensions ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/akidb_bench-5e0b3ad8c8007338)
+
+running 1 test
+test tests::parses_linux_hardware_metadata ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/graph.rs (target/debug/deps/akidb_graph_bench-3a37698420dc56bf)
+
+running 4 tests
+test tests::deterministic_topology_counts_are_exact ... ok
+test tests::entity_expected_chunks_cover_assigned_documents ... ok
+test tests::node_ids_are_workspace_scoped ... ok
+test tests::skip_build_requires_a_materialized_graph ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/memory.rs (target/debug/deps/akidb_memory_bench-891c2b202ded71e3)
+
+running 2 tests
+test tests::percentile_and_dataset_are_deterministic ... ok
+test tests::generated_ids_are_bounded_and_stable ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/recovery.rs (target/debug/deps/akidb_recovery_probe-53d40e36d7634545)
+
+running 5 tests
+test tests::crash_boundary_accepts_only_one_unacknowledged_advance ... ok
+test tests::probe_vectors_are_revision_specific_and_repeatable ... ok
+test tests::journal_ignores_only_an_unterminated_tail ... ok
+test tests::journal_round_trip_tracks_acknowledged_states ... ok
+test tests::journal_rejects_an_invalid_complete_record ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/akidb-e1f15b63f60506ac)
+
+running 6 tests
+test tests::test_memory_evidence_digest_is_stable ... ok
+test tests::test_parse_edge_kind_aliases ... ok
+test tests::test_parse_direction ... ok
+test tests::test_parse_memory_temporal_modes_and_sensitivity ... ok
+test tests::test_memory_cli_parses_reexecute_and_temporal_recall ... ok
+test tests::test_memory_cli_parses_reinforcement_and_deletion_commands ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_common-16d7cbe0d0df4b63)
+
+running 42 tests
+test config::tests::test_default_config ... ok
+test config::tests::test_parse_lowercase_log_format ... ok
+test error::tests::test_error_retriable ... ok
+test scheduler::governor::tests::test_governor_basic ... ok
+test scheduler::governor::tests::test_governor_cpu_overflow_rejects_task ... ok
+test scheduler::governor::tests::test_governor_latency_check ... ok
+test scheduler::governor::tests::test_governor_memory_overflow_rejects_task ... ok
+test metrics::tests::test_helper_functions ... ok
+test scheduler::task::tests::test_resource_requirements ... ok
+test metrics::tests::test_metrics_registration ... ok
+test scheduler::task::tests::test_task_context ... ok
+test scheduler::task::tests::test_task_result ... ok
+test config::tests::test_parse_postgres_sql_config ... ok
+test types::document::tests::test_builder_pattern ... ok
+test types::document::tests::test_content_hash_consistency ... ok
+test types::document::tests::test_category_path ... ok
+test types::document::tests::test_document_identifier_creation ... ok
+test types::document::tests::test_vector_metadata_versioning ... ok
+test types::document::tests::test_vector_metadata ... ok
+test types::lifecycle::tests::test_delete_state_ready_for_hard_delete ... ok
+test types::document::tests::test_hex_encoding ... ok
+test types::lifecycle::tests::test_delete_state_transitions ... ok
+test types::lifecycle::tests::test_increment_missing_stops_at_confirmed ... ok
+test types::lifecycle::tests::test_manifest_recovery ... ok
+test types::lifecycle::tests::test_object_manifest_custom_missing_threshold ... ok
+test types::lifecycle::tests::test_object_manifest_missing_count ... ok
+test types::lifecycle::tests::test_object_manifest_threshold_one_confirms_immediately ... ok
+test types::lifecycle::tests::test_sync_result ... ok
+test types::tag::tests::test_empty_text_list_rejected ... ok
+test types::lifecycle::tests::test_serde_delete_state ... ok
+test types::tag::tests::test_key_too_long ... ok
+test types::tag::tests::test_tag_value_types ... ok
+test types::tag::tests::test_tags_merge ... ok
+test types::tag::tests::test_serde_roundtrip ... ok
+test types::tag::tests::test_tags_validation_success ... ok
+test types::tag::tests::test_text_list_item_too_long ... ok
+test types::tag::tests::test_tags_too_many ... ok
+test types::tag::tests::test_value_too_long ... ok
+test types::tests::test_vector_dimensions ... ok
+test types::tests::test_vector_id_generation ... ok
+test scheduler::governor::tests::test_resource_summary ... ok
+test config::tests::test_parse_config_without_sql_uses_default ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_contracts-5f198ccf6f36d73a)
+
+running 74 tests
+test collection_key::tests::test_collection_key_basic ... ok
+test collection_key::tests::test_collection_key_bijective ... ok
+test collection_key::tests::test_collection_key_empty_collection ... ok
+test collection_key::tests::test_collection_key_empty_id ... ok
+test collection_key::tests::test_collection_key_long_collection ... ok
+test collection_key::tests::test_collection_key_no_collision ... ok
+test collection_key::tests::test_collection_key_unicode ... ok
+test collection_key::tests::test_collection_key_serialization ... ok
+test error::tests::test_contract_violation_display ... ok
+test error::tests::test_contract_violation_kinds ... ok
+test knowledge::proptests::json_integer_boundaries_are_portable ... ok
+test knowledge::proptests::generation_rejects_reversed_sequence_ranges ... ok
+test knowledge::proptests::nonportable_json_integers_are_rejected ... ok
+test knowledge::tests::every_documented_manifest_boundary_is_enforced ... ok
+test knowledge::tests::explicit_null_optional_fields_are_rejected ... ok
+test knowledge::tests::invalid_golden_fixtures_are_rejected ... ok
+test knowledge::tests::mutation_and_checkpoint_boundary_rules_are_enforced ... ok
+test knowledge::tests::unknown_fields_are_rejected ... ok
+test knowledge::tests::valid_golden_fixtures_round_trip ... ok
+test knowledge_bundle::tests::header_and_record_match_manifest ... ok
+test knowledge_bundle::tests::mutation_payload_is_bound_to_exact_ordered_chunk_projection ... ok
+test knowledge_bundle::tests::rejects_ambiguous_or_evidence_free_edges ... ok
+test knowledge_bundle::tests::rejects_dimension_model_and_count_mismatch ... ok
+test knowledge_bundle::tests::rejects_unknown_and_explicit_null_fields ... ok
+test collection_key::proptests::prop_has_correct_prefix ... ok
+test knowledge_bundle::tests::shared_mutation_payload_fixture_matches_manifest_and_contract ... ok
+test memory::tests::assertion_identity_normalizes_unicode_and_whitespace ... ok
+test memory::tests::authority_axes_are_independent_but_policy_bounded ... ok
+test memory::tests::entity_and_privacy_subject_are_distinct ... ok
+test memory::tests::assertion_validation_detects_identity_tampering ... ok
+test memory::tests::request_purposes_must_be_nonempty_and_unique ... ok
+test memory::tests::visibility_is_bound_to_projection_set_and_commit ... ok
+test memory::tests::structured_content_rejects_excessive_depth ... ok
+test memory_ax::tests::studio_timeline_and_debugger_are_content_free_and_ordered ... ok
+test memory_ax::tests::fabric_batch_is_exact_scope_bound_and_contains_no_authority_fields ... ok
+test knowledge::proptests::noncanonical_sha256_is_rejected ... ok
+test memory_compiler::tests::conformance_rejects_scope_expansion ... ok
+test collection_key::proptests::prop_no_concatenation_collision ... ok
+test memory_consolidation::tests::validator_rejects_conflict_laundered_as_duplicate ... ok
+test memory_evidence_graph::tests::dangling_edges_and_unbounded_requests_fail_closed ... ok
+test memory_evidence_graph::tests::deterministic_traversal_is_depth_and_node_bounded ... ok
+test memory_consolidation::tests::executor_is_deterministic_and_never_silently_merges_conflicts ... ok
+test memory_evidence_graph::tests::graph_cannot_cross_scope_or_smuggle_authority ... ok
+test memory_trajectory::tests::scope_changes_and_missing_recovery_fail_closed ... ok
+test memory_trajectory::tests::forged_output_is_rejected ... ok
+test memory_trajectory::tests::reference_trajectory_is_deterministic_and_cannot_launder_authority ... ok
+test wal::proptests::prop_empty_id_fails ... ok
+test wal::proptests::prop_empty_vector_fails ... ok
+test memory_compiler::tests::reference_compiler_is_deterministic_and_surfaces_conflicts ... ok
+test collection_key::proptests::prop_bijectivity ... ok
+test wal::proptests::prop_nan_vector_fails ... ok
+test wal::proptests::prop_none_metadata_passes ... ok
+test wal::proptests::prop_oversized_id_fails ... ok
+test wal::proptests::prop_valid_metadata_passes ... ok
+test collection_key::proptests::prop_serialization_roundtrip ... ok
+test wal::tests::test_validate_external_id_empty ... ok
+test knowledge::proptests::lowercase_sha256_is_accepted ... ok
+test wal::tests::test_validate_external_id_too_long ... ok
+test wal::tests::test_validate_external_id_valid ... ok
+test wal::tests::test_validate_insert_complete ... ok
+test wal::tests::test_validate_metadata_none ... ok
+test wal::tests::test_validate_metadata_valid ... ok
+test wal::tests::test_validate_metadata_too_large ... ok
+test wal::tests::test_validate_vector_empty ... ok
+test wal::tests::test_validate_vector_infinity ... ok
+test wal::tests::test_validate_vector_nan ... ok
+test wal::tests::test_validate_vector_valid ... ok
+test wal::tests::test_validate_vector_too_large ... ok
+test wal::proptests::prop_oversized_metadata_fails ... ok
+test wal::proptests::prop_oversized_vector_fails ... ok
+test wal::proptests::prop_valid_id_passes ... ok
+test collection_key::proptests::prop_key_length_predictable ... ok
+test wal::proptests::prop_valid_vector_passes ... ok
+test wal::proptests::prop_validate_insert_conjunction ... ok
+
+test result: ok. 74 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_coordinator-c214191e3ddf6ebd)
+
+running 98 tests
+test backpressure::tests::test_is_under_pressure ... ok
+test backpressure::tests::test_load_percentage_extreme_max_concurrent_does_not_overflow ... ok
+test backpressure::tests::test_rate_limiter_error_rates_do_not_overflow ... ok
+test backpressure::tests::test_rate_limiter_current_rate_does_not_overflow ... ok
+test backpressure::tests::test_queue_depth_limit_does_not_wrap_at_usize_max ... ok
+test backpressure::tests::test_backpressure_counters_saturate_without_wrapping ... ok
+test backpressure::tests::test_basic_acquire_release ... ok
+test backpressure::tests::test_is_under_pressure_extreme_max_concurrent_does_not_overflow ... ok
+test backpressure::tests::test_load_percentage ... ok
+test backpressure::tests::test_rate_limiter_nonzero_rps_small_window_is_not_unlimited ... ok
+test backpressure::tests::test_rate_limiter_zero_rps_remains_unlimited ... ok
+test backpressure::tests::test_rate_limiter_zero_window_is_sanitized ... ok
+test backpressure::tests::test_requests_per_window_uses_wide_arithmetic_before_clamping ... ok
+test backpressure::tests::test_stats ... ok
+test backpressure::tests::test_zero_max_concurrent_is_sanitized ... ok
+test batch::tests::test_batch_result ... ok
+test batch::tests::test_min_batch_size_is_clamped_to_max_batch_size ... ok
+test batch::tests::test_batch_with_failures ... ok
+test batch::tests::test_extra_processor_results_do_not_underflow_stats ... ok
+test batch::tests::test_recommended_size ... ok
+test batch::tests::test_record_batch_duration_micros_saturates_without_truncating ... ok
+test batch::tests::test_process_batch_pending_count_saturates_without_wrapping ... ok
+test batch::tests::test_record_batch_stats_saturate_without_wrapping ... ok
+test batch::tests::test_try_process_batch_rejects_saturated_pending_without_wrapping ... ok
+test compaction::tests::test_scheduler_creation ... ok
+test compaction::tests::test_tombstone_threshold_trigger ... ok
+test batch::tests::test_batch_processor_basic ... ok
+test batch::tests::test_batch_stats ... ok
+test consistency::tests::test_delete_removes_tracking ... ok
+test consistency::tests::test_confirm_write ... ok
+test consistency::tests::test_record_and_retrieve ... ok
+test consistency::tests::test_shard_filter ... ok
+test consistency::tests::test_stats ... ok
+test discovery::config::tests::test_default_config ... ok
+test discovery::config::tests::test_parse_config ... ok
+test discovery::config::tests::test_stale_peer_max_age_does_not_overflow ... ok
+test discovery::config::tests::test_stale_peer_max_age_never_returns_zero ... ok
+test discovery::config::tests::test_zero_intervals_are_sanitized ... ok
+test discovery::tests::test_cluster_state_merge ... ok
+test fanout::tests::test_fanout_result_is_partial_when_coverage_incomplete_without_missing_list ... ok
+test fanout::tests::test_fanout_top_k_allows_u32_max ... ok
+test fanout::tests::test_fanout_top_k_rejects_u32_overflow ... ok
+test fanout::tests::test_shard_search_request_forwards_score_threshold_and_group_by ... ok
+test fanout::tests::test_shard_search_request_preserves_metadata_filters ... ok
+test fanout::tests::test_shard_search_request_uses_requested_collection ... ok
+test fanout::tests::test_shard_search_result_keeps_non_json_metadata_as_string ... ok
+test fanout::tests::test_shard_search_result_preserves_json_metadata ... ok
+test fanout::tests::test_shard_update_request_preserves_metadata ... ok
+test merger::tests::test_invalid_duplicate_does_not_block_later_valid_score ... ok
+test merger::tests::test_large_capacity_constructor_does_not_overflow ... ok
+test merger::tests::test_merger_basic ... ok
+test merger::tests::test_merger_keeps_best_score ... ok
+test merger::tests::test_merger_keeps_lexicographically_smallest_ids_on_score_tie ... ok
+test merger::tests::test_merger_multi_shard ... ok
+test merger::tests::test_merger_rejects_non_finite_scores ... ok
+test batch::tests::test_concurrent_batches ... ok
+test batch::tests::test_zero_batch_limits_are_sanitized ... ok
+test router::tests::test_router_basic ... ok
+test router::tests::test_router_consistent ... ok
+test server::tests::test_accumulate_shard_insert_response_accepts_consistent_accounting ... ok
+test server::tests::test_accumulate_shard_insert_response_rejects_inconsistent_counts ... ok
+test server::tests::test_accumulate_shard_insert_response_rejects_unknown_failed_id ... ok
+test server::tests::test_apply_score_and_group_forwards_threshold_and_parent_group ... ok
+test server::tests::test_get_rejects_empty_id_before_routing ... ok
+test server::tests::test_insert_batch_marks_unrouted_vectors_failed ... ok
+test server::tests::test_insert_batch_rejects_duplicate_ids_before_routing ... ok
+test server::tests::test_insert_rejects_empty_id_before_routing ... ok
+test server::tests::test_search_batch_rejects_empty_query_before_fanout ... ok
+test server::tests::test_search_batch_rejects_zero_nprobe_even_when_empty ... ok
+test server::tests::test_search_batch_rejects_zero_top_k_even_when_empty ... ok
+test server::tests::test_search_rejects_nan_query_before_fanout ... ok
+test server::tests::test_search_rejects_top_k_above_limit_before_fanout ... ok
+test server::tests::test_search_rejects_zero_nprobe_before_fanout ... ok
+test server::tests::test_search_result_metadata_empty_when_missing ... ok
+test server::tests::test_search_rejects_zero_top_k_before_fanout ... ok
+test server::tests::test_search_result_metadata_serializes_json_value ... ok
+test slo::tests::test_degraded_mode_recommendation ... ok
+test server::tests::test_update_rejects_nan_vector_before_fanout ... ok
+test slo::tests::test_estimate_with_few_samples ... ok
+test slo::tests::test_estimate_with_enough_samples ... ok
+test slo::tests::test_latency_counters_saturate_without_wrapping ... ok
+test slo::tests::test_load_factor ... ok
+test slo::tests::test_recommended_timeout ... ok
+test slo::tests::test_record_latency ... ok
+test slo::tests::test_request_started_saturates_without_wrapping ... ok
+test slo::tests::test_slo_compliance ... ok
+test workflow::tests::test_min_coverage_clamping ... ok
+test workflow::tests::test_query_coverage_is_incomplete_when_responding_count_is_short ... ok
+test workflow::tests::test_query_coverage_threshold ... ok
+test workflow::tests::test_query_state_terminal ... ok
+test workflow::tests::test_query_timing_remaining ... ok
+test workflow::tests::test_workflow_builder ... ok
+test router::tests::test_distribution_evenness ... ok
+test batch::tests::test_batch_processor_multiple_batches ... ok
+test compaction::tests::test_manual_trigger ... ok
+test compaction::tests::test_update_shard_stats ... ok
+test batch::tests::test_adaptive_sizing ... ok
+test consistency::tests::test_ttl_expiration ... ok
+
+test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running unittests src/bin/coordinator.rs (target/debug/deps/akidb_coordinator-1873c0654a8e5a28)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_embedding-ed17505c76b769ef)
+
+running 23 tests
+test ax_engine::tests::test_parse_response_ordering ... ok
+test ax_engine::tests::test_batch_too_large ... ok
+test ax_engine::tests::test_parse_response_rejects_duplicate_indices ... ok
+test ax_engine::tests::test_parse_response_count_mismatch ... ok
+test ax_engine::tests::test_dimension_validation ... ok
+test tests::test_batch_too_large ... ok
+test tests::test_cache ... ok
+test tests::test_cache_eviction ... ok
+test tests::test_cache_hit_miss_counters_saturate_without_wrapping ... ok
+test ax_engine::tests::test_ax_engine_client_creation ... ok
+test tests::test_cached_batch ... ok
+test tests::test_cached_batch_rejects_short_backend_response ... ok
+test tests::test_cached_service ... ok
+test tests::test_fallback_dimension_mismatch ... ok
+test tests::test_fallback_service ... ok
+test tests::test_mock_batch ... ok
+test tests::test_embedding_stats_hit_rate_does_not_overflow ... ok
+test tests::test_mock_deterministic ... ok
+test tests::test_mock_embedding ... ok
+test ax_engine::tests::test_empty_batch ... ok
+test ax_engine::tests::test_connection_error ... ok
+test ax_engine::tests::test_parse_response_rejects_out_of_range_index ... ok
+test ax_engine::tests::test_parse_response_rejects_non_finite_embedding_value ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_faiss-582309f3c9505bd0)
+
+running 59 tests
+test hnsw::tests::filtered_candidate_window_is_bounded_and_tombstone_aware ... ok
+test hnsw::tests::test_hnsw_create ... ok
+test hnsw::tests::test_hnsw_delete_after_capacity_growth ... ok
+test hnsw::tests::test_hnsw_delete ... ok
+test hnsw::tests::test_hnsw_dimension_mismatch ... ok
+test hnsw::tests::test_hnsw_insert_rejects_exhausted_internal_ids ... ok
+test hnsw::tests::test_hnsw_batch_insert ... ok
+test hnsw::tests::test_hnsw_filter_applies_before_top_k_cutoff ... ok
+test hnsw::tests::test_hnsw_insert_rejects_non_finite_vector_values ... ok
+test hnsw::tests::test_hnsw_insert_search ... ok
+test hnsw::tests::test_hnsw_ip_score_conversion ... ok
+test hnsw::tests::test_hnsw_search_params_nprobe ... ok
+test hnsw::tests::test_hnsw_search_rejects_non_finite_query_values ... ok
+test hnsw::tests::test_hnsw_concurrent_search_with_different_nprobe ... ok
+test hnsw::tests::test_hnsw_reinsert_after_rebuild_restores_reverse_mapping ... ok
+test hnsw::tests::test_hnsw_zero_dimensions ... ok
+test hnsw::tests::test_hnsw_upsert ... ok
+test index::tests::test_search_params_default ... ok
+test index::tests::test_search_params_builder ... ok
+test mock::tests::test_mock_delete ... ok
+test mock::tests::test_mock_dimension_mismatch ... ok
+test mock::tests::test_mock_delete_after_capacity_growth ... ok
+test mock::tests::test_mock_insert_rejects_exhausted_internal_ids ... ok
+test mock::tests::test_mock_insert_rejects_non_finite_vector_values ... ok
+test mock::tests::test_mock_insert_search ... ok
+test hnsw::tests::test_hnsw_stats ... ok
+test mock::tests::test_mock_search_rejects_non_finite_query_values ... ok
+test mock::tests::test_mock_rebuild_keeps_deleted_vectors_hidden ... ok
+test rebuild::checkpoint::tests::test_checkpoint_config_defaults ... ok
+test rebuild::checkpoint::tests::test_compress_decompress ... ok
+test rebuild::checkpoint::tests::test_resource_scheduler ... ok
+test rebuild::checkpoint::tests::test_should_checkpoint ... ok
+test rebuild::manager::tests::test_needs_compaction ... ok
+test rebuild::manager::tests::test_cannot_start_rebuild_twice ... ok
+test rebuild::manager::tests::test_abort_rebuild ... ok
+test rebuild::manager::tests::test_progress_tracking ... ok
+test hnsw::tests::test_hnsw_l2_score_conversion ... ok
+test rebuild::manager::tests::test_operations_during_rebuild ... ok
+test rebuild::manager::tests::test_rebuild_state_transitions ... ok
+test rebuild::persistent_state::tests::test_cannot_start_rebuild_twice ... ok
+test rebuild::persistent_state::tests::test_failure_and_retry ... ok
+test rebuild::persistent_state::tests::test_phase_progress ... ok
+test rebuild::persistent_state::tests::test_retry_count_saturates_on_repeated_failure ... ok
+test rebuild::persistent_state::tests::test_state_machine_lifecycle ... ok
+test rebuild::typestate::tests::test_abort_from_building ... ok
+test rebuild::typestate::tests::test_abort_from_preparing ... ok
+test tombstone::tests::test_clear_deleted_count_saturates_without_underflow ... ok
+test mock::tests::test_mock_stats ... ok
+test rebuild::typestate::tests::test_data_loss_detection ... ok
+test tombstone::tests::test_mark_deleted_count_saturates_without_wrapping ... ok
+test rebuild::typestate::tests::test_typestate_valid_transitions ... ok
+test hnsw::tests::selective_filter_work_is_geometrically_bounded ... ok
+test tombstone::tests::test_tombstone_idempotent ... ok
+test hnsw::tests::selective_filter_expands_until_it_finds_a_bounded_match ... ok
+test tombstone::tests::test_tombstone_memory ... ok
+test tombstone::tests::test_tombstone_basic ... ok
+test tombstone::tests::test_tombstone_ratio ... ok
+test tombstone::tests::test_tombstone_reset ... ok
+test hnsw::tests::custom_expansion_is_restored_when_a_filter_panics ... ok
+
+test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_graph-6dddaba5af39acaf)
+
+running 22 tests
+test model::tests::malformed_scoped_node_id_remains_an_unscoped_id ... ok
+test model::tests::scoped_node_id_round_trips_workspace_and_chunk ... ok
+test model::tests::scoped_node_ids_only_match_the_same_workspace ... ok
+test native::tests::test_placeholder_merge_preserves_data_but_authoritative_upsert_replaces_it ... ok
+test native::tests::test_batch_merges_duplicate_node_properties ... ok
+test native::tests::test_batch_atomically_replaces_projection_edges ... ok
+test native::tests::test_neighbors_by_type_and_direction ... ok
+test native::tests::test_delete_node_removes_attached_edges ... ok
+test native::tests::test_invalid_batch_is_not_partially_committed ... ok
+test native::tests::test_cross_workspace_edge_is_rejected_without_partial_state ... ok
+test native::tests::test_neighbors_limit_not_consumed_by_prefixed_node_id ... ok
+test native::tests::test_related_chunks_combines_direct_and_incoming_chunk_edges ... ok
+test native::tests::test_related_chunks_deduplicates_one_hop_chunk_edges_before_limit ... ok
+test native::tests::test_related_chunks_direct_mapping_and_delete_edge ... ok
+test native::tests::test_related_chunks_limit_prefers_higher_weight_chunk ... ok
+test native::tests::test_related_chunks_does_not_match_prefixed_entity_id ... ok
+test native::tests::test_related_chunks_includes_incoming_chunk_edges ... ok
+test native::tests::test_stats ... ok
+test native::tests::test_upsert_and_get_node ... ok
+test native::tests::test_two_hop_and_path_exists ... ok
+test native::tests::test_related_chunks_with_depth_reaches_two_hop_chunk ... ok
+test native::tests::test_upsert_edge_replaces_stale_adjacency_and_chunk_link ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_grpc-497736121d24fee6)
+
+running 144 tests
+test acl::tests::legacy_metadata_default_workspace ... ok
+test acl::tests::stamps_workspace_and_model ... ok
+test acl::tests::rejects_cross_workspace_stamp ... ok
+test admin::tests::test_register_task ... ok
+test admin::tests::test_task_history ... ok
+test admin::tests::test_webhook_config ... ok
+test admin::tests::test_task_history_rejects_unknown_status_filter ... ok
+test admin::tests::test_trigger_snapshot_rejects_active_state_from_callback ... ok
+test admin::tests::test_configure_webhook_rejects_unknown_event ... ok
+test admin::tests::test_trigger_rebuild_rejects_active_state_from_callback ... ok
+test auth::tests::detects_loopback_hosts ... ok
+test auth::tests::generation_control_bootstrap_is_always_authenticated ... ok
+test auth::tests::loopback_optional_allows_missing_token_on_loopback ... ok
+test auth::tests::legacy_data_plane_keeps_workspace_header_compatibility ... ok
+test auth::tests::legacy_token_has_no_memory_capabilities_by_default ... ok
+test auth::tests::inactive_or_expired_principal_credential_is_rejected ... ok
+test admin::tests::test_trigger_rebuild_allows_terminal_state_from_callback ... ok
+test auth::tests::duplicate_token_binding_is_rejected ... ok
+test auth::tests::loopback_optional_requires_token_off_loopback ... ok
+test auth::tests::namespace_prefix_grant_does_not_match_sibling_prefix ... ok
+test auth::tests::rejects_invalid_token ... ok
+test filter::tests::test_and_or_not ... ok
+test auth::tests::principal_workspace_header_cannot_expand_data_plane_scope ... ok
+test auth::tests::principal_agent_wildcard_allows_an_exact_request_selector ... ok
+test auth::tests::principal_token_file_rejects_group_or_world_access ... ok
+test admin::tests::test_trigger_snapshot_allows_terminal_state_from_callback ... ok
+test filter::tests::test_build_legacy_subset_match ... ok
+test filter::tests::test_build_malformed_legacy_filter_errors ... ok
+test filter::tests::test_build_combines_legacy_and_tag ... ok
+test auth::tests::rotation_accepts_two_distinct_active_credentials ... ok
+test filter::tests::test_build_none_when_no_filters ... ok
+test filter::tests::test_build_rejects_unknown_tag_operator ... ok
+test filter::tests::test_contains_string_and_array ... ok
+test filter::tests::test_contains_text_list_intersection ... ok
+test filter::tests::test_direct_tag_filter_does_not_fallback_unknown_operator_to_eq ... ok
+test filter::tests::test_empty_and_is_true_empty_or_is_false ... ok
+test filter::tests::test_eq_missing_key_is_false ... ok
+test auth::tests::principal_request_scope_can_only_narrow_grants ... ok
+test filter::tests::test_eq_text_list_ignores_duplicates_as_set_equality ... ok
+test filter::tests::test_eq_text_list_set_equality ... ok
+test filter::tests::test_eq_text_number_bool ... ok
+test filter::tests::test_exists ... ok
+test filter::tests::test_matches_against_null_metadata_excludes ... ok
+test filter::tests::test_numeric_ordering ... ok
+test filter::tests::test_tag_filter_matches_nested_dotted_paths ... ok
+test filter::tests::test_tag_filter_prefers_literal_dotted_key_over_path ... ok
+test filter::tests::test_text_ordering ... ok
+test generation::tests::disk_admission_evidence_survives_a_rejected_build ... ok
+test generation::tests::disk_admission_reports_estimate_and_post_build_reserve ... ok
+test generation::tests::disk_admission_rejects_before_creating_a_shadow_build ... ok
+test filter::tests::test_build_legacy_nested_subset_match ... ok
+test generation::tests::phase_two_rejects_unapplied_mutation_tail_without_false_failure ... ok
+test generation::tests::conflicting_workspace_metadata_fails_closed ... ok
+test generation::tests::graph_edge_with_missing_endpoint_never_becomes_ready ... ok
+test generation::tests::ready_generation_retry_revalidates_without_rebuilding ... ok
+test generation::tests::materializes_one_bundle_into_rebuildable_ready_indexes ... ok
+test generation::tests::materializing_journal_resumes_idempotently_after_partial_payload_write ... ok
+test generation_control::tests::exact_publish_retry_after_ready_repairs_state_idempotently ... ok
+test generation_control::tests::failed_shadow_build_never_changes_active_runtime ... ok
+test generation_control::tests::activation_cas_mismatch_leaves_state_and_runtime_unchanged ... ok
+test generation_control::tests::pointer_cache_tracks_atomic_activation_and_rollback ... ok
+test generation_data_plane::tests::dense_and_lexical_reads_report_exact_served_generation ... ok
+test generation_fetch::tests::symbolic_link_is_rejected ... ok
+test generation_fetch::tests::temporary_bundle_is_deleted_on_drop ... ok
+test generation::tests::mutation_tail_builds_sealed_revisions_and_keeps_base_immutable ... ok
+test generation_data_plane::tests::workspace_scope_cannot_fall_through_to_another_active_runtime ... ok
+test generation_control::tests::publish_is_shadowed_until_atomic_activation_and_rollback ... ok
+test ingestion::tests::test_delete_category_requires_configured_backend ... ok
+test ingestion::tests::test_delete_category_validation ... ok
+test ingestion::tests::test_get_sync_status ... ok
+test ingestion::tests::test_list_categories ... ok
+test ingestion::tests::test_reindex_category_requires_configured_backend ... ok
+test ingestion::tests::test_reindex_category_validation ... ok
+test ingestion::tests::test_trigger_sync ... ok
+test ingestion::tests::test_update_tags_requires_configured_backend ... ok
+test ingestion::tests::test_update_tags_validation ... ok
+test management::tests::capabilities_expose_no_execution_permissions ... ok
+test management::tests::import_plan_rejects_urls_and_filesystem_paths ... ok
+test management::tests::import_plan_requires_registered_immutable_source ... ok
+test management::tests::sanitizer_does_not_preserve_paths_or_controls ... ok
+test management::tests::valid_import_plan_is_validation_only_and_audited ... ok
+test generation_data_plane::tests::collection_schema_is_replaced_with_the_active_generation ... ok
+test generation_management::tests::corrupt_fetched_object_never_becomes_ready ... ok
+test generation_control::tests::sealed_revision_swaps_active_runtime_and_restores_after_restart ... ok
+test generation_management::tests::unauthenticated_and_cross_workspace_publication_are_denied ... ok
+test generation_data_plane::tests::writes_are_rejected_in_generation_mode ... ok
+test memory::tests::request_scope_cannot_expand_principal_grants ... ok
+test generation_control::tests::restart_restores_active_and_previous_runtime_from_durable_state ... ok
+test metrics::tests::memory_metric_labels_reject_unbounded_values ... ok
+test metrics::tests::memory_metrics_export_required_content_free_families ... ok
+test service::tests::test_batch_search_rejects_empty_query ... ok
+test generation_management::tests::stage_activate_and_status_require_explicit_cas ... ok
+test memory::tests::reinforcement_adds_temporal_outcome_evidence_without_rewriting_authority ... ok
+test service::tests::test_batch_write_and_search_are_workspace_scoped ... ok
+test service::tests::test_batch_search_returns_durable_metadata ... ok
+test service::tests::test_batch_search_rejects_zero_nprobe_before_queries ... ok
+test memory::tests::deletion_redacts_snapshot_projection_export_and_blocks_reimport ... ok
+test memory::tests::request_scope_isolation_filters_recall_get_and_replay ... ok
+test service::tests::test_bm25_text_search_uses_inserted_source_text_without_embedding_provider ... ok
+test service::tests::test_delete_rejects_empty_id ... ok
+test service::tests::test_collection_lifecycle_apis ... ok
+test service::tests::test_delete_removes_bm25_document ... ok
+test service::tests::test_context_pack_uses_provenance_citation ... ok
+test service::tests::test_delete_returns_already_deleted_on_second_delete ... ok
+test service::tests::test_dense_search_rejects_zero_nprobe ... ok
+test service::tests::test_dense_search_rejects_nan_query ... ok
+test memory::tests::typed_preview_round_trip_snapshot_and_forget ... ok
+test service::tests::test_dense_search_returns_durable_metadata ... ok
+test service::tests::test_dense_search_applies_legacy_metadata_filter_before_top_k ... ok
+test memory::tests::authoritative_lifecycle_temporal_explain_reexecute_history_and_export ... ok
+test service::tests::test_get_rejects_empty_id ... ok
+test service::tests::test_group_by_parent_keeps_one_per_group ... ok
+test service::tests::test_graph_hybrid_expands_related_edges ... ok
+test service::tests::test_insert_batch_rejects_duplicate_ids_before_writes ... ok
+test service::tests::test_preview_text_does_not_split_utf8_codepoints ... ok
+test service::tests::test_insert_batch_rejects_invalid_json_metadata ... ok
+test service::tests::test_insert_rejects_empty_id ... ok
+test service::tests::test_insert_empty_text_removes_previous_bm25_document ... ok
+test service::tests::test_graph_projection_is_workspace_scoped_replaced_and_rebuildable ... ok
+test service::tests::test_insert_rejects_invalid_json_metadata ... ok
+test service::tests::test_rpc_entrypoints_reject_wrong_collection ... ok
+test service::tests::test_score_threshold_excludes_low_scores ... ok
+test service::tests::test_text_search_rejects_excessive_pack_token_budget ... ok
+test service::tests::test_structured_sql_results_are_workspace_scoped ... ok
+test service::tests::test_text_search_rejects_zero_nprobe ... ok
+test service::tests::test_text_search_rejects_invalid_embedding_vector ... ok
+test tags::tests::test_boolean_tag_conversion ... ok
+test tags::tests::test_empty_tag_value_fails ... ok
+test tags::tests::test_number_tag_conversion ... ok
+test tags::tests::test_tags_map_conversion ... ok
+test tags::tests::test_text_list_tag_conversion ... ok
+test tags::tests::test_text_tag_conversion ... ok
+test webhook::tests::test_hmac_signature ... ok
+test webhook::tests::test_payload_serialization ... ok
+test webhook::tests::test_webhook_config_default ... ok
+test webhook::tests::test_webhook_payload_builder ... ok
+test service::tests::test_text_search_rejects_zero_pack_token_budget ... ok
+test service::tests::test_update_keeps_upserted_vector_searchable ... ok
+test service::tests::test_update_rejects_invalid_json_metadata ... ok
+test service::tests::test_workspace_acl_hides_and_protects_point_mutations ... ok
+test service::tests::test_workspace_acl_isolates_search_results ... ok
+test webhook::tests::test_webhook_sender_disabled ... ok
+test webhook::tests::test_recent_deliveries_returns_newest_first ... ok
+test memory::tests::concurrent_commits_receive_sequence_specific_visible_receipts ... ok
+
+test result: ok. 144 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+
+     Running tests/hybrid_search.rs (target/debug/deps/hybrid_search-21406fec2b1128c7)
+
+running 55 tests
+test test_batch_insert_upsert_empty_text_removes_stale_bm25_document ... ok
+test test_batch_insert_rejects_invalid_vectors_without_indexing_text ... ok
+test test_bm25_tag_filter_applies_before_top_k_cutoff ... ok
+test test_auto_graph_query_expands_symbol_metadata_seed ... ok
+test test_bm25_metadata_filter_applies_before_top_k_cutoff ... ok
+test test_bm25_tag_filter_matches_nested_metadata_path ... ok
+test test_context_pack_v1_preserves_canonical_versioned_citation ... ok
+test test_auto_graph_query_expands_file_metadata_seed ... ok
+test test_diversity_demotes_near_duplicate ... ok
+test test_delete_removes_auto_indexed_graph_chunk ... ok
+test test_dense_only_vs_hybrid_reorders_results ... ok
+test test_diversity_rejects_invalid_mmr_lambda ... ok
+test test_delete_removes_from_hybrid_results ... ok
+test test_high_lexical_weight_promotes_lexical_match ... ok
+test test_graph_depth_defaults_to_one_and_explicit_two_hops_returns_evidence ... ok
+test test_graph_mode_returns_graph_expanded_results ... ok
+test test_hybrid_rejects_zero_fusion_weights ... ok
+test test_hybrid_with_empty_lexical_degrades_to_dense ... ok
+test test_hybrid_top_k_above_pool_cap_does_not_panic ... ok
+test test_hybrid_result_carries_metadata ... ok
+test test_insert_upsert_empty_text_removes_stale_bm25_document ... ok
+test test_insert_metadata_indexes_graph_related_ids_for_pack ... ok
+test test_insert_metadata_indexes_single_graph_related_id_for_pack ... ok
+test test_insert_metadata_indexes_code_graph_edges_for_pack ... ok
+test test_insert_upsert_removes_stale_graph_related_context ... ok
+test test_pack_dedups_siblings_to_single_parent ... ok
+test test_invalid_retrieval_mode_error_lists_sql_modes ... ok
+test test_no_pack_leaves_context_empty ... ok
+test test_pack_respects_token_budget ... ok
+test test_pack_includes_graph_related_chunk ... ok
+test test_pack_expands_child_to_parent ... ok
+test test_lexical_index_persists_across_restart ... ok
+test test_pack_returns_cited_context ... ok
+test test_rebuild_lexical_index_removes_stale_in_memory_text ... ok
+test test_rebuild_lexical_index_skips_deleted_vectors_with_stale_text ... ok
+test test_retrieval_mode_bm25_does_not_require_embedding_provider ... ok
+test test_rebuild_sql_metadata_index_removes_deleted_vectors ... ok
+test test_retrieval_mode_sql_applies_nested_legacy_metadata_filter ... ok
+test test_rerank_promotes_query_term_match ... ok
+test test_retrieval_mode_sql_applies_tag_filter_before_top_k_cutoff ... ok
+test test_retrieval_mode_vector_overrides_hybrid_flag ... ok
+test test_retrieval_mode_sql_matches_null_metadata_filter ... ok
+test test_retrieval_mode_sql_array_filter_uses_post_filter_before_top_k_cutoff ... ok
+test test_retrieval_mode_sql_uses_metadata_adapter_without_embedder ... ok
+test test_retrieval_mode_sql_pack_builds_context ... ok
+test test_retrieval_mode_sql_empty_object_filter_requires_object_value ... ok
+test test_retrieval_mode_sql_preserves_literal_dotted_legacy_filter_key ... ok
+test test_text_search_accepts_long_multibyte_query ... ok
+test test_text_search_rejects_unknown_tag_operator ... ok
+test test_text_search_applies_legacy_metadata_filter_to_hybrid_results ... ok
+test test_text_search_applies_nested_legacy_metadata_filter ... ok
+test test_text_search_rejects_whitespace_only_query ... ok
+test test_update_preserves_incoming_graph_related_context ... ok
+test test_text_search_filter_blocks_graph_expanded_context ... ok
+test test_update_removes_stale_graph_related_context ... ok
+
+test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+     Running tests/mcp_server.rs (target/debug/deps/mcp_server-83e5fdd17932e5cc)
+
+running 16 tests
+test test_initialize_reports_server_info ... ok
+test test_mcp_memory_workspace_isolation ... ok
+test test_notification_yields_no_response ... ok
+test test_memory_read_rejects_non_string_conversation_scope ... ok
+test test_memory_write_rejects_unknown_kind ... ok
+test test_memory_write_then_read_roundtrip ... ok
+test test_authoritative_memory_mcp_narrowing_fails_closed ... ok
+test test_authoritative_memory_tools_are_explicit_and_round_trip ... ok
+test test_parse_error_response ... ok
+test test_status_tool ... ok
+test test_tool_integer_arguments_reject_overflow ... ok
+test test_tool_boolean_arguments_reject_wrong_type ... ok
+test test_status_tool_reports_graph_stats_when_configured ... ok
+test test_search_and_pack_tools ... ok
+test test_tools_list_exposes_the_tool_surface ... ok
+test test_unknown_method_returns_error ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_ingestion-af9cb147012b0c74)
+
+running 223 tests
+test akidb_client::tests::test_batch_result ... ok
+test akidb_client::tests::test_build_batch_insert_result_rejects_inserted_count_overflow ... ok
+test akidb_client::tests::test_build_batch_insert_result_rejects_false_success_flag_without_failures ... ok
+test akidb_client::tests::test_build_batch_insert_result_maps_failed_ids ... ok
+test akidb_client::tests::test_build_batch_insert_result_rejects_true_success_flag_with_failures ... ok
+test akidb_client::tests::test_search_top_k_allows_service_maximum ... ok
+test akidb_client::tests::test_build_batch_insert_result_rejects_unknown_failed_id ... ok
+test akidb_client::tests::test_search_top_k_rejects_above_service_maximum ... ok
+test akidb_client::tests::test_build_batch_insert_result_requires_consistent_counts ... ok
+test akidb_client::tests::test_search_top_k_rejects_u32_overflow ... ok
+test akidb_client::tests::test_search_top_k_rejects_zero ... ok
+test akidb_client::tests::test_vector_insert ... ok
+test backpressure::tests::test_activates_on_high_latency ... ok
+test backpressure::tests::test_activates_on_high_queue_depth ... ok
+test akidb_client::tests::test_parse_search_metadata_preserves_non_string_scalars ... ok
+test backpressure::tests::test_deactivates_on_queue_depth_recovery ... ok
+test backpressure::tests::test_deactivates_on_recovery ... ok
+test backpressure::tests::test_initial_state ... ok
+test backpressure::tests::test_latency_threshold_conversion_saturates ... ok
+test backpressure::tests::test_manual_control ... ok
+test batcher::dynamic::tests::test_max_batch_below_min_batch_is_normalized ... ok
+test batcher::dynamic::tests::test_extreme_batch_sizes_do_not_overflow_channel_capacity ... ok
+test batcher::dynamic::tests::test_optimal_size_high_gpu ... ok
+test batcher::dynamic::tests::test_optimal_size_high_load ... ok
+test batcher::dynamic::tests::test_optimal_size_low_load ... ok
+test batcher::dynamic::tests::test_pending_increment_saturates_without_wrapping ... ok
+test batcher::dynamic::tests::test_zero_max_batch_is_normalized ... ok
+test chunker::semantic::tests::test_empty_text ... ok
+test chunker::semantic::tests::test_estimate_tokens_fast ... ok
+test batcher::dynamic::tests::test_collect_batch_without_pending_increment_does_not_underflow ... ok
+test batcher::dynamic::tests::test_zero_timeout_still_collects_ready_item ... ok
+test chunker::semantic::tests::test_whitespace_only_text_returns_no_chunks ... ok
+test chunker::semantic::tests::test_count_tokens ... ok
+test chunker::semantic::tests::test_single_sentence ... ok
+test chunker::semantic::tests::test_inverted_overlap_bounds_are_normalized ... ok
+test chunker::semantic::tests::test_offsets_round_trip_with_overlap ... ok
+test chunker::semantic::tests::test_multiple_sentences ... ok
+test chunker::semantic::tests::test_zero_target_tokens_is_normalized ... ok
+test chunker::semantic::tests::test_offsets_round_trip_repeated_unicode_sentences ... ok
+test circuit_breaker::tests::test_failure_count_saturates_without_wrapping ... ok
+test circuit_breaker::tests::test_half_open_success_count_does_not_wrap ... ok
+test circuit_breaker::tests::test_initial_state_is_closed ... ok
+test circuit_breaker::tests::test_opens_after_threshold_failures ... ok
+test circuit_breaker::tests::test_reset ... ok
+test circuit_breaker::tests::test_success_resets_failure_count ... ok
+test circuit_breaker::tests::test_zero_thresholds_are_normalized ... ok
+test config::tests::test_default_configs ... ok
+test embedding::tests::test_backoff_saturates_for_large_attempts ... ok
+test embedding::tests::test_parse_embedding_response_rejects_duplicate_indices ... ok
+test config::tests::test_from_env_rejects_invalid_numeric_values ... ok
+test embedding::tests::test_parse_embedding_response_rejects_empty_embedding ... ok
+test embedding::tests::test_parse_embedding_response_rejects_mixed_dimensions ... ok
+test config::tests::test_from_env_rejects_non_finite_memory_thresholds ... ok
+test embedding::tests::test_parse_embedding_response_rejects_non_finite_values ... ok
+test idempotency::tests::test_check_and_mark ... ok
+test idempotency::tests::test_duplicate_detection ... ok
+test idempotency::tests::test_hash_content ... ok
+test idempotency::tests::test_eviction ... ok
+test idempotency::tests::test_persistent_zero_max_entries_is_normalized ... ok
+test idempotency::tests::test_persistent_unmark_removes_hash_from_sqlite ... ok
+test idempotency::tests::test_unmark_hash_allows_failed_content_to_retry ... ok
+test idempotency::tests::test_zero_max_entries_is_normalized ... ok
+test idempotency::tests::test_persistent_load_keeps_newest_hashes_when_db_exceeds_capacity ... ok
+test lifecycle::tests::test_handle_missing_confirms_at_threshold ... ok
+test lifecycle::tests::test_handle_missing_increments_count ... ok
+test lifecycle::tests::test_handle_missing_respects_threshold_above_default ... ok
+test lifecycle::tests::test_process_hard_deletes_delegates_before_manifest_removal ... ok
+test lifecycle::tests::test_process_hard_deletes_requires_configured_backend ... ok
+test lifecycle::tests::test_lifecycle_stats ... ok
+test chunker::semantic::tests::test_long_single_sentence_is_split_to_target_tokens ... ok
+test lifecycle::tests::test_recover_document ... ok
+test manifest::tests::test_manifest_crud ... ok
+test lifecycle::tests::test_schedule_hard_delete ... ok
+test lifecycle::tests::test_schedule_hard_delete_rejects_active_document ... ok
+test manifest::tests::test_increment_missing_uses_custom_threshold ... ok
+test manifest::tests::test_list_confirmed_deletes ... ok
+test embedding::tests::test_client_creation ... ok
+test memory::tests::test_memory_coordinator_initial_state ... ok
+test memory::tests::test_parse_vm_stat ... ok
+test memory::tests::test_zero_poll_interval_does_not_panic_monitoring_task ... ok
+test manifest::tests::test_manifest_epoch ... ok
+test metrics::tests::test_metrics_creation ... ok
+test metrics::tests::test_sync_metrics ... ok
+test metrics::tests::test_tag_metrics ... ok
+test parsers::csv::tests::test_malformed_csv_returns_error ... ok
+test parsers::csv::tests::test_parse_csv ... ok
+test parsers::csv::tests::test_parse_csv_ignores_empty_wide_rows_for_header_detection ... ok
+test parsers::csv::tests::test_parse_csv_ignores_trailing_empty_cells_for_header_detection ... ok
+test parsers::csv::tests::test_parse_csv_ignores_title_row_when_selecting_headers ... ok
+test parsers::csv::tests::test_parse_csv_preserves_all_text_header_value_pairs ... ok
+test parsers::csv::tests::test_parse_csv_preserves_header_value_pairs_for_retrieval ... ok
+test parsers::csv::tests::test_parse_csv_preserves_name_header_value_pairs ... ok
+test parsers::csv::tests::test_parse_csv_preserves_uppercase_common_header_value_pairs ... ok
+test parsers::csv::tests::test_parse_csv_strips_utf8_bom_from_first_header ... ok
+test parsers::csv::tests::test_parse_csv_tracks_widest_flexible_row ... ok
+test parsers::csv::tests::test_parse_csv_without_header_does_not_promote_all_text_data_row_to_headers ... ok
+test parsers::csv::tests::test_parse_csv_without_header_does_not_promote_first_data_row_to_headers ... ok
+test manifest::tests::test_manifest_epoch_exhaustion_is_rejected ... ok
+test parsers::docx::tests::test_file_too_large ... ok
+test parsers::docx::tests::test_is_simple_invalid_zip ... ok
+test parsers::csv::tests::test_parse_tsv ... ok
+test manifest::tests::test_manifest_list_all ... ok
+test parsers::docx::tests::test_parse_docx_table_cell_separates_paragraphs ... ok
+test parsers::docx::tests::test_parse_docx_table_ignores_title_row_when_selecting_headers ... ok
+test parsers::docx::tests::test_parse_docx_table_ignores_empty_wide_rows_for_header_detection ... ok
+test parsers::docx::tests::test_parse_docx_table_ignores_trailing_empty_cells_for_header_detection ... ok
+test parsers::docx::tests::test_parse_docx_table_preserves_all_text_header_value_pairs ... ok
+test parsers::docx::tests::test_parse_docx_table_preserves_name_header_value_pairs ... ok
+test parsers::docx::tests::test_parse_docx_table_preserves_header_value_pairs_for_retrieval ... ok
+test parsers::docx::tests::test_parse_docx_table_preserves_uppercase_common_header_value_pairs ... ok
+test parsers::docx::tests::test_parser_creation ... ok
+test parsers::docx::tests::test_parse_docx_table_without_header_does_not_promote_all_text_data_row_to_headers ... ok
+test parsers::docx::tests::test_parser_with_max_size ... ok
+test parsers::docx::tests::test_parse_docx_table_without_header_does_not_promote_first_data_row_to_headers ... ok
+test parsers::html::tests::test_excludes_script ... ok
+test parsers::html::tests::test_excludes_style ... ok
+test parsers::html::tests::test_parse_html ... ok
+test parsers::html::tests::test_parse_html_does_not_duplicate_title_before_punctuation ... ok
+test manifest::tests::test_manifest_object_named_epoch_does_not_collide_with_epoch_counter ... ok
+test manifest::tests::test_manifest_reads_and_migrates_legacy_epoch_key ... ok
+test manifest::tests::test_manifest_missing_count ... ok
+test parsers::html::tests::test_parse_html_includes_title_in_retrieval_text ... ok
+test parsers::html::tests::test_parse_html_includes_title_when_only_present_as_body_substring ... ok
+test parsers::html::tests::test_parse_html_excludes_visibility_collapse_elements ... ok
+test parsers::html::tests::test_parse_html_includes_semantic_attributes_for_retrieval ... ok
+test parsers::html::tests::test_parse_html_excludes_hidden_elements ... ok
+test parsers::html::tests::test_title_phrase_boundary_handles_punctuation_case_and_identifiers ... ok
+test parsers::json::tests::test_parse_json_accepts_utf8_bom ... ok
+test parsers::json::tests::test_parse_json_preserves_nested_paths_for_retrieval ... ok
+test parsers::json::tests::test_parse_json_preserves_object_keys_for_retrieval ... ok
+test parsers::json::tests::test_parse_simple_json ... ok
+test parsers::tests::test_format_detection ... ok
+test parsers::tests::test_format_detection_accepts_content_types ... ok
+test parsers::json::tests::test_parse_nested_json ... ok
+test parsers::html::tests::test_parse_html_trims_title_metadata ... ok
+test parsers::html::tests::test_parse_html_respects_inline_style_important_priority ... ok
+test parsers::html::tests::test_parse_html_respects_later_inline_style_overrides ... ok
+test parsers::tests::test_requires_python ... ok
+test parsers::tests::test_format_detection_accepts_spreadsheet_content_types ... ok
+test parsers::tests::test_format_detection_accepts_filenames_and_paths ... ok
+test parsers::tests::test_format_detection_accepts_structured_syntax_content_types ... ok
+test parsers::tests::test_route_parser ... ok
+test parsers::tests::test_format_detection_accepts_word_content_types ... ok
+test parsers::tests::test_rust_native_check ... ok
+test parsers::tests::test_spreadsheet_extensions_share_rust_parser_contract ... ok
+test parsers::tests::test_txt_parser_strips_utf8_bom ... ok
+test parsers::tests::test_format_detection_falls_back_to_content_type ... ok
+test parsers::tests::test_tsv_extension_routes_to_tab_delimited_parser ... ok
+test parsers::xlsx::tests::test_parse_xlsx_ignores_empty_wide_rows_for_header_detection ... ok
+test parsers::xlsx::tests::test_parse_xlsx_ignores_trailing_empty_cells_for_header_detection ... ok
+test manifest::tests::test_manifest_stats ... ok
+test parsers::xlsx::tests::test_parse_xlsx_preserves_all_text_header_value_pairs ... ok
+test parsers::xlsx::tests::test_parse_xlsx_empty_cell_with_ref_fills_none_gap ... ok
+test parsers::xlsx::tests::test_parse_xlsx_ignores_title_row_when_selecting_headers ... ok
+test parsers::xlsx::tests::test_parse_xlsx_preserves_header_value_pairs_for_retrieval ... ok
+test parsers::xlsx::tests::test_xlsx_parser_creation ... ok
+test parsers::xml::tests::test_parse_xml ... ok
+test parsers::xml::tests::test_parse_xml_accepts_utf8_bom ... ok
+test parsers::xlsx::tests::test_parse_xlsx_preserves_name_header_value_pairs ... ok
+test parsers::xlsx::tests::test_parse_xlsx_single_column_still_uses_first_row_as_header ... ok
+test parsers::xlsx::tests::test_parse_xlsx_preserves_uppercase_common_header_value_pairs ... ok
+test parsers::xlsx::tests::test_parse_xlsx_without_header_does_not_promote_all_text_data_row_to_headers ... ok
+test parsers::xlsx::tests::test_parse_xlsx_sparse_columns_align_headers_with_values ... ok
+test parsers::xlsx::tests::test_parse_xlsx_without_header_does_not_promote_first_data_row_to_headers ... ok
+test parsers::xml::tests::test_parse_xml_preserves_element_value_pairs_for_retrieval ... ok
+test parsers::xml::tests::test_parse_xml_preserves_attribute_value_pairs_for_retrieval ... ok
+test parsers::xml::tests::test_parse_xml_preserves_nested_element_paths_for_retrieval ... ok
+test parsers::xml::tests::test_parse_xml_unescapes_attribute_values_for_retrieval ... ok
+test parsers::xml::tests::test_parse_xml_with_cdata ... ok
+test pipeline::tests::test_detect_upload_format_falls_back_to_content_type ... ok
+test pipeline::tests::test_build_vector_metadata_skips_empty_optional_strings ... ok
+test pipeline::tests::test_ensure_complete_insert_rejects_partial_success ... ok
+test pipeline::tests::test_build_vector_metadata_preserves_document_metadata ... ok
+test parsers::xml::tests::test_parse_xml_preserves_nested_attribute_paths_for_retrieval ... ok
+test pipeline::tests::test_ensure_embedding_alignment_allows_exact_match ... ok
+test pipeline::tests::test_detect_upload_format_prefers_file_extension ... ok
+test pipeline::tests::test_ensure_complete_insert_allows_full_success ... ok
+test pipeline::tests::test_ensure_embedding_alignment_rejects_partial_embedding_response ... ok
+test pipeline::tests::test_non_simple_docx_routes_to_python_parser ... ok
+test pipeline::tests::test_parser_label_uses_python_for_non_simple_docx ... ok
+test pipeline::tests::test_parser_label_uses_rust_for_rust_native_json ... ok
+test pipeline::tests::test_rust_native_json_does_not_route_to_python_parser ... ok
+test python_client::http::tests::test_parse_response_accepts_integer_float_word_count ... ok
+test python_client::http::tests::test_parse_response_accepts_mime_type_format ... ok
+test python_client::http::tests::test_parse_response_falls_back_to_text_word_count ... ok
+test python_client::http::tests::test_parse_response_adds_structured_content_to_retrieval_text ... ok
+test python_client::http::tests::test_parse_response_filename_fallback_handles_paths_and_query_strings ... ok
+test python_client::http::tests::test_parse_response_format_overrides_filename_extension ... ok
+test python_client::http::tests::test_parse_response_negative_page_count_is_ignored ... ok
+test python_client::http::tests::test_parse_response_preserves_parser_extra_metadata ... ok
+test python_client::http::tests::test_parse_response_rejects_fractional_word_count ... ok
+test python_client::http::tests::test_parse_response_unknown_format_falls_back_to_filename_extension ... ok
+test python_client::http::tests::test_parse_response_normalizes_metadata_fields ... ok
+test reindex::tests::test_get_category_version ... ok
+test reindex::tests::test_execute_reindex_handles_error ... ok
+test reindex::tests::test_get_category_version_ignores_deleted_documents ... ok
+test reindex::tests::test_execute_reindex ... ok
+test reindex::tests::test_execute_reindex_zero_batch_size_does_not_panic ... ok
+test reindex::tests::test_execute_reindex_updates_manifest_versions ... ok
+test python_client::http::tests::test_client_url_normalization ... ok
+test python_client::http::tests::test_client_creation ... ok
+test reindex::tests::test_plan_reindex_rejects_version_exhaustion ... ok
+test reindex::tests::test_reindex_plan_empty ... ok
+test reindex::tests::test_plan_excludes_deleted ... ok
+test reindex::tests::test_plan_reindex_category ... ok
+test reindex::tests::test_resume_reindex_rejects_stale_checkpoint_key ... ok
+test reindex::tests::test_tombstone_old_version_delegates_to_tombstoner ... ok
+test reindex::tests::test_tombstone_old_version_requires_configured_tombstoner ... ok
+test scheduler::tests::test_change_detection ... ok
+test state::tests::test_get_by_state_rejects_limit_sqlite_integer_overflow ... ok
+test state::tests::test_negative_legacy_chunk_count_is_rejected ... ok
+test state::tests::test_state_stats ... ok
+test state::tests::test_state_tracker ... ok
+test scheduler::tests::test_change_detection_missing ... ok
+test state::tests::test_update_chunk_count_rejects_sqlite_integer_overflow ... ok
+test scheduler::tests::test_change_detection_does_not_confirm_before_configured_threshold ... ok
+test storage::tests::test_object_metadata ... ok
+test state::tests::test_updates_reject_missing_document ... ok
+test scheduler::tests::test_scheduler_creation ... ok
+test scheduler::tests::test_change_detection_uses_configured_deletion_threshold ... ok
+test scheduler::tests::test_scheduler_rejects_epoch_exhaustion ... ok
+test scheduler::tests::test_scheduler_trigger ... ok
+test scheduler::tests::test_scheduler_overlap_prevention ... ok
+
+test result: ok. 223 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s
+
+     Running unittests src/main.rs (target/debug/deps/akidb_ingestion-6109ea0459fdc24b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/integration_tests.rs (target/debug/deps/integration_tests-5e9c37416abcd2ed)
+
+running 14 tests
+test test_backpressure_latency_based ... ok
+test test_backpressure_queue_depth ... ok
+test test_config_defaults ... ok
+test test_idempotency_checker_integration ... ok
+test test_parser_routing ... ok
+test test_json_parser_integration ... ok
+test test_csv_parser_integration ... ok
+test test_storage_client_configuration ... ok
+test test_html_parser_integration ... ok
+test test_xml_parser_integration ... ok
+test test_state_tracker_sqlite ... ok
+test test_document_processing_flow ... ok
+test test_semantic_chunker_integration ... ok
+test test_circuit_breaker_full_cycle ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.00s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_invariants-949224b431826e1a)
+
+running 8 tests
+test tests::test_debug_invariant_passes ... ok
+test tests::test_ensure_invariant_passes ... ok
+test tests::test_debug_invariant_with_format ... ok
+test tests::test_invariant_or_passes ... ok
+test tests::test_ensure_invariant_fails ... ok
+test tests::test_invariant_or_recovers ... ok
+test tests::test_debug_invariant_fails - should panic ... ok
+test tests::test_debug_invariant_format_in_panic - should panic ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_proto-931a3bdc6bcb720d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_retrieval-dbbf2e4bab98de12)
+
+running 160 tests
+test code::tests::test_language_from_extension ... ok
+test code::tests::test_byte_spans_cover_chunk_text ... ok
+test code::tests::test_go_func_chunks_and_test_edge ... ok
+test code::tests::test_python_decorator_does_not_leak_to_next_function ... ok
+test code::tests::test_python_multiline_decorator_attached ... ok
+test code::tests::test_python_multiline_decorator_ignores_parens_inside_triple_strings ... ok
+test code::tests::test_other_language_single_chunk ... ok
+test code::tests::test_python_multiline_signature_keeps_body ... ok
+test code::tests::test_python_multiline_decorator_ignores_parens_inside_strings ... ok
+test code::tests::test_python_multiline_signature_ignores_colon_inside_triple_string ... ok
+test code::tests::test_python_multiline_signature_ignores_colon_inside_default_string ... ok
+test code::tests::test_rust_attribute_does_not_leak_to_next_item ... ok
+test code::tests::test_python_decorator_attached ... ok
+test code::tests::test_python_extracts_functions_and_classes ... ok
+test code::tests::test_rust_braces_inside_multiline_raw_strings_do_not_break_scanning ... ok
+test code::tests::test_rust_braces_inside_block_comments_do_not_break_scanning ... ok
+test code::tests::test_rust_braces_inside_multiline_strings_do_not_break_scanning ... ok
+test code::tests::test_rust_braces_inside_nested_block_comments_do_not_break_scanning ... ok
+test code::tests::test_rust_braces_inside_strings_do_not_break_top_level_scanning ... ok
+test code::tests::test_rust_braces_inside_raw_strings_do_not_break_scanning ... ok
+test code::tests::test_rust_const_unsafe_extern_function_is_chunked ... ok
+test code::tests::test_rust_extracts_top_level_symbols ... ok
+test code::tests::test_rust_function_body_not_split ... ok
+test code::tests::test_rust_extracts_top_level_constants_types_and_macros ... ok
+test code::tests::test_rust_impl_name_skips_nested_generic_params ... ok
+test code::tests::test_rust_impl_and_attributes ... ok
+test code::tests::test_rust_impl_trait_for_type_name ... ok
+test code::tests::test_rust_modifier_chains_are_chunked ... ok
+test code::tests::test_rust_multiline_attribute_attached ... ok
+test code::tests::test_rust_multiline_attribute_ignores_raw_string_brackets ... ok
+test code::tests::test_rust_one_line_functions_are_separate_chunks ... ok
+test code::tests::test_rust_semicolon_inside_multiline_const_string_does_not_end_chunk ... ok
+test code::tests::test_rust_trait_impl_name_skips_nested_generic_params ... ok
+test code::tests::test_rust_trait_impl_name_skips_reference_target_prefix ... ok
+test context::tests::test_headings_prepends_title_and_path ... ok
+test context::tests::test_headings_skips_empty_parts ... ok
+test context::tests::test_headings_with_no_context_returns_chunk ... ok
+test context::tests::test_off_returns_chunk_unchanged ... ok
+test code::tests::test_typescript_function_and_class_chunks ... ok
+test context::tests::test_title_only ... ok
+test eval::tests::test_controlled_eval_zero_dimensions_returns_zero_metrics ... ok
+test eval::tests::test_controlled_eval_zero_queries_returns_zero_metrics ... ok
+test eval::tests::test_ndcg_at_k_deduplicates_retrieved_ids ... ok
+test eval::tests::test_ndcg_perfect_and_zero ... ok
+test eval::tests::test_ndcg_rewards_higher_rank ... ok
+test expansion::tests::test_child_expands_to_parent ... ok
+test eval::tests::test_recall_at_k ... ok
+test eval::tests::test_recall_at_k_deduplicates_retrieved_ids ... ok
+test expansion::tests::test_missing_parent_text_falls_back_to_child ... ok
+test expansion::tests::test_empty_parent_text_falls_back_to_child ... ok
+test expansion::tests::test_no_parent_uses_child_text ... ok
+test expansion::tests::test_siblings_dedup_to_single_parent_best_score ... ok
+test expansion::tests::test_order_preserved_across_mixed_matches ... ok
+test expansion::tests::test_siblings_dedup_updates_parent_to_later_higher_score ... ok
+test fusion::tests::test_hybrid_fuser_combines_dense_and_lexical ... ok
+test fusion::tests::test_hybrid_fuser_dense_only_when_lexical_empty ... ok
+test fusion::tests::test_rrf_clamps_overflowing_scores ... ok
+test fusion::tests::test_rrf_empty_inputs_return_empty ... ok
+test fusion::tests::test_rrf_exact_scores ... ok
+test fusion::tests::test_rrf_ignores_duplicate_ids_within_one_list ... ok
+test fusion::tests::test_rrf_invalid_k_falls_back_to_default ... ok
+test fusion::tests::test_rrf_ignores_invalid_weights ... ok
+test fusion::tests::test_rrf_item_in_both_lists_ranks_first ... ok
+test fusion::tests::test_rrf_single_list_preserves_order ... ok
+test fusion::tests::test_rrf_tie_break_is_deterministic_by_id ... ok
+test fusion::tests::test_rrf_top_k_truncates ... ok
+test fusion::tests::test_rrf_top_k_zero_returns_empty ... ok
+test fusion::tests::test_rrf_weight_changes_ordering ... ok
+test lexical::tests::test_bm25_score_conversion_stays_finite ... ok
+test lexical::tests::test_camel_case_identifier_matches_split_word_query ... ok
+test lexical::tests::test_acronym_digit_identifier_matches_split_word_query ... ok
+test lexical::tests::test_digit_boundary_identifier_matches_split_word_query ... ok
+test lexical::tests::test_empty_index_returns_no_results ... ok
+test lexical::tests::test_empty_document_is_not_indexed_and_upsert_removes_existing ... ok
+test lexical::tests::test_exact_cpp_identifier_ranks_above_plain_c ... ok
+test lexical::tests::test_exact_rust_path_identifier_ranks_above_split_words ... ok
+test lexical::tests::test_hyphen_only_document_is_not_indexed ... ok
+test lexical::tests::test_exact_snake_case_identifier_ranks_above_split_words ... ok
+test lexical::tests::test_exact_kebab_case_identifier_ranks_above_split_words ... ok
+test lexical::tests::test_higher_term_frequency_scores_higher ... ok
+test lexical::tests::test_length_normalization_prefers_shorter_doc ... ok
+test lexical::tests::test_postings_pruned_when_last_doc_removed ... ok
+test lexical::tests::test_repeated_query_terms_do_not_double_count_incorrectly ... ok
+test lexical::tests::test_single_document_match_and_miss ... ok
+test lexical::tests::test_remove_updates_index_and_stats ... ok
+test lexical::tests::test_rare_term_outweighs_common_term_via_idf ... ok
+test lexical::tests::test_tie_break_is_deterministic_by_id ... ok
+test lexical::tests::test_invalid_bm25_params_are_normalized ... ok
+test lexical::tests::test_kebab_case_identifier_matches_split_word_query ... ok
+test lexical::tests::test_tokenize_drops_hyphen_only_runs ... ok
+test lexical::tests::test_tokenize_drops_underscore_only_runs ... ok
+test lexical::tests::test_tokenize_drops_single_colon_punctuation ... ok
+test lexical::tests::test_tokenize_lowercases_and_splits_on_non_alphanumeric ... ok
+test lexical::tests::test_tokenize_preserves_code_language_identifiers ... ok
+test lexical::tests::test_tokenize_preserves_acronym_digit_identifier_parts ... ok
+test lexical::tests::test_tokenize_preserves_kebab_case_identifier_and_parts ... ok
+test lexical::tests::test_tokenize_preserves_digit_boundary_identifier_parts ... ok
+test lexical::tests::test_tokenize_preserves_snake_case_identifier_and_parts ... ok
+test lexical::tests::test_tokenize_preserves_rust_path_identifier_and_parts ... ok
+test lexical::tests::test_tokenize_preserves_camel_case_identifier_and_parts ... ok
+test lexical::tests::test_top_k_zero_or_empty_query_returns_empty ... ok
+test lexical::tests::test_total_len_saturates_without_underflow_on_remove ... ok
+test lexical::tests::test_total_len_saturates_without_wrapping_on_insert ... ok
+test lexical::tests::test_underscore_only_document_is_not_indexed ... ok
+test lexical::tests::test_top_k_limits_results ... ok
+test lexical::tests::test_upsert_replaces_document_content ... ok
+test memory::tests::test_custom_tags_preserved_and_reserved_protected ... ok
+test memory::tests::test_from_metadata_collects_unknown_keys_as_tags ... ok
+test memory::tests::test_from_metadata_requires_kind ... ok
+test memory::tests::test_kind_string_roundtrip ... ok
+test memory::tests::test_metadata_roundtrip ... ok
+test memory::tests::test_to_metadata_includes_set_fields_and_omits_none ... ok
+test packer::tests::test_all_fit_within_budget ... ok
+test packer::tests::test_blank_passages_are_dropped ... ok
+test packer::tests::test_budget_drops_overflowing_passages_preserving_order ... ok
+test packer::tests::test_citation_span_normalizes_reversed_bounds ... ok
+test packer::tests::test_citation_schema_v1_golden_shape ... ok
+test packer::tests::test_citation_strategy_includes_markers ... ok
+test packer::tests::test_empty_input_produces_empty_pack ... ok
+test packer::tests::test_every_included_passage_has_a_citation ... ok
+test packer::tests::test_estimate_tokens_counts_words ... ok
+test packer::tests::test_full_strategy_appends_source_line ... ok
+test packer::tests::test_passage_new_sanitizes_non_finite_scores ... ok
+test packer::tests::test_zero_budget_drops_everything ... ok
+test packer::tests::test_separator_tokens_count_against_budget ... ok
+test planner::tests::test_caller_query_phrase_enables_graph ... ok
+test planner::tests::test_code_word_prefix_does_not_false_positive_graph ... ok
+test planner::tests::test_dependency_query_phrase_enables_graph ... ok
+test planner::tests::test_explicit_mode_wins ... ok
+test planner::tests::test_how_to_use_query_does_not_false_positive_graph ... ok
+test planner::tests::test_chinese_relationship_queries_enable_graph ... ok
+test planner::tests::test_enterprise_relationship_queries_enable_graph ... ok
+test planner::tests::test_import_query_phrase_enables_graph ... ok
+test planner::tests::test_identifier_query_uses_hybrid ... ok
+test planner::tests::test_modified_query_enables_graph ... ok
+test planner::tests::test_relationship_query_enables_graph ... ok
+test planner::tests::test_what_does_query_without_relation_does_not_enable_graph ... ok
+test planner::tests::test_owner_query_phrase_enables_graph ... ok
+test planner::tests::test_use_cases_query_does_not_false_positive_graph ... ok
+test planner::tests::test_what_does_query_with_relation_enables_graph ... ok
+test planner::tests::test_where_question_without_relation_does_not_enable_graph ... ok
+test planner::tests::test_where_used_query_enables_graph ... ok
+test planner::tests::test_who_imports_query_enables_graph ... ok
+test planner::tests::test_who_uses_query_enables_graph ... ok
+test planner::tests::test_which_files_import_query_enables_graph ... ok
+test rerank::tests::test_cosine_similarity ... ok
+test rerank::tests::test_cosine_similarity_rejects_non_finite_values ... ok
+test rerank::tests::test_identity_reranker_preserves_order_and_scores ... ok
+test rerank::tests::test_identity_reranker_sanitizes_non_finite_scores ... ok
+test rerank::tests::test_lexical_overlap_empty_query_scores_zero ... ok
+test rerank::tests::test_lexical_overlap_ties_use_original_score ... ok
+test rerank::tests::test_lexical_overlap_reranker_ranks_by_query_term_hits ... ok
+test rerank::tests::test_mmr_deduplicates_ids ... ok
+test rerank::tests::test_mmr_diversity_demotes_near_duplicate ... ok
+test rerank::tests::test_mmr_does_not_promote_non_finite_relevance ... ok
+test rerank::tests::test_mmr_empty_and_zero_topk ... ok
+test rerank::tests::test_mmr_lambda_one_is_pure_relevance ... ok
+test rerank::tests::test_mmr_non_finite_lambda_uses_default ... ok
+test rerank::tests::test_mmr_respects_top_k ... ok
+test eval::tests::test_hybrid_beats_single_retrievers ... ok
+
+test result: ok. 160 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_server-f8e72bb5a67fc434)
+
+running 6 tests
+test tests::generation_mode_requires_stable_replica_identity ... ok
+test tests::installs_rustls_crypto_provider_before_tls_configuration ... ok
+test tests::generation_data_paths_must_not_overlap ... ok
+test tests::tls_requires_explicit_certificate_and_key_paths ... ok
+test tests::memory_data_path_must_not_overlap_other_mutable_state ... ok
+test tests::build_service_returns_error_for_invalid_hnsw_config ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/main.rs (target/debug/deps/akidb_server-0a96743561183e7d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_sql-ef33559d7ae66d90)
+
+running 5 tests
+test tests::test_rejects_unsafe_field_paths ... ok
+test tests::test_upsert_rejects_timestamp_outside_sql_integer_range ... ok
+test tests::test_exists_predicate ... ok
+test tests::test_null_equality_predicate_matches_json_null ... ok
+test tests::test_upsert_query_and_delete_metadata ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_storage-d0df5e8638a20863)
+
+running 129 tests
+test generation_bundle::tests::enforces_decoded_size_and_consumer_failures ... ok
+test generation_bundle::tests::rejects_declared_count_mismatch_before_consuming_excess ... ok
+test generation_bundle::tests::rejects_noncanonical_order_and_missing_final_lf ... ok
+test generation_bundle::tests::shared_golden_bundle_has_exact_bytes_digest_and_contract ... ok
+test generation_bundle::tests::validates_and_streams_a_complete_bundle ... ok
+test generation_bundle::tests::validates_a_zstd_stream_without_archive_extraction ... ok
+test generation_layout::tests::failed_build_keeps_evidence_and_cannot_be_sealed ... ok
+test generation_layout::tests::corrupt_or_truncated_bundle_never_installs_or_becomes_ready ... ok
+test generation_layout::tests::exact_build_resumes_but_changed_manifest_conflicts ... ok
+test generation_layout::tests::generation_gc_rejects_an_empty_retention_barrier ... ok
+test generation_layout::tests::prepares_hashed_shadow_paths_without_exposing_ids ... ok
+test generation_layout::tests::ready_journal_before_directory_rename_is_recovered ... ok
+test generation_layout::tests::pointer_set_is_atomic_recoverable_cache_of_ready_state ... ok
+test backend::tests::test_rocksdb_synced_batch ... ok
+test generation_layout::tests::replica_volume_cannot_be_adopted_by_another_identity ... ok
+test generation_layout::tests::replica_volume_owner_is_stable_and_idempotent ... ok
+test generation_layout::tests::ready_load_rejects_bundle_corruption ... ok
+test generation_layout::tests::symlinked_scope_component_is_rejected ... ok
+test generation_layout::tests::reinstall_does_not_clear_a_failed_build_journal ... ok
+test generation_layout::tests::verified_materialization_retry_preserves_original_evidence ... ok
+test generation_layout::tests::generation_gc_is_dry_run_first_and_never_removes_retained_or_young_state ... ok
+test generation_layout::tests::verified_build_is_atomically_sealed_and_survives_restart ... ok
+test backend::tests::test_rocksdb_scan_prefix_from_is_exclusive_and_bounded ... ok
+test backend::tests::test_rocksdb_scan_prefix ... ok
+test backend::tests::test_rocksdb_batch ... ok
+test backend::tests::test_rocksdb_basic ... ok
+test id_mapping::tests::test_id_mapping_create ... ok
+test id_mapping::tests::test_deleted_vector_payload_not_loaded ... ok
+test id_mapping::tests::test_id_mapping_delete ... ok
+test id_mapping::tests::test_id_mapping_get_internal ... ok
+test id_mapping::tests::test_id_mapping_delete_returns_none_when_already_deleted ... ok
+test id_mapping::tests::test_id_reuse_forbidden ... ok
+test memory::tests::altered_or_wrongly_scoped_access_proof_fails_closed ... ok
+test id_mapping::tests::test_text_persistence_rejects_invalid_utf8_id ... ok
+test id_mapping::tests::test_text_persistence_isolated_by_collection ... ok
+test memory::tests::commit_is_one_synced_batch_and_retry_is_idempotent ... ok
+test id_mapping::tests::test_text_persistence_rejects_invalid_utf8_payload ... ok
+test id_mapping::tests::test_vector_payload_persists ... ok
+test id_mapping::tests::test_text_persistence_roundtrip ... ok
+test memory::tests::failed_synced_batch_leaves_no_partial_state_or_sequence_gap ... ok
+test memory::tests::deletion_plan_execute_redacts_fanout_and_blocks_reimport ... ok
+test memory::tests::expected_head_conflict_has_no_canonical_effect ... ok
+test memory::tests::length_delimited_workspace_keys_do_not_alias ... ok
+test memory::tests::forget_tombstones_exact_heads_without_destroying_history ... ok
+test memory::tests::checked_in_bitemporal_fixture_returns_exact_lineage ... ok
+test memory::tests::idempotency_key_cannot_be_reused_for_different_content ... ok
+test memory::tests::retained_recall_replay_is_bound_to_effective_scope ... ok
+test memory::tests::fine_grained_scope_filters_reads_and_rejects_out_of_scope_commits ... ok
+test memory::tests::projection_gap_blocks_readiness_and_blank_replay_is_contiguous ... ok
+test memory::tests::projection_activation_never_exposes_an_incomplete_or_mixed_artifact_set ... ok
+test memory::tests::visibility_is_bound_to_an_immutable_projection_set ... ok
+test memory::tests::scheduled_compiler_jobs_recover_leases_and_dead_letter_without_scope_laundering ... ok
+test serving_state::tests::a_gap_blocks_readiness_without_advancing_checkpoint ... ok
+test memory::tests::two_blank_projections_rebuild_to_identical_state ... ok
+test serving_state::tests::activation_and_rollback_update_both_checkpoints_atomically ... ok
+test serving_state::tests::duplicate_delivery_is_a_noop_and_conflicts_are_rejected ... ok
+test serving_state::tests::failed_atomic_batch_leaves_no_partial_state_or_markers ... ok
+test serving_state::tests::failed_staged_generation_keeps_active_serving_and_requires_evidence ... ok
+test serving_state::tests::length_prefixed_scope_keys_do_not_alias ... ok
+test serving_state::tests::mutation_for_another_scope_or_generation_is_rejected ... ok
+test memory::tests::observe_propose_commit_correct_temporal_history_export_and_retract ... ok
+test serving_state::tests::repeated_stage_is_a_noop_but_changed_content_conflicts ... ok
+test serving_state::tests::redelivery_with_changed_content_is_rejected ... ok
+test memory::tests::synced_commit_survives_rocksdb_reopen ... ok
+test serving_state::tests::sealed_revision_advances_active_checkpoint_and_markers_atomically ... ok
+test snapshot::backend::tests::test_local_snapshot_rejects_metadata_file_overwrite ... ok
+test snapshot::backend::tests::test_local_snapshot_rejects_traversal_snapshot_id ... ok
+test snapshot::backend::tests::test_s3_object_path_encodes_key_segments_without_encoding_slashes ... ok
+test serving_state::tests::staging_never_changes_active_generation ... ok
+test memory::tests::acknowledged_synced_commit_survives_process_kill ... ok
+test snapshot::backend::tests::test_local_snapshot_save_load ... ok
+test snapshot::backend::tests::test_snapshot_file_path_validation_rejects_reserved_metadata ... ok
+test snapshot::backend::tests::test_snapshot_id_validation_rejects_path_segments ... ok
+test snapshot::backend::tests::test_snapshot_metadata_key_parser_requires_exact_root_metadata_object ... ok
+test snapshot::backend::tests::test_snapshot_verify_for_restore_accepts_consistent_meta ... ok
+test snapshot::backend::tests::test_snapshot_verify_for_restore_rejects_zero_dimensions ... ok
+test snapshot::cleanup::tests::test_abort_multipart_upload_path_encodes_key_segments_and_upload_id ... ok
+test snapshot::cleanup::tests::test_cleanup_config_defaults ... ok
+test snapshot::cleanup::tests::test_cleanup_result ... ok
+test snapshot::cleanup::tests::test_extract_xml_value ... ok
+test snapshot::cleanup::tests::test_extract_xml_value_decodes_common_entities_once ... ok
+test serving_state::tests::active_state_survives_rocksdb_restart ... ok
+test snapshot::resumable_upload::tests::test_config_defaults ... ok
+test snapshot::resumable_upload::tests::test_config_sanitizes_zero_values ... ok
+test snapshot::resumable_upload::tests::test_calculate_chunks_does_not_overflow_for_large_file_size ... ok
+test snapshot::backend::tests::test_s3_object_url_uses_encoded_path ... ok
+test snapshot::resumable_upload::tests::test_calculate_chunks ... ok
+test snapshot::resumable_upload::tests::test_multipart_paths_encode_object_key_segments_and_upload_id ... ok
+test snapshot::resumable_upload::tests::test_parse_etag ... ok
+test snapshot::resumable_upload::tests::test_parse_upload_id ... ok
+test snapshot::resumable_upload::tests::test_retry_backoff_saturates_for_large_attempts ... ok
+test snapshot::resumable_upload::tests::test_start_offset_rejects_invalid_checkpoint_part ... ok
+test snapshot::resumable_upload::tests::test_start_offset_rejects_overflow ... ok
+test snapshot::state_machine::tests::test_failure_and_retry ... ok
+test snapshot::state_machine::tests::test_empty_retry_backoff_uses_default_delay ... ok
+test snapshot::state_machine::tests::test_progress_calculation ... ok
+test snapshot::state_machine::tests::test_persistence ... ok
+test tag_index::tests::test_f64_sortable_encoding ... ok
+test tag_index::tests::test_filter_contains_not_detection ... ok
+test snapshot::resumable_upload::tests::test_multipart_object_url_uses_encoded_path ... ok
+test snapshot::state_machine::tests::test_state_machine_lifecycle ... ok
+test tag_index::tests::test_id_exceeds_u32_max_fails ... ok
+test snapshot::state_machine::tests::test_retry_count_saturates_on_repeated_failure ... ok
+test snapshot::backend::tests::test_snapshot_manager ... ok
+test tag_index::tests::test_infinity_range_query_rejected ... ok
+test tag_index::tests::test_infinity_tag_rejected ... ok
+test tag_index::tests::test_negative_infinity_tag_rejected ... ok
+test tag_index::tests::test_nan_tag_rejected ... ok
+test tag_index::tests::test_nan_range_query_rejected ... ok
+test tag_index::tests::test_negative_number_range_query ... ok
+test tag_index::tests::test_not_filter_with_universe ... ok
+test tag_index::tests::test_tag_index_add_and_query ... ok
+test tag_index::tests::test_tag_index_and_filter ... ok
+test tag_index::tests::test_not_filter_without_universe_fails ... ok
+test tag_index::tests::test_tag_index_numeric_range ... ok
+test tag_index::tests::test_tag_index_or_filter ... ok
+test tag_index::tests::test_tag_index_exists ... ok
+test tag_index::tests::test_tag_index_remove ... ok
+test wal::tests::test_wal_basic ... ok
+test tag_index::tests::test_tag_index_stats ... ok
+test wal::tests::test_wal_read_since ... ok
+test wal::tests::test_wal_recovery ... ok
+test wal::tests::test_wal_rejects_lsn_exhaustion_after_recovery ... ok
+test tag_index::tests::test_tag_index_text_list ... ok
+test tag_index::tests::test_tag_index_update ... ok
+test tag_index::tests::test_tag_key_and_value_colons_do_not_collide ... ok
+test serving_state::tests::any_out_of_order_sequence_is_rejected_without_advancing ... ok
+test memory::tests::randomized_late_corrections_match_reference_bitemporal_interpreter ... ok
+test memory::tests::duplicate_and_reordered_delivery_has_one_canonical_effect ... ok
+
+test result: ok. 129 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.56s
+
+     Running unittests src/lib.rs (target/debug/deps/akidb_tui-8a1be3b0b7dcaca5)
+
+running 21 tests
+test app::tests::import_form_builds_validation_input_only ... ok
+test app::tests::failed_refresh_preserves_stale_data ... ok
+test app::tests::test_app_normalizes_zero_refresh_interval ... ok
+test config::tests::test_default_config ... ok
+test config::tests::test_normalize_rejects_zero_refresh_interval ... ok
+test config::tests::test_parse_json_config ... ok
+test client::tests::token_file_requires_regular_mode_0600_file ... ok
+test effect::tests::v1_effect_allowlist_contains_only_read_or_validation_work ... ok
+test events::tests::test_quit_keys ... ok
+test config::tests::test_parse_config_with_discovery_addresses ... ok
+test events::tests::test_screen_switch ... ok
+test events::tests::test_zero_tick_rate_is_sanitized ... ok
+test events::tests::test_navigation_keys ... ok
+test config::tests::test_parse_config ... ok
+test theme::tests::test_theme_by_name ... ok
+test ui::layout::tests::test_format_vector_count ... ok
+test ui::management::tests::bytes_are_human_readable ... ok
+test ui::management::tests::filters_are_case_insensitive ... ok
+test ui::management::tests::truncation_is_bounded ... ok
+test ui::layout::tests::compact_terminal_never_panics ... ok
+test ui::layout::tests::every_console_screen_renders_at_supported_size ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/main.rs (target/debug/deps/akidb_tui-772b22b077757aee)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_common
+
+running 4 tests
+test crates/common/src/scheduler/mod.rs - scheduler (line 15) ... ignored
+test crates/common/src/types/document.rs - types::document::DocumentIdentifier (line 27) ... ok
+test crates/common/src/types/tag.rs - types::tag::TagValue (line 22) ... ok
+test crates/common/src/metrics.rs - metrics (line 12) ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.07s
+
+   Doc-tests akidb_contracts
+
+running 2 tests
+test crates/contracts/src/lib.rs - (line 16) ... ok
+test crates/contracts/src/collection_key.rs - collection_key::CollectionKey (line 42) ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.35s
+
+   Doc-tests akidb_coordinator
+
+running 1 test
+test crates/coordinator/src/workflow.rs - workflow (line 20) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_embedding
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_faiss
+
+running 1 test
+test crates/faiss-wrapper/src/rebuild/typestate.rs - rebuild::typestate (line 21) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_graph
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_grpc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_ingestion
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_invariants
+
+running 5 tests
+test crates/invariants/src/lib.rs - debug_invariant (line 54) ... ok
+test crates/invariants/src/lib.rs - ensure_invariant (line 139) ... ok
+test crates/invariants/src/lib.rs - invariant_or (line 168) ... ok
+test crates/invariants/src/lib.rs - critical_invariant (line 95) ... ok
+test crates/invariants/src/lib.rs - (line 20) ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+   Doc-tests akidb_proto
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_retrieval
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_server
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_sql
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_storage
+
+running 2 tests
+test crates/storage/src/snapshot/mod.rs - snapshot (line 41) ... ignored
+test crates/storage/src/snapshot/mod.rs - snapshot (line 60) ... ignored
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests akidb_tui
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -435,6 +435,16 @@ hardware all affect performance. See the [one-node benchmark
 methodology](docs/quality/one-mac-benchmark.md) and [vector quality
 gates](docs/quality/vector-quality.md).
 
+The separate Authoritative Memory Linux AMD64 systems profile passed 15 fresh
+release runs across four shared 8-vCPU/32-GB VMs, with five runs at each of
+1k, 10k, and 100k versions. At 100k versions, the run medians were 444.49
+synced visible commits/second with 21.358-ms P95 and 730.07 known-answer
+recalls/second with 11.995-ms P95; all 555,000 commits and 15,000 measured
+recalls completed with zero failures, incorrect recalls, or observed
+projection lag. This is a synthetic single-process preview envelope, not a
+production or semantic-quality claim. See the [Linux AMD64 Authoritative
+Memory qualification](docs/quality/linux-amd64-authoritative-memory-qualification.md).
+
 ## Project layout
 
 ```text
@@ -476,6 +486,7 @@ akidb/
 - [Knowledge-serving runbook](docs/runbooks/knowledge-serving.md)
 - [Ansible deployment](deploy/ansible/README.md)
 - [Ubuntu AMD64 knowledge-cell qualification](docs/quality/linux-amd64-knowledge-cell-qualification.md)
+- [Linux AMD64 Authoritative Memory qualification](docs/quality/linux-amd64-authoritative-memory-qualification.md)
 - [Market-readiness qualification](docs/quality/market-readiness-qualification.md)
 - [Vector quality gates](docs/quality/vector-quality.md)
 - [One-node benchmark](docs/quality/one-mac-benchmark.md)
@@ -516,8 +527,10 @@ akidb/
 - Authoritative Memory is an experimental, single-process developer preview.
   Its immutable ledger, bitemporal/history APIs, retained replay, and
   reviewable deletion workflow are implemented for evaluation, but are not a
-  production, system-of-record, multi-tenant, HA, or fleet qualification. See
-  the [preview boundary](docs/development/authoritative-memory-preview.md).
+  production, system-of-record, multi-tenant, HA, or fleet qualification. A
+  bounded synthetic Linux AMD64 systems envelope is published separately. See
+  the [preview boundary](docs/development/authoritative-memory-preview.md) and
+  [qualification report](docs/quality/linux-amd64-authoritative-memory-qualification.md).
 
 ## Contributing
 

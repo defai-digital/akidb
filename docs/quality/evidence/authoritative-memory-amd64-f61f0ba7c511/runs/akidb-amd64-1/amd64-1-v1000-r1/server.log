@@ -1,0 +1,10 @@
+[2m2026-07-27T05:04:05.419967Z[0m [32m INFO[0m ThreadId(01) [2makidb_server[0m[2m:[0m Starting AkiDB Server v0.10.0
+[2m2026-07-27T05:04:05.420024Z[0m [32m INFO[0m ThreadId(01) [2makidb_server[0m[2m:[0m Config file: "/root/akidb-memory-work-f61f0ba7c511/amd64-1-v1000-r1/akidb-memory-qualification.toml"
+[2m2026-07-27T05:04:05.420029Z[0m [32m INFO[0m ThreadId(01) [2makidb_server[0m[2m:[0m Running in standalone mode (no external dependencies)
+[2m2026-07-27T05:04:05.420441Z[0m [32m INFO[0m ThreadId(01) [2makidb_server[0m[2m:[0m AkiDB Prometheus endpoint listening [3maddress[0m[2m=[0m127.0.0.1:19090
+[2m2026-07-27T05:04:05.420465Z[0m [32m INFO[0m ThreadId(01) [2makidb_server[0m[2m:[0m Initializing RocksDB at /root/akidb-memory-work-f61f0ba7c511/amd64-1-v1000-r1/vector-rocksdb
+[2m2026-07-27T05:04:05.420533Z[0m [32m INFO[0m ThreadId(01) [2makidb_storage::backend[0m[2m:[0m Opening RocksDB at "/root/akidb-memory-work-f61f0ba7c511/amd64-1-v1000-r1/vector-rocksdb"
+[2m2026-07-27T05:04:05.427544Z[0m [32m INFO[0m ThreadId(01) [2makidb_server[0m[2m:[0m Vector index initialized (HNSW mode) [3mprecision[0m[2m=[0mF32 [3mmetric[0m[2m=[0mCosine
+[2m2026-07-27T05:04:05.427663Z[0m [32m INFO[0m ThreadId(01) [2makidb_server[0m[2m:[0m Native graph index enabled
+[2m2026-07-27T05:04:05.427723Z[0m [32m INFO[0m ThreadId(01) [2makidb_storage::backend[0m[2m:[0m Opening RocksDB at "/root/akidb-memory-work-f61f0ba7c511/amd64-1-v1000-r1/memory-rocksdb"
+[2m2026-07-27T05:04:05.433526Z[0m [32m INFO[0m ThreadId(01) [2makidb_server[0m[2m:[0m Starting gRPC server on 127.0.0.1:50051

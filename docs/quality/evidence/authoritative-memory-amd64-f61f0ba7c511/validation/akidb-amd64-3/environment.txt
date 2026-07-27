@@ -1,0 +1,13 @@
+validation_role=workspace-check-all-targets
+source_commit=f61f0ba7c5113ac6b061e6684f00d846ef1e2b1a
+source_status_before=clean
+kernel=Linux 7.0.0-28-generic
+architecture=x86_64
+os=Ubuntu 26.04 LTS
+logical_cores=8
+memory_bytes=32569466880
+rustc 1.93.1 (01f6ddf75 2026-02-11) (built from a source tarball)
+cargo 1.93.1 (083ac5135 2025-12-15) (built from a source tarball)
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+libprotoc 3.21.12
+source_clean_after=true
