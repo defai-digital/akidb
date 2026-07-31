@@ -7,7 +7,7 @@ plus isolated market-qualification playbooks:
 | --- | --- | --- |
 | Knowledge-serving cell | `knowledge-preflight.yml`, `knowledge-site.yml`, `knowledge-verify.yml`, load/failure/backup drills | Supported availability design: three independently rebuilt full replicas, two AX gateways, PostgreSQL authority, MinIO artifacts. Bounded Ubuntu AMD64 envelope is qualified. |
 | Market qualification | `knowledge-market-ann.yml`, `knowledge-market-recovery.yml`, `knowledge-market-competitors.yml`, `knowledge-market-graph.yml` | Active release gate automation. Isolates one replica or runs competitors; not production reconciliation. |
-| Independent-shard lab (N=1, 2, or 4+) | `preflight.yml`, `network.yml`, `deploy.yml`, `verify.yml`, `site.yml` | Capacity path: 1 standalone, 2 dual-shard, or 4+ multi-shard with one coordinator. Not HA and not the agent-facing replica design. N=3 is not a supported size. |
+| Independent-shard lab (N=1, 2, or 4+) | `preflight.yml`, `network.yml`, `deploy.yml`, `verify.yml`, `site.yml` | Capacity path: 1 standalone, 2 dual-shard, or 4+ multi-shard with one or more active-active coordinators. Entrypoint HA only — not data replication / not the agent-facing replica design. N=3 is not a supported size. |
 
 These playbooks target the **enterprise AMD64 cloud/lab path**. Product
 targets also include single-user Mac Studio or AMD64 PC, and enterprise Mac
@@ -43,8 +43,11 @@ The tradeoffs are deliberate:
 
 - Ansible controls host state, so operating-system consistency still matters;
 - these four servers are independent shards, not a replicated high-
-  availability cluster. A failed node makes that shard's data unavailable;
-- coordinator high availability is not implemented;
+  availability cluster. A failed shard host makes that partition's data
+  unavailable until it returns;
+- coordinator **entrypoint HA** is supported via two or more active-active
+  coordinator processes behind a client VIP/LB (static peer list + optional
+  side-effect leader). This is not shard data replication;
 - the current coordinator does not propagate bearer token or workspace
   metadata to shards. Cluster mode therefore uses `auth.mode=disabled` only
   on a WireGuard-only service network. Public interfaces never bind AkiDB
@@ -87,15 +90,26 @@ Inventory length drives topology. Playbooks loop over
 | Size | Inventory shape | Client entrypoint |
 | --- | --- | --- |
 | **N=1** | 1 host in `akidb_shards`; omit `akidb_coordinators` | Shard `:50051` |
-| **N=2** | 2 shards + exactly 1 coordinator (often co-located) | Coordinator `:50050` |
-| **N=4+** | N shards (4, 5, 6, …) + exactly 1 coordinator | Coordinator `:50050` |
+| **N=2** | 2 shards + **1+** coordinators (often co-located) | Coordinator `:50050` (VIP/LB if multi-coord) |
+| **N=4+** | N shards (4, 5, 6, …) + **1+** coordinators | Coordinator `:50050` (VIP/LB if multi-coord) |
 | **N=3** | Not supported for this profile | — |
+
+**Coordinator HA (entrypoint only):** put two or more hosts in
+`akidb_coordinators`. Each process fans out to the same ordered shard list.
+Clients should target a private VIP or load balancer that health-checks every
+coordinator gRPC `:50050` (prefer `akidb health --require-ready`). Role
+defaults to `akidb_coord_role: auto` (lexicographically smallest advertise
+address owns future side effects). Read-your-writes sticky routing is
+**per coordinator process** (not shared across active-active instances).
 
 Examples (documentation IPs only):
 
 - `inventories/example/hosts.single.yml` — N=1
-- `inventories/example/hosts.dual.yml` — N=2
-- `inventories/example/hosts.yml` — N=4 (comment shows how to add N>4)
+- `inventories/example/hosts.dual.yml` — N=2 with dual coordinators
+- `inventories/example/hosts.yml` — N=4 with dual coordinators (comment shows how to add N>4)
+- `inventories/example/hosts.ha-private.yml` — N=4 private backplane + dual coordinators
+
+Operator runbook: [`docs/runbooks/coordinator-ha.md`](../../docs/runbooks/coordinator-ha.md).
 
 Real host maps stay in gitignored `inventories/lab/`.
 

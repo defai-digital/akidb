@@ -181,6 +181,15 @@
       delay: 2
       until: akidb_coordinator_health.rc == 0
 
+    - name: Check peer coordinator ports on the service plane
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item].akidb_overlay_address }}"
+        port: "{{ akidb_coordinator_port | int }}"
+        timeout: 10
+        state: started
+      loop: "{{ groups.get('akidb_coordinators', []) | difference([inventory_hostname]) }}"
+      when: (groups.get('akidb_coordinators', []) | length) > 1
+
     - name: Check coordinator HTTP health
       ansible.builtin.uri:
         url: "http://127.0.0.1:{{ akidb_coordinator_metrics_port }}/health"
@@ -244,7 +253,9 @@
     - name: Confirm deployed release
       ansible.builtin.debug:
         msg: >-
-          AkiDB {{ akidb_release_id }} is ready through
-          {{ akidb_overlay_address }}:{{ akidb_coordinator_port }} with
-          {{ groups['akidb_shards'] | length }} shards
-          (supported sizes: N=1 standalone, N=2, N>=4).
+          AkiDB {{ akidb_release_id }} coordinator ready on
+          {{ akidb_overlay_address }}:{{ akidb_coordinator_port }}
+          ({{ groups.get('akidb_coordinators', []) | length }} coordinator(s),
+          {{ groups['akidb_shards'] | length }} shards).
+          Point clients at a VIP/LB across all coordinator endpoints for
+          entrypoint HA. Shards remain independent partitions.

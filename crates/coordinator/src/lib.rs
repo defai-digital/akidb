@@ -50,6 +50,9 @@ pub use fanout::{
 pub use merger::ResultMerger;
 pub use metrics::{export_metrics, metrics as coordinator_metrics, CoordinatorMetrics};
 pub use router::{DistributionStats, ShardInfo, ShardRouter};
-pub use server::{run as run_server, Args as ServerArgs, CoordinatorService};
+pub use server::{
+    coordinator_node_id, parse_address_list, resolve_leader_address, run as run_server,
+    Args as ServerArgs, CoordRole, CoordinatorService,
+};
 pub use slo::{SloConfig, SloEstimate, SloEstimator, SloStats};
 pub use workflow::{QueryCoverage, QueryState, QueryTiming, QueryWorkflow, QueryWorkflowResult};

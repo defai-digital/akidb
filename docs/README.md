@@ -10,7 +10,7 @@
 | Authoritative agent Memory | Experimental single-process developer preview; bounded Linux AMD64 systems profile passed, but production/system-of-record/HA and external product gates remain open | [Authoritative Memory Developer Preview](development/authoritative-memory-preview.md), [Linux AMD64 qualification](quality/linux-amd64-authoritative-memory-qualification.md) |
 | PostgreSQL-led full-replica knowledge cell | Implemented; Ubuntu AMD64 qualified for a bounded envelope; Mac Studio cluster is an intended enterprise path | [Agentic Knowledge-Serving Architecture](architecture/knowledge-serving.md), [Ubuntu AMD64 qualification](quality/linux-amd64-knowledge-cell-qualification.md) |
 | Market-aligned ANN / graph / competitor parity | Active release gate; automation ready, full evidence verdict not complete | [Market-Readiness Qualification](quality/market-readiness-qualification.md) |
-| Multi-shard coordinator | Capacity / fan-out path only; not HA replication | [Ansible deployment](../deploy/ansible/README.md) |
+| Multi-shard coordinator | Capacity / fan-out path; optional multi-coordinator entrypoint HA; not shard data replication | [Ansible deployment](../deploy/ansible/README.md) |
 | Native GraphRAG | Shipped as bounded retrieval graph, not a general graph DB | [Native GraphRAG Plan](development/native-graphrag-plan.md) |
 
 > Detailed Product Requirements, Architecture Decision Records, research, and

@@ -56,16 +56,16 @@
     that:
       - (akidb_preflight_shard_count | int) >= 1
       - (akidb_preflight_cluster_count | int) >= 1
-      - (akidb_preflight_coordinator_count | int) <= 1
       - >-
         (akidb_preflight_shard_count | int) == 1
-        or (akidb_preflight_coordinator_count | int) == 1
+        or (akidb_preflight_coordinator_count | int) >= 1
       - >-
         (akidb_preflight_shard_count | int) != 3
     fail_msg: >-
       Supported independent-shard sizes are 1, 2, or 4+ hosts (not 3).
       N=1: one shard, optional coordinator. N=2 and N>=4: one or more shards
-      plus exactly one coordinator host. Multi-coordinator HA is not supported.
+      plus one or more coordinator hosts (active-active entrypoint HA).
+      Multi-coordinator is entrypoint redundancy only; shards are not replicas.
       Declare hosts in inventory groups; do not hardcode size in playbooks.
   run_once: true
 

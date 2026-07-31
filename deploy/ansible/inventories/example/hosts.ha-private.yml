@@ -1,0 +1,48 @@
+---
+# Example: N=4 independent shards + active-active coordinators on a
+# provider private backplane (VPC / OVH vRack style).
+#
+# Topology (documentation IPs only — copy to inventories/lab/):
+#   node-1  overlay 10.1.0.11  shard + coordinator
+#   node-2  overlay 10.1.0.12  shard + coordinator
+#   node-3  overlay 10.1.0.13  shard
+#   node-4  overlay 10.1.0.14  shard
+#
+# Clients should use a private VIP/LB that health-checks both
+# coordinator endpoints (:50050). Prefer:
+#   akidb health --server <coord> --require-ready
+#
+# This is entrypoint HA only. Shards are independent partitions;
+# losing a shard host loses that partition until restore.
+all:
+  vars:
+    ansible_user: ubuntu
+  children:
+    akidb_cluster:
+      vars:
+        akidb_cluster_network_trusted: true
+        akidb_service_network_mode: private
+        # Match the private network CIDR used for akidb_overlay_address.
+        akidb_overlay_cidr: 10.1.0.0/16
+        # Optional: bind UFW to the private NIC name on each host.
+        # akidb_service_network_interface: ens4
+        akidb_coord_role: auto
+      children:
+        akidb_shards:
+          hosts:
+            akidb-1:
+              ansible_host: 192.0.2.11
+              akidb_overlay_address: 10.1.0.11
+            akidb-2:
+              ansible_host: 192.0.2.12
+              akidb_overlay_address: 10.1.0.12
+            akidb-3:
+              ansible_host: 192.0.2.13
+              akidb_overlay_address: 10.1.0.13
+            akidb-4:
+              ansible_host: 192.0.2.14
+              akidb_overlay_address: 10.1.0.14
+        akidb_coordinators:
+          hosts:
+            akidb-1:
+            akidb-2:

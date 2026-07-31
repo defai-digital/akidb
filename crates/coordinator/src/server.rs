@@ -96,6 +96,95 @@ pub struct Args {
     /// Maximum queue depth for waiting requests
     #[arg(long, default_value = "5000")]
     pub max_queue_depth: usize,
+
+    /// Peer coordinator addresses (comma-separated host:port), excluding self.
+    /// Used for GetClusterState membership and HA inventory visibility.
+    #[arg(long, default_value = "", env = "AKIDB_COORD_PEERS")]
+    pub peers: String,
+
+    /// HA role for side-effect ownership (future compaction, admin tasks).
+    /// `auto` elects the lexicographically smallest address among self+peers.
+    /// Search/insert fan-out is always active on every coordinator.
+    #[arg(
+        long,
+        default_value = "auto",
+        env = "AKIDB_COORD_ROLE",
+        value_parser = ["auto", "primary", "secondary"]
+    )]
+    pub coord_role: String,
+
+    /// Advertise address reported in cluster state (defaults to --listen).
+    /// Set when the process binds a different address than clients use.
+    #[arg(long, default_value = "", env = "AKIDB_COORD_ADVERTISE_ADDR")]
+    pub advertise: String,
+}
+
+/// HA role for coordinator side-effect ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CoordRole {
+    /// Leader is the lexicographically smallest address among self + peers.
+    #[default]
+    Auto,
+    /// This process owns side effects (and reports is_leader=true).
+    Primary,
+    /// This process serves queries only; does not own side effects.
+    Secondary,
+}
+
+impl CoordRole {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "primary" => Ok(Self::Primary),
+            "secondary" => Ok(Self::Secondary),
+            other => Err(format!(
+                "unsupported coord role '{other}' (expected auto, primary, or secondary)"
+            )),
+        }
+    }
+}
+
+/// Parse a comma-separated host:port list, dropping empties and normalizing trim.
+pub fn parse_address_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// Stable coordinator node id derived from an advertise address.
+pub fn coordinator_node_id(address: &str) -> String {
+    format!("coord-{}", address.replace([':', '.'], "-"))
+}
+
+/// Resolve which coordinator address is the HA leader for side effects.
+///
+/// - `primary`: this process is always the leader.
+/// - `secondary`: leader is the lexicographically smallest peer (fallback: self).
+/// - `auto`: leader is the lexicographically smallest among self + peers.
+pub fn resolve_leader_address(role: CoordRole, local: &str, peers: &[String]) -> String {
+    match role {
+        CoordRole::Primary => local.to_string(),
+        CoordRole::Secondary => peers
+            .iter()
+            .filter(|p| p.as_str() != local)
+            .min()
+            .cloned()
+            .unwrap_or_else(|| local.to_string()),
+        CoordRole::Auto => {
+            let mut all: Vec<&str> = peers
+                .iter()
+                .map(String::as_str)
+                .filter(|p| *p != local)
+                .collect();
+            all.push(local);
+            all.into_iter()
+                .min()
+                .unwrap_or(local)
+                .to_string()
+        }
+    }
 }
 
 /// Coordinator gRPC service
@@ -103,13 +192,20 @@ pub struct CoordinatorService {
     fanout: Arc<FanoutExecutor>,
     router: Arc<RwLock<ShardRouter>>,
     /// Tracks recent writes for read-your-writes consistency
+    /// (local to this process; not shared across active-active coordinators).
     consistency: Arc<ConsistencyTracker>,
     /// Backpressure controller for rate limiting and load shedding
     backpressure: Arc<BackpressureController>,
-    /// Local coordinator address
+    /// Local coordinator advertise address
     local_address: String,
     /// Local coordinator ID
     local_id: String,
+    /// Peer coordinator advertise addresses (static membership)
+    peer_addresses: Vec<String>,
+    /// Whether this process owns HA side effects
+    is_leader: bool,
+    /// Resolved leader node id
+    leader_id: String,
 }
 
 impl CoordinatorService {
@@ -120,6 +216,27 @@ impl CoordinatorService {
         backpressure_config: BackpressureConfig,
         local_address: String,
     ) -> Self {
+        Self::with_ha(
+            shards,
+            timeout,
+            pool_size,
+            backpressure_config,
+            local_address,
+            Vec::new(),
+            CoordRole::Auto,
+        )
+    }
+
+    /// Build a coordinator with static multi-coordinator HA membership.
+    pub fn with_ha(
+        shards: Vec<ShardInfo>,
+        timeout: Duration,
+        pool_size: usize,
+        backpressure_config: BackpressureConfig,
+        local_address: String,
+        peer_addresses: Vec<String>,
+        role: CoordRole,
+    ) -> Self {
         let router = Arc::new(RwLock::new(ShardRouter::new(shards)));
         let fanout = Arc::new(FanoutExecutor::with_pool_size(
             router.clone(),
@@ -128,7 +245,14 @@ impl CoordinatorService {
         ));
         let consistency = Arc::new(ConsistencyTracker::new());
         let backpressure = Arc::new(BackpressureController::with_config(backpressure_config));
-        let local_id = format!("coord-{}", local_address.replace([':', '.'], "-"));
+        let local_id = coordinator_node_id(&local_address);
+        let peers: Vec<String> = peer_addresses
+            .into_iter()
+            .filter(|p| p != &local_address)
+            .collect();
+        let leader_address = resolve_leader_address(role, &local_address, &peers);
+        let is_leader = leader_address == local_address;
+        let leader_id = coordinator_node_id(&leader_address);
 
         Self {
             fanout,
@@ -137,7 +261,30 @@ impl CoordinatorService {
             backpressure,
             local_address,
             local_id,
+            peer_addresses: peers,
+            is_leader,
+            leader_id,
         }
+    }
+
+    /// Whether this coordinator owns side-effect scheduling (compaction, etc.).
+    pub fn is_leader(&self) -> bool {
+        self.is_leader
+    }
+
+    /// Static peer coordinator addresses.
+    pub fn peer_addresses(&self) -> &[String] {
+        &self.peer_addresses
+    }
+
+    /// Resolved HA leader node id.
+    pub fn leader_id(&self) -> &str {
+        &self.leader_id
+    }
+
+    /// Advertise address for this coordinator.
+    pub fn local_address(&self) -> &str {
+        &self.local_address
     }
 
     fn validate_search_controls(top_k: u32, nprobe: Option<u32>) -> Result<(), Status> {
@@ -622,13 +769,18 @@ impl Akidb for CoordinatorService {
         let router = self.router.read().await;
         let healthy_count = router.healthy_shards().len();
         let total_count = router.all_shards().len();
+        let role = if self.is_leader {
+            "primary"
+        } else {
+            "secondary"
+        };
+        let peer_count = self.peer_addresses.len();
 
         Ok(Response::new(HealthResponse {
             healthy: healthy_count > 0,
-            ready: healthy_count == total_count,
+            ready: healthy_count == total_count && total_count > 0,
             message: format!(
-                "Coordinator: {}/{} shards healthy",
-                healthy_count, total_count
+                "Coordinator ({role}): {healthy_count}/{total_count} shards healthy; {peer_count} peer coord(s)"
             ),
             total_vectors: 0, // Would need to aggregate from shards
             active_vectors: 0,
@@ -816,15 +968,28 @@ impl Akidb for CoordinatorService {
         let all_shards = router.all_shards();
         let healthy_shards = router.healthy_shards();
 
-        // Build coordinator list (for now just this coordinator, as single-coordinator setup)
-        let coordinators = vec![CoordinatorNode {
+        // Self + static peers (active-active membership; peers are not probed here).
+        let mut coordinators = vec![CoordinatorNode {
             id: self.local_id.clone(),
             peer_id: self.local_id.clone(),
             address: self.local_address.clone(),
-            is_leader: true, // Single coordinator is always leader
+            is_leader: self.is_leader,
             is_self: true,
             status: NodeStatus::Healthy as i32,
         }];
+        for peer in &self.peer_addresses {
+            let peer_id = coordinator_node_id(peer);
+            let is_leader = peer_id == self.leader_id;
+            coordinators.push(CoordinatorNode {
+                id: peer_id.clone(),
+                peer_id,
+                address: peer.clone(),
+                is_leader,
+                is_self: false,
+                status: NodeStatus::Unknown as i32,
+            });
+        }
+        coordinators.sort_by(|a, b| a.address.cmp(&b.address));
 
         // Build shard list from router
         let shards: Vec<ShardNode> = all_shards
@@ -868,7 +1033,7 @@ impl Akidb for CoordinatorService {
         Ok(Response::new(GetClusterStateResponse {
             coordinators,
             shards,
-            leader_id: Some(self.local_id.clone()),
+            leader_id: Some(self.leader_id.clone()),
             local_peer_id: self.local_id.clone(),
             metrics: cluster_metrics,
             serving_generation: None,
@@ -947,22 +1112,32 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting AkiDB Coordinator");
 
-    // Parse shard addresses
-    let shards: Vec<ShardInfo> = args
-        .shards
-        .split(',')
+    // Parse shard addresses (order must match across active-active coordinators)
+    let shards: Vec<ShardInfo> = parse_address_list(&args.shards)
+        .into_iter()
         .enumerate()
-        .map(|(i, addr)| ShardInfo {
+        .map(|(i, address)| ShardInfo {
             id: format!("shard-{}", i),
-            address: addr.trim().to_string(),
+            address,
             healthy: true,
         })
         .collect();
+    if shards.is_empty() {
+        return Err("at least one shard address is required".into());
+    }
 
     info!("Configured {} shards:", shards.len());
     for shard in &shards {
         info!("  {} -> {}", shard.id, shard.address);
     }
+
+    let role = CoordRole::parse(&args.coord_role)?;
+    let advertise = if args.advertise.trim().is_empty() {
+        args.listen.clone()
+    } else {
+        args.advertise.trim().to_string()
+    };
+    let peers = parse_address_list(&args.peers);
 
     // Create coordinator service with backpressure config
     let timeout = Duration::from_millis(args.timeout);
@@ -982,12 +1157,22 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         },
         args.max_queue_depth
     );
-    let service = CoordinatorService::new(
+    let service = CoordinatorService::with_ha(
         shards,
         timeout,
         args.pool_size,
         backpressure_config,
-        args.listen.clone(),
+        advertise.clone(),
+        peers.clone(),
+        role,
+    );
+    info!(
+        "HA membership: advertise={}, role={:?}, is_leader={}, peers={:?}, leader_id={}",
+        advertise,
+        role,
+        service.is_leader(),
+        service.peer_addresses(),
+        service.leader_id()
     );
 
     // Initialize connection pools to all shards
@@ -1085,6 +1270,153 @@ mod tests {
             BackpressureConfig::default(),
             "127.0.0.1:0".to_string(),
         )
+    }
+
+    #[test]
+    fn test_parse_address_list_trims_and_drops_empty() {
+        assert_eq!(
+            parse_address_list(" 10.1.0.1:50050, ,10.1.0.2:50050 "),
+            vec!["10.1.0.1:50050".to_string(), "10.1.0.2:50050".to_string()]
+        );
+        assert!(parse_address_list("").is_empty());
+    }
+
+    #[test]
+    fn test_resolve_leader_auto_picks_lexicographic_minimum() {
+        let local = "10.1.1.121:50050";
+        let peers = vec![
+            "10.1.0.132:50050".to_string(),
+            "10.1.3.4:50050".to_string(),
+        ];
+        assert_eq!(
+            resolve_leader_address(CoordRole::Auto, local, &peers),
+            "10.1.0.132:50050"
+        );
+        assert_eq!(
+            resolve_leader_address(CoordRole::Primary, local, &peers),
+            local
+        );
+        assert_eq!(
+            resolve_leader_address(CoordRole::Secondary, local, &peers),
+            "10.1.0.132:50050"
+        );
+    }
+
+    #[test]
+    fn test_single_coordinator_is_leader_by_default() {
+        let service = test_service();
+        assert!(service.is_leader());
+        assert!(service.peer_addresses().is_empty());
+        assert_eq!(service.leader_id(), coordinator_node_id("127.0.0.1:0"));
+    }
+
+    #[tokio::test]
+    async fn test_get_cluster_state_lists_static_peers_and_leader() {
+        let service = CoordinatorService::with_ha(
+            vec![ShardInfo {
+                id: "shard-0".into(),
+                address: "10.1.0.132:50051".into(),
+                healthy: true,
+            }],
+            Duration::from_millis(10),
+            1,
+            BackpressureConfig::default(),
+            "10.1.1.121:50050".to_string(),
+            vec![
+                "10.1.0.132:50050".to_string(),
+                "10.1.1.121:50050".to_string(), // self duplicate filtered
+            ],
+            CoordRole::Auto,
+        );
+
+        // Lexicographic min among 10.1.0.132 and 10.1.1.121 is 10.1.0.132
+        assert!(!service.is_leader());
+        assert_eq!(
+            service.leader_id(),
+            coordinator_node_id("10.1.0.132:50050")
+        );
+        assert_eq!(service.peer_addresses(), &["10.1.0.132:50050".to_string()]);
+
+        let state = service
+            .get_cluster_state(Request::new(GetClusterStateRequest {}))
+            .await
+            .expect("cluster state")
+            .into_inner();
+
+        assert_eq!(state.coordinators.len(), 2);
+        assert_eq!(
+            state.leader_id.as_deref(),
+            Some(coordinator_node_id("10.1.0.132:50050").as_str())
+        );
+
+        let self_node = state
+            .coordinators
+            .iter()
+            .find(|c| c.is_self)
+            .expect("self node");
+        assert_eq!(self_node.address, "10.1.1.121:50050");
+        assert!(!self_node.is_leader);
+
+        let peer_node = state
+            .coordinators
+            .iter()
+            .find(|c| !c.is_self)
+            .expect("peer node");
+        assert_eq!(peer_node.address, "10.1.0.132:50050");
+        assert!(peer_node.is_leader);
+        assert_eq!(state.shards.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_cluster_state_primary_role_marks_self_leader() {
+        let service = CoordinatorService::with_ha(
+            vec![],
+            Duration::from_millis(10),
+            1,
+            BackpressureConfig::default(),
+            "10.1.1.121:50050".to_string(),
+            vec!["10.1.0.132:50050".to_string()],
+            CoordRole::Primary,
+        );
+        assert!(service.is_leader());
+
+        let state = service
+            .get_cluster_state(Request::new(GetClusterStateRequest {}))
+            .await
+            .expect("cluster state")
+            .into_inner();
+        let self_node = state.coordinators.iter().find(|c| c.is_self).unwrap();
+        assert!(self_node.is_leader);
+        assert_eq!(
+            state.leader_id.as_deref(),
+            Some(coordinator_node_id("10.1.1.121:50050").as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_health_reports_ha_role_and_peer_count() {
+        let service = CoordinatorService::with_ha(
+            vec![ShardInfo {
+                id: "shard-0".into(),
+                address: "10.1.0.132:50051".into(),
+                healthy: true,
+            }],
+            Duration::from_millis(10),
+            1,
+            BackpressureConfig::default(),
+            "10.1.0.132:50050".to_string(),
+            vec!["10.1.1.121:50050".to_string()],
+            CoordRole::Auto,
+        );
+        let health = service
+            .health(Request::new(HealthRequest {}))
+            .await
+            .expect("health")
+            .into_inner();
+        assert!(health.healthy);
+        assert!(health.ready);
+        assert!(health.message.contains("primary"));
+        assert!(health.message.contains("1 peer"));
     }
 
     fn search_request(top_k: u32, nprobe: Option<u32>) -> SearchRequest {

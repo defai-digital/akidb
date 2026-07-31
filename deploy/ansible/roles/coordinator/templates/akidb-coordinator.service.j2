@@ -1,6 +1,9 @@
 {# Prefer akidb_service_network_mode; fall back to legacy akidb_manage_wireguard. #}
 {% set _mode = akidb_service_network_mode | default('') %}
 {% set _use_wg = (_mode == 'wireguard') if (_mode | length > 0) else (akidb_manage_wireguard | default(true) | bool) %}
+{% set _coord_role = akidb_coord_role | default('auto') %}
+{% set _advertise = akidb_overlay_address ~ ':' ~ (akidb_coordinator_port | string) %}
+{% set _peer_hosts = groups.get('akidb_coordinators', []) | reject('equalto', inventory_hostname) | list %}
 [Unit]
 Description=AkiDB query coordinator
 After=network-online.target{% if _use_wg %} wg-quick@{{ akidb_wireguard_interface }}.service{% endif %} akidb-server.service
@@ -14,7 +17,7 @@ Type=simple
 User={{ akidb_user }}
 Group={{ akidb_group }}
 UMask=0027
-ExecStart={{ akidb_install_root }}/current/bin/akidb-coordinator --listen {{ akidb_overlay_address }}:{{ akidb_coordinator_port }} --shards {% for host in groups['akidb_shards'] %}{{ hostvars[host].akidb_overlay_address }}:{{ akidb_server_port }}{% if not loop.last %},{% endif %}{% endfor %} --timeout {{ akidb_coordinator_timeout_ms }} --pool-size {{ akidb_coordinator_pool_size }} --metrics-port {{ akidb_coordinator_metrics_port }} --max-concurrent {{ akidb_coordinator_max_concurrent }} --rate-limit {{ akidb_coordinator_rate_limit }} --max-queue-depth {{ akidb_coordinator_max_queue_depth }} --log-level {{ akidb_log_level }}
+ExecStart={{ akidb_install_root }}/current/bin/akidb-coordinator --listen {{ akidb_overlay_address }}:{{ akidb_coordinator_port }} --advertise {{ _advertise }} --shards {% for host in groups['akidb_shards'] %}{{ hostvars[host].akidb_overlay_address }}:{{ akidb_server_port }}{% if not loop.last %},{% endif %}{% endfor %}{% if _peer_hosts | length > 0 %} --peers {% for host in _peer_hosts %}{{ hostvars[host].akidb_overlay_address }}:{{ akidb_coordinator_port }}{% if not loop.last %},{% endif %}{% endfor %}{% endif %} --coord-role {{ _coord_role }} --timeout {{ akidb_coordinator_timeout_ms }} --pool-size {{ akidb_coordinator_pool_size }} --metrics-port {{ akidb_coordinator_metrics_port }} --max-concurrent {{ akidb_coordinator_max_concurrent }} --rate-limit {{ akidb_coordinator_rate_limit }} --max-queue-depth {{ akidb_coordinator_max_queue_depth }} --log-level {{ akidb_log_level }}
 Restart=on-failure
 RestartSec=3
 TimeoutStartSec=60

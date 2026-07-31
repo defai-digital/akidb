@@ -132,8 +132,14 @@ Enterprise designs center on:
    independent-shard lab on Ubuntu 24.04+ AMD64.
 
 The coordinator can fan out requests to shards on supported native runtimes.
-It does not yet provide replication, failover, placement, or rebalancing, and
-it does not forward bearer/workspace metadata to shards.
+Independent-shard deployments may run **two or more active-active
+coordinators** for entrypoint redundancy (VIP/LB + static peer membership).
+That path does **not** provide shard data replication, automatic rebalancing,
+or placement. A failed shard host still makes that partition unavailable.
+The coordinator also does not forward bearer/workspace metadata to shards.
+
+For agent-facing read HA with generation barriers, use the knowledge-serving
+cell (full replicas + gateways), not independent-shard fan-out alone.
 
 The checked-in AMD64 Ansible profile is a qualification environment:
 

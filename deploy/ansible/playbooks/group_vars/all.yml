@@ -66,6 +66,10 @@ akidb_coordinator_pool_size: 4
 akidb_coordinator_max_concurrent: 1000
 akidb_coordinator_rate_limit: 0
 akidb_coordinator_max_queue_depth: 5000
+# HA role for side-effect ownership: auto | primary | secondary.
+# Search/insert is active on every coordinator; auto elects the
+# lexicographically smallest advertise address as side-effect leader.
+akidb_coord_role: auto
 
 # PostgreSQL-authoritative full-replica knowledge cell. These values are
 # separate from the legacy independent-shard profile above.
