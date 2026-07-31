@@ -29,6 +29,14 @@ else
     python3 scripts/qa_vector_quality.py
 fi
 
+echo ""
+echo "=== QA Gate 1b: Correctness KPI table (ingest + Get + recall) ==="
+if [ "$BUILD" = true ]; then
+    python3 scripts/qa_correctness_kpi.py --build
+else
+    python3 scripts/qa_correctness_kpi.py
+fi
+
 if [ -n "${AX_ENGINE_MODEL_DIR:-}" ]; then
     echo ""
     echo "=== QA Gate 2: Semantic text retrieval ==="

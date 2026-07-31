@@ -122,9 +122,13 @@ Each artifact includes:
 
 Do not publish a recall or semantic-relevance claim from `akidb-bench` alone.
 Use `akidb-bench` for latency and throughput, and use these QA scripts for
-quality claims. A release quality statement should include:
+quality claims. For a full **ingest + Get + retrieval KPI table** (missing data,
+wrong payload, ghost IDs), use
+[correctness-kpi.md](correctness-kpi.md) / `scripts/qa_correctness_kpi.py`.
+A release quality statement should include:
 
 - the `qa_vector_quality.py` JSON artifact
+- the `qa_correctness_kpi.py` JSON/Markdown table
 - the `qa_text_retrieval.py` JSON artifact when text search is in scope
 - the benchmark artifact for throughput/latency
 - the exact embedding model ID and dimensions
