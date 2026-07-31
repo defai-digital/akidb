@@ -46,9 +46,16 @@ Ansible renders these from `groups['akidb_coordinators']` in
 Side-effect leadership (future compaction ownership) uses:
 
 - `auto`: lexicographically smallest advertise address among self+peers
-- `primary` / `secondary`: explicit override via `akidb_coord_role`
+- `primary`: force this process to own side effects (warn if not the
+  canonical min when peers are configured)
+- `secondary`: never own side effects (even if this process is alone)
 
 Search, insert, delete, and update fan-out on **every** healthy coordinator.
+
+**Critical:** every coordinator must see the **same sorted unique** shard
+endpoint set. The binary sorts/dedups `--shards`, and Ansible renders shard
+and peer lists sorted by overlay address so `shard-0..N` ids stay aligned for
+consistent-hash routing.
 
 ### Client entrypoint
 

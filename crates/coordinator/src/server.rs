@@ -153,37 +153,62 @@ pub fn parse_address_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Normalize endpoint lists used for multi-coordinator membership and shards.
+///
+/// Sorting + dedup keeps consistent-hash `shard-N` ids identical across active-
+/// active coordinators even when CLI/env order differs.
+pub fn normalize_endpoint_list(raw: &str) -> Vec<String> {
+    let mut addrs = parse_address_list(raw);
+    addrs.sort();
+    addrs.dedup();
+    addrs
+}
+
 /// Stable coordinator node id derived from an advertise address.
 pub fn coordinator_node_id(address: &str) -> String {
     format!("coord-{}", address.replace([':', '.'], "-"))
 }
 
-/// Resolve which coordinator address is the HA leader for side effects.
+/// Canonical HA leader advertise address among self + peers.
 ///
-/// - `primary`: this process is always the leader.
-/// - `secondary`: leader is the lexicographically smallest peer (fallback: self).
-/// - `auto`: leader is the lexicographically smallest among self + peers.
+/// Always the lexicographically smallest distinct address so every coordinator
+/// that shares the same membership set agrees on who owns side effects.
+pub fn canonical_leader_address(local: &str, peers: &[String]) -> String {
+    let mut all: Vec<&str> = peers
+        .iter()
+        .map(String::as_str)
+        .filter(|p| !p.is_empty() && *p != local)
+        .collect();
+    if !local.is_empty() {
+        all.push(local);
+    }
+    all.into_iter()
+        .min()
+        .unwrap_or(local)
+        .to_string()
+}
+
+/// Resolve reported leader address for cluster state.
+///
+/// - `primary`: this process is the reported leader (operator override).
+/// - `secondary` / `auto`: lexicographically smallest among self + peers.
 pub fn resolve_leader_address(role: CoordRole, local: &str, peers: &[String]) -> String {
     match role {
         CoordRole::Primary => local.to_string(),
-        CoordRole::Secondary => peers
-            .iter()
-            .filter(|p| p.as_str() != local)
-            .min()
-            .cloned()
-            .unwrap_or_else(|| local.to_string()),
-        CoordRole::Auto => {
-            let mut all: Vec<&str> = peers
-                .iter()
-                .map(String::as_str)
-                .filter(|p| *p != local)
-                .collect();
-            all.push(local);
-            all.into_iter()
-                .min()
-                .unwrap_or(local)
-                .to_string()
-        }
+        CoordRole::Secondary | CoordRole::Auto => canonical_leader_address(local, peers),
+    }
+}
+
+/// Whether this process should own HA side effects.
+///
+/// - `primary`: always true (even if not the canonical min — warn at startup).
+/// - `secondary`: always false (never owns side effects, even if alone).
+/// - `auto`: true only when this process is the canonical leader.
+pub fn resolve_is_leader(role: CoordRole, local: &str, peers: &[String]) -> bool {
+    match role {
+        CoordRole::Primary => true,
+        CoordRole::Secondary => false,
+        CoordRole::Auto => canonical_leader_address(local, peers) == local,
     }
 }
 
@@ -246,12 +271,14 @@ impl CoordinatorService {
         let consistency = Arc::new(ConsistencyTracker::new());
         let backpressure = Arc::new(BackpressureController::with_config(backpressure_config));
         let local_id = coordinator_node_id(&local_address);
-        let peers: Vec<String> = peer_addresses
+        let mut peers: Vec<String> = peer_addresses
             .into_iter()
-            .filter(|p| p != &local_address)
+            .filter(|p| p != &local_address && !p.is_empty())
             .collect();
+        peers.sort();
+        peers.dedup();
         let leader_address = resolve_leader_address(role, &local_address, &peers);
-        let is_leader = leader_address == local_address;
+        let is_leader = resolve_is_leader(role, &local_address, &peers);
         let leader_id = coordinator_node_id(&leader_address);
 
         Self {
@@ -1112,8 +1139,13 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting AkiDB Coordinator");
 
-    // Parse shard addresses (order must match across active-active coordinators)
-    let shards: Vec<ShardInfo> = parse_address_list(&args.shards)
+    // Sort+dedup so active-active coordinators assign the same shard-N ids
+    // even when --shards / env order differs between hosts.
+    let shard_addrs = normalize_endpoint_list(&args.shards);
+    if shard_addrs.is_empty() {
+        return Err("at least one shard address is required".into());
+    }
+    let shards: Vec<ShardInfo> = shard_addrs
         .into_iter()
         .enumerate()
         .map(|(i, address)| ShardInfo {
@@ -1122,11 +1154,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             healthy: true,
         })
         .collect();
-    if shards.is_empty() {
-        return Err("at least one shard address is required".into());
-    }
 
-    info!("Configured {} shards:", shards.len());
+    info!("Configured {} shards (sorted unique endpoints):", shards.len());
     for shard in &shards {
         info!("  {} -> {}", shard.id, shard.address);
     }
@@ -1137,7 +1166,28 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         args.advertise.trim().to_string()
     };
-    let peers = parse_address_list(&args.peers);
+    if advertise.starts_with("0.0.0.0:") || advertise.starts_with("[::]:") {
+        warn!(
+            "advertise address {} is a wildcard bind; set --advertise / AKIDB_COORD_ADVERTISE_ADDR \
+             to the service-plane host:port so peer membership and leader election are stable",
+            advertise
+        );
+    }
+    let peers = normalize_endpoint_list(&args.peers);
+    let canonical = canonical_leader_address(&advertise, &peers);
+    if role == CoordRole::Primary && !peers.is_empty() && advertise != canonical {
+        warn!(
+            "coord-role=primary on {} but canonical auto leader is {}; \
+             other coordinators using auto will disagree on side-effect ownership",
+            advertise, canonical
+        );
+    }
+    if role == CoordRole::Secondary && peers.is_empty() {
+        warn!(
+            "coord-role=secondary with no peers on {}; this process will never own side effects",
+            advertise
+        );
+    }
 
     // Create coordinator service with backpressure config
     let timeout = Duration::from_millis(args.timeout);
@@ -1282,6 +1332,14 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_endpoint_list_sorts_and_dedups() {
+        assert_eq!(
+            normalize_endpoint_list("10.1.1.2:50051,10.1.1.1:50051,10.1.1.2:50051,"),
+            vec!["10.1.1.1:50051".to_string(), "10.1.1.2:50051".to_string()]
+        );
+    }
+
+    #[test]
     fn test_resolve_leader_auto_picks_lexicographic_minimum() {
         let local = "10.1.1.121:50050";
         let peers = vec![
@@ -1300,6 +1358,42 @@ mod tests {
             resolve_leader_address(CoordRole::Secondary, local, &peers),
             "10.1.0.132:50050"
         );
+        assert!(!resolve_is_leader(CoordRole::Secondary, local, &peers));
+        assert!(!resolve_is_leader(CoordRole::Auto, local, &peers));
+        assert!(resolve_is_leader(
+            CoordRole::Auto,
+            "10.1.0.132:50050",
+            &peers
+        ));
+    }
+
+    #[test]
+    fn test_secondary_alone_never_claims_leadership() {
+        // BUG fix: secondary with empty peers must not become leader.
+        assert!(!resolve_is_leader(CoordRole::Secondary, "10.1.0.1:50050", &[]));
+        assert_eq!(
+            resolve_leader_address(CoordRole::Secondary, "10.1.0.1:50050", &[]),
+            "10.1.0.1:50050"
+        );
+        let service = CoordinatorService::with_ha(
+            vec![],
+            Duration::from_millis(10),
+            1,
+            BackpressureConfig::default(),
+            "10.1.0.1:50050".to_string(),
+            vec![],
+            CoordRole::Secondary,
+        );
+        assert!(!service.is_leader());
+    }
+
+    #[test]
+    fn test_shard_ids_stable_regardless_of_input_order() {
+        // Active-active coordinators must agree on shard-N assignment.
+        let a = normalize_endpoint_list("10.1.0.3:50051,10.1.0.1:50051,10.1.0.2:50051");
+        let b = normalize_endpoint_list("10.1.0.2:50051,10.1.0.3:50051,10.1.0.1:50051");
+        assert_eq!(a, b);
+        assert_eq!(a[0], "10.1.0.1:50051");
     }
 
     #[test]

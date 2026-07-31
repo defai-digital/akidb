@@ -69,6 +69,17 @@
       Declare hosts in inventory groups; do not hardcode size in playbooks.
   run_once: true
 
+- name: Require coordinators to be cluster members with overlay addresses
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in groups.get('akidb_cluster', [])
+      - akidb_overlay_address is defined
+      - akidb_overlay_address | length > 0
+    fail_msg: >-
+      Coordinator host {{ inventory_hostname }} must also be in akidb_cluster
+      with a non-empty akidb_overlay_address (service-plane bind/advertise).
+  when: inventory_hostname in groups.get('akidb_coordinators', [])
+
 - name: Validate isolated cluster-network policy
   ansible.builtin.assert:
     that:
