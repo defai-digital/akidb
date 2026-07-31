@@ -46,23 +46,18 @@ fn shard_search_request(
     collection: String,
     query: Vec<f32>,
     top_k: u32,
-    nprobe: u32,
-    filter: Vec<u8>,
-    tag_filter: Option<TagFilter>,
-    score_threshold: Option<f32>,
-    group_by: String,
-    group_size: Option<u32>,
+    options: FanoutSearchOptions,
 ) -> SearchRequest {
     SearchRequest {
         collection,
         query,
         top_k,
-        nprobe: Some(nprobe),
-        filter,
-        tag_filter,
-        score_threshold,
-        group_by,
-        group_size,
+        nprobe: Some(options.nprobe),
+        filter: options.filter,
+        tag_filter: options.tag_filter,
+        score_threshold: options.score_threshold,
+        group_by: options.group_by,
+        group_size: options.group_size,
     }
 }
 
@@ -212,6 +207,30 @@ pub struct FanoutExecutor {
     pool_tracker: PoolCreationTracker,
 }
 
+/// Optional controls forwarded with every shard search.
+#[derive(Debug, Clone)]
+pub struct FanoutSearchOptions {
+    pub nprobe: u32,
+    pub filter: Vec<u8>,
+    pub tag_filter: Option<TagFilter>,
+    pub score_threshold: Option<f32>,
+    pub group_by: String,
+    pub group_size: Option<u32>,
+}
+
+impl Default for FanoutSearchOptions {
+    fn default() -> Self {
+        Self {
+            nprobe: 32,
+            filter: Vec::new(),
+            tag_filter: None,
+            score_threshold: None,
+            group_by: String::new(),
+            group_size: None,
+        }
+    }
+}
+
 impl FanoutExecutor {
     pub fn new(router: Arc<RwLock<ShardRouter>>, timeout: Duration) -> Self {
         Self::with_pool_size(router, timeout, 4)
@@ -313,15 +332,10 @@ impl FanoutExecutor {
         collection: &str,
         query: &[f32],
         top_k: usize,
-        nprobe: u32,
-        filter: &[u8],
-        tag_filter: Option<TagFilter>,
-        score_threshold: Option<f32>,
-        group_by: String,
-        group_size: Option<u32>,
+        options: FanoutSearchOptions,
     ) -> Result<FanoutResult> {
         // Over-fetch when grouping so post-merge cuts still fill top_k.
-        let fetch_k = if group_by.trim().is_empty() {
+        let fetch_k = if options.group_by.trim().is_empty() {
             top_k
         } else {
             top_k.saturating_mul(4).max(top_k)
@@ -360,7 +374,6 @@ impl FanoutExecutor {
         // Launch parallel searches using pooled connections
         let collection = collection.to_string();
         let query_vec: Vec<f32> = query.to_vec();
-        let filter = filter.to_vec();
         // FIX BUG-071: Track shard IDs separately to identify failures even on panic
         let mut handles = Vec::with_capacity(shard_pools.len());
         let mut handle_shard_ids = Vec::with_capacity(shard_pools.len());
@@ -368,9 +381,7 @@ impl FanoutExecutor {
         for (shard, pool) in shard_pools {
             let collection = collection.clone();
             let query_clone = query_vec.clone();
-            let filter = filter.clone();
-            let tag_filter = tag_filter.clone();
-            let group_by = group_by.clone();
+            let options = options.clone();
             let timeout = self.timeout;
             let shard_id = shard.id.clone();
             handle_shard_ids.push(shard_id.clone()); // Track shard ID outside async block
@@ -379,17 +390,7 @@ impl FanoutExecutor {
                 // Get client from pool (no connection overhead!)
                 let mut client = pool.get_client();
 
-                let request = shard_search_request(
-                    collection,
-                    query_clone,
-                    request_top_k,
-                    nprobe,
-                    filter,
-                    tag_filter,
-                    score_threshold,
-                    group_by,
-                    group_size,
-                );
+                let request = shard_search_request(collection, query_clone, request_top_k, options);
 
                 let search_result = tokio::time::timeout(timeout, client.search(request)).await;
 
@@ -898,12 +899,7 @@ mod tests {
             "tenant-a".to_string(),
             vec![0.1, 0.2],
             5,
-            32,
-            vec![],
-            None,
-            None,
-            String::new(),
-            None,
+            FanoutSearchOptions::default(),
         );
 
         assert_eq!(request.collection, "tenant-a");
@@ -921,12 +917,11 @@ mod tests {
             "tenant-a".to_string(),
             vec![0.1, 0.2],
             5,
-            32,
-            filter.clone(),
-            Some(tag_filter.clone()),
-            None,
-            String::new(),
-            None,
+            FanoutSearchOptions {
+                filter: filter.clone(),
+                tag_filter: Some(tag_filter.clone()),
+                ..FanoutSearchOptions::default()
+            },
         );
 
         assert_eq!(request.filter, filter);
@@ -939,12 +934,12 @@ mod tests {
             "tenant-a".to_string(),
             vec![0.1, 0.2],
             5,
-            32,
-            vec![],
-            None,
-            Some(0.42),
-            "parent_id".to_string(),
-            Some(1),
+            FanoutSearchOptions {
+                score_threshold: Some(0.42),
+                group_by: "parent_id".to_string(),
+                group_size: Some(1),
+                ..FanoutSearchOptions::default()
+            },
         );
         assert_eq!(request.score_threshold, Some(0.42));
         assert_eq!(request.group_by, "parent_id");

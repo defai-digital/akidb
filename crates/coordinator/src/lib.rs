@@ -44,7 +44,8 @@ pub use discovery::{
     ShardAnnouncement,
 };
 pub use fanout::{
-    BroadcastDeleteResult, BroadcastUpdateResult, FanoutExecutor, FanoutResult, PoolStats,
+    BroadcastDeleteResult, BroadcastUpdateResult, FanoutExecutor, FanoutResult,
+    FanoutSearchOptions, PoolStats,
 };
 pub use merger::ResultMerger;
 pub use metrics::{export_metrics, metrics as coordinator_metrics, CoordinatorMetrics};

@@ -28,8 +28,14 @@ pub struct IngestionConfig {
     /// vLLM/TensorRT embedding service URL
     pub embedding_url: String,
 
+    /// Model identifier sent to the OpenAI-compatible embedding endpoint
+    pub embedding_model: String,
+
     /// Python parser service URL
     pub doc_parser_url: String,
+
+    /// Prometheus and health HTTP listen address
+    pub metrics_addr: String,
 
     /// Circuit breaker configuration
     pub circuit_breaker: CircuitBreakerConfig,
@@ -60,6 +66,9 @@ pub struct NatsConfig {
 
     /// Dead letter queue stream
     pub dlq_stream: String,
+
+    /// Number of JetStream replicas
+    pub replicas: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -245,10 +254,64 @@ fn env_parse_percentage(key: &str, default: f32) -> Result<f32> {
     Ok(value)
 }
 
+fn env_value(key: &str) -> Result<Option<String>> {
+    match std::env::var(key) {
+        Ok(value) => Ok(Some(value)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(value)) => Err(IngestionError::Config(format!(
+            "invalid {key} value {value:?}: not valid Unicode"
+        ))),
+    }
+}
+
+fn env_or_file(value_key: &str, file_key: &str) -> Result<Option<String>> {
+    if let Some(value) = env_value(value_key)? {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            return Err(IngestionError::Config(format!(
+                "{value_key} contains an empty secret"
+            )));
+        }
+        return Ok(Some(value));
+    }
+    let Some(path) = env_value(file_key)? else {
+        return Ok(None);
+    };
+    let value = std::fs::read_to_string(&path).map_err(|error| {
+        IngestionError::Config(format!("failed to read {file_key} path '{path}': {error}"))
+    })?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(IngestionError::Config(format!(
+            "{file_key} path '{path}' contains an empty secret"
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn credential_from_env(
+    primary_value_key: &str,
+    primary_file_key: &str,
+    fallback_value_key: &str,
+    fallback_file_key: &str,
+    default: &str,
+) -> Result<String> {
+    if let Some(value) = env_or_file(primary_value_key, primary_file_key)? {
+        return Ok(value);
+    }
+    Ok(env_or_file(fallback_value_key, fallback_file_key)?.unwrap_or_else(|| default.to_string()))
+}
+
 impl IngestionConfig {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self> {
         dotenvy::dotenv().ok();
+        let nats_replicas = env_parse("NATS_REPLICAS", 1)?;
+        if !(1..=5).contains(&nats_replicas) {
+            return Err(IngestionError::Config(
+                "NATS_REPLICAS must be between 1 and 5".to_string(),
+            ));
+        }
 
         Ok(Self {
             nats: NatsConfig {
@@ -260,30 +323,38 @@ impl IngestionConfig {
                     .unwrap_or_else(|_| "ingestion-orchestrator".to_string()),
                 dlq_stream: std::env::var("NATS_DLQ_STREAM")
                     .unwrap_or_else(|_| "akidb-dlq".to_string()),
+                replicas: nats_replicas,
             },
             minio: MinioConfig {
                 endpoint: std::env::var("MINIO_ENDPOINT")
                     .unwrap_or_else(|_| "localhost:9000".to_string()),
-                access_key: std::env::var("MINIO_ACCESS_KEY")
-                    .unwrap_or_else(|_| "minioadmin".to_string()),
-                secret_key: std::env::var("MINIO_SECRET_KEY")
-                    .unwrap_or_else(|_| "minioadmin".to_string()),
+                access_key: env_or_file("MINIO_ACCESS_KEY", "MINIO_ACCESS_KEY_FILE")?
+                    .unwrap_or_else(|| "minioadmin".to_string()),
+                secret_key: env_or_file("MINIO_SECRET_KEY", "MINIO_SECRET_KEY_FILE")?
+                    .unwrap_or_else(|| "minioadmin".to_string()),
                 upload_bucket: std::env::var("MINIO_UPLOAD_BUCKET")
                     .unwrap_or_else(|_| "uploads".to_string()),
             },
             storage: StorageConfig {
                 endpoint: std::env::var("STORAGE_ENDPOINT")
                     .unwrap_or_else(|_| "http://localhost:9000".to_string()),
-                access_key: std::env::var("STORAGE_ACCESS_KEY")
-                    .or_else(|_| std::env::var("MINIO_ACCESS_KEY"))
-                    .unwrap_or_else(|_| "minioadmin".to_string()),
-                secret_key: std::env::var("STORAGE_SECRET_KEY")
-                    .or_else(|_| std::env::var("MINIO_SECRET_KEY"))
-                    .unwrap_or_else(|_| "minioadmin".to_string()),
+                access_key: credential_from_env(
+                    "STORAGE_ACCESS_KEY",
+                    "STORAGE_ACCESS_KEY_FILE",
+                    "MINIO_ACCESS_KEY",
+                    "MINIO_ACCESS_KEY_FILE",
+                    "minioadmin",
+                )?,
+                secret_key: credential_from_env(
+                    "STORAGE_SECRET_KEY",
+                    "STORAGE_SECRET_KEY_FILE",
+                    "MINIO_SECRET_KEY",
+                    "MINIO_SECRET_KEY_FILE",
+                    "minioadmin",
+                )?,
                 bucket: std::env::var("STORAGE_BUCKET")
                     .unwrap_or_else(|_| "akidb-documents".to_string()),
-                region: std::env::var("STORAGE_REGION")
-                    .unwrap_or_else(|_| "us-east-1".to_string()),
+                region: std::env::var("STORAGE_REGION").unwrap_or_else(|_| "us-east-1".to_string()),
             },
             akidb: AkiDbConfig {
                 endpoint: std::env::var("AKIDB_ENDPOINT")
@@ -297,8 +368,12 @@ impl IngestionConfig {
                 .unwrap_or_else(|_| "http://localhost:50050".to_string()),
             embedding_url: std::env::var("EMBEDDING_URL")
                 .unwrap_or_else(|_| "http://localhost:8000".to_string()),
+            embedding_model: std::env::var("EMBEDDING_MODEL")
+                .unwrap_or_else(|_| "Qwen/Qwen3-Embedding-4B".to_string()),
             doc_parser_url: std::env::var("DOC_PARSER_URL")
                 .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            metrics_addr: std::env::var("INGESTION_METRICS_ADDR")
+                .unwrap_or_else(|_| "0.0.0.0:9093".to_string()),
             circuit_breaker: CircuitBreakerConfig {
                 failure_threshold: env_parse("CIRCUIT_BREAKER_THRESHOLD", 3)?,
                 reset_timeout_secs: env_parse("CIRCUIT_BREAKER_RESET_SECS", 30)?,
@@ -402,6 +477,12 @@ mod tests {
             std::env::set_var(key, value);
             Self { key, original }
         }
+
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, original }
+        }
     }
 
     impl Drop for EnvGuard {
@@ -464,5 +545,62 @@ mod tests {
             }
             other => panic!("expected config error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_from_env_reads_storage_credentials_from_secret_files() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let access_file = tempfile::NamedTempFile::new().unwrap();
+        let secret_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(access_file.path(), "access-from-file\n").unwrap();
+        std::fs::write(secret_file.path(), "secret-from-file\n").unwrap();
+        let _access_value = EnvGuard::unset("STORAGE_ACCESS_KEY");
+        let _secret_value = EnvGuard::unset("STORAGE_SECRET_KEY");
+        let _access_file = EnvGuard::set(
+            "STORAGE_ACCESS_KEY_FILE",
+            access_file.path().to_str().unwrap(),
+        );
+        let _secret_file = EnvGuard::set(
+            "STORAGE_SECRET_KEY_FILE",
+            secret_file.path().to_str().unwrap(),
+        );
+
+        let config = IngestionConfig::from_env().unwrap();
+
+        assert_eq!(config.storage.access_key, "access-from-file");
+        assert_eq!(config.storage.secret_key, "secret-from-file");
+    }
+
+    #[test]
+    fn test_from_env_rejects_empty_secret_file() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let secret_file = tempfile::NamedTempFile::new().unwrap();
+        let _secret_value = EnvGuard::unset("STORAGE_SECRET_KEY");
+        let _secret_file = EnvGuard::set(
+            "STORAGE_SECRET_KEY_FILE",
+            secret_file.path().to_str().unwrap(),
+        );
+
+        let error = IngestionConfig::from_env().unwrap_err();
+
+        assert!(matches!(
+            error,
+            IngestionError::Config(message) if message.contains("empty secret")
+        ));
+    }
+
+    #[test]
+    fn test_from_env_rejects_empty_direct_secret() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _secret_value = EnvGuard::set("STORAGE_SECRET_KEY", "  ");
+        let _secret_file = EnvGuard::unset("STORAGE_SECRET_KEY_FILE");
+
+        let error = IngestionConfig::from_env().unwrap_err();
+
+        assert!(matches!(
+            error,
+            IngestionError::Config(message)
+                if message.contains("STORAGE_SECRET_KEY contains an empty secret")
+        ));
     }
 }

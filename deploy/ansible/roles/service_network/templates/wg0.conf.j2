@@ -1,0 +1,13 @@
+[Interface]
+Address = {{ akidb_overlay_address }}/32
+ListenPort = {{ akidb_wireguard_port }}
+PrivateKey = {{ akidb_wireguard_private_key }}
+
+{% for peer in groups['akidb_cluster'] if peer != inventory_hostname %}
+[Peer]
+PublicKey = {{ hostvars[peer].akidb_wireguard_public_key }}
+AllowedIPs = {{ hostvars[peer].akidb_overlay_address }}/32
+Endpoint = {{ hostvars[peer].ansible_host }}:{{ hostvars[peer].akidb_wireguard_port | default(akidb_wireguard_port) }}
+PersistentKeepalive = 25
+
+{% endfor %}

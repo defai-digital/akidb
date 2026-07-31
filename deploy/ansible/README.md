@@ -7,7 +7,7 @@ plus isolated market-qualification playbooks:
 | --- | --- | --- |
 | Knowledge-serving cell | `knowledge-preflight.yml`, `knowledge-site.yml`, `knowledge-verify.yml`, load/failure/backup drills | Supported availability design: three independently rebuilt full replicas, two AX gateways, PostgreSQL authority, MinIO artifacts. Bounded Ubuntu AMD64 envelope is qualified. |
 | Market qualification | `knowledge-market-ann.yml`, `knowledge-market-recovery.yml`, `knowledge-market-competitors.yml`, `knowledge-market-graph.yml` | Active release gate automation. Isolates one replica or runs competitors; not production reconciliation. |
-| Legacy four-shard lab | `preflight.yml`, `network.yml`, `deploy.yml`, `verify.yml`, `site.yml` | Independent-shard capacity path only. Not HA and not the agent-facing replica design. |
+| Independent-shard lab (N=1, 2, or 4+) | `preflight.yml`, `network.yml`, `deploy.yml`, `verify.yml`, `site.yml` | Capacity path: 1 standalone, 2 dual-shard, or 4+ multi-shard with one coordinator. Not HA and not the agent-facing replica design. N=3 is not a supported size. |
 
 These playbooks target the **enterprise AMD64 cloud/lab path**. Product
 targets also include single-user Mac Studio or AMD64 PC, and enterprise Mac
@@ -78,25 +78,74 @@ workers, and monitoring; dedicated VMs run RocksDB, vector indexes, and WAL.
 An orchestrator can restart a process, but it cannot substitute for database-
 level replication, durable shard placement, or failover semantics.
 
+## Supported cluster sizes (independent-shard profile)
+
+Inventory length drives topology. Playbooks loop over
+`groups['akidb_shards']` / `groups['akidb_cluster']` — do **not** write
+`if n==1 / elif n==2 / elif n==4` trees in roles.
+
+| Size | Inventory shape | Client entrypoint |
+| --- | --- | --- |
+| **N=1** | 1 host in `akidb_shards`; omit `akidb_coordinators` | Shard `:50051` |
+| **N=2** | 2 shards + exactly 1 coordinator (often co-located) | Coordinator `:50050` |
+| **N=4+** | N shards (4, 5, 6, …) + exactly 1 coordinator | Coordinator `:50050` |
+| **N=3** | Not supported for this profile | — |
+
+Examples (documentation IPs only):
+
+- `inventories/example/hosts.single.yml` — N=1
+- `inventories/example/hosts.dual.yml` — N=2
+- `inventories/example/hosts.yml` — N=4 (comment shows how to add N>4)
+
+Real host maps stay in gitignored `inventories/lab/`.
+
 ## Network and host model
 
-SSH uses each host's public IP. AkiDB uses a WireGuard full mesh:
+SSH uses each host's public (or management) IP. AkiDB data/control ports bind
+only to a **trusted service plane**, never to `0.0.0.0` / the public NIC.
+
+Two service-plane modes are supported via `akidb_service_network_mode`:
+
+| Mode | When to use | `akidb_overlay_address` | WireGuard |
+| --- | --- | --- | --- |
+| `private` | Provider private backplane exists (VPC, vRack, private NIC) | Private NIC IPs | Off |
+| `wireguard` (default) | Hosts only share public reachability | Synthetic overlay IPs (e.g. `10.77.0.x`) | Full mesh |
+
+### WireGuard mode (no private back network)
 
 The public endpoints below use the RFC 5737 documentation range; real host
 addresses stay only in the gitignored lab inventory.
 
 ```text
-documentation SSH             private AkiDB service network
+documentation SSH             WireGuard service plane
 192.0.2.11       ────────>     10.77.0.11
 192.0.2.12       ────────>     10.77.0.12
 192.0.2.13       ────────>     10.77.0.13
 192.0.2.14       ────────>     10.77.0.14
 ```
 
-UFW permits WireGuard UDP only from the other declared peer IPs. Shards bind
-`10.77.0.x:50051`; the coordinator binds `10.77.0.11:50050`. The real lab
-inventory is stored under `inventories/lab/` and is intentionally gitignored.
-WireGuard private keys are generated and retained on their respective hosts.
+UFW permits WireGuard UDP only from the other declared peer public IPs. Shards
+bind `10.77.0.x:50051`; the coordinator binds `10.77.0.11:50050`. WireGuard
+private keys are generated and retained on their respective hosts.
+
+### Private mode (trusted backplane)
+
+```yaml
+# Set on each host (host vars beat playbook group_vars defaults):
+akidb_service_network_mode: private
+akidb_overlay_address: 10.1.0.132          # this host's private NIC
+akidb_overlay_cidr: 10.1.0.0/16            # cluster private CIDR
+akidb_service_network_interface: ens4      # optional UFW interface bind
+```
+
+Preflight requires the overlay address to be present on a local interface.
+`network.yml` skips WireGuard, opens AkiDB ports only from `akidb_overlay_cidr`
+(optionally on the private NIC), and verifies peer reachability over the
+backplane. Systemd units do **not** `Require=` WireGuard in this mode.
+
+The real lab inventory is stored under `inventories/lab/` and is intentionally
+gitignored. Legacy inventories may still set `akidb_manage_wireguard: false`
+instead of mode; roles treat that as private when mode is empty.
 
 ## Artifact flow
 
@@ -158,24 +207,26 @@ Stage one artifact everywhere and perform a rolling deployment:
 ansible-playbook playbooks/deploy.yml
 ```
 
-Verify local shard health, coordinator-to-shard reachability, coordinator
-health, and public bind policy:
+Verify the release ID and checksum on every host, local shard health,
+coordinator-to-shard reachability, coordinator health, and public bind policy:
 
 ```bash
 ansible-playbook playbooks/verify.yml
 ```
 
-The complete, safely rerunnable path for the **legacy four-shard lab** is:
+The complete, safely rerunnable path for the **independent-shard lab**
+(N=1, 2, or 4+) is:
 
 ```bash
 ansible-playbook playbooks/site.yml
 ```
 
-Rollback requires an already installed release and still rolls one shard at a
-time:
+Rollback requires an already installed release and its original artifact
+checksum, and still rolls one shard at a time:
 
 ```bash
 export AKIDB_ROLLBACK_RELEASE_ID=<previous-git-sha>
+export AKIDB_ROLLBACK_ARTIFACT_SHA256=<previous-artifact-sha256>
 ansible-playbook playbooks/rollback.yml
 ```
 
@@ -343,10 +394,10 @@ release decision live in
 Exit criterion: a second `network.yml` and `site.yml` run is idempotent, and
 no AkiDB service port is reachable on a public interface.
 
-### Phase 1 — functional four-shard cluster
+### Phase 1 — functional multi-shard cluster (N=2 or N>=4)
 
 - direct health on all shards
-- coordinator fan-out paths to all four shards
+- coordinator fan-out paths to every declared shard
 - deterministic insert, get, update, delete, and search
 - fsynced acknowledged-mutation, SIGKILL, and RocksDB/WAL recovery
 - GraphRAG node, edge, traversal, and context-expansion smoke tests

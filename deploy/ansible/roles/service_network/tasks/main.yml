@@ -1,0 +1,247 @@
+---
+# Dual-mode AkiDB service plane:
+# - wireguard: create a full-mesh overlay when hosts only share public reachability
+# - private: bind to an existing trusted backplane (VPC, vRack, private NIC)
+#
+# Backward compatibility: if akidb_service_network_mode is unset, fall back to
+# akidb_manage_wireguard (true → wireguard, false → private).
+
+- name: Resolve service-network mode
+  ansible.builtin.set_fact:
+    akidb_resolved_service_network_mode: >-
+      {{
+        akidb_service_network_mode
+        if (akidb_service_network_mode | default('') | length) > 0
+        else (
+          'wireguard'
+          if (akidb_manage_wireguard | default(true) | bool)
+          else 'private'
+        )
+      }}
+
+- name: Require a supported service-network mode
+  ansible.builtin.assert:
+    that:
+      - akidb_resolved_service_network_mode in ['wireguard', 'private']
+      - akidb_overlay_address is defined
+      - akidb_overlay_address | length > 0
+      - akidb_overlay_cidr is defined
+      - akidb_overlay_cidr | length > 0
+      - ansible_host is defined
+      - groups['akidb_cluster'] | length >= 1
+      - akidb_overlay_address != ansible_host | string
+    fail_msg: >-
+      Set akidb_service_network_mode to 'wireguard' or 'private', provide a
+      unique akidb_overlay_address distinct from ansible_host (SSH). Supported
+      sizes are N=1 (standalone), N=2, or N>=4; inventory length drives peers.
+
+- name: Derive WireGuard usage for this host
+  ansible.builtin.set_fact:
+    # Mesh only makes sense with 2+ hosts. Single-node always stays private-bind.
+    akidb_use_wireguard: >-
+      {{
+        (akidb_resolved_service_network_mode == 'wireguard')
+        and (groups['akidb_cluster'] | length >= 2)
+      }}
+
+- name: Resolve the firewall interface for service-port rules
+  ansible.builtin.set_fact:
+    akidb_service_firewall_interface: >-
+      {{
+        akidb_wireguard_interface
+        if akidb_use_wireguard | bool
+        else (akidb_service_network_interface | default('') | trim)
+      }}
+
+- name: Require unique overlay addresses across the cluster
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          groups['akidb_cluster']
+          | map('extract', hostvars, 'akidb_overlay_address')
+          | list
+          | unique
+          | length
+        ) == (groups['akidb_cluster'] | length)
+    fail_msg: "Every host in akidb_cluster must have a unique akidb_overlay_address."
+  run_once: true
+
+- name: Reconcile private service-name resolution
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} AKIDB PRIVATE OVERLAY"
+    block: |
+      {% for host in groups['akidb_cluster'] | sort %}
+      {{ hostvars[host].akidb_overlay_address }} {{ host }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+  when: akidb_manage_overlay_hosts | bool
+
+- name: Install UFW
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: akidb_manage_ufw | bool
+
+- name: Allow SSH before enabling UFW
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - "{{ akidb_ssh_port | string }}/tcp"
+      - comment
+      - AkiDB administration
+  register: akidb_ufw_ssh_rule
+  changed_when: "'Rule added' in akidb_ufw_ssh_rule.stdout"
+  when: akidb_manage_ufw | bool
+
+- name: Read firewall policy before reconciliation
+  ansible.builtin.command:
+    argv: [ufw, status, verbose]
+  changed_when: false
+  register: akidb_ufw_status_before
+  when: akidb_manage_ufw | bool
+
+- name: Set default incoming firewall policy
+  ansible.builtin.command:
+    argv: [ufw, default, deny, incoming]
+  register: akidb_ufw_default_incoming
+  changed_when: true
+  when:
+    - akidb_manage_ufw | bool
+    - "'Default: deny (incoming)' not in akidb_ufw_status_before.stdout"
+
+- name: Set default outgoing firewall policy
+  ansible.builtin.command:
+    argv: [ufw, default, allow, outgoing]
+  register: akidb_ufw_default_outgoing
+  changed_when: true
+  when:
+    - akidb_manage_ufw | bool
+    - "'allow (outgoing)' not in akidb_ufw_status_before.stdout"
+
+- name: Configure WireGuard overlay
+  ansible.builtin.include_tasks: wireguard.yml
+  when: akidb_use_wireguard | bool
+
+- name: Disable WireGuard when using a native private backplane
+  ansible.builtin.systemd_service:
+    name: "wg-quick@{{ akidb_wireguard_interface }}"
+    state: stopped
+    enabled: false
+  failed_when: false
+  when: not (akidb_use_wireguard | bool)
+
+- name: Require private overlay address is present on a local interface
+  ansible.builtin.assert:
+    that:
+      - >-
+        akidb_overlay_address in (ansible_facts['all_ipv4_addresses'] | default([]))
+        or akidb_overlay_address in ['127.0.0.1', '::1']
+    fail_msg: >-
+      private mode requires akidb_overlay_address={{ akidb_overlay_address }}
+      on this host (VPC/vRack/private NIC, or 127.0.0.1 for single-node). Found:
+      {{ ansible_facts['all_ipv4_addresses'] | default([]) | join(', ') }}.
+  when: not (akidb_use_wireguard | bool)
+
+- name: Allow shard traffic only from the trusted service plane
+  ansible.builtin.command:
+    argv: "{{ ['ufw', 'allow'] + (['in', 'on', akidb_service_firewall_interface] if (akidb_service_firewall_interface | length) > 0 else []) + ['from', akidb_overlay_cidr, 'to', 'any', 'port', akidb_server_port | string, 'proto', 'tcp', 'comment', 'AkiDB shard service plane'] }}"
+  register: akidb_ufw_shard_rule
+  changed_when: "'Rule added' in akidb_ufw_shard_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('akidb_shards', [])
+
+- name: Allow coordinator traffic only from the trusted service plane
+  ansible.builtin.command:
+    argv: "{{ ['ufw', 'allow'] + (['in', 'on', akidb_service_firewall_interface] if (akidb_service_firewall_interface | length) > 0 else []) + ['from', akidb_overlay_cidr, 'to', 'any', 'port', akidb_coordinator_port | string, 'proto', 'tcp', 'comment', 'AkiDB coordinator service plane'] }}"
+  register: akidb_ufw_coordinator_rule
+  changed_when: "'Rule added' in akidb_ufw_coordinator_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('akidb_coordinators', [])
+
+- name: Allow immutable knowledge-replica traffic through the service plane
+  ansible.builtin.command:
+    argv: "{{ ['ufw', 'allow'] + (['in', 'on', akidb_service_firewall_interface] if (akidb_service_firewall_interface | length) > 0 else []) + ['from', akidb_overlay_cidr, 'to', 'any', 'port', akidb_knowledge_server_port | string, 'proto', 'tcp', 'comment', 'AkiDB knowledge replica service plane'] }}"
+  register: akidb_ufw_knowledge_replica_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_replica_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('akidb_knowledge_replicas', [])
+
+- name: Allow knowledge-replica Prometheus traffic through the service plane
+  ansible.builtin.command:
+    argv: "{{ ['ufw', 'allow'] + (['in', 'on', akidb_service_firewall_interface] if (akidb_service_firewall_interface | length) > 0 else []) + ['from', akidb_overlay_cidr, 'to', 'any', 'port', akidb_knowledge_metrics_port | string, 'proto', 'tcp', 'comment', 'AkiDB knowledge metrics service plane'] }}"
+  register: akidb_ufw_knowledge_metrics_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_metrics_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('akidb_knowledge_replicas', [])
+
+- name: Allow AX knowledge-gateway traffic through the service plane
+  ansible.builtin.command:
+    argv: "{{ ['ufw', 'allow'] + (['in', 'on', akidb_service_firewall_interface] if (akidb_service_firewall_interface | length) > 0 else []) + ['from', akidb_overlay_cidr, 'to', 'any', 'port', akidb_knowledge_gateway_port | string, 'proto', 'tcp', 'comment', 'AX knowledge gateway service plane'] }}"
+  register: akidb_ufw_knowledge_gateway_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_gateway_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('ax_knowledge_gateways', [])
+
+- name: Allow knowledge-control PostgreSQL through the service plane
+  ansible.builtin.command:
+    argv: "{{ ['ufw', 'allow'] + (['in', 'on', akidb_service_firewall_interface] if (akidb_service_firewall_interface | length) > 0 else []) + ['from', akidb_overlay_cidr, 'to', 'any', 'port', akidb_knowledge_postgres_port | string, 'proto', 'tcp', 'comment', 'AX knowledge PostgreSQL service plane'] }}"
+  register: akidb_ufw_knowledge_postgres_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_postgres_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('akidb_knowledge_dependencies', [])
+
+- name: Allow knowledge MinIO through the service plane
+  ansible.builtin.command:
+    argv: "{{ ['ufw', 'allow'] + (['in', 'on', akidb_service_firewall_interface] if (akidb_service_firewall_interface | length) > 0 else []) + ['from', akidb_overlay_cidr, 'to', 'any', 'port', akidb_knowledge_minio_port | string, 'proto', 'tcp', 'comment', 'AkiDB knowledge MinIO service plane'] }}"
+  register: akidb_ufw_knowledge_minio_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_minio_rule.stdout"
+  when:
+    - akidb_manage_ufw | bool
+    - inventory_hostname in groups.get('akidb_knowledge_dependencies', [])
+
+- name: Enable UFW after administration and service-plane rules exist
+  ansible.builtin.command:
+    argv: [ufw, --force, enable]
+  register: akidb_ufw_enable
+  changed_when: true
+  when:
+    - akidb_manage_ufw | bool
+    - "'Status: active' not in akidb_ufw_status_before.stdout"
+
+- name: Require an active firewall
+  ansible.builtin.command:
+    argv: [ufw, status]
+  changed_when: false
+  register: akidb_ufw_status
+  failed_when: "'Status: active' not in akidb_ufw_status.stdout"
+  when: akidb_manage_ufw | bool
+
+- name: Wait for every service-plane peer
+  ansible.builtin.command:
+    argv:
+      - ping
+      - -c
+      - "1"
+      - -W
+      - "2"
+      - "{{ hostvars[item].akidb_overlay_address }}"
+  loop: "{{ groups['akidb_cluster'] | difference([inventory_hostname]) }}"
+  changed_when: false
+  register: akidb_overlay_ping
+  retries: 5
+  delay: 2
+  until: akidb_overlay_ping.rc == 0
+  when: (groups['akidb_cluster'] | difference([inventory_hostname]) | length) > 0

@@ -81,10 +81,9 @@ class StorageClient:
             raise
 
     def is_connected(self) -> bool:
-        """Check if MinIO is reachable."""
+        """Check that the configured bucket is reachable."""
         try:
-            self.client.list_buckets()
-            return True
+            return self.client.bucket_exists(self.bucket)
         except Exception:
             return False
 
@@ -94,7 +93,7 @@ class StorageClient:
             exists = self.client.bucket_exists(self.bucket)
             object_count = None
             if exists:
-                objects = list(self.client.list_objects(self.bucket))
+                objects = list(self.client.list_objects(self.bucket, recursive=True))
                 object_count = len(objects)
             return {
                 "name": self.bucket,

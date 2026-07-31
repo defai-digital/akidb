@@ -100,8 +100,32 @@ pub struct Args {
     pub config: PathBuf,
 
     /// gRPC listen address (default: config server.host:grpc_port, loopback-first)
-    #[arg(short, long, default_value = "")]
+    #[arg(short, long, default_value = "", env = "AKIDB_LISTEN_ADDR")]
     pub listen: String,
+
+    /// Override the RocksDB data directory
+    #[arg(long, env = "AKIDB_DATA_DIR")]
+    pub data_dir: Option<PathBuf>,
+
+    /// Override the write-ahead log directory
+    #[arg(long, env = "AKIDB_WAL_DIR")]
+    pub wal_dir: Option<PathBuf>,
+
+    /// Override the vector dimensions used for the default collection
+    #[arg(long, env = "AKIDB_DIMENSIONS")]
+    pub dimensions: Option<usize>,
+
+    /// Override the Prometheus/health listen address
+    #[arg(long, env = "AKIDB_METRICS_ADDR")]
+    pub metrics_addr: Option<SocketAddr>,
+
+    /// Override auth.mode (loopback_optional, required, or disabled)
+    #[arg(
+        long,
+        env = "AKIDB_AUTH_MODE",
+        value_parser = ["loopback_optional", "required", "disabled"]
+    )]
+    pub auth_mode: Option<String>,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info")]
@@ -110,6 +134,36 @@ pub struct Args {
     /// Run in standalone mode (skip MinIO, no external deps)
     #[arg(long, default_value_t = false)]
     pub standalone: bool,
+}
+
+fn apply_runtime_overrides(
+    config: &mut AkiDbConfig,
+    data_dir: Option<&Path>,
+    wal_dir: Option<&Path>,
+    dimensions: Option<usize>,
+    auth_mode: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(data_dir) = data_dir {
+        config.storage.rocksdb_path = data_dir.display().to_string();
+    }
+    if let Some(wal_dir) = wal_dir {
+        config.storage.wal_path = wal_dir.display().to_string();
+    }
+    if let Some(dimensions) = dimensions {
+        if dimensions == 0 {
+            return Err("AKIDB_DIMENSIONS must be greater than zero".into());
+        }
+        config.slo.reference.dimensions = dimensions;
+    }
+    if let Some(auth_mode) = auth_mode {
+        config.auth.mode = match auth_mode {
+            "loopback_optional" => AuthMode::LoopbackOptional,
+            "required" => AuthMode::Required,
+            "disabled" => AuthMode::Disabled,
+            value => return Err(format!("unsupported auth mode override: {value}").into()),
+        };
+    }
+    Ok(())
 }
 
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
@@ -141,13 +195,20 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Load configuration if exists
-    let config = if args.config.exists() {
+    let mut config = if args.config.exists() {
         let config_str = std::fs::read_to_string(&args.config)?;
         toml::from_str::<AkiDbConfig>(&config_str)?
     } else {
         info!("Config file not found, using defaults");
         AkiDbConfig::default()
     };
+    apply_runtime_overrides(
+        &mut config,
+        args.data_dir.as_deref(),
+        args.wal_dir.as_deref(),
+        args.dimensions,
+        args.auth_mode.as_deref(),
+    )?;
     if config.memory.enabled {
         validate_memory_paths(&config)?;
     }
@@ -170,7 +231,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let auth_runtime = AuthRuntime::bootstrap(config.auth.clone(), &bind_host)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     let _metrics_task = if config.observability.metrics_enabled {
-        let metrics_addr = SocketAddr::new(addr.ip(), config.observability.metrics_port);
+        let metrics_addr = args
+            .metrics_addr
+            .unwrap_or_else(|| SocketAddr::new(addr.ip(), config.observability.metrics_port));
         Some(start_metrics_server(metrics_addr).await?)
     } else {
         None
@@ -1085,6 +1148,35 @@ mod tests {
 
         assert!(rustls::crypto::CryptoProvider::get_default().is_some());
         let _ = rustls::ServerConfig::builder();
+    }
+
+    #[test]
+    fn runtime_overrides_apply_container_paths_and_auth_mode() {
+        let mut config = AkiDbConfig::default();
+
+        apply_runtime_overrides(
+            &mut config,
+            Some(Path::new("/var/lib/akidb/data")),
+            Some(Path::new("/var/lib/akidb/wal")),
+            Some(2560),
+            Some("disabled"),
+        )
+        .unwrap();
+
+        assert_eq!(config.storage.rocksdb_path, "/var/lib/akidb/data");
+        assert_eq!(config.storage.wal_path, "/var/lib/akidb/wal");
+        assert_eq!(config.slo.reference.dimensions, 2560);
+        assert_eq!(config.auth.mode, AuthMode::Disabled);
+    }
+
+    #[test]
+    fn runtime_override_rejects_unknown_auth_mode() {
+        let mut config = AkiDbConfig::default();
+
+        let error =
+            apply_runtime_overrides(&mut config, None, None, None, Some("sometimes")).unwrap_err();
+
+        assert!(error.to_string().contains("unsupported auth mode"));
     }
 
     fn unique_temp_path(name: &str) -> PathBuf {

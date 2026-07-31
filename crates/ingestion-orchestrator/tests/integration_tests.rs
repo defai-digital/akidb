@@ -6,15 +6,15 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use akidb_ingestion::{
-    config::{
-        BackpressureConfig, BatcherConfig, ChunkerConfig, CircuitBreakerConfig,
-        MemoryConfig, NatsConfig, StorageConfig, AkiDbConfig,
-    },
+    backpressure::BackpressureController,
     chunker::SemanticChunker,
     circuit_breaker::{CircuitBreaker, CircuitState},
-    backpressure::BackpressureController,
+    config::{
+        AkiDbConfig, BackpressureConfig, BatcherConfig, ChunkerConfig, CircuitBreakerConfig,
+        MemoryConfig, NatsConfig, StorageConfig,
+    },
     idempotency::IdempotencyChecker,
-    parsers::{DocumentFormat, route_parser},
+    parsers::{route_parser, DocumentFormat},
 };
 
 use tempfile::TempDir;
@@ -322,6 +322,7 @@ async fn test_config_defaults() {
         stream: "test-stream".to_string(),
         consumer: "test-consumer".to_string(),
         dlq_stream: "test-dlq".to_string(),
+        replicas: 1,
     };
 
     assert_eq!(nats.url, "nats://localhost:4222");
@@ -396,7 +397,7 @@ async fn test_document_processing_flow() {
 /// Test state tracker with SQLite
 #[tokio::test]
 async fn test_state_tracker_sqlite() {
-    use akidb_ingestion::state::{StateTracker, DocumentState};
+    use akidb_ingestion::state::{DocumentState, StateTracker};
 
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test_state.db");
@@ -407,12 +408,22 @@ async fn test_state_tracker_sqlite() {
     tracker.record_document("hash123", "test/doc.pdf").unwrap();
 
     // Update state through stages
-    tracker.update_state("hash123", DocumentState::Parsing).unwrap();
-    tracker.update_state("hash123", DocumentState::Chunking).unwrap();
+    tracker
+        .update_state("hash123", DocumentState::Parsing)
+        .unwrap();
+    tracker
+        .update_state("hash123", DocumentState::Chunking)
+        .unwrap();
     tracker.update_chunk_count("hash123", 5).unwrap();
-    tracker.update_state("hash123", DocumentState::Embedding).unwrap();
-    tracker.update_state("hash123", DocumentState::Inserting).unwrap();
-    tracker.update_state("hash123", DocumentState::Completed).unwrap();
+    tracker
+        .update_state("hash123", DocumentState::Embedding)
+        .unwrap();
+    tracker
+        .update_state("hash123", DocumentState::Inserting)
+        .unwrap();
+    tracker
+        .update_state("hash123", DocumentState::Completed)
+        .unwrap();
 
     // Check stats
     let stats = tracker.stats().unwrap();

@@ -1,0 +1,103 @@
+---
+# WireGuard full-mesh overlay for hosts without a trusted private backplane.
+
+- name: Install WireGuard
+  ansible.builtin.apt:
+    name:
+      - wireguard-tools
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create WireGuard configuration directory
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Inspect WireGuard private key
+  ansible.builtin.stat:
+    path: "/etc/wireguard/{{ akidb_wireguard_interface }}.key"
+  register: akidb_wireguard_key_file
+
+- name: Generate WireGuard private key
+  ansible.builtin.command:
+    argv: [wg, genkey]
+  register: akidb_wireguard_generated_key
+  changed_when: true
+  no_log: true
+  when: not akidb_wireguard_key_file.stat.exists
+
+- name: Persist WireGuard private key
+  ansible.builtin.copy:
+    content: "{{ akidb_wireguard_generated_key.stdout }}\n"
+    dest: "/etc/wireguard/{{ akidb_wireguard_interface }}.key"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: not akidb_wireguard_key_file.stat.exists
+
+- name: Read WireGuard private key
+  ansible.builtin.slurp:
+    path: "/etc/wireguard/{{ akidb_wireguard_interface }}.key"
+  register: akidb_wireguard_key_slurp
+  no_log: true
+
+- name: Keep WireGuard private key in memory
+  ansible.builtin.set_fact:
+    akidb_wireguard_private_key: "{{ akidb_wireguard_key_slurp.content | b64decode | trim }}"
+  no_log: true
+
+- name: Derive WireGuard public key
+  ansible.builtin.command:
+    argv: [wg, pubkey]
+    stdin: "{{ akidb_wireguard_private_key }}"
+  register: akidb_wireguard_public_key_result
+  changed_when: false
+  no_log: true
+
+- name: Publish WireGuard public key to peer hostvars
+  ansible.builtin.set_fact:
+    akidb_wireguard_public_key: "{{ akidb_wireguard_public_key_result.stdout | trim }}"
+
+- name: Allow WireGuard only from declared peers
+  ansible.builtin.command:
+    argv:
+      - ufw
+      - allow
+      - proto
+      - udp
+      - from
+      - "{{ hostvars[item].ansible_host }}"
+      - to
+      - any
+      - port
+      - "{{ akidb_wireguard_port | string }}"
+      - comment
+      - "AkiDB WireGuard {{ item }}"
+  loop: "{{ groups['akidb_cluster'] | difference([inventory_hostname]) }}"
+  register: akidb_ufw_rule
+  changed_when: "'Rule added' in akidb_ufw_rule.stdout"
+  when: akidb_manage_ufw | bool
+
+- name: Render full-mesh WireGuard configuration
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: "/etc/wireguard/{{ akidb_wireguard_interface }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart AkiDB WireGuard
+
+- name: Enable and start WireGuard
+  ansible.builtin.systemd_service:
+    name: "wg-quick@{{ akidb_wireguard_interface }}"
+    enabled: true
+    state: started
+
+- name: Apply pending WireGuard changes
+  ansible.builtin.meta: flush_handlers

@@ -1,10 +1,15 @@
 """Configuration for the document parser service."""
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Service configuration loaded from environment variables."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="DOC_PARSER_",
+        case_sensitive=False,
+    )
 
     # Service settings
     host: str = "0.0.0.0"
@@ -23,10 +28,5 @@ class Settings(BaseSettings):
     # Metrics
     metrics_enabled: bool = True
     metrics_port: int = 9090
-
-    class Config:
-        env_prefix = "DOC_PARSER_"
-        case_sensitive = False
-
 
 settings = Settings()

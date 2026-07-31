@@ -437,7 +437,11 @@ fn col_index_from_ref(cell_ref: &[u8]) -> Option<usize> {
             break;
         }
     }
-    if has_letters { Some(col - 1) } else { None }
+    if has_letters {
+        Some(col - 1)
+    } else {
+        None
+    }
 }
 
 /// Place a resolved cell value at the correct column position, growing the row
@@ -508,11 +512,8 @@ fn parse_sheet_xml(xml: &str, shared_strings: &[String]) -> Result<Vec<Vec<Optio
                         let cell_type_str = current_cell_type
                             .as_deref()
                             .and_then(|b| std::str::from_utf8(b).ok());
-                        let value = resolve_cell_value(
-                            cell_type_str,
-                            &current_cell_value,
-                            shared_strings,
-                        );
+                        let value =
+                            resolve_cell_value(cell_type_str, &current_cell_value, shared_strings);
                         place_cell(row, current_col_idx, value);
                     }
                     current_cell_type = None;
@@ -850,8 +851,16 @@ mod tests {
         assert!(result.text.contains("name Alice"), "got: {}", result.text);
         assert!(result.text.contains("score 95"), "got: {}", result.text);
         assert!(result.text.contains("ignored"), "got: {}", result.text);
-        assert!(!result.text.contains("name ignored"), "got: {}", result.text);
-        assert!(!result.text.contains("score ignored"), "got: {}", result.text);
+        assert!(
+            !result.text.contains("name ignored"),
+            "got: {}",
+            result.text
+        );
+        assert!(
+            !result.text.contains("score ignored"),
+            "got: {}",
+            result.text
+        );
     }
 
     #[test]

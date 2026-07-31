@@ -1,23 +1,20 @@
 # AkiDB Docker Compose
 # Portable local development stack (published images currently target AMD64)
 
-version: "3.9"
-
 services:
   # ============================================
   # NATS JetStream Cluster (3-node)
   # ============================================
   nats-1:
-    image: nats:2.10-alpine
-    container_name: akidb-nats-1
-    # user: "1000:1000"  # Disabled - NATS needs write access to /data
+    image: nats:2.11.15-alpine
     command: >
       -c /etc/nats/nats.conf
       --name nats-1
+      --routes nats://nats-2:6222,nats://nats-3:6222
+      --connect_retries 120
     ports:
-      - "4222:4222"   # Client connections
-      - "8222:8222"   # Monitoring
-      - "6222:6222"   # Cluster routing
+      - "127.0.0.1:${NATS_CLIENT_PORT:-4222}:4222"   # Client connections
+      - "127.0.0.1:${NATS_MONITOR_PORT:-8222}:8222"  # Monitoring
     volumes:
       - ./nats/nats.conf:/etc/nats/nats.conf:ro
       - nats-1-data:/data
@@ -34,17 +31,12 @@ services:
       retries: 3
 
   nats-2:
-    image: nats:2.10-alpine
-    container_name: akidb-nats-2
-    user: "1000:1000"
+    image: nats:2.11.15-alpine
     command: >
       -c /etc/nats/nats.conf
       --name nats-2
-      --cluster_name akidb-cluster
       --routes nats://nats-1:6222
-    ports:
-      - "4223:4222"
-      - "8223:8222"
+      --connect_retries 120
     volumes:
       - ./nats/nats.conf:/etc/nats/nats.conf:ro
       - nats-2-data:/data
@@ -54,21 +46,19 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    depends_on:
-      - nats-1
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   nats-3:
-    image: nats:2.10-alpine
-    container_name: akidb-nats-3
-    user: "1000:1000"
+    image: nats:2.11.15-alpine
     command: >
       -c /etc/nats/nats.conf
       --name nats-3
-      --cluster_name akidb-cluster
       --routes nats://nats-1:6222
-    ports:
-      - "4224:4222"
-      - "8224:8222"
+      --connect_retries 120
     volumes:
       - ./nats/nats.conf:/etc/nats/nats.conf:ro
       - nats-3-data:/data
@@ -78,27 +68,72 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  nats-exporter:
+    image: natsio/prometheus-nats-exporter:0.20.1
+    command:
+      - -varz
+      - -connz
+      - -routez
+      - -healthz
+      - -jsz=all
+      - http://nats-1:8222
+      - http://nats-2:8222
+      - http://nats-3:8222
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
-      - nats-1
+      nats-1:
+        condition: service_healthy
+      nats-2:
+        condition: service_healthy
+      nats-3:
+        condition: service_healthy
 
   # ============================================
   # MinIO Object Storage
   # ============================================
+  minio-init:
+    image: minio/minio:latest
+    user: "0:0"
+    read_only: true
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chown -R 1000:1000 /data"]
+    volumes:
+      - minio-data:/data
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+
   minio:
     image: minio/minio:latest
-    container_name: akidb-minio
     user: "1000:1000"
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"   # API
-      - "9001:9001"   # Console
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"       # API
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"   # Console
     environment:
       MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
-      MINIO_NOTIFY_NATS_ENABLE: "on"
-      MINIO_NOTIFY_NATS_ADDRESS: "nats-1:4222"
-      MINIO_NOTIFY_NATS_SUBJECT: "minio.uploads"
-      MINIO_NOTIFY_NATS_JETSTREAM: "on"
+      MINIO_NOTIFY_NATS_ENABLE_PRIMARY: "on"
+      MINIO_NOTIFY_NATS_ADDRESS_PRIMARY: "nats-1:4222"
+      MINIO_NOTIFY_NATS_SUBJECT_PRIMARY: "minio.uploads"
+      MINIO_NOTIFY_NATS_JETSTREAM_PRIMARY: "on"
+      MINIO_NOTIFY_NATS_STREAMING_ASYNC_PRIMARY: "on"
     volumes:
       - minio-data:/data
     networks:
@@ -116,17 +151,20 @@ services:
       timeout: 5s
       retries: 3
     depends_on:
-      - nats-1
+      nats-1:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
   # MinIO setup - creates bucket and configures notifications
   minio-setup:
     image: minio/mc:latest
-    container_name: akidb-minio-setup
     user: "1000:1000"
     read_only: true
     entrypoint: /bin/sh
     command: /setup/setup-minio.sh
     environment:
+      MC_CONFIG_DIR: /tmp/.mc
       MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
     volumes:
@@ -153,16 +191,17 @@ services:
     build:
       context: ../../services/upload-gateway
       dockerfile: Dockerfile
-    container_name: akidb-upload-gateway
     user: "1000:1000"
     read_only: true
     ports:
-      - "8081:8081"
+      - "127.0.0.1:${UPLOAD_GATEWAY_PORT:-8081}:8081"
     environment:
       UPLOAD_GATEWAY_MINIO_ENDPOINT: minio:9000
       UPLOAD_GATEWAY_MINIO_ACCESS_KEY_FILE: /run/secrets/minio_root_user
       UPLOAD_GATEWAY_MINIO_SECRET_KEY_FILE: /run/secrets/minio_root_password
-      UPLOAD_GATEWAY_NATS_URL: nats://nats-1:4222
+      UPLOAD_GATEWAY_NATS_URL: ${NATS_URL:-nats://nats-1:4222}
+      UPLOAD_GATEWAY_NATS_STREAM: ${NATS_STREAM:-INGESTION}
+      UPLOAD_GATEWAY_NATS_REPLICAS: ${NATS_REPLICAS:-3}
       UPLOAD_GATEWAY_LOG_LEVEL: INFO
     tmpfs:
       - /tmp:mode=1777,size=256M
@@ -180,6 +219,12 @@ services:
         condition: service_healthy
       nats-1:
         condition: service_healthy
+      nats-2:
+        condition: service_healthy
+      nats-3:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
 
   # ============================================
   # Document Parser (Python sidecar)
@@ -188,11 +233,10 @@ services:
     build:
       context: ../../services/doc-parser
       dockerfile: Dockerfile
-    container_name: akidb-doc-parser
     user: "1000:1000"
     read_only: true
     ports:
-      - "8080:8080"
+      - "127.0.0.1:${DOC_PARSER_PORT:-8080}:8080"
     environment:
       DOC_PARSER_LOG_LEVEL: INFO
       DOC_PARSER_MAX_FILE_SIZE_MB: 100
@@ -212,29 +256,49 @@ services:
     build:
       context: ../..
       dockerfile: deploy/compose/ingestion/Dockerfile
-    container_name: akidb-ingestion
     user: "1000:1000"
     environment:
-      NATS_URL: nats://nats-1:4222
+      NATS_URL: ${NATS_URL:-nats://nats-1:4222}
+      NATS_STREAM: ${NATS_STREAM:-INGESTION}
+      NATS_CONSUMER: ${NATS_CONSUMER:-ingestion-orchestrator}
+      NATS_DLQ_STREAM: ${NATS_DLQ_STREAM:-akidb-dlq}
+      NATS_REPLICAS: ${NATS_REPLICAS:-3}
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_ACCESS_KEY_FILE: /run/secrets/minio_root_user
+      STORAGE_SECRET_KEY_FILE: /run/secrets/minio_root_password
+      STORAGE_BUCKET: akidb-documents
+      AKIDB_ENDPOINT: http://akidb-server:50051
+      AKIDB_TIMEOUT_MS: ${AKIDB_TIMEOUT_MS:-30000}
+      AKIDB_MAX_RETRIES: ${AKIDB_MAX_RETRIES:-3}
       DOC_PARSER_URL: http://doc-parser:8080
-      EMBEDDING_URL: http://embedding:8000
-      RUST_LOG: info
+      EMBEDDING_URL: ${EMBEDDING_URL:-http://host.docker.internal:8000}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-4B}
+      INGESTION_METRICS_ADDR: 0.0.0.0:9093
+      RUST_LOG: ${RUST_LOG:-info}
+      RUST_BACKTRACE: ${RUST_BACKTRACE:-0}
     volumes:
       - ingestion-state:/var/lib/akidb
     tmpfs:
       - /tmp:mode=1777,size=256M
     networks:
       - akidb-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    secrets:
+      - minio_root_user
+      - minio_root_password
     depends_on:
       nats-1:
         condition: service_healthy
       doc-parser:
         condition: service_started
       minio:
+        condition: service_healthy
+      akidb-server:
         condition: service_healthy
 
   # ============================================
@@ -244,17 +308,20 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/akidb-server.Dockerfile
-    container_name: akidb-server-1
     user: "1000:1000"
     ports:
-      - "50051:50051"   # gRPC
-      - "9092:9090"     # Metrics (mapped to avoid conflict with prometheus)
+      - "127.0.0.1:50051:50051"   # gRPC
+      - "127.0.0.1:9092:9090"     # Metrics (mapped to avoid conflict with prometheus)
     environment:
       RUST_LOG: info
       AKIDB_DATA_DIR: /var/lib/akidb/data
       AKIDB_WAL_DIR: /var/lib/akidb/wal
       AKIDB_LISTEN_ADDR: 0.0.0.0:50051
       AKIDB_METRICS_ADDR: 0.0.0.0:9090
+      AKIDB_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-2560}
+      # The coordinator cannot propagate shard credentials yet. This exception
+      # is restricted to the private Compose network and loopback host ports.
+      AKIDB_AUTH_MODE: disabled
     volumes:
       - akidb-server-data:/var/lib/akidb
     networks:
@@ -264,7 +331,7 @@ services:
     cap_drop:
       - ALL
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/healthz"]
       interval: 30s
       timeout: 10s
       start_period: 15s
@@ -277,16 +344,16 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/akidb-coordinator.Dockerfile
-    container_name: akidb-coordinator
     user: "1000:1000"
     ports:
-      - "50052:50052"   # gRPC
-      - "9091:9091"     # Metrics
+      - "127.0.0.1:50052:50052"   # gRPC
+      - "127.0.0.1:9091:9091"     # Metrics
     environment:
       RUST_LOG: info
       AKIDB_COORDINATOR_LISTEN_ADDR: 0.0.0.0:50052
-      AKIDB_COORDINATOR_METRICS_ADDR: 0.0.0.0:9091
-      AKIDB_SHARD_ADDRS: akidb-server-1:50051
+      AKIDB_COORDINATOR_METRICS_HOST: 0.0.0.0
+      AKIDB_COORDINATOR_METRICS_PORT: 9091
+      AKIDB_SHARD_ADDRS: akidb-server:50051
     networks:
       - akidb-net
     security_opt:
@@ -308,10 +375,9 @@ services:
   # ============================================
   prometheus:
     image: prom/prometheus:latest
-    container_name: akidb-prometheus
     user: "65534:65534"  # nobody user for prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -324,16 +390,17 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+    depends_on:
+      - nats-exporter
 
   # ============================================
   # Grafana (Dashboards)
   # ============================================
   grafana:
     image: grafana/grafana:latest
-    container_name: akidb-grafana
     user: "472:472"  # grafana user
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cluster-health.json

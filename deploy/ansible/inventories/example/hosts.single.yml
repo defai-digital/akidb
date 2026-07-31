@@ -1,0 +1,26 @@
+---
+# Example: N=1 standalone independent-shard profile.
+# Client talks to the shard directly (no coordinator group).
+# Use private mode and bind to a local/loopback or private address.
+#
+# Supported sizes for this profile: 1, 2, or 4+ (not 3).
+# Copy to inventories/lab/ (gitignored) and replace documentation IPs.
+all:
+  vars:
+    ansible_user: root
+  children:
+    akidb_cluster:
+      vars:
+        akidb_cluster_network_trusted: true
+        akidb_service_network_mode: private
+        akidb_overlay_cidr: 127.0.0.0/8
+      children:
+        akidb_shards:
+          hosts:
+            akidb-1:
+              ansible_host: 192.0.2.11
+              # Service bind address (must differ from ansible_host)
+              akidb_overlay_address: 127.0.0.1
+        # Empty coordinator group: pure standalone (client → shard :50051).
+        akidb_coordinators:
+          hosts: {}

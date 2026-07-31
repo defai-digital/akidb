@@ -32,17 +32,94 @@
       Root filesystem needs at least {{ akidb_min_available_disk_mb }} MiB
       available for this qualification profile.
 
+- name: Resolve service-network mode for preflight
+  ansible.builtin.set_fact:
+    akidb_preflight_service_network_mode: >-
+      {{
+        akidb_service_network_mode
+        if (akidb_service_network_mode | default('') | length) > 0
+        else (
+          'wireguard'
+          if (akidb_manage_wireguard | default(true) | bool)
+          else 'private'
+        )
+      }}
+
+- name: Resolve independent-shard topology size
+  ansible.builtin.set_fact:
+    akidb_preflight_shard_count: "{{ groups.get('akidb_shards', []) | length }}"
+    akidb_preflight_coordinator_count: "{{ groups.get('akidb_coordinators', []) | length }}"
+    akidb_preflight_cluster_count: "{{ groups.get('akidb_cluster', []) | length }}"
+
+- name: Validate supported independent-shard topology
+  ansible.builtin.assert:
+    that:
+      - (akidb_preflight_shard_count | int) >= 1
+      - (akidb_preflight_cluster_count | int) >= 1
+      - (akidb_preflight_coordinator_count | int) <= 1
+      - >-
+        (akidb_preflight_shard_count | int) == 1
+        or (akidb_preflight_coordinator_count | int) == 1
+      - >-
+        (akidb_preflight_shard_count | int) != 3
+    fail_msg: >-
+      Supported independent-shard sizes are 1, 2, or 4+ hosts (not 3).
+      N=1: one shard, optional coordinator. N=2 and N>=4: one or more shards
+      plus exactly one coordinator host. Multi-coordinator HA is not supported.
+      Declare hosts in inventory groups; do not hardcode size in playbooks.
+  run_once: true
+
 - name: Validate isolated cluster-network policy
   ansible.builtin.assert:
     that:
       - akidb_cluster_network_trusted | bool
       - akidb_overlay_address is defined
       - akidb_overlay_address | length > 0
-      - akidb_overlay_address != ansible_host
+      - akidb_overlay_address != ansible_host | string
+      - akidb_preflight_service_network_mode in ['wireguard', 'private']
       - akidb_auth_mode != 'disabled' or akidb_cluster_network_trusted | bool
     fail_msg: >-
       Cluster mode must use an explicit trusted service network distinct from
-      the public SSH address.
+      the public SSH address. Set akidb_service_network_mode to 'wireguard'
+      (no private backplane) or 'private' (VPC/vRack/private NIC), and set
+      akidb_overlay_address to the service-plane IP on each host.
+
+- name: Prefer loopback or private bind for single-node without a mesh
+  ansible.builtin.assert:
+    that:
+      - akidb_preflight_service_network_mode == 'private'
+        or (akidb_preflight_cluster_count | int) >= 2
+    fail_msg: >-
+      Single-node (N=1) deployments should use akidb_service_network_mode=private
+      (bind to a local/private address). WireGuard mesh is only needed when
+      two or more hosts share no trusted backplane.
+  when: (akidb_preflight_cluster_count | int) == 1
+
+- name: Require private overlay address is local when using a backplane
+  ansible.builtin.assert:
+    that:
+      - >-
+        akidb_overlay_address in (ansible_facts['all_ipv4_addresses'] | default([]))
+        or akidb_overlay_address in ['127.0.0.1', '::1']
+    fail_msg: >-
+      private mode requires akidb_overlay_address={{ akidb_overlay_address }}
+      on a local interface (or 127.0.0.1 for single-node). Found:
+      {{ ansible_facts['all_ipv4_addresses'] | default([]) | join(', ') }}.
+  when: akidb_preflight_service_network_mode == 'private'
+
+- name: Require unique overlay addresses across the cluster
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          groups['akidb_cluster']
+          | map('extract', hostvars, 'akidb_overlay_address')
+          | list
+          | unique
+          | length
+        ) == (groups['akidb_cluster'] | length)
+    fail_msg: "Every host in akidb_cluster must have a unique akidb_overlay_address."
+  run_once: true
 
 - name: Prevent unsupported authenticated coordinator topology
   ansible.builtin.assert:
@@ -50,8 +127,8 @@
       - akidb_auth_mode == 'disabled' or groups.get('akidb_coordinators', []) | length == 0
     fail_msg: >-
       The current coordinator does not propagate shard bearer/workspace
-      metadata. Use auth.mode=disabled only on the isolated overlay until that
-      product gap is implemented.
+      metadata. Use auth.mode=disabled only on the isolated service plane
+      until that product gap is implemented.
 
 - name: Require an explicit token when authentication is enabled
   ansible.builtin.assert:

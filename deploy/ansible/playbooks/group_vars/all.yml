@@ -23,13 +23,25 @@ akidb_min_available_disk_mb: 20480
 
 # The current coordinator does not propagate bearer/workspace metadata to
 # shards. Cluster mode is therefore allowed only on an isolated service
-# network. The WireGuard role creates that network for public-cloud lab hosts.
+# network. That plane is either a provider private backplane or WireGuard.
 akidb_auth_mode: disabled
 akidb_auth_token: "{{ lookup('env', 'AKIDB_AUTH_TOKEN') }}"
 akidb_default_workspace: cluster-test
 
+# Service plane mode (set in inventory host vars to override these defaults):
+# - wireguard: full-mesh overlay when hosts lack a trusted private back network
+# - private: use existing VPC/vRack/private NIC addresses as akidb_overlay_address
+#
+# Note: playbook group_vars win over inventory group vars. To use private mode
+# in a lab inventory, set akidb_service_network_mode on each host (host vars
+# beat playbook group_vars), or pass -e akidb_service_network_mode=private.
+akidb_service_network_mode: wireguard
+# Optional NIC name for private-mode UFW binding (e.g. ens4). Empty = CIDR-only.
+akidb_service_network_interface: ""
 akidb_wireguard_interface: wg0
 akidb_wireguard_port: 51820
+# Legacy alias kept for older inventories. Prefer akidb_service_network_mode.
+# When mode is explicitly empty string, roles fall back to this flag.
 akidb_manage_wireguard: true
 akidb_manage_ufw: true
 akidb_manage_overlay_hosts: true

@@ -11,8 +11,10 @@ TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/akidb-generation-qa.XXXXXX")"
 MINIO_CONTAINER="akidb-generation-minio-$$"
 MINIO_ACCESS_KEY="generationqa"
 MINIO_SECRET_KEY="$(openssl rand -hex 24)"
-export AKIDB_AUTH_TOKEN="data-$(openssl rand -hex 24)"
-export AKIDB_GENERATION_CONTROL_TOKEN="control-$(openssl rand -hex 24)"
+AKIDB_AUTH_TOKEN="data-$(openssl rand -hex 24)"
+AKIDB_GENERATION_CONTROL_TOKEN="control-$(openssl rand -hex 24)"
+export AKIDB_AUTH_TOKEN
+export AKIDB_GENERATION_CONTROL_TOKEN
 SERVER_PID=""
 
 cleanup() {

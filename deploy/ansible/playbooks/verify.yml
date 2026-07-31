@@ -1,4 +1,55 @@
 ---
+- name: Validate the expected immutable release
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require an explicit release id
+      ansible.builtin.assert:
+        that:
+          - akidb_release_id | length >= 7
+          - akidb_release_id | length <= 64
+          - akidb_release_id is match('^[A-Za-z0-9._-]+$')
+          - akidb_artifact_sha256 is match('^[a-fA-F0-9]{64}$')
+        fail_msg: >-
+          Set AKIDB_RELEASE_ID and AKIDB_ARTIFACT_SHA256 for the immutable
+          release that every cluster process must be running.
+
+- name: Verify the expected release artifact on every cluster host
+  hosts: akidb_cluster
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Inspect the installed artifact marker
+      ansible.builtin.stat:
+        path: "{{ akidb_install_root }}/releases/{{ akidb_release_id }}/.artifact.sha256"
+      register: akidb_verify_release_marker
+
+    - name: Require the expected release artifact
+      ansible.builtin.assert:
+        that:
+          - akidb_verify_release_marker.stat.exists
+          - akidb_verify_release_marker.stat.isreg
+        fail_msg: >-
+          {{ inventory_hostname }} does not have immutable release
+          {{ akidb_release_id }} installed.
+
+    - name: Read the installed artifact marker
+      ansible.builtin.slurp:
+        path: "{{ akidb_install_root }}/releases/{{ akidb_release_id }}/.artifact.sha256"
+      register: akidb_verify_release_marker_content
+
+    - name: Require the expected artifact checksum
+      ansible.builtin.assert:
+        that:
+          - >-
+            akidb_verify_release_marker_content.content | b64decode | trim ==
+            akidb_artifact_sha256 | lower
+        fail_msg: >-
+          {{ inventory_hostname }} does not have the expected immutable
+          artifact {{ akidb_release_id }} ({{ akidb_artifact_sha256 }}).
+
 - name: Verify every shard locally
   hosts: akidb_shards
   become: true
@@ -67,10 +118,35 @@
       changed_when: false
       register: akidb_running_shard_executable
 
+    - name: Require the expected shard release to be active
+      ansible.builtin.assert:
+        that:
+          - >-
+            akidb_active_shard_executable.stdout | trim ==
+            akidb_install_root ~ '/releases/' ~ akidb_release_id ~
+            '/bin/akidb-server'
+        fail_msg: >-
+          {{ inventory_hostname }} is not running the expected immutable
+          release {{ akidb_release_id }}.
+
     - name: Require the shard to run the active immutable release
       ansible.builtin.assert:
         that:
           - akidb_running_shard_executable.stdout | trim == akidb_active_shard_executable.stdout | trim
+
+- name: Confirm standalone single-node readiness
+  hosts: akidb_shards
+  become: false
+  gather_facts: false
+  run_once: true
+  tasks:
+    - name: Report standalone endpoint
+      ansible.builtin.debug:
+        msg: >-
+          AkiDB {{ akidb_release_id }} standalone shard is ready through
+          {{ hostvars[groups['akidb_shards'][0]].akidb_overlay_address }}:{{ akidb_server_port }}
+          (N=1, no coordinator group).
+      when: (groups.get('akidb_coordinators', []) | length) == 0
 
 - name: Verify coordinator-to-shard paths and coordinator readiness
   hosts: akidb_coordinators
@@ -149,6 +225,17 @@
       changed_when: false
       register: akidb_running_coordinator_executable
 
+    - name: Require the expected coordinator release to be active
+      ansible.builtin.assert:
+        that:
+          - >-
+            akidb_active_coordinator_executable.stdout | trim ==
+            akidb_install_root ~ '/releases/' ~ akidb_release_id ~
+            '/bin/akidb-coordinator'
+        fail_msg: >-
+          {{ inventory_hostname }} is not running the expected immutable
+          release {{ akidb_release_id }}.
+
     - name: Require the coordinator to run the active immutable release
       ansible.builtin.assert:
         that:
@@ -159,4 +246,5 @@
         msg: >-
           AkiDB {{ akidb_release_id }} is ready through
           {{ akidb_overlay_address }}:{{ akidb_coordinator_port }} with
-          {{ groups['akidb_shards'] | length }} shards.
+          {{ groups['akidb_shards'] | length }} shards
+          (supported sizes: N=1 standalone, N=2, N>=4).

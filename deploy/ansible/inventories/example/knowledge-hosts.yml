@@ -6,6 +6,8 @@ all:
     akidb_cluster:
       vars:
         akidb_cluster_network_trusted: true
+        # wireguard (default) or private — see deploy/ansible/README.md
+        akidb_service_network_mode: wireguard
         akidb_overlay_cidr: 10.77.0.0/24
       hosts:
         knowledge-1:

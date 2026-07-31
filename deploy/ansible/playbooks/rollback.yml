@@ -6,6 +6,8 @@
   any_errors_fatal: true
   vars:
     akidb_rollback_release_id: "{{ lookup('env', 'AKIDB_ROLLBACK_RELEASE_ID') }}"
+    akidb_rollback_artifact_sha256: >-
+      {{ lookup('env', 'AKIDB_ROLLBACK_ARTIFACT_SHA256') }}
   tasks:
     - name: Validate rollback release id
       ansible.builtin.assert:
@@ -13,7 +15,10 @@
           - akidb_rollback_release_id | length >= 7
           - akidb_rollback_release_id | length <= 64
           - akidb_rollback_release_id is match('^[A-Za-z0-9._-]+$')
-        fail_msg: "Set AKIDB_ROLLBACK_RELEASE_ID to an installed release."
+          - akidb_rollback_artifact_sha256 is match('^[a-fA-F0-9]{64}$')
+        fail_msg: >-
+          Set AKIDB_ROLLBACK_RELEASE_ID and
+          AKIDB_ROLLBACK_ARTIFACT_SHA256 for an installed release.
 
     - name: Inspect rollback server binary
       ansible.builtin.stat:
@@ -25,6 +30,18 @@
         that:
           - akidb_rollback_binary.stat.exists
           - akidb_rollback_binary.stat.executable
+
+    - name: Read rollback artifact marker
+      ansible.builtin.slurp:
+        path: "{{ akidb_install_root }}/releases/{{ akidb_rollback_release_id }}/.artifact.sha256"
+      register: akidb_rollback_artifact_marker
+
+    - name: Require the rollback artifact checksum on every host
+      ansible.builtin.assert:
+        that:
+          - >-
+            akidb_rollback_artifact_marker.content | b64decode | trim ==
+            akidb_rollback_artifact_sha256 | lower
 
 - name: Roll back shards one node at a time
   hosts: akidb_shards
@@ -100,3 +117,4 @@
 - import_playbook: verify.yml
   vars:
     akidb_release_id: "{{ lookup('env', 'AKIDB_ROLLBACK_RELEASE_ID') }}"
+    akidb_artifact_sha256: "{{ lookup('env', 'AKIDB_ROLLBACK_ARTIFACT_SHA256') }}"

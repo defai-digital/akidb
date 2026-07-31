@@ -18,10 +18,7 @@ scrape_configs:
   # NATS monitoring
   - job_name: "nats"
     static_configs:
-      - targets:
-          - "nats-1:8222"
-          - "nats-2:8222"
-          - "nats-3:8222"
+      - targets: ["nats-exporter:7777"]
     metrics_path: /metrics
 
   # Upload Gateway
@@ -45,7 +42,7 @@ scrape_configs:
   # AkiDB Server (Vector Database Shards)
   - job_name: "akidb-server"
     static_configs:
-      - targets: ["akidb-server-1:9090"]
+      - targets: ["akidb-server:9090"]
     metrics_path: /metrics
 
   # AkiDB Coordinator

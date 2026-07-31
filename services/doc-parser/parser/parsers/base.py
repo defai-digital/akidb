@@ -34,7 +34,6 @@ def get_parser(format: DocumentFormat) -> BaseParser | None:
     parsers: dict[DocumentFormat, type[BaseParser]] = {
         DocumentFormat.PDF: PdfParser,
         DocumentFormat.DOCX: DocxParser,
-        DocumentFormat.DOC: DocxParser,  # Try docx parser for .doc
         DocumentFormat.ENL: EnlParser,
     }
 
@@ -60,7 +59,6 @@ def detect_format(filename: str) -> DocumentFormat:
     format_map = {
         "pdf": DocumentFormat.PDF,
         "docx": DocumentFormat.DOCX,
-        "doc": DocumentFormat.DOC,
         "pptx": DocumentFormat.PPTX,
         "enl": DocumentFormat.ENL,
         "enlx": DocumentFormat.ENL,

@@ -1,7 +1,7 @@
 # AkiDB Upload Gateway Service
 # Multi-stage build for macOS-hosted development and portable containers
 
-FROM python:3.12-slim as builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /app
 

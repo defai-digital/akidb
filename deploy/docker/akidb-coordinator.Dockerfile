@@ -25,7 +25,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 
 # Build release binary
-RUN cargo build --release -p akidb-coordinator
+RUN cargo build --release --locked -p akidb-coordinator
 
 # Verify binary was built
 RUN test -f /build/target/release/akidb-coordinator
@@ -38,7 +38,7 @@ FROM debian:bookworm-slim
 LABEL org.opencontainers.image.title="AkiDB Coordinator"
 LABEL org.opencontainers.image.description="AkiDB distributed query coordinator"
 LABEL org.opencontainers.image.vendor="AkiDB"
-LABEL org.opencontainers.image.version="0.2.0"
+LABEL org.opencontainers.image.version="0.10.0"
 
 WORKDIR /app
 
@@ -78,6 +78,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 # Default environment variables
 ENV RUST_LOG=info
 ENV AKIDB_COORDINATOR_LISTEN_ADDR=0.0.0.0:50052
-ENV AKIDB_COORDINATOR_METRICS_ADDR=0.0.0.0:9091
+ENV AKIDB_COORDINATOR_METRICS_HOST=0.0.0.0
+ENV AKIDB_COORDINATOR_METRICS_PORT=9091
 
 ENTRYPOINT ["akidb-coordinator"]

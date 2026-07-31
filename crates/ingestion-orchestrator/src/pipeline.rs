@@ -2,6 +2,7 @@
 //!
 //! Main orchestration logic for the hybrid document processing pipeline.
 
+use prometheus::Registry;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
@@ -39,6 +40,7 @@ pub struct IngestionPipeline {
     idempotency: IdempotencyChecker,
     state: StateTracker,
     metrics: IngestionMetrics,
+    metrics_registry: Arc<Registry>,
 }
 
 impl IngestionPipeline {
@@ -66,7 +68,7 @@ impl IngestionPipeline {
         let chunker = SemanticChunker::new(config.chunker.clone());
 
         // Initialize embedding client
-        let embedding_client = EmbeddingClient::with_qwen3(&config.embedding_url);
+        let embedding_client = EmbeddingClient::new(&config.embedding_url, &config.embedding_model);
 
         // Initialize resilience patterns
         let circuit_breaker = Arc::new(CircuitBreaker::new(config.circuit_breaker.clone()));
@@ -102,7 +104,7 @@ impl IngestionPipeline {
         };
 
         // Initialize metrics
-        let (metrics, _) = IngestionMetrics::default_registry();
+        let (metrics, metrics_registry) = IngestionMetrics::default_registry();
 
         info!("Ingestion pipeline initialized");
 
@@ -121,7 +123,13 @@ impl IngestionPipeline {
             idempotency,
             state,
             metrics,
+            metrics_registry: Arc::new(metrics_registry),
         })
+    }
+
+    /// Registry served by the ingestion Prometheus endpoint.
+    pub fn metrics_registry(&self) -> Arc<Registry> {
+        Arc::clone(&self.metrics_registry)
     }
 
     /// Run the ingestion pipeline
@@ -137,6 +145,13 @@ impl IngestionPipeline {
             std::time::Duration::from_secs(self.config.memory.max_pause_duration_secs);
 
         loop {
+            let queue_depth = self.consumer.pending_messages().await?;
+            self.backpressure
+                .update_queue_depth(usize::try_from(queue_depth).unwrap_or(usize::MAX));
+            self.metrics.queue_depth.set(queue_depth as f64);
+            self.metrics.batch_size.set(0.0);
+            self.refresh_control_metrics();
+
             // Check memory pressure with timeout to prevent indefinite stalls
             if self.memory.is_paused() {
                 let pause_start = memory_pause_start.get_or_insert_with(std::time::Instant::now);
@@ -171,6 +186,7 @@ impl IngestionPipeline {
 
             // Fetch batch of messages
             let messages = self.consumer.fetch(10).await?;
+            self.metrics.batch_size.set(messages.len() as f64);
 
             if messages.is_empty() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -182,18 +198,22 @@ impl IngestionPipeline {
                 if let Err(e) = self.process_message(&msg).await {
                     error!(?e, "Failed to process message");
 
-                    // Publish to DLQ for failed documents
-                    if let Ok(event) = msg.payload() {
-                        let dlq_entry = DlqEntry {
-                            original_event: serde_json::to_value(&event).unwrap_or_default(),
-                            error: e.to_string(),
-                            retry_count: 0,
-                            failed_at: chrono::Utc::now().to_rfc3339(),
-                            stage: "processing".to_string(),
-                        };
-                        if let Err(dlq_err) = self.dlq.publish(dlq_entry).await {
-                            error!(?dlq_err, "Failed to publish to DLQ");
-                        }
+                    // Preserve even malformed source payloads in the DLQ.
+                    let original_event =
+                        serde_json::from_slice(msg.raw_payload()).unwrap_or_else(|_| {
+                            serde_json::Value::String(
+                                String::from_utf8_lossy(msg.raw_payload()).into_owned(),
+                            )
+                        });
+                    let dlq_entry = DlqEntry {
+                        original_event,
+                        error: e.to_string(),
+                        retry_count: 0,
+                        failed_at: chrono::Utc::now().to_rfc3339(),
+                        stage: "processing".to_string(),
+                    };
+                    if let Err(dlq_err) = self.dlq.publish(dlq_entry).await {
+                        error!(?dlq_err, "Failed to publish to DLQ");
                     }
 
                     // Terminate message (don't redeliver since it's in DLQ)
@@ -202,14 +222,59 @@ impl IngestionPipeline {
                     msg.ack().await?;
                 }
             }
+
+            self.metrics.batch_size.set(0.0);
         }
+    }
+
+    fn refresh_control_metrics(&self) {
+        self.metrics
+            .circuit_breaker_state
+            .set(self.circuit_breaker.state() as u8 as f64);
+        self.metrics
+            .backpressure_active
+            .set(f64::from(self.backpressure.is_active()));
+        self.metrics
+            .memory_usage_pct
+            .set(f64::from(self.memory.usage_percent()));
     }
 
     /// Process a single upload message
     ///
     /// FIX: Records failed state in state tracker when errors occur after document is recorded.
     async fn process_message(&self, msg: &crate::nats::consumer::NatsMessage) -> Result<()> {
-        let event = msg.payload()?;
+        let events = match msg.payloads() {
+            Ok(events) => events,
+            Err(error) => {
+                self.metrics
+                    .documents_failed
+                    .with_label_values(&["unknown", "event"])
+                    .inc();
+                return Err(error);
+            }
+        };
+        let mut failures = Vec::new();
+        for event in events {
+            if let Err(error) = self.process_event(&event).await {
+                self.metrics
+                    .documents_failed
+                    .with_label_values(&[format_label(detect_upload_format(&event)), "processing"])
+                    .inc();
+                failures.push(format!("{}/{}: {error}", event.bucket, event.key));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(IngestionError::Other(format!(
+                "{} upload event(s) failed: {}",
+                failures.len(),
+                failures.join("; ")
+            )))
+        }
+    }
+
+    async fn process_event(&self, event: &UploadEvent) -> Result<()> {
         let start = Instant::now();
 
         info!(bucket = %event.bucket, key = %event.key, "Processing upload");
@@ -230,7 +295,7 @@ impl IngestionPipeline {
 
         // FIX: Call internal processing with error handling for state tracking
         if let Err(e) = self
-            .process_document_internal(&event, &content_hash, &data, start)
+            .process_document_internal(event, &content_hash, &data, start)
             .await
         {
             // Record failure in state tracker
@@ -284,7 +349,11 @@ impl IngestionPipeline {
         self.state
             .update_state(content_hash, DocumentState::Embedding)?;
         let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+        let embed_start = Instant::now();
         let embeddings = self.embedding_client.embed(texts).await?;
+        self.metrics
+            .embed_latency
+            .observe(embed_start.elapsed().as_secs_f64());
         ensure_embedding_alignment(chunks.len(), embeddings.len())?;
         self.metrics
             .embeddings_generated
@@ -322,6 +391,9 @@ impl IngestionPipeline {
         let insert_start = Instant::now();
         let result = self.akidb.insert_batch(vectors).await?;
         let insert_latency = insert_start.elapsed();
+        self.metrics
+            .insert_latency
+            .observe(insert_latency.as_secs_f64());
 
         // Update backpressure based on insert latency (convert to microseconds)
         self.backpressure
@@ -517,6 +589,7 @@ fn format_label(format: DocumentFormat) -> &'static str {
         DocumentFormat::Xml => "xml",
         DocumentFormat::Xlsx => "xlsx",
         DocumentFormat::Pdf => "pdf",
+        DocumentFormat::Enl => "enl",
         DocumentFormat::Docx => "docx",
         DocumentFormat::Txt => "txt",
         DocumentFormat::Unknown => "unknown",
@@ -575,6 +648,18 @@ mod tests {
             DocumentFormat::Json,
             br#"{"ok":true}"#
         ));
+    }
+
+    #[test]
+    fn test_endnote_routes_to_python_parser() {
+        assert!(should_use_python_parser(
+            DocumentFormat::Enl,
+            br#"<?xml version="1.0"?><xml/>"#
+        ));
+        assert_eq!(
+            parser_label_for_data(DocumentFormat::Enl, b"<xml/>"),
+            "python"
+        );
     }
 
     #[test]

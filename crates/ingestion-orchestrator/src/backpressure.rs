@@ -6,14 +6,20 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use crate::config::BackpressureConfig;
 
 /// Backpressure controller for AkiDB latency awareness
 pub struct BackpressureController {
-    /// Whether backpressure is currently active
-    active: AtomicBool,
+    /// Whether insert latency is applying backpressure.
+    latency_active: AtomicBool,
+
+    /// Whether queue depth is applying backpressure.
+    queue_active: AtomicBool,
+
+    /// Whether backpressure was manually activated.
+    manual_active: AtomicBool,
 
     /// Current observed latency (microseconds)
     current_latency_us: AtomicU64,
@@ -29,7 +35,9 @@ impl BackpressureController {
     /// Create a new backpressure controller
     pub fn new(config: BackpressureConfig) -> Self {
         Self {
-            active: AtomicBool::new(false),
+            latency_active: AtomicBool::new(false),
+            queue_active: AtomicBool::new(false),
+            manual_active: AtomicBool::new(false),
             current_latency_us: AtomicU64::new(0),
             queue_depth: AtomicU64::new(0),
             config,
@@ -38,7 +46,9 @@ impl BackpressureController {
 
     /// Check if backpressure is currently active
     pub fn is_active(&self) -> bool {
-        self.active.load(Ordering::SeqCst)
+        self.latency_active.load(Ordering::SeqCst)
+            || self.queue_active.load(Ordering::SeqCst)
+            || self.manual_active.load(Ordering::SeqCst)
     }
 
     /// Update the observed latency and check if backpressure should activate
@@ -48,22 +58,20 @@ impl BackpressureController {
         let threshold_us = self.config.latency_threshold_ms.saturating_mul(1000);
 
         if latency_us > threshold_us {
-            if !self.active.swap(true, Ordering::SeqCst) {
+            if !self.latency_active.swap(true, Ordering::SeqCst) {
                 warn!(
                     latency_ms = latency_us / 1000,
                     threshold_ms = self.config.latency_threshold_ms,
                     "Backpressure activated due to high latency"
                 );
             }
-        } else if self.active.load(Ordering::SeqCst) {
-            // Check if we should deactivate
-            if latency_us < threshold_us / 2 {
-                self.active.store(false, Ordering::SeqCst);
-                info!(
-                    latency_ms = latency_us / 1000,
-                    "Backpressure deactivated, latency recovered"
-                );
-            }
+        } else if latency_us <= threshold_us / 2
+            && self.latency_active.swap(false, Ordering::SeqCst)
+        {
+            info!(
+                latency_ms = latency_us / 1000,
+                "Latency backpressure deactivated"
+            );
         }
     }
 
@@ -74,20 +82,20 @@ impl BackpressureController {
         self.queue_depth.store(depth as u64, Ordering::SeqCst);
 
         if depth > self.config.queue_depth_high_water {
-            if !self.active.swap(true, Ordering::SeqCst) {
+            if !self.queue_active.swap(true, Ordering::SeqCst) {
                 warn!(
                     depth,
                     high_water = self.config.queue_depth_high_water,
                     "Backpressure activated due to high queue depth"
                 );
             }
-        } else if self.active.load(Ordering::SeqCst) && depth < self.config.queue_depth_low_water {
-            // Deactivate when queue drains below low water mark
-            self.active.store(false, Ordering::SeqCst);
+        } else if depth < self.config.queue_depth_low_water
+            && self.queue_active.swap(false, Ordering::SeqCst)
+        {
             info!(
                 depth,
                 low_water = self.config.queue_depth_low_water,
-                "Backpressure deactivated, queue depth recovered"
+                "Queue-depth backpressure deactivated"
             );
         }
     }
@@ -114,13 +122,15 @@ impl BackpressureController {
 
     /// Force activate backpressure (for testing or manual intervention)
     pub fn activate(&self) {
-        self.active.store(true, Ordering::SeqCst);
+        self.manual_active.store(true, Ordering::SeqCst);
         info!("Backpressure manually activated");
     }
 
     /// Force deactivate backpressure
     pub fn deactivate(&self) {
-        self.active.store(false, Ordering::SeqCst);
+        self.latency_active.store(false, Ordering::SeqCst);
+        self.queue_active.store(false, Ordering::SeqCst);
+        self.manual_active.store(false, Ordering::SeqCst);
         info!("Backpressure manually deactivated");
     }
 }
@@ -200,6 +210,19 @@ mod tests {
 
         bp.update_latency(200_000); // Below half threshold
         assert!(!bp.is_active());
+    }
+
+    #[test]
+    fn test_independent_pressure_signals_do_not_cancel_each_other() {
+        let bp = BackpressureController::new(test_config());
+
+        bp.update_latency(600_000);
+        bp.update_queue_depth(0);
+        assert!(bp.is_active());
+
+        bp.update_latency(0);
+        bp.update_queue_depth(1500);
+        assert!(bp.is_active());
     }
 
     #[test]

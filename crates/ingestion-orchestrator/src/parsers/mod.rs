@@ -57,6 +57,7 @@ pub enum DocumentFormat {
     Xml,
     Xlsx,
     Pdf,
+    Enl,
     Docx,
     Txt,
     Unknown,
@@ -71,9 +72,10 @@ impl DocumentFormat {
             "tsv" => DocumentFormat::Tsv,
             "html" | "htm" => DocumentFormat::Html,
             "xml" => DocumentFormat::Xml,
-            "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" => DocumentFormat::Xlsx,
+            "xlsx" | "xlsm" => DocumentFormat::Xlsx,
             "pdf" => DocumentFormat::Pdf,
-            "docx" | "doc" | "docm" | "dotx" | "dotm" => DocumentFormat::Docx,
+            "enl" | "enlx" | "enlp" => DocumentFormat::Enl,
+            "docx" | "docm" | "dotx" | "dotm" => DocumentFormat::Docx,
             "txt" | "text" | "md" => DocumentFormat::Txt,
             _ => DocumentFormat::Unknown,
         }
@@ -97,13 +99,9 @@ impl DocumentFormat {
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             | "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
             | "application/vnd.ms-word.document.macroenabled.12"
-            | "application/vnd.ms-word.template.macroenabled.12"
-            | "application/msword" => DocumentFormat::Docx,
+            | "application/vnd.ms-word.template.macroenabled.12" => DocumentFormat::Docx,
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            | "application/vnd.ms-excel"
-            | "application/vnd.ms-excel.sheet.macroenabled.12"
-            | "application/vnd.ms-excel.sheet.binary.macroenabled.12"
-            | "application/vnd.oasis.opendocument.spreadsheet" => DocumentFormat::Xlsx,
+            | "application/vnd.ms-excel.sheet.macroenabled.12" => DocumentFormat::Xlsx,
             "text/plain" | "text/markdown" => DocumentFormat::Txt,
             _ if media_type.ends_with("+json") => DocumentFormat::Json,
             _ if media_type.ends_with("+xml") => DocumentFormat::Xml,
@@ -145,7 +143,7 @@ impl DocumentFormat {
     /// Note: Simple DOCX files can be parsed in Rust.
     /// Use `requires_python_for_data()` with document data for accurate detection.
     pub fn requires_python(&self) -> bool {
-        matches!(self, DocumentFormat::Pdf)
+        matches!(self, DocumentFormat::Pdf | DocumentFormat::Enl)
     }
 }
 
@@ -253,12 +251,29 @@ mod tests {
     fn test_format_detection() {
         assert_eq!(DocumentFormat::from_extension("json"), DocumentFormat::Json);
         assert_eq!(DocumentFormat::from_extension("PDF"), DocumentFormat::Pdf);
+        assert_eq!(
+            DocumentFormat::from_extension("library.enlx"),
+            DocumentFormat::Enl
+        );
         assert_eq!(DocumentFormat::from_extension("tsv"), DocumentFormat::Tsv);
         assert_eq!(DocumentFormat::from_extension("xlsx"), DocumentFormat::Xlsx);
-        assert_eq!(DocumentFormat::from_extension("xls"), DocumentFormat::Xlsx);
         assert_eq!(DocumentFormat::from_extension("xlsm"), DocumentFormat::Xlsx);
-        assert_eq!(DocumentFormat::from_extension("xlsb"), DocumentFormat::Xlsx);
-        assert_eq!(DocumentFormat::from_extension("ods"), DocumentFormat::Xlsx);
+        assert_eq!(
+            DocumentFormat::from_extension("xls"),
+            DocumentFormat::Unknown
+        );
+        assert_eq!(
+            DocumentFormat::from_extension("xlsb"),
+            DocumentFormat::Unknown
+        );
+        assert_eq!(
+            DocumentFormat::from_extension("ods"),
+            DocumentFormat::Unknown
+        );
+        assert_eq!(
+            DocumentFormat::from_extension("doc"),
+            DocumentFormat::Unknown
+        );
         assert_eq!(DocumentFormat::from_extension("docx"), DocumentFormat::Docx);
         assert_eq!(DocumentFormat::from_extension("docm"), DocumentFormat::Docx);
         assert_eq!(DocumentFormat::from_extension("dotx"), DocumentFormat::Docx);
@@ -322,19 +337,9 @@ mod tests {
     }
 
     #[test]
-    fn test_format_detection_accepts_spreadsheet_content_types() {
+    fn test_format_detection_accepts_ooxml_spreadsheet_content_types() {
         assert_eq!(
             DocumentFormat::from_content_type("application/vnd.ms-excel.sheet.macroEnabled.12"),
-            DocumentFormat::Xlsx
-        );
-        assert_eq!(
-            DocumentFormat::from_content_type(
-                "application/vnd.ms-excel.sheet.binary.macroEnabled.12"
-            ),
-            DocumentFormat::Xlsx
-        );
-        assert_eq!(
-            DocumentFormat::from_content_type("application/vnd.oasis.opendocument.spreadsheet"),
             DocumentFormat::Xlsx
         );
     }
@@ -379,6 +384,7 @@ mod tests {
     #[test]
     fn test_requires_python() {
         assert!(DocumentFormat::Pdf.requires_python());
+        assert!(DocumentFormat::Enl.requires_python());
         assert!(!DocumentFormat::Docx.requires_python());
         assert!(!DocumentFormat::Json.requires_python());
     }
@@ -391,8 +397,8 @@ mod tests {
     }
 
     #[test]
-    fn test_spreadsheet_extensions_share_rust_parser_contract() {
-        for ext in ["xlsx", "xls", "xlsm", "xlsb", "ods"] {
+    fn test_ooxml_spreadsheet_extensions_share_rust_parser_contract() {
+        for ext in ["xlsx", "xlsm"] {
             let format = DocumentFormat::from_extension(ext);
             assert_eq!(
                 format,
@@ -411,6 +417,29 @@ mod tests {
             let parser = route_parser(format)
                 .unwrap_or_else(|| panic!("{ext} should have a routed spreadsheet parser"));
             assert_eq!(parser.format(), DocumentFormat::Xlsx);
+        }
+    }
+
+    #[test]
+    fn test_non_ooxml_office_formats_are_not_misrouted() {
+        for ext in ["doc", "xls", "xlsb", "ods"] {
+            assert_eq!(
+                DocumentFormat::from_extension(ext),
+                DocumentFormat::Unknown,
+                "{ext} must not route into an incompatible OOXML parser"
+            );
+        }
+        for content_type in [
+            "application/msword",
+            "application/vnd.ms-excel",
+            "application/vnd.ms-excel.sheet.binary.macroenabled.12",
+            "application/vnd.oasis.opendocument.spreadsheet",
+        ] {
+            assert_eq!(
+                DocumentFormat::from_content_type(content_type),
+                DocumentFormat::Unknown,
+                "{content_type} must not route into an incompatible OOXML parser"
+            );
         }
     }
 

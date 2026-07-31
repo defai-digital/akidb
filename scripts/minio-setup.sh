@@ -89,14 +89,14 @@ echo "Waiting for MinIO to start..."
 sleep 5
 
 # Configure MinIO client
-mc alias set akidb http://localhost:$MINIO_PORT $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
+mc alias set akidb "http://localhost:$MINIO_PORT" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
 
 # Create bucket
 echo "Creating bucket: $BUCKET_NAME"
-mc mb akidb/$BUCKET_NAME --ignore-existing
+mc mb "akidb/$BUCKET_NAME" --ignore-existing
 
 # Set bucket policy (private)
-mc anonymous set none akidb/$BUCKET_NAME
+mc anonymous set none "akidb/$BUCKET_NAME"
 
 echo ""
 echo "=========================================="

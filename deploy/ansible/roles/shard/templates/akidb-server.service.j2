@@ -1,8 +1,14 @@
+{# Prefer akidb_service_network_mode; fall back to legacy akidb_manage_wireguard. #}
+{% set _mode = akidb_service_network_mode | default('') %}
+{% set _use_wg = (_mode == 'wireguard') if (_mode | length > 0) else (akidb_manage_wireguard | default(true) | bool) %}
 [Unit]
 Description=AkiDB shard server
-After=network-online.target wg-quick@{{ akidb_wireguard_interface }}.service
+After=network-online.target{% if _use_wg %} wg-quick@{{ akidb_wireguard_interface }}.service{% endif %}
+
 Wants=network-online.target
+{% if _use_wg %}
 Requires=wg-quick@{{ akidb_wireguard_interface }}.service
+{% endif %}
 
 [Service]
 Type=simple

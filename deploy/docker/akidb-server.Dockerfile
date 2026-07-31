@@ -26,8 +26,33 @@ RUN apt-get update && apt-get install -y \
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 
+# NumKong 7.7 probes optional ARM extensions successfully with GCC 12, but its
+# combined dispatch translation unit is compiled at the ARMv8 baseline and then
+# fails on those intrinsics. Keep the portable baseline NEON path enabled while
+# disabling optional ARM dispatch variants for reproducible multi-arch images.
+ENV NK_TARGET_NEONHALF=0 \
+    NK_TARGET_NEONSDOT=0 \
+    NK_TARGET_NEONBFDOT=0 \
+    NK_TARGET_NEONFHM=0 \
+    NK_TARGET_SVE=0 \
+    NK_TARGET_SVEHALF=0 \
+    NK_TARGET_SVEBFDOT=0 \
+    NK_TARGET_SVESDOT=0 \
+    NK_TARGET_SVE2=0 \
+    NK_TARGET_SVE2P1=0 \
+    NK_TARGET_NEONFP8=0 \
+    NK_TARGET_SME=0 \
+    NK_TARGET_SME2=0 \
+    NK_TARGET_SME2P1=0 \
+    NK_TARGET_SMEF64=0 \
+    NK_TARGET_SMEHALF=0 \
+    NK_TARGET_SMEBF16=0 \
+    NK_TARGET_SMEBI32=0 \
+    NK_TARGET_SMELUT2=0 \
+    NK_TARGET_SMEFA64=0
+
 # Build release binary
-RUN cargo build --release -p akidb-server
+RUN cargo build --release --locked -p akidb-server
 
 # Verify binary was built
 RUN test -f /build/target/release/akidb-server
@@ -40,7 +65,7 @@ FROM debian:bookworm-slim
 LABEL org.opencontainers.image.title="AkiDB Server"
 LABEL org.opencontainers.image.description="AkiDB vector database shard server"
 LABEL org.opencontainers.image.vendor="AkiDB"
-LABEL org.opencontainers.image.version="0.2.0"
+LABEL org.opencontainers.image.version="0.10.0"
 
 WORKDIR /app
 
@@ -68,6 +93,7 @@ RUN chmod +x /usr/local/bin/akidb-server && \
 
 # Switch to non-root user
 USER akidb
+WORKDIR /var/lib/akidb
 
 # Expose ports
 # 50051: gRPC service
@@ -76,7 +102,7 @@ EXPOSE 50051 9090
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:9090/health || exit 1
+    CMD curl -sf http://localhost:9090/healthz || exit 1
 
 # Volume for persistent data
 VOLUME ["/var/lib/akidb"]

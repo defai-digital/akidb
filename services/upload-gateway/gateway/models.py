@@ -1,6 +1,6 @@
 """Data models for the upload gateway service."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -13,7 +13,7 @@ class UploadEvent(BaseModel):
     key: str = Field(..., description="Object key (file path)")
     size: int = Field(..., description="File size in bytes")
     content_type: str | None = Field(None, description="MIME content type")
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

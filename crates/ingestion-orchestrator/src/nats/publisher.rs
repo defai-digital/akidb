@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::config::NatsConfig;
+use crate::nats::ensure_stream;
 use crate::Result;
 
 /// Dead letter queue entry
@@ -42,16 +43,19 @@ impl DlqPublisher {
         let jetstream = jetstream::new(client);
 
         // Ensure DLQ stream exists
-        jetstream
-            .get_or_create_stream(jetstream::stream::Config {
+        ensure_stream(
+            &jetstream,
+            jetstream::stream::Config {
                 name: config.dlq_stream.clone(),
                 subjects: vec![format!("{}.>", config.dlq_stream)],
                 retention: jetstream::stream::RetentionPolicy::Limits,
                 max_messages: 100_000,
                 max_age: std::time::Duration::from_secs(7 * 24 * 60 * 60), // 7 days
+                num_replicas: config.replicas,
                 ..Default::default()
-            })
-            .await?;
+            },
+        )
+        .await?;
 
         info!(stream = %config.dlq_stream, "DLQ publisher created");
 

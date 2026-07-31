@@ -39,6 +39,7 @@ def test_detect_format_docx():
     """Test DOCX format detection."""
     assert detect_format("document.docx") == DocumentFormat.DOCX
     assert detect_format("file.DOCX") == DocumentFormat.DOCX
+    assert detect_format("legacy.doc") == DocumentFormat.UNKNOWN
 
 
 def test_detect_format_accepts_paths_and_url_suffixes():

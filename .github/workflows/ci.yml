@@ -301,7 +301,20 @@ jobs:
           AKIDB_COMPETITOR_MINIO_SECRET_KEY: qualification-only-secret
           AKIDB_PARITY_AKI_EVIDENCE_DIR: /tmp/akidb-ann-syntax
           AKIDB_PARITY_AKI_RUN_ID: sift1m-syntax-run
+          AKIDB_RELEASE_ID: syntax-release
+          AKIDB_ARTIFACT_PATH: /tmp/akidb-syntax-release.tar.gz
+          AKIDB_ARTIFACT_SHA256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          AKIDB_ROLLBACK_RELEASE_ID: syntax-rollback
+          AKIDB_ROLLBACK_ARTIFACT_SHA256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
         run: |
+          ansible-playbook \
+            -i inventories/example/hosts.yml \
+            playbooks/verify.yml \
+            --syntax-check
+          ansible-playbook \
+            -i inventories/example/hosts.yml \
+            playbooks/rollback.yml \
+            --syntax-check
           ansible-playbook \
             -i inventories/example/knowledge-hosts.yml \
             playbooks/knowledge-load-test.yml \

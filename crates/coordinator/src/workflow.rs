@@ -30,7 +30,7 @@
 //! }
 //! ```
 
-use crate::fanout::{FanoutExecutor, FanoutResult};
+use crate::fanout::{FanoutExecutor, FanoutResult, FanoutSearchOptions};
 use akidb_common::SearchResult;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -311,12 +311,10 @@ impl QueryWorkflow {
                 &self.collection,
                 &self.query,
                 self.top_k,
-                self.nprobe,
-                &[],
-                None,
-                None,
-                String::new(),
-                None,
+                FanoutSearchOptions {
+                    nprobe: self.nprobe,
+                    ..FanoutSearchOptions::default()
+                },
             ),
         )
         .await;

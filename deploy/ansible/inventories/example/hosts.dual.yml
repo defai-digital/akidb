@@ -1,0 +1,26 @@
+---
+# Example: N=2 dual-shard profile with one co-located coordinator.
+# Supported sizes for this profile: 1, 2, or 4+ (not 3).
+# Copy to inventories/lab/ (gitignored) and replace documentation IPs.
+all:
+  vars:
+    ansible_user: root
+  children:
+    akidb_cluster:
+      vars:
+        akidb_cluster_network_trusted: true
+        # private backplane, or wireguard when hosts only share public IPs
+        akidb_service_network_mode: wireguard
+        akidb_overlay_cidr: 10.77.0.0/24
+      children:
+        akidb_shards:
+          hosts:
+            akidb-1:
+              ansible_host: 192.0.2.11
+              akidb_overlay_address: 10.77.0.11
+            akidb-2:
+              ansible_host: 192.0.2.12
+              akidb_overlay_address: 10.77.0.12
+        akidb_coordinators:
+          hosts:
+            akidb-1:

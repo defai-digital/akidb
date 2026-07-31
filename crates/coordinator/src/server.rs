@@ -5,7 +5,7 @@
 
 use crate::{
     coordinator_metrics, export_metrics, BackpressureConfig, BackpressureController,
-    ConsistencyTracker, FanoutExecutor, ShardInfo, ShardRouter,
+    ConsistencyTracker, FanoutExecutor, FanoutSearchOptions, ShardInfo, ShardRouter,
 };
 use akidb_proto::akidb_server::{Akidb, AkidbServer};
 use akidb_proto::{
@@ -39,11 +39,21 @@ use tracing_subscriber::FmtSubscriber;
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// gRPC listen address
-    #[arg(short, long, default_value = "0.0.0.0:50050")]
+    #[arg(
+        short,
+        long,
+        default_value = "0.0.0.0:50050",
+        env = "AKIDB_COORDINATOR_LISTEN_ADDR"
+    )]
     pub listen: String,
 
     /// Shard addresses (comma-separated)
-    #[arg(short, long, default_value = "127.0.0.1:50051")]
+    #[arg(
+        short,
+        long,
+        default_value = "127.0.0.1:50051",
+        env = "AKIDB_SHARD_ADDRS"
+    )]
     pub shards: String,
 
     /// Search timeout in milliseconds
@@ -59,11 +69,20 @@ pub struct Args {
     pub pool_size: usize,
 
     /// Metrics HTTP port (0 to disable)
-    #[arg(short = 'm', long, default_value = "9090")]
+    #[arg(
+        short = 'm',
+        long,
+        default_value = "9090",
+        env = "AKIDB_COORDINATOR_METRICS_PORT"
+    )]
     pub metrics_port: u16,
 
     /// Metrics HTTP bind address
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(
+        long,
+        default_value = "127.0.0.1",
+        env = "AKIDB_COORDINATOR_METRICS_HOST"
+    )]
     pub metrics_host: IpAddr,
 
     /// Maximum concurrent requests (backpressure)
@@ -393,12 +412,14 @@ impl Akidb for CoordinatorService {
                 &req.collection,
                 &req.query,
                 req.top_k as usize,
-                req.nprobe.unwrap_or(32),
-                &req.filter,
-                req.tag_filter.clone(),
-                req.score_threshold,
-                req.group_by.clone(),
-                req.group_size,
+                FanoutSearchOptions {
+                    nprobe: req.nprobe.unwrap_or(32),
+                    filter: req.filter.clone(),
+                    tag_filter: req.tag_filter.clone(),
+                    score_threshold: req.score_threshold,
+                    group_by: req.group_by.clone(),
+                    group_size: req.group_size,
+                },
             )
             .await
             .map_err(|e| {
@@ -771,9 +792,9 @@ impl Akidb for CoordinatorService {
                     nprobe: req.nprobe,
                     filter: vec![],
                     tag_filter: None,
-            score_threshold: None,
-            group_by: String::new(),
-            group_size: None,
+                    score_threshold: None,
+                    group_by: String::new(),
+                    group_size: None,
                 };
                 self.search(Request::new(search_req))
             })
@@ -1104,13 +1125,8 @@ mod tests {
                 metadata: r#"{"parent_id":"p3"}"#.into(),
             },
         ];
-        let out = CoordinatorService::apply_score_and_group(
-            results,
-            10,
-            Some(0.5),
-            "parent_id",
-            Some(1),
-        );
+        let out =
+            CoordinatorService::apply_score_and_group(results, 10, Some(0.5), "parent_id", Some(1));
         assert!(out.iter().all(|r| r.score >= 0.5));
         assert!(!out.iter().any(|r| r.id == "b1"));
         let parents: std::collections::HashSet<_> = out

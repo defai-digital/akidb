@@ -182,7 +182,7 @@ async def list_formats() -> dict:
             },
             {
                 "format": "docx",
-                "extensions": [".docx", ".doc"],
+                "extensions": [".docx"],
                 "available": docx_parser.is_available(),
             },
             {
