@@ -506,8 +506,14 @@ def evaluate(args: argparse.Namespace, address: str) -> dict[str, Any]:
     partial_responses = 0
     query_failures = 0
     # Baseline corpus present (dirty cluster) makes "only this batch" neighbors invalid.
-    baseline_active = shard_active_before if shard_active_before is not None else active_before_entry
-    clean_corpus = baseline_active is not None and baseline_active == 0
+    # Prefer explicit shard health sums; fall back to entry health; unknown → 0 (clean).
+    if shard_active_before is not None:
+        baseline_active = shard_active_before
+    elif active_before_entry is not None:
+        baseline_active = active_before_entry
+    else:
+        baseline_active = 0
+    clean_corpus = baseline_active == 0
 
     for q_idx, query in enumerate(queries):
         exact = exact_topk(vectors, ids, query, args.top_k)

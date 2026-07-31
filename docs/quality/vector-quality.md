@@ -24,8 +24,10 @@ Run every local quality gate that can run with the current environment:
 ./scripts/qa_all.sh --build
 ```
 
-The vector quality gate always runs. The semantic text retrieval gate runs only
-when `AX_ENGINE_MODEL_DIR` is set, unless `--require-text` is passed.
+Always-on gates: vector quality, correctness KPI table, feature matrix
+(CRUD/filters/BM25), and live filtered search. The semantic text retrieval gate
+runs only when `AX_ENGINE_MODEL_DIR` is set, unless `--require-text` is passed.
+See [feature-qa-matrix.md](feature-qa-matrix.md) for the full feature map.
 
 For release validation where local embedding artifacts are available:
 

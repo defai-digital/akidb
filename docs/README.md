@@ -34,6 +34,8 @@
 - [Ubuntu AMD64 Knowledge-Cell Qualification](quality/linux-amd64-knowledge-cell-qualification.md)
 - [Linux AMD64 Authoritative Memory Qualification](quality/linux-amd64-authoritative-memory-qualification.md)
 - [Vector Quality Gates](quality/vector-quality.md)
+- [Feature QA Matrix](quality/feature-qa-matrix.md)
+- [Correctness KPI Gate](quality/correctness-kpi.md)
 - [One-Mac Benchmark](quality/one-mac-benchmark.md)
 - [Four-Mac Cell Validation](quality/four-mac-cell-validation.md)
 - [Four-Mac Evidence Manifest](quality/four-mac-evidence-manifest.md)

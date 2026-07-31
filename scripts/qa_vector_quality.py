@@ -358,7 +358,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--server-log-level", default="warn")
     parser.add_argument("--build", action="store_true", help="Build akidb-server before running")
     parser.add_argument("--keep-temp", action="store_true")
-    parser.add_argument("--collection", default=None)
+    parser.add_argument(
+        "--collection",
+        default="default",
+        help="Collection name (shard servers typically only accept 'default')",
+    )
     parser.add_argument("--vectors", type=int, default=500)
     parser.add_argument("--queries", type=int, default=100)
     parser.add_argument("--dimensions", type=int, default=128)
@@ -378,8 +382,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default=None)
     parser.add_argument("--no-fail", action="store_true", help="Always exit 0 after writing results")
     args = parser.parse_args()
-    if args.collection is None:
-        args.collection = f"qa-{int(time.time())}-{os.getpid()}"
     if args.output is None:
         args.output = str(ROOT / "qa-results" / f"vector-quality-{int(time.time())}.json")
     if args.top_k <= 0 or args.top_k > args.vectors:
