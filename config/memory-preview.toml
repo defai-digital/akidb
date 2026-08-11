@@ -101,7 +101,7 @@ max_count = 100000
 
 [storage]
 rocksdb_path = "./data/memory-preview/vector-rocksdb"
-wal_enabled = true
+wal_enabled = false
 wal_path = "./data/memory-preview/vector-wal"
 
 [storage.minio]

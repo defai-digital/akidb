@@ -753,7 +753,10 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             rocksdb_path: "./data/rocksdb".to_string(),
-            wal_enabled: true,
+            // Application-level WriteAheadLog is implemented in akidb-storage but
+            // not yet wired into the shard mutate path. Default false so config
+            // matches runtime behavior; set true only when WAL is integrated.
+            wal_enabled: false,
             wal_path: "./data/wal".to_string(),
             minio: MinioConfig::default(),
         }
@@ -964,7 +967,7 @@ mod tests {
 
             [storage]
             rocksdb_path = "./data/rocksdb"
-            wal_enabled = true
+            wal_enabled = false
             wal_path = "./data/wal"
 
             [storage.minio]

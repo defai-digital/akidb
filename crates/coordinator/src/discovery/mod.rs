@@ -1,9 +1,12 @@
-//! Discovery configuration and static discovery service placeholder.
+//! Static/explicit cluster addressing for the coordinator.
 //!
-//! The previous libp2p-backed discovery implementation depended on vulnerable
-//! transitive networking crates that currently have no compatible upstream fix.
-//! AkiDB uses explicit coordinator and shard addresses until a safe discovery
-//! implementation is available.
+//! **Auto-discovery is not implemented.** Operators must pass explicit
+//! coordinator and shard addresses (CLI / config). The previous libp2p-backed
+//! discovery implementation was removed due to vulnerable transitive
+//! networking crates with no compatible upstream fix.
+//!
+//! Types such as [`ClusterStateMessage`] remain for offline merge helpers and
+//! tests; they are not published on a live gossip bus.
 
 mod config;
 mod types;
@@ -19,21 +22,29 @@ pub use types::{
     MetricsMessage, NodeType, PeerInfo, ShardAnnouncement,
 };
 
-/// Static discovery placeholder.
+/// Holds an in-process cluster state snapshot.
+///
+/// This is **not** network auto-discovery. It never scans mDNS/libp2p peers;
+/// state is only what callers merge explicitly (or empty defaults).
 pub struct DiscoveryService {
     cluster_state: Arc<RwLock<ClusterState>>,
 }
 
 impl DiscoveryService {
-    /// Create a discovery service backed by explicit/static configuration.
+    /// Create a static discovery holder (explicit configuration only).
+    ///
+    /// The `config` and `grpc_address` arguments are accepted for API
+    /// compatibility; they are not used to advertise or discover peers.
     pub async fn new(_config: DiscoveryConfig, _grpc_address: String) -> Result<Self> {
-        tracing::warn!("Network auto-discovery is disabled; use explicit coordinator addresses");
+        tracing::warn!(
+            "DiscoveryService is static-only: network auto-discovery is disabled; use explicit coordinator and shard addresses"
+        );
         Ok(Self {
             cluster_state: Arc::new(RwLock::new(ClusterState::default())),
         })
     }
 
-    /// Get the current cluster state.
+    /// Get the current (in-process) cluster state.
     pub fn cluster_state(&self) -> Arc<RwLock<ClusterState>> {
         self.cluster_state.clone()
     }

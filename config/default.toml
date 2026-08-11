@@ -161,7 +161,9 @@ max_count = 100000
 
 [storage]
 rocksdb_path = "./data/rocksdb"
-wal_enabled = true
+# Application WAL module exists but is not wired into the mutate path yet.
+# Durability currently relies on RocksDB (synced vector mapping writes).
+wal_enabled = false
 wal_path = "./data/wal"
 
 [storage.minio]

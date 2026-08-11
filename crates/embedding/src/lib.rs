@@ -9,7 +9,7 @@
 pub mod ax_engine;
 
 use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 // FIX BUG-H032: Removed std::hash imports - now using deterministic FNV-1a hash
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -215,23 +215,15 @@ impl EmbeddingCache {
         let mut entries = self.entries.write();
         let mut order = self.access_order.write();
 
-        // FIX BUG-009: Evict expired entries first, then by LRU
-        // First pass: remove expired entries
-        // FIX BUG-039: Use HashSet for O(1) contains check instead of O(m) Vec lookup
-        let expired_keys: HashSet<u64> = entries
-            .iter()
-            .filter(|(_, entry)| entry.created_at.elapsed() >= self.ttl)
-            .map(|(&k, _)| k)
-            .collect();
-        for k in &expired_keys {
-            entries.remove(k);
-        }
-        order.retain(|k| !expired_keys.contains(k));
-
-        // FIX BUG-008: Use VecDeque::pop_front() for O(1) eviction
-        while entries.len() >= self.max_size && !order.is_empty() {
-            if let Some(oldest) = order.pop_front() {
-                entries.remove(&oldest);
+        // Avoid a full O(n) TTL scan under write locks on every put. Expiry is
+        // enforced on get (expired keys miss) and capacity pressure reclaims
+        // the true LRU head with O(1) pop_front work.
+        while entries.len() >= self.max_size {
+            match order.pop_front() {
+                Some(oldest) => {
+                    entries.remove(&oldest);
+                }
+                None => break,
             }
         }
 
@@ -721,6 +713,19 @@ mod tests {
         assert!(cache.get("b").is_some());
         assert!(cache.get("c").is_some());
         assert!(cache.get("d").is_some());
+    }
+
+    #[test]
+    fn cache_ttl_is_enforced_on_get_without_full_scan_on_put() {
+        let cache = EmbeddingCache::new(10, Duration::from_millis(20));
+        cache.put("short-lived", vec![9.0, 8.0]);
+        assert_eq!(cache.get("short-lived").unwrap(), vec![9.0, 8.0]);
+        std::thread::sleep(Duration::from_millis(40));
+        // Expired entries miss on get; put does not need to scan the map.
+        assert!(cache.get("short-lived").is_none());
+        cache.put("fresh", vec![1.0]);
+        assert_eq!(cache.get("fresh").unwrap(), vec![1.0]);
+        assert_eq!(cache.stats().size, 2); // expired key may remain until capacity eviction
     }
 
     #[test]

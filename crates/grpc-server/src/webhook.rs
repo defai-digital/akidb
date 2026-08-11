@@ -9,8 +9,17 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
+
+/// One queued webhook delivery attempt.
+#[derive(Debug, Clone)]
+struct PendingWebhook {
+    payload: WebhookPayload,
+    attempts: u32,
+    /// Earliest instant at which this item may be delivered (retry backoff).
+    ready_at: Instant,
+}
 
 /// Maximum retry attempts for webhook delivery
 const MAX_RETRIES: u32 = 3;
@@ -218,7 +227,7 @@ pub struct WebhookSender {
     /// HTTP client (behind RwLock so timeout changes in update_config take effect)
     client: RwLock<reqwest::Client>,
     /// Pending webhooks queue
-    pending: Arc<RwLock<VecDeque<(WebhookPayload, u32)>>>,
+    pending: Arc<RwLock<VecDeque<PendingWebhook>>>,
     /// Recent delivery statuses (for debugging)
     recent_deliveries: Arc<RwLock<VecDeque<DeliveryStatus>>>,
     /// Stats
@@ -299,23 +308,46 @@ impl WebhookSender {
                 warn!("Webhook queue full, dropping oldest event");
                 pending.pop_front();
             }
-            pending.push_back((payload.clone(), 0));
+            pending.push_back(PendingWebhook {
+                payload: payload.clone(),
+                attempts: 0,
+                ready_at: Instant::now(),
+            });
         }
 
         // Attempt immediate delivery
         self.process_pending().await;
     }
 
-    /// Process pending webhooks
+    /// Process pending webhooks that are ready for delivery.
+    ///
+    /// Retry backoff is stored as `ready_at` on the queue item so this loop
+    /// never sleeps while holding up other ready events.
     pub async fn process_pending(&self) {
+        let mut deferred: VecDeque<PendingWebhook> = VecDeque::new();
+        let now = Instant::now();
+
         loop {
-            // Get next item from queue
+            // Get next ready item from queue; defer not-yet-ready retries.
             let item = {
                 let mut pending = self.pending.write();
-                pending.pop_front()
+                loop {
+                    match pending.pop_front() {
+                        None => break None,
+                        Some(item) if item.ready_at > now => {
+                            deferred.push_back(item);
+                        }
+                        Some(item) => break Some(item),
+                    }
+                }
             };
 
-            let Some((payload, attempts)) = item else {
+            let Some(PendingWebhook {
+                payload,
+                attempts,
+                ..
+            }) = item
+            else {
                 break;
             };
 
@@ -358,20 +390,26 @@ impl WebhookSender {
                 deliveries.push_back(status.clone());
             }
 
-            // Handle retry if failed
+            // Handle retry if failed: schedule for later without blocking the drain.
             if !status.success && attempts < MAX_RETRIES {
                 {
                     let mut stats = self.stats.write();
                     stats.retries += 1;
                 }
 
-                // Exponential backoff
                 let backoff_ms = RETRY_BACKOFF_BASE_MS * 2u64.pow(attempts);
-                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                deferred.push_back(PendingWebhook {
+                    payload,
+                    attempts: attempts + 1,
+                    ready_at: Instant::now() + Duration::from_millis(backoff_ms),
+                });
+            }
+        }
 
-                // Re-queue for retry
-                let mut pending = self.pending.write();
-                pending.push_back((payload, attempts + 1));
+        if !deferred.is_empty() {
+            let mut pending = self.pending.write();
+            for item in deferred {
+                pending.push_back(item);
             }
         }
     }
@@ -382,9 +420,16 @@ impl WebhookSender {
         config: &WebhookConfig,
         payload: &WebhookPayload,
     ) -> Result<u16, String> {
-        let body = serde_json::to_string(payload).map_err(|e| e.to_string())?;
+        // Serialize once so the HMAC covers the exact bytes we put on the wire.
+        // Using `.json(payload)` would re-serialize and can diverge in key order.
+        let body = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
 
-        let mut request = self.client.read().post(&config.url).json(payload);
+        let mut request = self
+            .client
+            .read()
+            .post(&config.url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.clone());
 
         // Add custom headers
         for (key, value) in &config.headers {
@@ -539,8 +584,8 @@ impl WebhookSender {
     }
 }
 
-/// Compute HMAC-SHA256 signature for webhook payload
-fn compute_hmac_signature(secret: &str, body: &str) -> String {
+/// Compute HMAC-SHA256 signature for webhook payload body bytes
+fn compute_hmac_signature(secret: &str, body: &[u8]) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
@@ -548,7 +593,7 @@ fn compute_hmac_signature(secret: &str, body: &str) -> String {
 
     let mut mac =
         HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
-    mac.update(body.as_bytes());
+    mac.update(body);
     let result = mac.finalize();
 
     format!("sha256={}", hex::encode(result.into_bytes()))
@@ -599,9 +644,31 @@ mod tests {
 
     #[test]
     fn test_hmac_signature() {
-        let signature = compute_hmac_signature("secret", "test body");
+        let signature = compute_hmac_signature("secret", b"test body");
         assert!(signature.starts_with("sha256="));
         assert_eq!(signature.len(), 7 + 64); // "sha256=" + 64 hex chars
+    }
+
+    #[test]
+    fn hmac_signature_matches_serialized_body_bytes() {
+        let payload = WebhookPayload::new(WebhookEventType::TaskCompleted)
+            .with_task("rebuild", "r1")
+            .with_execution("exec-1");
+        let body = serde_json::to_vec(&payload).unwrap();
+        let signature = compute_hmac_signature("webhook-secret", &body);
+
+        // Recompute over the same bytes that would be sent on the wire.
+        let again = compute_hmac_signature("webhook-secret", &body);
+        assert_eq!(signature, again);
+
+        // A re-serialized copy with the same logical content must still match
+        // when we use the canonical body we actually transmit.
+        let body2 = serde_json::to_vec(&payload).unwrap();
+        assert_eq!(body, body2);
+        assert_eq!(
+            compute_hmac_signature("webhook-secret", &body2),
+            signature
+        );
     }
 
     #[test]
@@ -614,6 +681,79 @@ mod tests {
         assert!(json.contains("\"event\":\"snapshot_completed\""));
         assert!(json.contains("\"task_type\":\"snapshot\""));
         assert!(json.contains("\"duration_ms\":60000"));
+    }
+
+    #[test]
+    fn process_pending_defers_not_ready_retries_without_blocking_queue() {
+        let sender = WebhookSender::new(WebhookConfig::default(), None);
+        let now = Instant::now();
+
+        {
+            let mut pending = sender.pending.write();
+            pending.push_back(PendingWebhook {
+                payload: WebhookPayload::new(WebhookEventType::TaskFailed).with_task("t", "late"),
+                attempts: 1,
+                ready_at: now + Duration::from_secs(60),
+            });
+            pending.push_back(PendingWebhook {
+                payload: WebhookPayload::new(WebhookEventType::TaskCompleted)
+                    .with_task("t", "ready"),
+                attempts: 0,
+                ready_at: now,
+            });
+        }
+
+        // Drain with webhooks disabled: ready items are attempted (stats),
+        // not-ready items remain queued without a sleep in the drain path.
+        // Disabled config still short-circuits in send(), but process_pending
+        // always tries deliver; use enabled=false and empty URL to fail fast.
+        {
+            let mut config = sender.get_config();
+            config.enabled = true;
+            config.url = "http://127.0.0.1:1/webhook-unreachable".to_string();
+            config.events = vec![
+                WebhookEventType::TaskCompleted,
+                WebhookEventType::TaskFailed,
+            ];
+            sender.update_config(config);
+        }
+
+        let start = Instant::now();
+        // block_on process_pending — use a tiny runtime for the unit test.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(sender.process_pending());
+        let elapsed = start.elapsed();
+
+        // Must not have slept the 60s deferred backoff.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "drain loop slept on deferred retry: {elapsed:?}"
+        );
+
+        let pending = sender.pending.read();
+        // The not-ready item remains; the ready item is either delivered or
+        // requeued with a future ready_at after failure.
+        assert!(
+            pending.iter().any(|p| p.payload.task_id.as_deref() == Some("late")),
+            "deferred not-ready item must stay queued"
+        );
+        assert!(
+            pending
+                .iter()
+                .any(|p| p.payload.task_id.as_deref() == Some("ready") && p.attempts >= 1),
+            "failed ready item should be requeued with attempts incremented"
+        );
+        let ready_item = pending
+            .iter()
+            .find(|p| p.payload.task_id.as_deref() == Some("ready"))
+            .unwrap();
+        assert!(
+            ready_item.ready_at > Instant::now() - Duration::from_millis(100),
+            "retry must schedule future ready_at rather than inline sleep"
+        );
     }
 
     #[test]

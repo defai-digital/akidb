@@ -28,7 +28,7 @@ max_count = 100000
 
 [storage]
 rocksdb_path = "/var/lib/akidb-benchmark/rocksdb"
-wal_enabled = true
+wal_enabled = false
 wal_path = "/var/lib/akidb-benchmark/wal"
 
 [storage.minio]

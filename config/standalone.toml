@@ -54,7 +54,7 @@ max_count = 100000
 
 [storage]
 rocksdb_path = "./data/rocksdb"
-wal_enabled = true
+wal_enabled = false
 wal_path = "./data/wal"
 
 [storage.minio]

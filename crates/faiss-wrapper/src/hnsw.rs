@@ -549,9 +549,15 @@ impl VectorIndex for HnswIndex {
         }
         drop(reverse);
 
-        // Clean up reverse mapping
+        // Clean up reverse mapping for tombstoned IDs, then prune the forward
+        // external→internal map so deleted IDs do not force the upsert path forever.
         let mut reverse = self.reverse_mapping.write();
         reverse.retain(|&id, _| !self.tombstones.is_deleted(InternalId(id)));
+        {
+            let mut id_map = self.id_mapping.write();
+            id_map.retain(|_, &mut internal_id| reverse.contains_key(&internal_id));
+        }
+        drop(reverse);
 
         // Reset tombstones
         self.tombstones.reset();
@@ -712,6 +718,30 @@ mod tests {
             index.search(&vector, &SearchParams::new(1)).unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn rebuild_prunes_forward_id_mapping_for_deleted_ids() {
+        let index = HnswIndex::new(create_test_config()).unwrap();
+        let vector = create_random_vector(128, 3.0);
+        let external = VectorId::new("to-delete");
+        let internal = index.insert(&external, &vector).unwrap();
+
+        index.delete(internal).unwrap();
+        assert!(index.is_deleted(internal));
+        assert!(index.id_mapping.read().contains_key(external.as_str()));
+
+        index.trigger_rebuild().unwrap();
+
+        assert!(!index.is_deleted(internal));
+        assert!(
+            !index.id_mapping.read().contains_key(external.as_str()),
+            "rebuild must drop forward mapping for tombstoned external ids"
+        );
+        assert!(!index.reverse_mapping.read().contains_key(&internal.0));
+        // Fresh insert after rebuild must allocate a new mapping, not upsert a ghost.
+        let reinserted = index.insert(&external, &vector).unwrap();
+        assert_ne!(reinserted.0, internal.0);
     }
 
     #[test]

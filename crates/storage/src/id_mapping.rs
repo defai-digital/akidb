@@ -433,7 +433,9 @@ impl<S: StorageBackend> IdMapping<S> {
             });
         }
 
-        self.storage.write_batch(operations)?;
+        // Durable vector mutations use a synced batch so deletes survive power loss
+        // at the same durability level as the memory ledger path.
+        self.storage.write_batch_sync(operations)?;
 
         debug!(
             "Marked ID as deleted: {} (internal: {})",
@@ -485,7 +487,9 @@ impl<S: StorageBackend> IdMapping<S> {
             ..StoredVectorEntry::new(external_id, internal_id, vector, metadata)
         };
 
-        self.storage.write_batch(vec![
+        // Vector payload + mapping must be fsynced together so API "durable"
+        // visibility matches RocksDB acknowledgment (same as memory ledger).
+        self.storage.write_batch_sync(vec![
             BatchOperation::Put {
                 key: mapping_key,
                 value: Self::serialize_mapping(&entry)?,

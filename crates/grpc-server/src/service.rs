@@ -116,14 +116,13 @@ where
     /// In-memory BM25 lexical index, the lexical half of hybrid retrieval.
     ///
     /// Populated from the optional `text` carried on insert; kept in sync on
-    /// delete. NOTE: this index is in-memory only — it is not yet persisted, so
-    /// lexical/hybrid retrieval is empty after a restart until documents are
-    /// re-ingested. Persisting source text and rebuilding on startup is a
-    /// tracked follow-up.
+    /// delete. Source text is also persisted via `IdMapping::store_text` and
+    /// rebuilt into this index at process startup (`rebuild_lexical_index`).
+    /// Inserts that omit `text` still produce no lexical entry.
     lexical: Arc<RwLock<Bm25Index>>,
     /// Raw source text per vector id, the document store backing context
-    /// packing. Populated alongside `lexical` from insert `text`; same
-    /// in-memory-only limitation applies.
+    /// packing. Populated alongside `lexical` from insert `text`; rebuilt from
+    /// durable storage on startup when text was provided at insert time.
     documents: Arc<RwLock<HashMap<VectorId, String>>>,
     /// Optional graph index used to expand packed context with related chunks.
     ///
@@ -2139,6 +2138,19 @@ where
             })?;
 
         let old_metadata = self.ensure_insert_does_not_cross_workspace(&vector_id, &ctx)?;
+        // Soft-deleted IDs are not reusable. Check storage *before* touching the
+        // HNSW index so a failed re-insert cannot clear tombstones and briefly
+        // resurrect a deleted vector in search results.
+        if self
+            .id_mapping
+            .is_deleted(&vector_id)
+            .map_err(Self::to_status)?
+        {
+            return Err(Status::failed_precondition(format!(
+                "ID reuse is forbidden for soft-deleted vector: {}",
+                req.id
+            )));
+        }
         let old_internal_id = self
             .id_mapping
             .get_internal_id(&vector_id)
@@ -2555,6 +2567,25 @@ where
                     continue;
                 }
             };
+            match self.id_mapping.is_deleted(&vector_id) {
+                Ok(true) => {
+                    warn!(
+                        "Batch insert: ID {} is soft-deleted; reuse is forbidden",
+                        vector.id
+                    );
+                    failed_ids.push(vector.id);
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    warn!(
+                        "Batch insert: ID {} failed deleted-state lookup: {}",
+                        vector.id, e
+                    );
+                    failed_ids.push(vector.id);
+                    continue;
+                }
+            }
             let old_internal_id = match self.id_mapping.get_internal_id(&vector_id) {
                 Ok(internal_id) => internal_id,
                 Err(e) => {
@@ -4688,5 +4719,53 @@ mod tests {
                 .as_str(),
             "chunk-b"
         );
+    }
+
+    #[tokio::test]
+    async fn insert_rejects_soft_deleted_id_before_index_mutation() {
+        let (service, _dir) = test_service();
+        let id = "reuse-me";
+        insert_text(&service, id, vec![1.0, 0.0], "hello").await;
+
+        let delete_resp = service
+            .delete(Request::new(DeleteRequest {
+                collection: "test".to_string(),
+                id: id.to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(delete_resp.status, DeleteStatus::Deleted as i32);
+        assert!(service
+            .id_mapping
+            .is_deleted(&VectorId::new(id))
+            .unwrap());
+
+        let err = service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: id.to_string(),
+                vector: vec![0.0, 1.0],
+                metadata: br#"{"source":"unit-test"}"#.to_vec(),
+                text: "should not insert".to_string(),
+            }))
+            .await
+            .expect_err("soft-deleted id must be rejected");
+        assert_eq!(err.code(), Code::FailedPrecondition);
+        assert!(
+            err.message().contains("reuse") || err.message().contains("soft-deleted"),
+            "unexpected message: {}",
+            err.message()
+        );
+        // Storage still owns the soft-delete; active lookup must stay empty.
+        assert!(service
+            .id_mapping
+            .is_deleted(&VectorId::new(id))
+            .unwrap());
+        assert!(service
+            .id_mapping
+            .get_internal_id(&VectorId::new(id))
+            .unwrap()
+            .is_none());
     }
 }

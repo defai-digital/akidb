@@ -212,6 +212,12 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if config.memory.enabled {
         validate_memory_paths(&config)?;
     }
+    if config.storage.wal_enabled {
+        warn!(
+            wal_path = %config.storage.wal_path,
+            "storage.wal_enabled=true but application WriteAheadLog is not wired into the shard mutate path; vector durability uses RocksDB synced batches only"
+        );
+    }
 
     // Resolve listen address: CLI override, else config (secure loopback default).
     let listen = if args.listen.trim().is_empty() {
