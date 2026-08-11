@@ -50,7 +50,7 @@ def report(run_id, versions, hostname):
             "memory_bytes": 32_000_000_000,
         },
         "software": {
-            "akidb_version": "0.10.0",
+            "akidb_version": "1.0.0",
             "git_commit": COMMIT,
             "rustc": "rustc test",
             "git_status_available": True,

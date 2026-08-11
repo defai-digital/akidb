@@ -17,7 +17,7 @@ AkiDB has two deliberately different data-lifecycle profiles:
   generation-aware AX read gateway are implemented; the Linux AMD64 cell is
   qualified separately from the primary Mac profile.
 
-AkiDB v0.10.0 supports macOS 26 on Apple Silicon and Ubuntu 24.04 or newer on
+AkiDB v1.0.0 supports macOS 26 on Apple Silicon and Ubuntu 24.04 or newer on
 AMD64. Both supported targets use the CPU-portable HNSW backend. The product
 centers on two best-fit use cases:
 

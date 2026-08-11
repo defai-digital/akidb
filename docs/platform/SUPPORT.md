@@ -1,6 +1,6 @@
 # Platform Support
 
-AkiDB v0.10.0 supports the CPU-portable runtime on macOS 26 Apple Silicon and
+AkiDB v1.0.0 supports the CPU-portable runtime on macOS 26 Apple Silicon and
 Ubuntu 24.04 or newer on AMD64. Platform support refers to the native Rust
 server, coordinator, CLI, TUI, and SDK interoperability. Container images and
 deployment automation have the narrower qualification matrix below.
