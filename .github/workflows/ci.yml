@@ -270,6 +270,10 @@ jobs:
       - name: Install Ansible syntax validator
         run: pip install ansible-core==2.21.2
 
+      # QA unit tests (feature-matrix / correctness-kpi) import scripts that need numpy.
+      - name: Install Python test dependencies
+        run: pip install "numpy>=1.26,<3"
+
       - name: Four-Mac evidence pipeline smoke
         run: ./scripts/smoke-four-mac-validation.sh
 
