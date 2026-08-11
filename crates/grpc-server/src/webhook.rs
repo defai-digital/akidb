@@ -223,7 +223,7 @@ pub struct WebhookStats {
 /// Webhook sender for background task events
 ///
 /// Clonable so deferred retries can spawn a wake task that re-enters
-/// [`process_pending`] without requiring another [`send`].
+/// [`Self::process_pending`] without requiring another [`Self::send`].
 #[derive(Clone)]
 pub struct WebhookSender {
     /// Configuration
@@ -272,8 +272,8 @@ impl WebhookSender {
     /// Schedule a non-blocking wake that re-drains the queue at `ready_at`.
     ///
     /// Retries store backoff on the queue item instead of sleeping inside
-    /// [`process_pending`]; this wake restores the previous “eventually retry
-    /// without another send()” contract.
+    /// [`Self::process_pending`]; this wake restores the previous “eventually
+    /// retry without another [`Self::send`]” contract.
     fn schedule_wake_at(&self, ready_at: Instant) {
         let delay = ready_at.saturating_duration_since(Instant::now());
         let sender = self.clone();
