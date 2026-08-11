@@ -172,13 +172,60 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
+      - name: Compose release notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Prefer GitHub auto notes (commit list) under a stable product header.
+          auto="$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${TAG}" \
+            --jq .body 2>/dev/null || true)"
+          {
+            echo "## AkiDB ${TAG}"
+            echo
+            echo "CPU-portable private retrieval engine for vector search, hybrid text retrieval, and agent memory."
+            echo
+            echo "### Assets"
+            echo
+            echo "Download the archive for your platform below and verify the matching \`.sha256\` file."
+            echo
+            echo "| Target | Archive |"
+            echo "| --- | --- |"
+            echo "| macOS Apple Silicon | \`akidb-macos-arm64-*.tar.gz\` / \`akidb-aarch64-apple-darwin*.tar.gz\` |"
+            echo "| Linux AMD64 | \`akidb-linux-amd64-*.tar.gz\` / \`akidb-x86_64-unknown-linux-gnu*.tar.gz\` |"
+            echo
+            echo "### Install"
+            echo
+            echo '```bash'
+            echo 'tar -xzf akidb-*.tar.gz'
+            echo './bin/akidb --version'
+            echo '```'
+            echo
+            if [ -n "${auto}" ]; then
+              echo "### Changes"
+              echo
+              echo "${auto}"
+            else
+              echo "### Changelog"
+              echo
+              echo "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+            fi
+          } > "${RUNNER_TEMP}/release-notes.md"
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           # Keep release titles identical to the tag: vX.Y.Z
           name: ${{ github.ref_name }}
+          body_path: ${{ runner.temp }}/release-notes.md
           files: |
             akidb-*/akidb-*.tar.gz
             akidb-*/akidb-*.tar.gz.sha256
-          generate_release_notes: true
           fail_on_unmatched_files: true
+          make_latest: true
