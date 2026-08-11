@@ -221,11 +221,15 @@ pub struct WebhookStats {
 }
 
 /// Webhook sender for background task events
+///
+/// Clonable so deferred retries can spawn a wake task that re-enters
+/// [`process_pending`] without requiring another [`send`].
+#[derive(Clone)]
 pub struct WebhookSender {
     /// Configuration
     config: Arc<RwLock<WebhookConfig>>,
     /// HTTP client (behind RwLock so timeout changes in update_config take effect)
-    client: RwLock<reqwest::Client>,
+    client: Arc<RwLock<reqwest::Client>>,
     /// Pending webhooks queue
     pending: Arc<RwLock<VecDeque<PendingWebhook>>>,
     /// Recent delivery statuses (for debugging)
@@ -246,7 +250,7 @@ impl WebhookSender {
 
         Self {
             config: Arc::new(RwLock::new(config)),
-            client: RwLock::new(client),
+            client: Arc::new(RwLock::new(client)),
             pending: Arc::new(RwLock::new(VecDeque::new())),
             recent_deliveries: Arc::new(RwLock::new(VecDeque::new())),
             stats: Arc::new(RwLock::new(WebhookStats::default())),
@@ -263,6 +267,22 @@ impl WebhookSender {
             .unwrap_or_default();
         *self.client.write() = new_client;
         *self.config.write() = config;
+    }
+
+    /// Schedule a non-blocking wake that re-drains the queue at `ready_at`.
+    ///
+    /// Retries store backoff on the queue item instead of sleeping inside
+    /// [`process_pending`]; this wake restores the previous “eventually retry
+    /// without another send()” contract.
+    fn schedule_wake_at(&self, ready_at: Instant) {
+        let delay = ready_at.saturating_duration_since(Instant::now());
+        let sender = self.clone();
+        tokio::spawn(async move {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            sender.process_pending().await;
+        });
     }
 
     /// Get current configuration
@@ -407,10 +427,19 @@ impl WebhookSender {
         }
 
         if !deferred.is_empty() {
-            let mut pending = self.pending.write();
-            for item in deferred {
-                pending.push_back(item);
+            // Earliest ready_at among deferred items; wake once for that time.
+            let next_ready = deferred
+                .iter()
+                .map(|item| item.ready_at)
+                .min()
+                .expect("deferred non-empty");
+            {
+                let mut pending = self.pending.write();
+                for item in deferred {
+                    pending.push_back(item);
+                }
             }
+            self.schedule_wake_at(next_ready);
         }
     }
 
@@ -753,6 +782,65 @@ mod tests {
         assert!(
             ready_item.ready_at > Instant::now() - Duration::from_millis(100),
             "retry must schedule future ready_at rather than inline sleep"
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_retry_redelivers_after_ready_at_without_new_send() {
+        let sender = WebhookSender::new(WebhookConfig::default(), None);
+        {
+            let mut config = sender.get_config();
+            config.enabled = true;
+            // Connection-refused fails fast so the test does not hang.
+            config.url = "http://127.0.0.1:1/webhook-unreachable".to_string();
+            config.events = vec![WebhookEventType::TaskCompleted];
+            config.timeout_secs = 1;
+            sender.update_config(config);
+        }
+
+        let ready_at = Instant::now() + Duration::from_millis(80);
+        {
+            let mut pending = sender.pending.write();
+            pending.push_back(PendingWebhook {
+                payload: WebhookPayload::new(WebhookEventType::TaskCompleted)
+                    .with_task("t", "deferred-retry"),
+                attempts: 0,
+                ready_at,
+            });
+        }
+
+        // First drain: item is not ready, so it is requeued and a wake is scheduled.
+        let start = Instant::now();
+        sender.process_pending().await;
+        assert!(
+            start.elapsed() < Duration::from_millis(50),
+            "first drain must not sleep until ready_at"
+        );
+        assert_eq!(
+            sender.get_stats().total_sent, 0,
+            "not-ready item must not be delivered yet"
+        );
+        assert!(
+            sender
+                .pending
+                .read()
+                .iter()
+                .any(|p| p.payload.task_id.as_deref() == Some("deferred-retry")),
+            "item must remain queued for the scheduled wake"
+        );
+
+        // Wait for ready_at + wake task; no second send() is issued.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let stats = sender.get_stats();
+        assert!(
+            stats.total_sent >= 1,
+            "scheduled wake must redeliver without a new send(); stats={stats:?}"
+        );
+        // Failure against unreachable host should record a failure attempt.
+        assert!(
+            stats.failed >= 1 || stats.successful >= 1,
+            "wake path must drive real deliver(); stats={stats:?}"
         );
     }
 
