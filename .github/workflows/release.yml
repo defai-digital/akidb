@@ -175,6 +175,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          # Keep release titles identical to the tag: vX.Y.Z
+          name: ${{ github.ref_name }}
           files: |
             akidb-*/akidb-*.tar.gz
             akidb-*/akidb-*.tar.gz.sha256
