@@ -244,37 +244,40 @@ impl AdminService for AdminServiceImpl {
             None => None,
         };
 
+        let matches = |e: &&TaskExecution| {
+            if let Some(ref task_type) = req.task_type {
+                if &e.task_type != task_type {
+                    return false;
+                }
+            }
+            if let Some(ref task_id) = req.task_id {
+                if &e.task_id != task_id {
+                    return false;
+                }
+            }
+            if let Some(since) = req.since_timestamp_ms {
+                if (e.started_at as i64) < since {
+                    return false;
+                }
+            }
+            if let Some(expected_state) = &status_filter {
+                if &e.state != expected_state {
+                    return false;
+                }
+            }
+            true
+        };
+
+        // total_count reflects every match, independent of `limit`, matching
+        // the pagination convention used by the management list endpoints.
+        let total_count = history.iter().rev().filter(matches).count() as u32;
         let filtered: Vec<TaskExecutionRecord> = history
             .iter()
             .rev() // Most recent first
-            .filter(|e| {
-                if let Some(ref task_type) = req.task_type {
-                    if &e.task_type != task_type {
-                        return false;
-                    }
-                }
-                if let Some(ref task_id) = req.task_id {
-                    if &e.task_id != task_id {
-                        return false;
-                    }
-                }
-                if let Some(since) = req.since_timestamp_ms {
-                    if (e.started_at as i64) < since {
-                        return false;
-                    }
-                }
-                if let Some(expected_state) = &status_filter {
-                    if &e.state != expected_state {
-                        return false;
-                    }
-                }
-                true
-            })
+            .filter(matches)
             .take(limit)
             .map(task_execution_to_record)
             .collect();
-
-        let total_count = filtered.len() as u32;
 
         Ok(Response::new(GetTaskHistoryResponse {
             executions: filtered,

@@ -251,9 +251,13 @@ impl ResourceGovernor {
 
     /// Get current resource usage summary
     pub fn resource_summary(&self) -> ResourceSummary {
-        let running = self.running_tasks.read();
+        // Read guard must not outlive this statement: can_start() below
+        // re-acquires the same lock, and parking_lot::RwLock is not
+        // reentrant, so holding both risks a self-deadlock against a
+        // queued writer (register_task/unregister_task).
+        let running_tasks = self.running_tasks.read().len();
         ResourceSummary {
-            running_tasks: running.len(),
+            running_tasks,
             max_tasks: self.config.max_concurrent_tasks,
             p95_latency_ms: self.metrics.get_p95_latency_ms(),
             latency_threshold_ms: self.config.defer_when_p95_above_ms,

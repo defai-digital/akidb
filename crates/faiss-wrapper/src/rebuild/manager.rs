@@ -485,8 +485,11 @@ impl<I: VectorIndex + 'static> RebuildManager<I> {
 // Implement VectorIndex for RebuildManager to allow transparent usage
 impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
     fn insert(&self, id: &VectorId, vector: &[f32]) -> Result<InternalId> {
-        // Insert into primary
-        let result = self.primary().insert(id, vector)?;
+        // Capture the primary index once so a concurrent swap_indices() cannot
+        // make a later rollback target a different index instance than the
+        // one that actually received this insert.
+        let primary = self.primary();
+        let result = primary.insert(id, vector)?;
 
         // If rebuilding, also insert into shadow
         // FIX BUG-001: Acquire shadow lock first to avoid TOCTOU race
@@ -524,7 +527,7 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
                     // FIX BUG-H031: Handle rollback failure explicitly instead of ignoring with `let _ =`
                     // If rollback fails, we're in an inconsistent state and must report it
                     warn!(error = %e, "Shadow insert failed, attempting rollback of primary insert");
-                    if let Err(rollback_err) = self.primary().delete(result) {
+                    if let Err(rollback_err) = primary.delete(result) {
                         error!(
                             shadow_error = %e,
                             rollback_error = %rollback_err,
@@ -548,8 +551,11 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
     }
 
     fn insert_batch(&self, vectors: &[(VectorId, Vec<f32>)]) -> Result<Vec<InternalId>> {
-        // Insert into primary
-        let results = self.primary().insert_batch(vectors)?;
+        // Capture the primary index once so a concurrent swap_indices() cannot
+        // make a later rollback target a different index instance than the
+        // one that actually received this insert.
+        let primary = self.primary();
+        let results = primary.insert_batch(vectors)?;
 
         // If rebuilding, also insert into shadow
         // FIX BUG-001: Acquire shadow lock first to avoid TOCTOU race
@@ -583,7 +589,7 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
                     warn!(error = %e, "Shadow batch insert failed, rolling back {} primary inserts", results.len());
                     let mut rollback_failures = Vec::new();
                     for internal_id in &results {
-                        if let Err(rollback_err) = self.primary().delete(*internal_id) {
+                        if let Err(rollback_err) = primary.delete(*internal_id) {
                             rollback_failures.push((*internal_id, rollback_err));
                         }
                     }

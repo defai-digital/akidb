@@ -553,6 +553,12 @@ impl<P: RebuildStatePersistence> PersistentRebuildStateMachine<P> {
                 started_at,
             };
             record.updated_at = current_timestamp();
+
+            // Only save periodically to reduce I/O, matching update_scanning_progress
+            // and update_building_progress.
+            if samples_checked.is_multiple_of(record.config.checkpoint_interval) {
+                self.persistence.save_state(record)?;
+            }
         }
         Ok(())
     }

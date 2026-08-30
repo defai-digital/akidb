@@ -11,7 +11,7 @@ use crate::{
     validate_finite_vector_values, AkiDbError, InternalId, Result, SearchResult, VectorId,
 };
 use parking_lot::{Mutex, RwLock};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tracing::{debug, warn};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
@@ -537,30 +537,48 @@ impl VectorIndex for HnswIndex {
 
         self.is_rebuilding.store(true, Ordering::SeqCst);
 
-        // Physically remove tombstoned vectors from the usearch index
+        // Physically remove tombstoned vectors from the usearch index. Only
+        // vectors that are actually removed get their mapping pruned and
+        // tombstone cleared below — a failed removal must stay tombstoned
+        // and mapped so it is retried on the next rebuild instead of being
+        // orphaned (unreachable via any mapping, but never freed in usearch).
         let reverse = self.reverse_mapping.read();
         let mut removed = 0u64;
+        let mut successfully_removed = HashSet::new();
         for &internal_id in reverse.keys() {
             if self.tombstones.is_deleted(InternalId(internal_id)) {
-                if let Ok(count) = self.index.remove(internal_id as u64) {
-                    removed += count as u64;
+                match self.index.remove(internal_id as u64) {
+                    Ok(count) => {
+                        removed += count as u64;
+                        successfully_removed.insert(internal_id);
+                    }
+                    Err(error) => {
+                        warn!(
+                            internal_id,
+                            %error,
+                            "failed to physically remove tombstoned vector; leaving it tombstoned for retry"
+                        );
+                    }
                 }
             }
         }
         drop(reverse);
 
-        // Clean up reverse mapping for tombstoned IDs, then prune the forward
-        // external→internal map so deleted IDs do not force the upsert path forever.
+        // Clean up reverse mapping for successfully-removed IDs, then prune the
+        // forward external→internal map so deleted IDs do not force the upsert
+        // path forever.
         let mut reverse = self.reverse_mapping.write();
-        reverse.retain(|&id, _| !self.tombstones.is_deleted(InternalId(id)));
+        reverse.retain(|id, _| !successfully_removed.contains(id));
         {
             let mut id_map = self.id_mapping.write();
             id_map.retain(|_, &mut internal_id| reverse.contains_key(&internal_id));
         }
         drop(reverse);
 
-        // Reset tombstones
-        self.tombstones.reset();
+        // Clear tombstones only for the IDs that were actually removed.
+        for internal_id in successfully_removed {
+            let _ = self.tombstones.clear_deleted(InternalId(internal_id));
+        }
 
         debug!(removed = removed, "HNSW rebuild completed");
         self.is_rebuilding.store(false, Ordering::SeqCst);

@@ -251,43 +251,34 @@ impl WriteAheadLog {
             }
         }
 
-        let lsn = self.next_lsn()?;
-        let entry = WalEntry::Insert {
+        let entry = self.append_entry(|lsn| WalEntry::Insert {
             lsn,
             external_id: external_id.to_string(),
             internal_id,
             vector: vector.to_vec(),
             metadata: metadata.map(|m| m.to_vec()),
             timestamp: Self::timestamp(),
-        };
-
-        self.append_entry(&entry)?;
+        })?;
         Ok(entry.lsn())
     }
 
     /// Append a delete entry
     pub fn append_delete(&self, external_id: &str, internal_id: i64) -> Result<u64> {
-        let lsn = self.next_lsn()?;
-        let entry = WalEntry::Delete {
+        let entry = self.append_entry(|lsn| WalEntry::Delete {
             lsn,
             external_id: external_id.to_string(),
             internal_id,
             timestamp: Self::timestamp(),
-        };
-
-        self.append_entry(&entry)?;
+        })?;
         Ok(entry.lsn())
     }
 
     /// Append a checkpoint marker
     pub fn append_checkpoint(&self) -> Result<u64> {
-        let lsn = self.next_lsn()?;
-        let entry = WalEntry::Checkpoint {
+        let entry = self.append_entry(|lsn| WalEntry::Checkpoint {
             lsn,
             timestamp: Self::timestamp(),
-        };
-
-        self.append_entry(&entry)?;
+        })?;
         Ok(entry.lsn())
     }
 
@@ -298,7 +289,26 @@ impl WriteAheadLog {
     ///
     /// The magic bytes help resync after corruption, and the CRC32 checksum
     /// allows detection of corrupted data before deserialization.
-    fn append_entry(&self, entry: &WalEntry) -> Result<()> {
+    ///
+    /// LSN allocation happens while the writer lock is held so concurrent
+    /// callers cannot write entries to the file out of LSN order.
+    fn append_entry(&self, build: impl FnOnce(u64) -> WalEntry) -> Result<WalEntry> {
+        let mut writer_guard = self.writer.lock();
+        let lsn = self.next_lsn()?;
+        let entry = build(lsn);
+        Self::write_entry_locked(&self.sync_mode, &mut writer_guard, &entry)?;
+        Ok(entry)
+    }
+
+    /// Writes one entry with the writer lock already held.
+    ///
+    /// Split out from `append_entry` so tests can inject an entry with a
+    /// specific LSN without going through LSN allocation.
+    fn write_entry_locked(
+        sync_mode: &WalSyncMode,
+        writer_guard: &mut Option<BufWriter<File>>,
+        entry: &WalEntry,
+    ) -> Result<()> {
         let data = bincode::serialize(entry)
             .map_err(|e| AkiDbError::SerializationError(e.to_string()))?;
 
@@ -313,7 +323,6 @@ impl WriteAheadLog {
             )));
         }
 
-        let mut writer_guard = self.writer.lock();
         let writer = writer_guard.as_mut()
             .ok_or_else(|| AkiDbError::StorageError("WAL writer closed".to_string()))?;
 
@@ -344,7 +353,7 @@ impl WriteAheadLog {
             .map_err(|e| AkiDbError::StorageError(format!("WAL write error: {}", e)))?;
 
         // Sync based on mode
-        match self.sync_mode {
+        match sync_mode {
             WalSyncMode::Sync => {
                 writer.flush()
                     .map_err(|e| AkiDbError::StorageError(format!("WAL flush error: {}", e)))?;
@@ -357,6 +366,14 @@ impl WriteAheadLog {
 
         debug!("Appended WAL entry with LSN {}", entry.lsn());
         Ok(())
+    }
+
+    /// Writes an entry bypassing LSN allocation. Test-only, used to simulate a
+    /// WAL file that already contains an entry at a specific LSN.
+    #[cfg(test)]
+    fn append_raw_entry(&self, entry: &WalEntry) -> Result<()> {
+        let mut writer_guard = self.writer.lock();
+        Self::write_entry_locked(&self.sync_mode, &mut writer_guard, entry)
     }
 
     /// Flush the WAL to disk
@@ -777,7 +794,7 @@ mod tests {
                 lsn: u64::MAX,
                 timestamp: 0,
             };
-            wal.append_entry(&entry).unwrap();
+            wal.append_raw_entry(&entry).unwrap();
             wal.flush().unwrap();
         }
 
