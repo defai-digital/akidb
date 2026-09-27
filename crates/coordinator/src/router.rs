@@ -39,6 +39,10 @@ pub struct ShardRouter {
     /// When each currently-unhealthy shard was last marked unhealthy, used to
     /// decide whether its retry window has elapsed.
     unhealthy_since: HashMap<String, Instant>,
+    /// Shards currently being probed by an in-flight request, and when the
+    /// probe was claimed. Limits a recovered-but-still-down shard to one
+    /// in-flight probe instead of one probe per concurrent search.
+    probes_in_flight: HashMap<String, Instant>,
 }
 
 impl ShardRouter {
@@ -48,6 +52,7 @@ impl ShardRouter {
             shards,
             ring: BTreeMap::new(),
             unhealthy_since: HashMap::new(),
+            probes_in_flight: HashMap::new(),
         };
         router.rebuild_ring();
         router
@@ -149,11 +154,16 @@ impl ShardRouter {
     /// restart; until then it is held back and must be reported as missing so
     /// the response does not claim full coverage.
     ///
+    /// Only one probe of a recovering shard is in flight at a time: while a
+    /// claimed probe is younger than `retry_after`, further requests keep the
+    /// shard held back instead of every one of them paying the shard timeout.
+    /// A claim expires with the window, and any health update releases it.
+    ///
     /// If every configured shard is inside its retry window, all of them are
     /// probed anyway: holding back the whole cluster would turn a transient
     /// blip into a total search outage, and the resulting failures still land in
     /// the missing list.
-    pub fn fanout_selection(&self, retry_after: Duration) -> (Vec<&ShardInfo>, Vec<String>) {
+    pub fn fanout_selection(&mut self, retry_after: Duration) -> (Vec<&ShardInfo>, Vec<String>) {
         let now = Instant::now();
         let mut selected = Vec::new();
         let mut held_back = Vec::new();
@@ -170,7 +180,13 @@ impl ShardRouter {
                 // A shard that was never seen failing has no retry window to
                 // wait out.
                 .unwrap_or(true);
-            if retry_due {
+            let claimed = self
+                .probes_in_flight
+                .get(&shard.id)
+                .map(|claimed| now.duration_since(*claimed) < retry_after)
+                .unwrap_or(false);
+            if retry_due && !claimed {
+                self.probes_in_flight.insert(shard.id.clone(), now);
                 selected.push(shard);
             } else {
                 held_back.push(shard.id.clone());
@@ -184,6 +200,17 @@ impl ShardRouter {
         (selected, held_back)
     }
 
+    /// Release the probe claims of shards a fan-out has finished attempting.
+    ///
+    /// Every attempted shard needs this, whatever the outcome: the outcome is
+    /// already recorded through [`Self::update_health`], and a stale claim would
+    /// hold a shard back until it expires.
+    pub fn release_probe_claims(&mut self, shard_ids: &[String]) {
+        for shard_id in shard_ids {
+            self.probes_in_flight.remove(shard_id);
+        }
+    }
+
     /// Get all shards
     pub fn all_shards(&self) -> &[ShardInfo] {
         &self.shards
@@ -193,7 +220,8 @@ impl ShardRouter {
     ///
     /// Marking a shard unhealthy records the failure time and restarts the
     /// retry window, so a shard that keeps failing is probed at most once per
-    /// [`UNHEALTHY_RETRY_AFTER`].
+    /// [`UNHEALTHY_RETRY_AFTER`]. Either outcome also releases any in-flight
+    /// probe claim, because the probe has now completed.
     pub fn update_health(&mut self, shard_id: &str, healthy: bool) {
         if !self.shards.iter().any(|s| s.id == shard_id) {
             return;
@@ -201,6 +229,7 @@ impl ShardRouter {
         if let Some(shard) = self.shards.iter_mut().find(|s| s.id == shard_id) {
             shard.healthy = healthy;
         }
+        self.probes_in_flight.remove(shard_id);
         if healthy {
             self.unhealthy_since.remove(shard_id);
         } else {
@@ -348,7 +377,7 @@ mod tests {
         ]
     }
 
-    fn selected_ids(router: &ShardRouter, retry_after: Duration) -> Vec<String> {
+    fn selected_ids(router: &mut ShardRouter, retry_after: Duration) -> Vec<String> {
         router
             .fanout_selection(retry_after)
             .0
@@ -375,7 +404,7 @@ mod tests {
 
         // It rejoins on its own once the retry window elapses.
         assert_eq!(
-            selected_ids(&router, Duration::ZERO),
+            selected_ids(&mut router, Duration::ZERO),
             vec!["shard-0".to_string(), "shard-1".to_string()]
         );
 
@@ -393,14 +422,46 @@ mod tests {
         router.update_health("shard-1", false);
         std::thread::sleep(Duration::from_millis(80));
         assert!(
-            selected_ids(&router, window).contains(&"shard-1".to_string()),
+            selected_ids(&mut router, window).contains(&"shard-1".to_string()),
             "window elapsed"
         );
 
         // The probe failed as well, so the next attempt waits a full window
         // instead of inheriting the first failure's expired stamp.
         router.update_health("shard-1", false);
-        assert_eq!(selected_ids(&router, window), vec!["shard-0".to_string()]);
+        assert_eq!(
+            selected_ids(&mut router, window),
+            vec!["shard-0".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_a_retry_probe_is_claimed_by_one_request_at_a_time() {
+        let mut router = ShardRouter::new(two_shards());
+        let window = UNHEALTHY_RETRY_AFTER;
+
+        router.update_health("shard-1", false);
+        // Simulate the retry window having elapsed, without sleeping.
+        router.unhealthy_since.insert(
+            "shard-1".to_string(),
+            Instant::now() - window - Duration::from_secs(1),
+        );
+
+        // The first request claims the probe and selects the shard.
+        let (selected, held_back) = router.fanout_selection(window);
+        assert!(selected.iter().any(|s| s.id == "shard-1"));
+        assert!(held_back.is_empty());
+
+        // A concurrent request holds it back instead of probing it a second
+        // time and paying another full shard timeout.
+        let (selected, held_back) = router.fanout_selection(window);
+        assert_eq!(held_back, vec!["shard-1".to_string()]);
+        assert_eq!(selected.len(), 1);
+
+        // Any health update completes the probe and releases the claim, so the
+        // shard is never stuck held back.
+        router.update_health("shard-1", false);
+        assert!(!router.probes_in_flight.contains_key("shard-1"));
     }
 
     #[test]

@@ -409,7 +409,9 @@ impl FanoutExecutor {
         // Over-fetch when grouping so post-merge cuts still fill top_k.
         let fetch_k = fanout_fetch_k(top_k, !options.group_by.trim().is_empty());
         let request_top_k = fanout_top_k(fetch_k)?;
-        let router = self.router.read().await;
+        // fanout_selection claims the probes it hands out, so it needs the
+        // write lock; the critical section is O(shards).
+        let mut router = self.router.write().await;
         let (selected, held_back) = router.fanout_selection(UNHEALTHY_RETRY_AFTER);
         let shards: Vec<ShardInfo> = selected.iter().map(|shard| (*shard).clone()).collect();
         // Coverage is measured against every configured shard so that a shard
@@ -527,12 +529,15 @@ impl FanoutExecutor {
         }
 
         // A shard that answered is healthy again, including one that was
-        // retried after its retry window elapsed.
+        // retried after its retry window elapsed. Every attempted shard also
+        // releases its probe claim: the outcome is recorded through
+        // update_health, and a stale claim would hold the shard back.
         {
             let mut router = self.router.write().await;
             for shard_id in &responding_shards {
                 router.update_health(shard_id, true);
             }
+            router.release_probe_claims(&handle_shard_ids);
         }
 
         let results = merger.finish();

@@ -39,10 +39,15 @@ use tracing_subscriber::FmtSubscriber;
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// gRPC listen address
+    ///
+    /// Loopback by default. The coordinator forwards shard requests without
+    /// authenticating the caller and without TLS, so binding a reachable
+    /// interface is an explicit operator decision (Ansible passes `--listen`,
+    /// Docker sets `AKIDB_COORDINATOR_LISTEN_ADDR`).
     #[arg(
         short,
         long,
-        default_value = "0.0.0.0:50050",
+        default_value = "127.0.0.1:50050",
         env = "AKIDB_COORDINATOR_LISTEN_ADDR"
     )]
     pub listen: String,
@@ -512,73 +517,16 @@ impl CoordinatorService {
         *total_inserted += response.inserted_count;
         all_failed_ids.extend(response.failed_ids);
     }
-}
 
-#[tonic::async_trait]
-impl Akidb for CoordinatorService {
-    async fn insert(
+    /// Fan out one already-validated search.
+    ///
+    /// Backpressure is acquired by the caller so a batch can hold a single slot
+    /// across all of its queries instead of one per query.
+    async fn search_inner(
         &self,
-        request: Request<InsertRequest>,
-    ) -> Result<Response<InsertResponse>, Status> {
-        // Route insert to the appropriate shard based on vector ID
-        let req = request.into_inner();
-        Self::validate_request_collection(&req.collection)?;
-        Self::validate_vector_payload(&req.id, &req.vector)?;
-        let router = self.router.read().await;
-
-        let shard = router
-            .route(&akidb_common::VectorId::new(&req.id))
-            .ok_or_else(|| Status::unavailable("No shards available"))?;
-        let shard_id = shard.id.clone();
-        let shard_address = shard.address.clone();
-        drop(router);
-
-        // FIX BUG-HUNT-401: Use connection pool instead of creating new TCP connection per request
-        // Previously created new connections which caused connection exhaustion under load
-        let mut client = self
-            .fanout
-            .get_shard_client(&shard_address)
-            .await
-            .map_err(|e| Status::unavailable(format!("Failed to get shard client: {}", e)))?;
-
-        let id_clone = req.id.clone();
-        let response = client
-            .insert(InsertRequest {
-                collection: req.collection,
-                id: req.id,
-                vector: req.vector,
-                metadata: req.metadata,
-                text: req.text,
-            })
-            .await
-            .map_err(|e| Status::internal(format!("Shard insert failed: {}", e)))?;
-
-        // Record write for consistency tracking AFTER successful write
-        // This ensures we don't have stale entries if the write fails
-        self.consistency.record_write(&id_clone, &shard_id);
-        self.consistency.confirm_write(&id_clone);
-        coordinator_metrics().record_request("insert", "success");
-
-        Ok(response)
-    }
-
-    async fn search(
-        &self,
-        request: Request<SearchRequest>,
+        req: SearchRequest,
+        start: Instant,
     ) -> Result<Response<SearchResponse>, Status> {
-        let req = request.into_inner();
-        let start = Instant::now();
-
-        Self::validate_request_collection(&req.collection)?;
-        Self::validate_search_controls(req.top_k, req.nprobe)?;
-        Self::validate_query_vector(&req.query)?;
-
-        // Apply backpressure
-        let _guard = self.backpressure.try_acquire().await.map_err(|e| {
-            coordinator_metrics().record_request("search", "rejected");
-            Status::resource_exhausted(format!("Backpressure: {}", e))
-        })?;
-
         // Fan-out search to all shards (forward Phase C knobs).
         let result = self
             .fanout
@@ -651,6 +599,75 @@ impl Akidb for CoordinatorService {
             context_pack_v1: None,
             diagnostics: None,
         }))
+    }
+}
+
+#[tonic::async_trait]
+impl Akidb for CoordinatorService {
+    async fn insert(
+        &self,
+        request: Request<InsertRequest>,
+    ) -> Result<Response<InsertResponse>, Status> {
+        // Route insert to the appropriate shard based on vector ID
+        let req = request.into_inner();
+        Self::validate_request_collection(&req.collection)?;
+        Self::validate_vector_payload(&req.id, &req.vector)?;
+        let router = self.router.read().await;
+
+        let shard = router
+            .route(&akidb_common::VectorId::new(&req.id))
+            .ok_or_else(|| Status::unavailable("No shards available"))?;
+        let shard_id = shard.id.clone();
+        let shard_address = shard.address.clone();
+        drop(router);
+
+        // FIX BUG-HUNT-401: Use connection pool instead of creating new TCP connection per request
+        // Previously created new connections which caused connection exhaustion under load
+        let mut client = self
+            .fanout
+            .get_shard_client(&shard_address)
+            .await
+            .map_err(|e| Status::unavailable(format!("Failed to get shard client: {}", e)))?;
+
+        let id_clone = req.id.clone();
+        let response = client
+            .insert(InsertRequest {
+                collection: req.collection,
+                id: req.id,
+                vector: req.vector,
+                metadata: req.metadata,
+                text: req.text,
+            })
+            .await
+            .map_err(|e| Status::internal(format!("Shard insert failed: {}", e)))?;
+
+        // Record write for consistency tracking AFTER successful write
+        // This ensures we don't have stale entries if the write fails
+        self.consistency.record_write(&id_clone, &shard_id);
+        self.consistency.confirm_write(&id_clone);
+        coordinator_metrics().record_request("insert", "success");
+
+        Ok(response)
+    }
+
+    async fn search(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        let req = request.into_inner();
+        let start = Instant::now();
+
+        Self::validate_request_collection(&req.collection)?;
+        Self::validate_search_controls(req.top_k, req.nprobe)?;
+        Self::validate_query_vector(&req.query)?;
+
+        // Apply backpressure
+        let _guard = self.backpressure.try_acquire().await.map_err(|e| {
+            coordinator_metrics().record_request("search", "rejected");
+            Status::resource_exhausted(format!("Backpressure: {}", e))
+        })?;
+
+        self.search_inner(req, start).await
     }
 
     async fn delete(
@@ -985,6 +1002,15 @@ impl Akidb for CoordinatorService {
         // Previously, each query waited for the previous one to complete, resulting in
         // batch latency = N * single_query_latency. Now we use parallel execution so
         // batch latency ≈ single_query_latency (with some overhead for merging).
+        //
+        // One backpressure slot covers the whole batch. Acquiring one per query
+        // made a batch larger than the concurrency limit fail wholesale with
+        // resource_exhausted even on an otherwise idle cluster.
+        let _batch_slot = self.backpressure.try_acquire().await.map_err(|e| {
+            coordinator_metrics().record_request("search", "rejected");
+            Status::resource_exhausted(format!("Backpressure: {}", e))
+        })?;
+
         let search_futures: Vec<_> = req
             .queries
             .into_iter()
@@ -1000,7 +1026,8 @@ impl Akidb for CoordinatorService {
                     group_by: String::new(),
                     group_size: None,
                 };
-                self.search(Request::new(search_req))
+                let start = Instant::now();
+                async move { self.search_inner(search_req, start).await }
             })
             .collect();
 
@@ -1263,6 +1290,13 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Parse listen address
     let addr: SocketAddr = args.listen.parse()?;
+    if !addr.ip().is_loopback() {
+        warn!(
+            %addr,
+            "binding non-loopback address; the coordinator does not authenticate callers \
+             and forwards no credentials to shards, so restrict access at the network layer"
+        );
+    }
     info!("Starting gRPC server on {}", addr);
 
     // Start metrics HTTP server if enabled
@@ -1336,6 +1370,24 @@ mod tests {
     use super::*;
     use akidb_proto::Query;
     use tonic::Code;
+
+    #[test]
+    fn coordinator_listen_defaults_to_loopback() {
+        let command = <Args as clap::Args>::augment_args(clap::Command::new("akidb-coordinator"));
+        let matches = command
+            .try_get_matches_from(["akidb-coordinator"])
+            .expect("defaults must parse without arguments");
+        let listen = matches
+            .get_one::<String>("listen")
+            .expect("listen has a default value");
+
+        // The coordinator authenticates no caller and forwards no credentials,
+        // so the shipped default must not expose it on a reachable interface.
+        assert!(
+            listen.starts_with("127.0.0.1:"),
+            "coordinator listen default must be loopback, got {listen}"
+        );
+    }
 
     fn test_service() -> CoordinatorService {
         CoordinatorService::new(
