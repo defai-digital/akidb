@@ -15,7 +15,7 @@ use crate::{
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use tracing::{debug, warn};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
@@ -223,6 +223,10 @@ pub struct HnswIndex {
     /// Prevents concurrent insert/delete operations during trigger_rebuild.
     /// Searches do NOT acquire this lock (tombstone filtering remains correct).
     rebuild_lock: Mutex<()>,
+    /// ANN candidates requested by the most recent [`Self::search`] or
+    /// [`Self::search_batch`] call. `search_with_report` is what those trait
+    /// methods run.
+    last_ann_candidates: AtomicUsize,
 }
 
 impl HnswIndex {
@@ -278,6 +282,7 @@ impl HnswIndex {
             exact_vectors: RwLock::new(Vec::new()),
             ef_search_lock: RwLock::new(()),
             rebuild_lock: Mutex::new(()),
+            last_ann_candidates: AtomicUsize::new(0),
         })
     }
 
@@ -661,62 +666,10 @@ impl VectorIndex for HnswIndex {
     }
 
     fn search(&self, query: &[f32], params: &SearchParams) -> Result<Vec<SearchResult>> {
-        if query.len() != self.dimensions {
-            return Err(AkiDbError::DimensionMismatch {
-                expected: self.dimensions,
-                actual: query.len(),
-            });
-        }
-        validate_finite_vector_values(query, "Search")?;
-
-        // The service already expands top_k according to its configured
-        // post-filter policy. Add one bounded window here rather than asking
-        // usearch to return the entire index whenever the mandatory workspace
-        // ACL contributes a predicate. Compensate proportionally for
-        // tombstones so normal delete churn does not starve the final top_k.
-        let tombstoned = usize::try_from(self.tombstones.deleted_count()).unwrap_or(usize::MAX);
-        let mut search_count = candidate_count(
-            params.top_k,
-            self.index.size(),
-            tombstoned,
-            params.filter.is_some(),
-        );
-        if search_count == 0 {
-            return Ok(Vec::new());
-        }
-        if self.precision == VectorPrecision::I8 {
-            let floor = I8_RERANK_CANDIDATES
-                .min(self.index.size())
-                .max(params.top_k);
-            search_count = search_count.max(floor);
-        }
-        let candidate_limit = if params.filter.is_some() {
-            params
-                .filter_candidate_limit
-                .max(params.top_k)
-                .min(self.index.size())
-        } else {
-            search_count
-        };
-        search_count = search_count.min(candidate_limit);
-
-        // Usearch exposes expansion_search as shared mutable index state
-        // rather than a per-call option. Every default search therefore holds
-        // a shared guard; a custom nprobe search exclusively performs the
-        // change-search-restore sequence. This avoids a C++ read/write data
-        // race while preserving concurrency at the configured operating point.
-        if params.nprobe as usize == self.ef_search {
-            let _guard = self.ef_search_lock.read();
-            self.search_candidate_window(query, params, search_count, candidate_limit)
-        } else {
-            let _guard = self.ef_search_lock.write();
-            self.index.change_expansion_search(params.nprobe as usize);
-            let _reset = ExpansionSearchReset {
-                index: &self.index,
-                default: self.ef_search,
-            };
-            self.search_candidate_window(query, params, search_count, candidate_limit)
-        }
+        let report = self.search_with_report(query, params)?;
+        self.last_ann_candidates
+            .store(report.ann_candidates_requested, Ordering::Relaxed);
+        Ok(report.results)
     }
 
     fn search_batch(
@@ -724,7 +677,15 @@ impl VectorIndex for HnswIndex {
         queries: &[Vec<f32>],
         params: &SearchParams,
     ) -> Result<Vec<Vec<SearchResult>>> {
-        queries.iter().map(|q| self.search(q, params)).collect()
+        queries
+            .iter()
+            .map(|query| {
+                let report = self.search_with_report(query, params)?;
+                self.last_ann_candidates
+                    .store(report.ann_candidates_requested, Ordering::Relaxed);
+                Ok(report.results)
+            })
+            .collect()
     }
 
     fn delete(&self, internal_id: InternalId) -> Result<()> {
@@ -910,7 +871,14 @@ impl HnswIndex {
             exact_vectors: RwLock::new(loaded.exact_vectors),
             ef_search_lock: RwLock::new(()),
             rebuild_lock: Mutex::new(()),
+            last_ann_candidates: AtomicUsize::new(0),
         })
+    }
+
+    /// ANN candidates requested by the last [`VectorIndex::search`] or
+    /// [`VectorIndex::search_batch`] call on this index.
+    pub fn ann_candidates_requested(&self) -> usize {
+        self.last_ann_candidates.load(Ordering::Relaxed)
     }
 
     /// Report whether this external id is currently mapped to `internal_id`.
@@ -1033,14 +1001,12 @@ mod tests {
             }))
             .with_filter_candidate_limit(100);
 
-        let report = index
-            .search_with_report(&create_random_vector(128, 0.0), &params)
-            .unwrap();
+        let results = VectorIndex::search(&index, &create_random_vector(128, 0.0), &params).unwrap();
 
-        assert!(report.results.is_empty());
+        assert!(results.is_empty());
         // Nothing matches, so the id map is exact-scored and the ANN is not asked
         // to grow a candidate window. The predicate runs once per live id.
-        assert_eq!(report.ann_candidates_requested, 0);
+        assert_eq!(index.ann_candidates_requested(), 0);
         assert_eq!(predicate_calls.load(Ordering::Relaxed), 100);
     }
 
@@ -1076,22 +1042,29 @@ mod tests {
                 id.as_str().starts_with("match-")
             }))
             .with_filter_candidate_limit(256);
-        let report = index
-            .search_with_report(&create_random_vector(32, 0.0), &params)
-            .unwrap();
+        let query = create_random_vector(32, 0.0);
+        let results = VectorIndex::search(&index, &query, &params).unwrap();
 
-        assert_eq!(report.ann_candidates_requested, 0);
-        assert!(report.ann_candidates_requested <= 256);
-        let mut got: Vec<_> = report
-            .results
+        assert_eq!(index.ann_candidates_requested(), 0);
+        let mut got: Vec<_> = results
             .iter()
             .map(|result| result.id.as_str().to_string())
             .collect();
         got.sort();
         expected.sort();
         assert_eq!(got, expected);
-        assert!(report.results.windows(2).all(|pair| pair[0].score >= pair[1].score));
-        assert!(report.results.iter().all(|result| result.score.is_finite()));
+        assert!(results.windows(2).all(|pair| pair[0].score >= pair[1].score));
+        assert!(results.iter().all(|result| result.score.is_finite()));
+
+        let batched = VectorIndex::search_batch(&index, &[query], &params).unwrap();
+        assert_eq!(batched.len(), 1);
+        let mut batched_ids: Vec<_> = batched[0]
+            .iter()
+            .map(|result| result.id.as_str().to_string())
+            .collect();
+        batched_ids.sort();
+        assert_eq!(batched_ids, expected);
+        assert_eq!(index.ann_candidates_requested(), 0);
     }
 
     #[test]
@@ -1121,14 +1094,12 @@ mod tests {
                     .is_some_and(|row| row % 3 != 0)
             }))
             .with_filter_candidate_limit(cap);
-        let report = index
-            .search_with_report(&create_random_vector(32, 1.0), &params)
-            .unwrap();
+        let results = VectorIndex::search(&index, &create_random_vector(32, 1.0), &params).unwrap();
 
-        assert!(report.ann_candidates_requested > 0);
-        assert!(report.ann_candidates_requested <= cap);
-        assert!(report.ann_candidates_requested < 1_500);
-        assert!(report.results.iter().all(|result| {
+        assert!(index.ann_candidates_requested() > 0);
+        assert!(index.ann_candidates_requested() <= cap);
+        assert!(index.ann_candidates_requested() < 1_500);
+        assert!(results.iter().all(|result| {
             result
                 .id
                 .as_str()
