@@ -317,6 +317,7 @@ fn precision_name(precision: VectorPrecision) -> &'static str {
     match precision {
         VectorPrecision::F32 => "f32",
         VectorPrecision::F16 => "f16",
+        VectorPrecision::I8 => "i8",
     }
 }
 

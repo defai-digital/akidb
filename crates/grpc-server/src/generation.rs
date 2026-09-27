@@ -196,6 +196,7 @@ impl GenerationMaterializer {
         let precision_bytes = match self.config.vector_precision {
             VectorPrecision::F32 => 4_u64,
             VectorPrecision::F16 => 2_u64,
+            VectorPrecision::I8 => 1_u64,
         };
         let vector_bytes = checked_product(&[
             manifest.expected_vector_count,
@@ -216,7 +217,15 @@ impl GenerationMaterializer {
         let graph_edge_bytes = checked_product(&[manifest.expected_edge_count, 384])?;
         // The sealed directory also stores a USearch snapshot about the size of
         // the raw vectors so the next process can open the graph.
-        let snapshot_bytes = vector_bytes;
+        let exact_rerank_bytes = match self.config.vector_precision {
+            VectorPrecision::I8 => checked_product(&[
+                manifest.expected_vector_count,
+                u64::from(manifest.embedding_dimensions),
+                4,
+            ])?,
+            VectorPrecision::F32 | VectorPrecision::F16 => 0,
+        };
+        let snapshot_bytes = vector_bytes.saturating_add(exact_rerank_bytes);
         let logical_bytes = manifest
             .bundle
             .size_bytes

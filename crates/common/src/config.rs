@@ -670,7 +670,8 @@ pub struct IndexSettings {
     pub hnsw_ef_construction: u32,
     /// Default ef_search parameter
     pub hnsw_ef_search: u32,
-    /// Vector storage precision: `f32` (default) or `f16` (GAP-010).
+    /// Vector storage precision: `f32` (default), `f16`, or `i8`.
+    /// `i8` stores routing codes in the graph and rescores candidates with the original f32 vectors.
     #[serde(default = "default_vector_precision")]
     pub vector_precision: String,
     /// Distance metric: `cosine` (default), `l2`, or `ip`.

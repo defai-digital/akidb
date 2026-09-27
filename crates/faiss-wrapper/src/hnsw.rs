@@ -21,6 +21,9 @@ use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
 const FILTER_CANDIDATE_MULTIPLIER: usize = 2;
 const MIN_FILTER_CANDIDATES: usize = 32;
+/// Routed I8 hits are rescored with original f32 vectors. The pool has to be
+/// wider than `top_k` so a quantization miss can still be corrected.
+const I8_RERANK_CANDIDATES: usize = 64;
 
 fn candidate_count(top_k: usize, index_size: usize, tombstoned: usize, filtered: bool) -> usize {
     if index_size == 0 {
@@ -70,6 +73,8 @@ pub enum VectorPrecision {
     #[default]
     F32,
     F16,
+    /// Signed 8-bit routing codes. Search rescores candidates with the original f32 vectors.
+    I8,
 }
 
 impl VectorPrecision {
@@ -77,6 +82,7 @@ impl VectorPrecision {
         match s.trim().to_ascii_lowercase().as_str() {
             "f32" | "float32" | "" => Ok(Self::F32),
             "f16" | "float16" | "half" => Ok(Self::F16),
+            "i8" | "int8" | "sq8" => Ok(Self::I8),
             other => Err(AkiDbError::InvalidParameter(format!(
                 "unsupported vector_precision '{other}'; expected f32 or f16"
             ))),
@@ -87,6 +93,7 @@ impl VectorPrecision {
         match self {
             Self::F32 => ScalarKind::F32,
             Self::F16 => ScalarKind::F16,
+            Self::I8 => ScalarKind::I8,
         }
     }
 }
@@ -205,6 +212,10 @@ pub struct HnswIndex {
     ef_search: usize,
     /// Distance metric used for score conversion
     metric: DistanceMetric,
+    /// Storage precision. I8 keeps original f32 vectors for the final score.
+    precision: VectorPrecision,
+    /// Original f32 vectors, indexed by internal id. Populated only for I8.
+    exact_vectors: RwLock<Vec<Option<Vec<f32>>>>,
     /// Prevents usearch's shared expansion-search setting from changing while
     /// any default search reads it. Default searches share a read lock;
     /// non-default `nprobe` searches take the write lock.
@@ -263,9 +274,68 @@ impl HnswIndex {
             is_rebuilding: AtomicBool::new(false),
             ef_search: config.ef_search,
             metric: config.metric,
+            precision: config.precision,
+            exact_vectors: RwLock::new(Vec::new()),
             ef_search_lock: RwLock::new(()),
             rebuild_lock: Mutex::new(()),
         })
+    }
+
+    fn remember_exact(&self, internal_id: i64, vector: &[f32]) {
+        if self.precision != VectorPrecision::I8 || internal_id < 0 {
+            return;
+        }
+        let mut exact = self.exact_vectors.write();
+        let slot = internal_id as usize;
+        if exact.len() <= slot {
+            exact.resize(slot + 1, None);
+        }
+        exact[slot] = Some(vector.to_vec());
+    }
+
+    fn forget_exact(&self, internal_id: i64) {
+        if self.precision != VectorPrecision::I8 || internal_id < 0 {
+            return;
+        }
+        let mut exact = self.exact_vectors.write();
+        if let Some(slot) = exact.get_mut(internal_id as usize) {
+            *slot = None;
+        }
+    }
+
+    /// Exact score in the same units as [`Self::distance_to_score`].
+    fn exact_score(&self, query: &[f32], vector: &[f32]) -> f32 {
+        match self.metric {
+            DistanceMetric::Cosine => {
+                let mut dot = 0.0f32;
+                let mut query_norm = 0.0f32;
+                let mut vector_norm = 0.0f32;
+                for (left, right) in query.iter().zip(vector) {
+                    dot += left * right;
+                    query_norm += left * left;
+                    vector_norm += right * right;
+                }
+                let denom = query_norm.sqrt() * vector_norm.sqrt();
+                if denom == 0.0 {
+                    0.0
+                } else {
+                    dot / denom
+                }
+            }
+            DistanceMetric::L2 => {
+                let mut sum = 0.0f32;
+                for (left, right) in query.iter().zip(vector) {
+                    let delta = left - right;
+                    sum += delta * delta;
+                }
+                1.0 / (1.0 + sum)
+            }
+            DistanceMetric::InnerProduct => query
+                .iter()
+                .zip(vector)
+                .map(|(left, right)| left * right)
+                .sum(),
+        }
     }
 
     /// Convert a usearch distance value to a similarity score based on the
@@ -298,7 +368,8 @@ impl HnswIndex {
                 })?;
 
             let reverse = self.reverse_mapping.read();
-            let mut results = Vec::with_capacity(params.top_k);
+            let rerank = self.precision == VectorPrecision::I8;
+            let mut hits = Vec::with_capacity(params.top_k);
             for (key, distance) in matches.keys.iter().zip(matches.distances.iter()) {
                 let internal_id = *key as i64;
 
@@ -309,16 +380,27 @@ impl HnswIndex {
                     if params.filter.as_ref().is_some_and(|filter| !filter(ext_id)) {
                         continue;
                     }
-                    results.push(SearchResult::new(
-                        ext_id.clone(),
-                        self.distance_to_score(*distance),
+                    hits.push((
+                        internal_id,
+                        SearchResult::new(ext_id.clone(), self.distance_to_score(*distance)),
                     ));
-                    if results.len() >= params.top_k {
+                    if !rerank && hits.len() >= params.top_k {
                         break;
                     }
                 }
             }
             drop(reverse);
+            if rerank {
+                let exact = self.exact_vectors.read();
+                for (internal_id, result) in &mut hits {
+                    if let Some(Some(vector)) = exact.get(*internal_id as usize) {
+                        result.score = self.exact_score(query, vector);
+                    }
+                }
+                hits.sort_by(|left, right| right.1.score.total_cmp(&left.1.score));
+                hits.truncate(params.top_k);
+            }
+            let results: Vec<SearchResult> = hits.into_iter().map(|(_, result)| result).collect();
 
             if results.len() >= params.top_k || search_count >= candidate_limit {
                 return Ok(results);
@@ -377,6 +459,7 @@ impl VectorIndex for HnswIndex {
             self.index
                 .add(existing_id as u64, vector)
                 .map_err(|e| AkiDbError::InvalidParameter(format!("HNSW upsert failed: {}", e)))?;
+            self.remember_exact(existing_id, vector);
             let mut reverse = self.reverse_mapping.write();
             reverse.insert(existing_id, id.clone());
             return Ok(InternalId(existing_id));
@@ -389,6 +472,7 @@ impl VectorIndex for HnswIndex {
         self.index
             .add(internal_id as u64, vector)
             .map_err(|e| AkiDbError::InvalidParameter(format!("HNSW insert failed: {}", e)))?;
+        self.remember_exact(internal_id, vector);
 
         id_map.insert(id.as_str().to_string(), internal_id);
         drop(id_map);
@@ -433,6 +517,12 @@ impl VectorIndex for HnswIndex {
         );
         if search_count == 0 {
             return Ok(Vec::new());
+        }
+        if self.precision == VectorPrecision::I8 {
+            let floor = I8_RERANK_CANDIDATES
+                .min(self.index.size())
+                .max(params.top_k);
+            search_count = search_count.max(floor);
         }
         let candidate_limit = if params.filter.is_some() {
             params
@@ -489,6 +579,12 @@ impl VectorIndex for HnswIndex {
         if self.tombstones.is_deleted(internal_id) {
             return Ok(None);
         }
+        if self.precision == VectorPrecision::I8 {
+            let exact = self.exact_vectors.read();
+            return Ok(exact
+                .get(internal_id.0 as usize)
+                .and_then(|slot| slot.clone()));
+        }
 
         let mut buffer = vec![0.0f32; self.dimensions];
         let found = self
@@ -506,13 +602,18 @@ impl VectorIndex for HnswIndex {
     fn stats(&self) -> IndexStats {
         let total = self.index.size() as u64;
         let deleted = self.tombstones.deleted_count();
+        let stored_bytes = match self.precision {
+            VectorPrecision::F32 => self.dimensions * 4,
+            VectorPrecision::F16 => self.dimensions * 2,
+            VectorPrecision::I8 => self.dimensions * (1 + 4),
+        };
 
         IndexStats {
             total_vectors: total,
             active_vectors: total.saturating_sub(deleted),
             tombstoned_vectors: deleted,
             dimensions: self.dimensions,
-            memory_bytes: total * (self.dimensions * 4 + 64) as u64, // vectors + graph overhead
+            memory_bytes: total * (stored_bytes + 64) as u64,
             gpu_memory_bytes: None,
             using_gpu: false,
             rebuild_in_progress: self.is_rebuilding.load(Ordering::SeqCst),
@@ -581,6 +682,7 @@ impl VectorIndex for HnswIndex {
         // Clear tombstones only for the IDs that were actually removed.
         for internal_id in successfully_removed {
             let _ = self.tombstones.clear_deleted(InternalId(internal_id));
+            self.forget_exact(internal_id);
         }
 
         debug!(removed = removed, "HNSW rebuild completed");
@@ -602,6 +704,7 @@ impl HnswIndex {
         let _search_guard = self.ef_search_lock.write();
         let id_mapping = self.id_mapping.read();
         let reverse_mapping = self.reverse_mapping.read();
+        let exact_vectors = self.exact_vectors.read();
         snapshot::save(
             &snapshot::SnapshotSource {
                 index: &self.index,
@@ -612,6 +715,7 @@ impl HnswIndex {
                 dimensions: self.dimensions,
                 ef_search: self.ef_search,
                 metric: self.metric,
+                exact_vectors: &exact_vectors,
             },
             directory,
             payload_sha256,
@@ -636,6 +740,8 @@ impl HnswIndex {
             is_rebuilding: AtomicBool::new(false),
             ef_search: expected.ef_search,
             metric: expected.metric,
+            precision: expected.precision,
+            exact_vectors: RwLock::new(loaded.exact_vectors),
             ef_search_lock: RwLock::new(()),
             rebuild_lock: Mutex::new(()),
         })
@@ -1271,5 +1377,55 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("fingerprint"), "{error}");
+    }
+
+    #[test]
+    fn test_vector_precision_parses_i8_aliases() {
+        assert_eq!(VectorPrecision::parse("i8").unwrap(), VectorPrecision::I8);
+        assert_eq!(VectorPrecision::parse("int8").unwrap(), VectorPrecision::I8);
+        assert_eq!(VectorPrecision::parse("sq8").unwrap(), VectorPrecision::I8);
+        assert!(VectorPrecision::parse("f8").is_err());
+    }
+
+    #[test]
+    fn test_i8_routing_returns_exact_f32_score() {
+        let config = HnswConfig::new(4).with_capacity(8).with_ef_search(16);
+        let mut i8_config = config.clone();
+        i8_config.precision = VectorPrecision::I8;
+        let index = HnswIndex::new(i8_config).unwrap();
+        let query = [1.0f32, 0.0, 0.0, 0.0];
+        let near = [0.2f32, 0.0, 0.0, 0.05];
+        let far = [0.0f32, 1.0, 0.0, 0.0];
+        index.insert(&VectorId::new("near"), &near).unwrap();
+        index.insert(&VectorId::new("far"), &far).unwrap();
+
+        assert_eq!(
+            index.get_vector(InternalId(0)).unwrap().as_deref(),
+            Some(near.as_slice())
+        );
+        let results = index.search(&query, &SearchParams::new(1)).unwrap();
+        assert_eq!(results[0].id.as_str(), "near");
+        let expected = 0.2 / (0.2f32 * 0.2 + 0.05 * 0.05).sqrt();
+        assert!(
+            (results[0].score - expected).abs() < 1e-5,
+            "score {} differed from exact cosine {expected}",
+            results[0].score
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("hnsw-snapshot");
+        let payload = fingerprint(&[("near", 0, near.as_slice()), ("far", 1, far.as_slice())]);
+        index.save_snapshot(&snapshot, &payload).unwrap();
+        assert!(snapshot.join("exact-f32.bin").is_file());
+        let mut restored_config = config.clone();
+        restored_config.precision = VectorPrecision::I8;
+        let restored = HnswIndex::load_snapshot(&snapshot, &restored_config, &payload).unwrap();
+        let restored_results = restored.search(&query, &SearchParams::new(1)).unwrap();
+        assert_eq!(restored_results[0].id.as_str(), "near");
+        assert!((restored_results[0].score - expected).abs() < 1e-5);
+        assert_eq!(
+            restored.get_vector(InternalId(0)).unwrap().as_deref(),
+            Some(near.as_slice())
+        );
     }
 }

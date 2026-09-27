@@ -26,6 +26,7 @@ const MANIFEST_FILE: &str = "manifest.json";
 const GRAPH_FILE: &str = "graph.usearch";
 const MAPPINGS_FILE: &str = "mappings.bin";
 const TOMBSTONES_FILE: &str = "tombstones.bin";
+const EXACT_VECTORS_FILE: &str = "exact-f32.bin";
 
 /// One active durable vector, borrowed from the payload store.
 #[derive(Debug, Clone, Copy)]
@@ -84,6 +85,9 @@ struct SnapshotManifest {
     graph_sha256: String,
     mappings_sha256: String,
     tombstones_sha256: String,
+    /// SHA-256 of `exact-f32.bin` when routing uses I8. Empty for f32 and f16.
+    #[serde(default)]
+    exact_sha256: String,
 }
 
 pub(crate) struct LoadedSnapshot {
@@ -92,6 +96,7 @@ pub(crate) struct LoadedSnapshot {
     pub reverse_mapping: HashMap<i64, VectorId>,
     pub tombstones: TombstoneBitset,
     pub next_id: i64,
+    pub exact_vectors: Vec<Option<Vec<f32>>>,
 }
 
 pub(crate) struct SnapshotSource<'a> {
@@ -103,6 +108,7 @@ pub(crate) struct SnapshotSource<'a> {
     pub dimensions: usize,
     pub ef_search: usize,
     pub metric: DistanceMetric,
+    pub exact_vectors: &'a [Option<Vec<f32>>],
 }
 
 pub(crate) fn save(
@@ -157,6 +163,17 @@ pub(crate) fn save(
     fsync_file(&graph_path)?;
     fsync_file(&staged.0.join(MAPPINGS_FILE))?;
     fsync_file(&staged.0.join(TOMBSTONES_FILE))?;
+    let precision = precision_name(scalar_precision(source.index)?);
+    let exact_bytes = if precision == "i8" {
+        Some(encode_exact(source)?)
+    } else {
+        None
+    };
+    if let Some(exact_bytes) = &exact_bytes {
+        let exact_path = staged.0.join(EXACT_VECTORS_FILE);
+        write_bytes(&exact_path, exact_bytes)?;
+        fsync_file(&exact_path)?;
+    }
 
     let manifest = SnapshotManifest {
         schema_version: SCHEMA_VERSION,
@@ -164,7 +181,7 @@ pub(crate) fn save(
         connectivity: source.index.connectivity(),
         ef_construction: source.index.expansion_add(),
         ef_search: source.ef_search,
-        precision: precision_name(scalar_precision(source.index)?).to_string(),
+        precision: precision.to_string(),
         metric: metric_name(source.metric).to_string(),
         next_id: source.next_id,
         vector_count: source.index.size() as u64,
@@ -174,6 +191,10 @@ pub(crate) fn save(
         graph_sha256: sha256_file(&graph_path)?,
         mappings_sha256: sha256_bytes(&mappings),
         tombstones_sha256: sha256_bytes(&tombstone_bytes),
+        exact_sha256: exact_bytes
+            .as_ref()
+            .map(|bytes| sha256_bytes(bytes))
+            .unwrap_or_default(),
     };
     if source.index.metric_kind() != source.metric.to_metric_kind() {
         return Err(AkiDbError::IndexError(
@@ -306,13 +327,98 @@ pub(crate) fn load(
         }
     }
 
+    let exact_vectors = if manifest.precision == "i8" {
+        if manifest.exact_sha256.is_empty() {
+            return Err(AkiDbError::IndexError(
+                "I8 HNSW snapshot is missing exact f32 vectors".to_string(),
+            ));
+        }
+        let exact_bytes = read_file(&directory.join(EXACT_VECTORS_FILE))?;
+        if sha256_bytes(&exact_bytes) != manifest.exact_sha256 {
+            return Err(AkiDbError::IndexError(
+                "HNSW snapshot checksum mismatch".to_string(),
+            ));
+        }
+        decode_exact(&exact_bytes, &id_mapping, manifest.dimensions)?
+    } else if !manifest.exact_sha256.is_empty() {
+        return Err(AkiDbError::IndexError(
+            "HNSW snapshot has exact vectors for a non-i8 index".to_string(),
+        ));
+    } else {
+        Vec::new()
+    };
+
     Ok(LoadedSnapshot {
         index,
         id_mapping,
         reverse_mapping,
         tombstones,
         next_id: manifest.next_id,
+        exact_vectors,
     })
+}
+
+fn encode_exact(source: &SnapshotSource<'_>) -> Result<Vec<u8>> {
+    let mut rows = Vec::with_capacity(source.id_mapping.len());
+    for internal_id in source.id_mapping.values() {
+        let vector = source
+            .exact_vectors
+            .get(*internal_id as usize)
+            .and_then(|slot| slot.as_ref())
+            .ok_or_else(|| {
+                AkiDbError::IndexError(format!(
+                    "I8 HNSW index is missing the exact vector for internal id {internal_id}"
+                ))
+            })?;
+        if vector.len() != source.dimensions {
+            return Err(AkiDbError::IndexError(format!(
+                "exact vector {internal_id} has dimension {}, expected {}",
+                vector.len(),
+                source.dimensions
+            )));
+        }
+        rows.push((*internal_id, vector.clone()));
+    }
+    rows.sort_by_key(|(internal_id, _)| *internal_id);
+    bincode::serialize(&rows).map_err(|error| AkiDbError::SerializationError(error.to_string()))
+}
+
+fn decode_exact(
+    bytes: &[u8],
+    id_mapping: &HashMap<String, i64>,
+    dimensions: usize,
+) -> Result<Vec<Option<Vec<f32>>>> {
+    let rows: Vec<(i64, Vec<f32>)> = bincode::deserialize(bytes)
+        .map_err(|error| AkiDbError::SerializationError(error.to_string()))?;
+    if rows.len() != id_mapping.len() {
+        return Err(AkiDbError::IndexError(
+            "HNSW snapshot exact vector count does not match the graph".to_string(),
+        ));
+    }
+    let mut expected: HashSet<i64> = id_mapping.values().copied().collect();
+    let max_id = expected.iter().copied().max().unwrap_or(-1);
+    let width = usize::try_from(max_id.saturating_add(1).max(0)).map_err(|_| {
+        AkiDbError::IndexError("HNSW snapshot exact vector id does not fit".to_string())
+    })?;
+    let mut slab = vec![None; width];
+    for (internal_id, vector) in rows {
+        if internal_id < 0
+            || vector.len() != dimensions
+            || !expected.remove(&internal_id)
+            || slab.get(internal_id as usize).is_none()
+        {
+            return Err(AkiDbError::IndexError(format!(
+                "HNSW snapshot exact vector {internal_id} does not match the id map"
+            )));
+        }
+        slab[internal_id as usize] = Some(vector);
+    }
+    if !expected.is_empty() {
+        return Err(AkiDbError::IndexError(
+            "HNSW snapshot is missing an exact vector".to_string(),
+        ));
+    }
+    Ok(slab)
 }
 
 fn encode_mappings(
@@ -363,6 +469,7 @@ fn precision_name(precision: VectorPrecision) -> &'static str {
     match precision {
         VectorPrecision::F32 => "f32",
         VectorPrecision::F16 => "f16",
+        VectorPrecision::I8 => "i8",
     }
 }
 
@@ -372,6 +479,8 @@ fn scalar_precision(index: &Index) -> Result<VectorPrecision> {
         Ok(VectorPrecision::F32)
     } else if kind == VectorPrecision::F16.to_scalar_kind() {
         Ok(VectorPrecision::F16)
+    } else if kind == VectorPrecision::I8.to_scalar_kind() {
+        Ok(VectorPrecision::I8)
     } else {
         Err(AkiDbError::IndexError(
             "HNSW snapshot scalar kind is not f32 or f16".to_string(),
