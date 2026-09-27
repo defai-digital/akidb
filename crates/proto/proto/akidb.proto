@@ -759,7 +759,7 @@ message SearchRequest {
   string collection = 1;
   repeated float query = 2;
   uint32 top_k = 3;
-  optional uint32 nprobe = 4;  // IVF probes, default 32
+  optional uint32 nprobe = 4;  // HNSW breadth override; omitted uses index.hnsw_ef_search
   bytes filter = 5;  // Optional metadata filter (legacy JSON)
   TagFilter tag_filter = 6;  // Optional typed tag filter
   // Minimum score to keep (similarity; higher is better). Unset = no cut.

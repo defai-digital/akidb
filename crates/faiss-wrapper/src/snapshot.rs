@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use usearch::Index;
 
@@ -245,10 +245,9 @@ pub(crate) fn load(
         ));
     }
 
-    let graph_bytes = read_file(&directory.join(GRAPH_FILE))?;
     let mapping_bytes = read_file(&directory.join(MAPPINGS_FILE))?;
     let tombstone_bytes = read_file(&directory.join(TOMBSTONES_FILE))?;
-    if sha256_bytes(&graph_bytes) != manifest.graph_sha256
+    if sha256_file(&directory.join(GRAPH_FILE))? != manifest.graph_sha256
         || sha256_bytes(&mapping_bytes) != manifest.mappings_sha256
         || sha256_bytes(&tombstone_bytes) != manifest.tombstones_sha256
     {
@@ -286,16 +285,16 @@ pub(crate) fn load(
             "HNSW snapshot mapping count does not match the graph".to_string(),
         ));
     }
+    drop(mapping_bytes);
     let mut id_mapping = HashMap::with_capacity(mappings.len());
     let mut reverse_mapping = HashMap::with_capacity(mappings.len());
-    let mut seen_internal = HashSet::with_capacity(mappings.len());
     for (external_id, internal_id) in mappings {
         if external_id.is_empty() || internal_id < 0 || internal_id >= manifest.next_id {
             return Err(AkiDbError::IndexError(format!(
                 "HNSW snapshot mapping for '{external_id}' is outside the id space"
             )));
         }
-        if !seen_internal.insert(internal_id) || id_mapping.contains_key(&external_id) {
+        if reverse_mapping.contains_key(&internal_id) || id_mapping.contains_key(&external_id) {
             return Err(AkiDbError::IndexError(
                 "HNSW snapshot contains a duplicate id mapping".to_string(),
             ));
@@ -506,8 +505,10 @@ fn read_manifest(path: &Path) -> Result<SnapshotManifest> {
     })
 }
 
-fn read_file(path: &Path) -> Result<Vec<u8>> {
+fn open_snapshot_file(path: &Path) -> Result<File> {
     reject_symlink(path)?;
+    // Reject special files before open: opening a FIFO could otherwise block
+    // forever before the descriptor's metadata can be checked.
     let metadata =
         fs::metadata(path).map_err(|error| io_error("stat HNSW snapshot", path, error))?;
     if !metadata.is_file() {
@@ -516,7 +517,26 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
             path.display()
         )));
     }
-    fs::read(path).map_err(|error| io_error("read HNSW snapshot", path, error))
+    let file = File::open(path).map_err(|error| io_error("open HNSW snapshot", path, error))?;
+    if !file
+        .metadata()
+        .map_err(|error| io_error("stat HNSW snapshot", path, error))?
+        .is_file()
+    {
+        return Err(AkiDbError::IndexError(format!(
+            "HNSW snapshot expected a file at {}",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
+fn read_file(path: &Path) -> Result<Vec<u8>> {
+    let mut file = open_snapshot_file(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| io_error("read HNSW snapshot", path, error))?;
+    Ok(bytes)
 }
 
 fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -547,8 +567,20 @@ fn fsync_dir(path: &Path) -> Result<()> {
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
-    let bytes = read_file(path)?;
-    Ok(sha256_bytes(&bytes))
+    let mut file = open_snapshot_file(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = match file.read(&mut buffer) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result.map_err(|error| io_error("hash HNSW snapshot", path, error))?,
+        };
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -617,5 +649,82 @@ impl Drop for StagedDir {
         if self.0.exists() {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod checksum_tests {
+    use super::*;
+
+    #[test]
+    fn streaming_checksum_covers_empty_partial_and_multiple_buffers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("graph");
+        for size in [0, 65_535, 65_536, 65_537, 131_089] {
+            let bytes: Vec<_> = (0..size).map(|offset| (offset % 251) as u8).collect();
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(sha256_file(&path).unwrap(), sha256_bytes(&bytes));
+        }
+        assert!(sha256_file(directory.path()).is_err());
+    }
+
+    #[test]
+    fn valid_checksum_does_not_allow_duplicate_snapshot_mappings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("snapshot");
+        let config = HnswConfig::new(2).with_capacity(2);
+        let index = crate::HnswIndex::new(config.clone()).unwrap();
+        use crate::VectorIndex;
+        index.insert(&VectorId::new("one"), &[1.0, 0.0]).unwrap();
+        index.insert(&VectorId::new("two"), &[0.0, 1.0]).unwrap();
+        let fingerprint = durable_vector_fingerprint(&[
+            DurableVectorRef {
+                external_id: "one",
+                internal_id: 0,
+                vector: &[1.0, 0.0],
+            },
+            DurableVectorRef {
+                external_id: "two",
+                internal_id: 1,
+                vector: &[0.0, 1.0],
+            },
+        ]);
+        index.save_snapshot(&path, &fingerprint).unwrap();
+        for mappings in [
+            vec![("one".to_string(), 0i64), ("two".to_string(), 0i64)],
+            vec![("one".to_string(), 0i64), ("one".to_string(), 1i64)],
+        ] {
+            let bytes = bincode::serialize(&mappings).unwrap();
+            fs::write(path.join(MAPPINGS_FILE), &bytes).unwrap();
+            let mut manifest = read_manifest(&path.join(MANIFEST_FILE)).unwrap();
+            manifest.mappings_sha256 = sha256_bytes(&bytes);
+            fs::write(
+                path.join(MANIFEST_FILE),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            let error = match load(&path, &config, &fingerprint) {
+                Ok(_) => panic!("duplicate mapping was accepted"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains("duplicate id mapping"),
+                "{error}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn streaming_checksum_rejects_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("graph");
+        fs::write(&path, b"graph data").unwrap();
+        let link = directory.path().join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(sha256_file(&link)
+            .unwrap_err()
+            .to_string()
+            .contains("symlink"));
     }
 }

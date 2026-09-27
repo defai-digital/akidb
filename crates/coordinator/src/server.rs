@@ -535,7 +535,7 @@ impl CoordinatorService {
                 &req.query,
                 req.top_k as usize,
                 FanoutSearchOptions {
-                    nprobe: req.nprobe.unwrap_or(32),
+                    nprobe: req.nprobe,
                     filter: req.filter.clone(),
                     tag_filter: req.tag_filter.clone(),
                     score_threshold: req.score_threshold,

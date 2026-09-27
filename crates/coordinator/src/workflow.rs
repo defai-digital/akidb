@@ -195,8 +195,8 @@ pub struct QueryWorkflow {
     query: Vec<f32>,
     /// Number of results to return
     top_k: usize,
-    /// Number of probes for FAISS
-    nprobe: u32,
+    /// Optional HNSW search breadth override
+    nprobe: Option<u32>,
     /// Deadline for entire query
     deadline: Duration,
     /// Minimum acceptable coverage (0.0 to 1.0)
@@ -212,7 +212,7 @@ impl QueryWorkflow {
             collection: "default".to_string(),
             query,
             top_k,
-            nprobe: 10, // default nprobe
+            nprobe: None, // use each shard's configured breadth
             deadline,
             min_coverage: 0.0, // accept any coverage by default
             state: QueryState::Pending,
@@ -225,9 +225,9 @@ impl QueryWorkflow {
         self
     }
 
-    /// Set the nprobe parameter for FAISS
+    /// Override each shard's configured HNSW search breadth
     pub fn with_nprobe(mut self, nprobe: u32) -> Self {
-        self.nprobe = nprobe;
+        self.nprobe = Some(nprobe);
         self
     }
 
@@ -251,7 +251,7 @@ impl QueryWorkflow {
         let mut timing = QueryTiming::new(self.deadline);
 
         debug!(
-            "Starting query workflow: top_k={}, nprobe={}, deadline={:?}",
+            "Starting query workflow: top_k={}, nprobe={:?}, deadline={:?}",
             self.top_k, self.nprobe, self.deadline
         );
 
@@ -488,7 +488,7 @@ mod tests {
         assert_eq!(workflow.collection, "tenant-a");
         assert_eq!(workflow.query, query);
         assert_eq!(workflow.top_k, 10);
-        assert_eq!(workflow.nprobe, 20);
+        assert_eq!(workflow.nprobe, Some(20));
         assert_eq!(workflow.deadline, Duration::from_secs(5));
         assert_eq!(workflow.min_coverage, 0.8);
         assert_eq!(workflow.state, QueryState::Pending);

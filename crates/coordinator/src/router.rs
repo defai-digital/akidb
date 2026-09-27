@@ -220,7 +220,7 @@ impl ShardRouter {
     ///
     /// Marking a shard unhealthy records the failure time and restarts the
     /// retry window, so a shard that keeps failing is probed at most once per
-    /// [`UNHEALTHY_RETRY_AFTER`]. Either outcome also releases any in-flight
+    /// `UNHEALTHY_RETRY_AFTER`. Either outcome also releases any in-flight
     /// probe claim, because the probe has now completed.
     pub fn update_health(&mut self, shard_id: &str, healthy: bool) {
         if !self.shards.iter().any(|s| s.id == shard_id) {

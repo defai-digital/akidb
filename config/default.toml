@@ -138,6 +138,8 @@ generation_gc_dry_run = true
 index_type = "HNSW"
 hnsw_m = 16
 hnsw_ef_construction = 128
+# Search requests without nprobe use this breadth and share the search lock.
+# Explicit overrides that differ from this value serialize native searches.
 hnsw_ef_search = 64
 # f32 (default), f16 for lower RAM (GAP-010), or i8 for faster graph routing.
 # i8 keeps a full f32 copy of every vector in RAM for exact rescoring, so it

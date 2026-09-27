@@ -194,3 +194,37 @@ Track:
 
 If latency rises, reduce ingestion concurrency, compact tombstones, or split
 hot collections across additional qualified shards.
+
+
+## HNSW search breadth and bounded filtering
+
+`Search`, `SearchBatch`, and dense `TextSearch` requests that omit `nprobe`
+use `[index].hnsw_ef_search`. The coordinator preserves omission, so each
+shard uses its own configuration. An explicit positive `nprobe` overrides
+that value; explicit zero is rejected. With USearch, an override that differs
+from the configured breadth requires an exclusive change/search/reset lock.
+For concurrent traffic, set the index configuration to the usual operating
+point and omit per-request overrides when possible.
+
+Previously, omitted requests were forced to 32. With the shipped
+`hnsw_ef_search = 64`, omission now searches more broadly: single-query
+latency may rise while recall and concurrent throughput can improve.
+Operators retaining the former search breadth can configure
+`hnsw_ef_search = 32`. Measure recall and latency on the actual corpus before
+changing this setting; increasing breadth is not a universal speedup.
+
+Metadata filtering remembers rejected candidates only within one vector
+query, reducing repeated storage reads as candidate windows grow. Accepted
+candidates are rechecked on expansion. There is no cross-query ACL cache;
+a record that becomes eligible during a query may appear only on the next
+query. The Rust index API exposes this optimization as the opt-in
+`with_filter_rejection_cache(true)`; inexpensive predicates can leave it off.
+`SearchParams.nprobe` and `FanoutSearchOptions.nprobe` are now `Option<u32>`:
+use `None` to inherit, or `Some(value)` for a direct field override. Existing
+`with_nprobe(value)` builders remain available.
+
+Tombstone-heavy searches can expand their candidate window when the initial
+window underfills. Expansion remains bounded by `filter_candidate_limit`
+(default 16,384 in the index API), also for queries without a metadata filter.
+Extreme deletion or filtering can still return fewer than `top_k` results;
+logical deletes continue to be removed physically by maintenance compaction.

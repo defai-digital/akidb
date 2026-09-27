@@ -198,7 +198,7 @@ impl AkiDbClient {
             collection: self.collection.clone(),
             query,
             top_k,
-            nprobe: Some(32),
+            nprobe: None,
             filter: vec![],
             tag_filter: None,
             score_threshold: None,

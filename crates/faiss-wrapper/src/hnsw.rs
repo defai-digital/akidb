@@ -362,6 +362,10 @@ impl HnswIndex {
         mut search_count: usize,
         candidate_limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        // Only negative decisions are memoized: never reuse an earlier ACL
+        // approval after metadata changes. This set is local to one query,
+        // including when SearchParams is reused by a batch or another caller.
+        let mut rejected = HashSet::new();
         loop {
             let matches = self
                 .index
@@ -380,8 +384,16 @@ impl HnswIndex {
                     continue;
                 }
                 if let Some(ext_id) = reverse.get(&internal_id) {
-                    if params.filter.as_ref().is_some_and(|filter| !filter(ext_id)) {
-                        continue;
+                    if let Some(filter) = &params.filter {
+                        if params.cache_filter_rejections && rejected.contains(&internal_id) {
+                            continue;
+                        }
+                        if !filter(ext_id) {
+                            if params.cache_filter_rejections {
+                                rejected.insert(internal_id);
+                            }
+                            continue;
+                        }
                     }
                     hits.push((
                         internal_id,
@@ -527,7 +539,7 @@ impl VectorIndex for HnswIndex {
                 .max(params.top_k);
             search_count = search_count.max(floor);
         }
-        let candidate_limit = if params.filter.is_some() {
+        let candidate_limit = if params.filter.is_some() || tombstoned > 0 {
             params
                 .filter_candidate_limit
                 .max(params.top_k)
@@ -542,12 +554,13 @@ impl VectorIndex for HnswIndex {
         // a shared guard; a custom nprobe search exclusively performs the
         // change-search-restore sequence. This avoids a C++ read/write data
         // race while preserving concurrency at the configured operating point.
-        if params.nprobe as usize == self.ef_search {
+        let breadth = params.nprobe.map_or(self.ef_search, |value| value as usize);
+        if breadth == self.ef_search {
             let _guard = self.ef_search_lock.read();
             self.search_candidate_window(query, params, search_count, candidate_limit)
         } else {
             let _guard = self.ef_search_lock.write();
-            self.index.change_expansion_search(params.nprobe as usize);
+            self.index.change_expansion_search(breadth);
             let _reset = ExpansionSearchReset {
                 index: &self.index,
                 default: self.ef_search,
@@ -716,7 +729,7 @@ impl VectorIndex for HnswIndex {
 impl HnswIndex {
     /// Write the graph, id maps, and tombstones so a later process can skip
     /// reinserting every vector. `payload_sha256` must be
-    /// [`durable_vector_fingerprint`] of the durable vectors this graph serves.
+    /// [`crate::durable_vector_fingerprint`] of the durable vectors this graph serves.
     pub fn save_snapshot(&self, directory: &std::path::Path, payload_sha256: &str) -> Result<()> {
         let _rebuild_guard = self.rebuild_lock.lock();
         let _search_guard = self.ef_search_lock.write();
@@ -788,6 +801,140 @@ mod tests {
 
     fn create_random_vector(dim: usize, seed: f32) -> Vec<f32> {
         (0..dim).map(|i| ((i as f32 + seed) * 0.1).sin()).collect()
+    }
+
+    #[test]
+    fn default_search_uses_configured_breadth_and_shared_guard() {
+        let index =
+            std::sync::Arc::new(HnswIndex::new(create_test_config().with_ef_search(96)).unwrap());
+        let vector = create_random_vector(128, 1.0);
+        index.insert(&VectorId::new("row"), &vector).unwrap();
+        let observed = index.clone();
+        let params = SearchParams::new(1).with_filter(std::sync::Arc::new(move |_| {
+            assert_eq!(observed.index.expansion_search(), 96);
+            assert!(observed.ef_search_lock.try_read().is_some());
+            true
+        }));
+        assert_eq!(index.search(&vector, &params).unwrap().len(), 1);
+
+        let observed = index.clone();
+        let explicit = SearchParams::new(1)
+            .with_nprobe(32)
+            .with_filter(std::sync::Arc::new(move |_| {
+                assert_eq!(observed.index.expansion_search(), 32);
+                assert!(observed.ef_search_lock.try_read().is_none());
+                true
+            }));
+        assert_eq!(index.search(&vector, &explicit).unwrap().len(), 1);
+        assert_eq!(index.index.expansion_search(), 96);
+    }
+
+    #[test]
+    fn rejected_candidates_are_evaluated_once_per_search_and_not_cached_between_queries() {
+        let index = HnswIndex::new(create_test_config()).unwrap();
+        for row in 0..100 {
+            index
+                .insert(
+                    &VectorId::new(row.to_string()),
+                    &create_random_vector(128, row as f32),
+                )
+                .unwrap();
+        }
+        let calls = std::sync::Arc::new(Mutex::new(HashMap::<String, usize>::new()));
+        let allow = std::sync::Arc::new(AtomicBool::new(false));
+        let observed = calls.clone();
+        let allowed = allow.clone();
+        let params = SearchParams::new(1)
+            .with_filter(std::sync::Arc::new(move |id| {
+                *observed.lock().entry(id.to_string()).or_default() += 1;
+                allowed.load(Ordering::Relaxed)
+            }))
+            .with_filter_rejection_cache(true)
+            .with_filter_candidate_limit(100);
+        let query = create_random_vector(128, 0.0);
+        assert!(index.search(&query, &params).unwrap().is_empty());
+        assert_eq!(calls.lock().len(), 100);
+        assert!(calls.lock().values().all(|count| *count == 1));
+        allow.store(true, Ordering::Relaxed);
+        assert_eq!(index.search(&query, &params).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn allowed_candidates_are_rechecked_when_the_window_expands() {
+        let index = HnswIndex::new(create_test_config()).unwrap();
+        for row in 0..100 {
+            index
+                .insert(
+                    &VectorId::new(row.to_string()),
+                    &create_random_vector(128, row as f32),
+                )
+                .unwrap();
+        }
+        let seen = std::sync::Arc::new(AtomicBool::new(false));
+        let params = SearchParams::new(2)
+            .with_filter(std::sync::Arc::new(move |id| {
+                id.as_str() == "0" && !seen.swap(true, Ordering::Relaxed)
+            }))
+            .with_filter_rejection_cache(true)
+            .with_filter_candidate_limit(100);
+        assert!(index
+            .search(&create_random_vector(128, 0.0), &params)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn clustered_tombstones_retry_within_the_candidate_limit() {
+        let mut config = HnswConfig::new(2).with_capacity(100).with_ef_search(128);
+        config.metric = DistanceMetric::L2;
+        let index = HnswIndex::new(config).unwrap();
+        for row in 0..100 {
+            let id = index
+                .insert(&VectorId::new(row.to_string()), &[row as f32, 0.0])
+                .unwrap();
+            if row < 20 {
+                index.delete(id).unwrap();
+            }
+        }
+        let results = index.search(&[0.0, 0.0], &SearchParams::new(5)).unwrap();
+        assert_eq!(results.len(), 5);
+        assert_eq!(
+            results
+                .iter()
+                .map(|hit| hit.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["20", "21", "22", "23", "24"]
+        );
+        let bounded = SearchParams::new(5).with_filter_candidate_limit(10);
+        assert!(index.search(&[0.0, 0.0], &bounded).unwrap().is_empty());
+    }
+
+    #[test]
+    fn filtered_tombstone_compensation_respects_the_window_cap() {
+        let mut config = HnswConfig::new(2).with_capacity(100).with_ef_search(128);
+        config.metric = DistanceMetric::L2;
+        let index = HnswIndex::new(config).unwrap();
+        for row in 0..100 {
+            let id = index
+                .insert(&VectorId::new(row.to_string()), &[row as f32, 0.0])
+                .unwrap();
+            if row >= 50 {
+                index.delete(id).unwrap();
+            }
+        }
+        let calls = std::sync::Arc::new(Mutex::new(HashMap::<String, usize>::new()));
+        let observed = calls.clone();
+        // The compensated first window would be 64, but the cap is 40.
+        let params = SearchParams::new(1)
+            .with_filter(std::sync::Arc::new(move |id| {
+                *observed.lock().entry(id.to_string()).or_default() += 1;
+                id.as_str() == "45"
+            }))
+            .with_filter_rejection_cache(true)
+            .with_filter_candidate_limit(40);
+        assert!(index.search(&[0.0, 0.0], &params).unwrap().is_empty());
+        assert_eq!(calls.lock().len(), 40);
+        assert!(calls.lock().values().all(|count| *count == 1));
     }
 
     #[test]
@@ -890,9 +1037,7 @@ mod tests {
             .unwrap();
 
         assert!(results.is_empty());
-        // Windows are 32, 64, and 100. Repeated candidates make cumulative
-        // predicate work larger than the final window, but geometric growth
-        // keeps it below twice that configured maximum.
+        // Without memoization, geometric growth still bounds callback work.
         assert!(predicate_calls.load(Ordering::Relaxed) < 200);
     }
 
@@ -1248,7 +1393,7 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let config = create_test_config();
+        let config = create_test_config().with_ef_search(96);
         let index = Arc::new(HnswIndex::new(config).unwrap());
 
         // Insert some vectors
@@ -1263,12 +1408,21 @@ mod tests {
         let mut handles = Vec::new();
 
         // Spawn threads with different nprobe values to exercise ef_search_lock
-        for nprobe in [16u32, 32, 64, 128, 256] {
+        for nprobe in [None, Some(16), Some(32), Some(96), Some(128), Some(256)] {
             let idx = Arc::clone(&index);
             let q = query.clone();
             handles.push(thread::spawn(move || {
-                for _ in 0..10 {
-                    let params = SearchParams::new(5).with_nprobe(nprobe);
+                for _ in 0..100 {
+                    let observed = idx.clone();
+                    let params = SearchParams::new(5)
+                        .with_optional_nprobe(nprobe)
+                        .with_filter(Arc::new(move |_| {
+                            assert_eq!(
+                                observed.index.expansion_search(),
+                                nprobe.unwrap_or(96) as usize
+                            );
+                            true
+                        }));
                     let results = idx.search(&q, &params).unwrap();
                     // Results must be valid and non-empty (we have 20 vectors)
                     assert!(!results.is_empty());
@@ -1284,6 +1438,7 @@ mod tests {
         for handle in handles {
             handle.join().expect("concurrent search thread panicked");
         }
+        assert_eq!(index.index.expansion_search(), 96);
     }
 
     fn fingerprint(records: &[(&str, i64, &[f32])]) -> String {

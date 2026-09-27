@@ -120,7 +120,7 @@ fn shard_search_request(
         collection,
         query,
         top_k,
-        nprobe: Some(options.nprobe),
+        nprobe: options.nprobe,
         filter: options.filter,
         tag_filter: options.tag_filter,
         score_threshold: options.score_threshold,
@@ -282,7 +282,8 @@ pub struct FanoutExecutor {
 /// Optional controls forwarded with every shard search.
 #[derive(Debug, Clone)]
 pub struct FanoutSearchOptions {
-    pub nprobe: u32,
+    /// None lets each shard use its configured HNSW breadth.
+    pub nprobe: Option<u32>,
     pub filter: Vec<u8>,
     pub tag_filter: Option<TagFilter>,
     pub score_threshold: Option<f32>,
@@ -293,7 +294,7 @@ pub struct FanoutSearchOptions {
 impl Default for FanoutSearchOptions {
     fn default() -> Self {
         Self {
-            nprobe: 32,
+            nprobe: None,
             filter: Vec::new(),
             tag_filter: None,
             score_threshold: None,
@@ -1053,7 +1054,23 @@ mod tests {
         assert_eq!(request.collection, "tenant-a");
         assert_eq!(request.query, vec![0.1, 0.2]);
         assert_eq!(request.top_k, 5);
-        assert_eq!(request.nprobe, Some(32));
+        assert_eq!(request.nprobe, None);
+    }
+
+    #[test]
+    fn test_shard_search_request_preserves_explicit_breadth() {
+        for nprobe in [32, 64, 128] {
+            let request = shard_search_request(
+                "test".into(),
+                vec![1.0, 0.0],
+                10,
+                FanoutSearchOptions {
+                    nprobe: Some(nprobe),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(request.nprobe, Some(nprobe));
+        }
     }
 
     #[test]

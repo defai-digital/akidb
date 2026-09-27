@@ -203,6 +203,7 @@ version = "1.0.0"
 dependencies = [
  "akidb-common",
  "akidb-contracts",
+ "akidb-coordinator",
  "akidb-faiss",
  "akidb-graph",
  "akidb-proto",

@@ -63,4 +63,5 @@ hmac = "0.12"
 hex = "0.4"
 
 [dev-dependencies]
+akidb-coordinator = { path = "../coordinator" }
 tempfile.workspace = true

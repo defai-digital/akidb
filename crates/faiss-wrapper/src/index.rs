@@ -10,11 +10,15 @@ pub type SearchFilter = Arc<dyn Fn(&VectorId) -> bool + Send + Sync>;
 pub struct SearchParams {
     /// Number of results to return
     pub top_k: usize,
-    /// Number of probes for IVF index
-    pub nprobe: u32,
+    /// Optional HNSW search breadth override. None uses the index configuration.
+    pub nprobe: Option<u32>,
     /// Optional filter function
     pub filter: Option<SearchFilter>,
-    /// Maximum ANN candidate window when a post-filter needs expansion.
+    /// Cache rejected predicate decisions within one search. Enable for costly
+    /// metadata predicates; cheap in-memory predicates usually do not benefit.
+    /// Accepted decisions are never cached.
+    pub cache_filter_rejections: bool,
+    /// Maximum ANN candidate window for post-filter or tombstone expansion.
     pub filter_candidate_limit: usize,
 }
 
@@ -24,6 +28,7 @@ impl std::fmt::Debug for SearchParams {
             .field("top_k", &self.top_k)
             .field("nprobe", &self.nprobe)
             .field("filter", &self.filter.is_some())
+            .field("cache_filter_rejections", &self.cache_filter_rejections)
             .field("filter_candidate_limit", &self.filter_candidate_limit)
             .finish()
     }
@@ -33,8 +38,9 @@ impl Default for SearchParams {
     fn default() -> Self {
         Self {
             top_k: 10,
-            nprobe: 32,
+            nprobe: None,
             filter: None,
+            cache_filter_rejections: false,
             filter_candidate_limit: 16_384,
         }
     }
@@ -77,6 +83,12 @@ impl SearchParams {
     }
 
     pub fn with_nprobe(mut self, nprobe: u32) -> Self {
+        self.nprobe = Some(nprobe);
+        self
+    }
+
+    /// Preserve an omitted request override so the index uses its configured breadth.
+    pub fn with_optional_nprobe(mut self, nprobe: Option<u32>) -> Self {
         self.nprobe = nprobe;
         self
     }
@@ -89,8 +101,16 @@ impl SearchParams {
         self
     }
 
+    /// Avoid repeating costly rejected predicate evaluations while widening
+    /// one query. Rejections remain fixed until that query returns; a subsequent
+    /// query always evaluates fresh state, even when these parameters are reused.
+    pub fn with_filter_rejection_cache(mut self, enabled: bool) -> Self {
+        self.cache_filter_rejections = enabled;
+        self
+    }
+
     /// Bound the largest iterative post-filter window so selective or
-    /// impossible predicates cannot force an unbounded full-index scan.
+    /// impossible predicates or clustered deletions cannot force an unbounded scan.
     pub fn with_filter_candidate_limit(mut self, limit: usize) -> Self {
         self.filter_candidate_limit = limit.max(self.top_k);
         self
@@ -203,13 +223,13 @@ mod tests {
     fn test_search_params_default() {
         let params = SearchParams::default();
         assert_eq!(params.top_k, 10);
-        assert_eq!(params.nprobe, 32);
+        assert_eq!(params.nprobe, None);
     }
 
     #[test]
     fn test_search_params_builder() {
         let params = SearchParams::new(50).with_nprobe(64);
         assert_eq!(params.top_k, 50);
-        assert_eq!(params.nprobe, 64);
+        assert_eq!(params.nprobe, Some(64));
     }
 }

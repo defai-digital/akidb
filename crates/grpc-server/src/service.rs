@@ -635,8 +635,9 @@ where
                     _ => false,
                 }
             }));
-            params =
-                params.with_filter_candidate_limit(self.filter_settings.max_postfilter_candidates);
+            params = params
+                .with_filter_rejection_cache(true)
+                .with_filter_candidate_limit(self.filter_settings.max_postfilter_candidates);
         }
         params
     }
@@ -2252,7 +2253,7 @@ where
         } else {
             search_k.saturating_mul(4).max(search_k)
         };
-        let params = SearchParams::new(fetch_k).with_nprobe(req.nprobe.unwrap_or(32));
+        let params = SearchParams::new(fetch_k).with_optional_nprobe(req.nprobe);
         let params = self.attach_metadata_predicate(params, metadata_filter);
 
         let results = self
@@ -2709,7 +2710,7 @@ where
         Self::validate_search_controls(req.top_k, req.nprobe)?;
 
         let metadata_filter = self.compile_search_filter(&[], None, &ctx)?.map(Arc::new);
-        let params = SearchParams::new(req.top_k as usize).with_nprobe(req.nprobe.unwrap_or(32));
+        let params = SearchParams::new(req.top_k as usize).with_optional_nprobe(req.nprobe);
         let params = self.attach_metadata_predicate(params, metadata_filter);
 
         let mut results = Vec::with_capacity(req.queries.len());
@@ -2955,7 +2956,7 @@ where
                 "TextSearch embedding generated"
             );
 
-            let params = SearchParams::new(search_k).with_nprobe(req.nprobe.unwrap_or(32));
+            let params = SearchParams::new(search_k).with_optional_nprobe(req.nprobe);
             let params = self.attach_metadata_predicate(params, metadata_filter.clone());
 
             // Drop only truly non-finite scores (NaN, inf, -inf) from the
