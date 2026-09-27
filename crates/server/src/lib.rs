@@ -2,7 +2,7 @@
 //!
 //! This binary starts the AkiDB gRPC server with vector indexing capabilities.
 //! In standalone mode (`--standalone`), it runs with no external dependencies
-//! (no MinIO, no NATS) and optionally uses ax-engine for text embeddings.
+//! (no SeaweedFS, no NATS) and optionally uses ax-engine for text embeddings.
 
 use akidb_common::config::{AkiDbConfig, AuthMode};
 use akidb_common::scheduler::{ResourceGovernor, ResourceGovernorConfig, SimpleMetricsSource};
@@ -10,7 +10,10 @@ use akidb_common::VectorId;
 #[cfg(feature = "generation-s3")]
 use akidb_contracts::KnowledgeScope;
 use akidb_embedding::ax_engine::AxEngineEmbedding;
-use akidb_faiss::{DistanceMetric, HnswConfig, HnswIndex, VectorIndex, VectorPrecision};
+use akidb_faiss::{
+    durable_vector_fingerprint, DistanceMetric, DurableVectorRef, HnswConfig, HnswIndex,
+    VectorIndex, VectorPrecision, HNSW_SNAPSHOT_DIR,
+};
 use akidb_graph::NativeGraphIndex;
 use akidb_grpc::{
     export_metrics, mcp::AuthoritativeMemoryMcp, AdminState, AkiDbService, AuthInterceptor,
@@ -131,7 +134,7 @@ pub struct Args {
     #[arg(long, default_value = "info")]
     pub log_level: String,
 
-    /// Run in standalone mode (skip MinIO, no external deps)
+    /// Run in standalone mode (skip SeaweedFS, no external deps)
     #[arg(long, default_value_t = false)]
     pub standalone: bool,
 }
@@ -253,7 +256,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
         if args.standalone {
             return Err(
-                "generation serving requires configured immutable S3/MinIO publication; it cannot run with --standalone"
+                "generation serving requires configured immutable S3/SeaweedFS publication; it cannot run with --standalone"
                     .into(),
             );
         }
@@ -387,12 +390,12 @@ async fn run_generation_server(
     data_plane.restore_scope(&default_scope)?;
 
     let allowed_buckets: HashSet<String> = if generation.allowed_buckets.is_empty() {
-        HashSet::from([config.storage.minio.bucket.clone()])
+        HashSet::from([config.storage.seaweedfs.bucket.clone()])
     } else {
         generation.allowed_buckets.iter().cloned().collect()
     };
-    let fetcher = Arc::new(S3GenerationBundleFetcher::for_minio(
-        &config.storage.minio,
+    let fetcher = Arc::new(S3GenerationBundleFetcher::for_seaweedfs(
+        &config.storage.seaweedfs,
         generation.s3_region.clone(),
         S3GenerationBundleFetcherConfig {
             allowed_buckets,
@@ -962,6 +965,20 @@ fn future_canonical_path(path: &Path) -> Result<PathBuf, Box<dyn std::error::Err
     Ok(resolved)
 }
 
+/// Snapshot directory beside the RocksDB directory, not inside it.
+fn hnsw_snapshot_dir(rocksdb_path: &Path) -> PathBuf {
+    let mut name = rocksdb_path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("rocksdb"))
+        .to_os_string();
+    name.push(".");
+    name.push(HNSW_SNAPSHOT_DIR);
+    match rocksdb_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(name),
+        _ => PathBuf::from(name),
+    }
+}
+
 /// Build a fully-wired AkiDbService (storage, index, vector reload, embedding
 /// provider, lexical rebuild) from config. Shared by the gRPC and MCP entry
 /// points.
@@ -980,17 +997,14 @@ fn build_service(
     // Initialize vector index
     let precision = VectorPrecision::parse(&config.index.vector_precision)?;
     let metric = DistanceMetric::parse(&config.index.metric)?;
-    let index = {
-        let hnsw_config = HnswConfig {
-            dimensions: config.slo.reference.dimensions,
-            capacity: config.slo.reference.vectors_per_shard,
-            m: config.index.hnsw_m as usize,
-            ef_construction: config.index.hnsw_ef_construction as usize,
-            ef_search: config.index.hnsw_ef_search as usize,
-            precision,
-            metric,
-        };
-        Arc::new(HnswIndex::new(hnsw_config)?)
+    let hnsw_config = HnswConfig {
+        dimensions: config.slo.reference.dimensions,
+        capacity: config.slo.reference.vectors_per_shard,
+        m: config.index.hnsw_m as usize,
+        ef_construction: config.index.hnsw_ef_construction as usize,
+        ef_search: config.index.hnsw_ef_search as usize,
+        precision,
+        metric,
     };
     info!(
         precision = ?precision,
@@ -999,47 +1013,108 @@ fn build_service(
     );
 
     let stored_vectors = id_mapping.load_active_vectors()?;
-    if !stored_vectors.is_empty() {
-        info!(
-            "Reloading {} persisted vectors into HNSW index",
-            stored_vectors.len()
-        );
-    }
-    let mut reloaded_count = 0usize;
-    for stored in stored_vectors {
-        let vector_id = VectorId::new(&stored.external_id);
-        match index.insert(&vector_id, &stored.vector) {
-            Ok(internal_id) => {
-                if let Err(e) = id_mapping.upsert_with_vector(
-                    &vector_id,
-                    internal_id,
-                    &stored.vector,
-                    &stored.metadata,
-                ) {
+    let snapshot_dir = hnsw_snapshot_dir(Path::new(&rocksdb_path));
+    let payload_fingerprint = durable_vector_fingerprint(
+        &stored_vectors
+            .iter()
+            .map(|stored| DurableVectorRef {
+                external_id: stored.external_id.as_str(),
+                internal_id: stored.internal_id,
+                vector: stored.vector.as_slice(),
+            })
+            .collect::<Vec<_>>(),
+    );
+    let reload_hnsw = || -> Result<Arc<HnswIndex>, Box<dyn std::error::Error>> {
+        if !stored_vectors.is_empty() {
+            info!(
+                "Reloading {} persisted vectors into HNSW index",
+                stored_vectors.len()
+            );
+        }
+        let index = Arc::new(HnswIndex::new(hnsw_config.clone())?);
+        let mut assigned = Vec::with_capacity(stored_vectors.len());
+        for (position, stored) in stored_vectors.iter().enumerate() {
+            let vector_id = VectorId::new(&stored.external_id);
+            match index.insert(&vector_id, &stored.vector) {
+                Ok(internal_id) => {
+                    if let Err(error) = id_mapping.upsert_with_vector(
+                        &vector_id,
+                        internal_id,
+                        &stored.vector,
+                        &stored.metadata,
+                    ) {
+                        warn!(
+                            vector_id = %stored.external_id,
+                            %error,
+                            "Failed to update mapping for reloaded vector"
+                        );
+                    } else {
+                        assigned.push((position, internal_id.0));
+                    }
+                }
+                Err(error) => {
                     warn!(
                         vector_id = %stored.external_id,
-                        error = %e,
-                        "Failed to update mapping for reloaded vector"
+                        %error,
+                        "Failed to reload persisted vector into index"
                     );
-                } else {
-                    reloaded_count += 1;
                 }
             }
-            Err(e) => {
-                warn!(
-                    vector_id = %stored.external_id,
-                    error = %e,
-                    "Failed to reload persisted vector into index"
-                );
+        }
+        if !assigned.is_empty() {
+            info!(
+                "Reloaded {} persisted vectors into HNSW index",
+                assigned.len()
+            );
+        }
+        if assigned.len() == stored_vectors.len() && !assigned.is_empty() {
+            let refs = assigned
+                .iter()
+                .map(|(position, internal_id)| {
+                    let stored = &stored_vectors[*position];
+                    DurableVectorRef {
+                        external_id: stored.external_id.as_str(),
+                        internal_id: *internal_id,
+                        vector: stored.vector.as_slice(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let fingerprint = durable_vector_fingerprint(&refs);
+            if let Err(error) = index.save_snapshot(&snapshot_dir, &fingerprint) {
+                warn!(%error, "Failed to persist HNSW snapshot after reload");
             }
         }
-    }
-    if reloaded_count > 0 {
-        info!(
-            "Reloaded {} persisted vectors into HNSW index",
-            reloaded_count
-        );
-    }
+        Ok(index)
+    };
+    let index = if snapshot_dir.join("manifest.json").is_file() {
+        match HnswIndex::load_snapshot(&snapshot_dir, &hnsw_config, &payload_fingerprint) {
+            Ok(index)
+                if stored_vectors.iter().all(|stored| {
+                    index.external_id_maps_to(&stored.external_id, stored.internal_id)
+                }) =>
+            {
+                info!(
+                    vectors = stored_vectors.len(),
+                    path = %snapshot_dir.display(),
+                    "Loaded persisted HNSW snapshot"
+                );
+                Arc::new(index)
+            }
+            Ok(_) => {
+                warn!("HNSW snapshot mappings do not match durable vectors; rebuilding");
+                reload_hnsw()?
+            }
+            Err(error) => {
+                warn!(
+                    %error,
+                    "HNSW snapshot rejected; rebuilding from stored vectors"
+                );
+                reload_hnsw()?
+            }
+        }
+    } else {
+        reload_hnsw()?
+    };
 
     // Create gRPC service
     let graph_index = Arc::new(NativeGraphIndex::new(storage));
@@ -1194,6 +1269,54 @@ mod tests {
             "akidb-server-{name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn persisted_hnsw_snapshot_reopens_without_rewriting_the_graph() {
+        let rocksdb_path = unique_temp_path("hnsw-snapshot");
+        let mut config = AkiDbConfig::default();
+        config.storage.rocksdb_path = rocksdb_path.display().to_string();
+        config.slo.reference.dimensions = 4;
+        config.slo.reference.vectors_per_shard = 8;
+        config.embedding.enabled = false;
+        config.sql.enabled = false;
+
+        {
+            let storage = Arc::new(RocksDbBackend::open(&rocksdb_path).unwrap());
+            let mapping = IdMapping::new(storage, "default");
+            mapping
+                .upsert_with_vector(
+                    &VectorId::new("persisted"),
+                    akidb_common::InternalId(7),
+                    &[1.0, 0.0, 0.0, 0.0],
+                    b"{}",
+                )
+                .unwrap();
+        }
+
+        let first = build_service(&config).expect("initial rebuild saves a snapshot");
+        drop(first);
+        let snapshot = hnsw_snapshot_dir(Path::new(&rocksdb_path));
+        let graph = snapshot.join("graph.usearch");
+        let saved = std::fs::read(&graph).expect("snapshot graph");
+
+        let second = build_service(&config).expect("snapshot reopen");
+        drop(second);
+        assert_eq!(
+            std::fs::read(&graph).unwrap(),
+            saved,
+            "reopen must keep the saved graph instead of rebuilding it"
+        );
+
+        let mut corrupt = saved.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0xff;
+        std::fs::write(&graph, corrupt).unwrap();
+        let third = build_service(&config).expect("corrupt snapshot falls back to rebuild");
+        drop(third);
+
+        let _ = std::fs::remove_dir_all(&rocksdb_path);
+        let _ = std::fs::remove_dir_all(snapshot);
     }
 
     #[test]

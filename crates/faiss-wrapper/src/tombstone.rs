@@ -197,6 +197,44 @@ impl TombstoneBitset {
         self.data.read().clone()
     }
 
+    /// Restore a bitset previously produced by [`Self::as_slice`].
+    ///
+    /// The deleted-count must equal the number of set bits, and no bit past
+    /// `capacity` may be set. A mismatch means the snapshot is corrupt.
+    pub(crate) fn try_restore(capacity: u64, deleted_count: u64, bytes: Vec<u8>) -> Result<Self> {
+        let expected_len = usize::try_from(capacity.div_ceil(8)).unwrap_or(usize::MAX);
+        if bytes.len() != expected_len {
+            return Err(crate::AkiDbError::IndexError(format!(
+                "HNSW tombstone length {} does not match capacity {capacity}",
+                bytes.len()
+            )));
+        }
+        if capacity % 8 != 0 {
+            if let Some(last) = bytes.last() {
+                let valid_bits = (capacity % 8) as u32;
+                if last >> valid_bits != 0 {
+                    return Err(crate::AkiDbError::IndexError(
+                        "HNSW tombstone has bits set past its capacity".to_string(),
+                    ));
+                }
+            }
+        }
+        let counted = bytes
+            .iter()
+            .map(|byte| u64::from(byte.count_ones()))
+            .sum::<u64>();
+        if counted != deleted_count {
+            return Err(crate::AkiDbError::IndexError(format!(
+                "HNSW tombstone deleted count {deleted_count} does not match {counted} set bits"
+            )));
+        }
+        Ok(Self {
+            data: RwLock::new(bytes),
+            capacity: AtomicU64::new(capacity),
+            deleted_count: AtomicU64::new(deleted_count),
+        })
+    }
+
     /// Get capacity
     pub fn capacity(&self) -> u64 {
         self.capacity.load(Ordering::Acquire)

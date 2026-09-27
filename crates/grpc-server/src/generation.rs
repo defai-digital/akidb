@@ -2,12 +2,16 @@
 //!
 //! The bundle remains architecture-neutral. This materializer writes
 //! generation-local RocksDB payload/text/graph projections and builds HNSW and
-//! BM25 in memory as verification gates. Runtime activation can reconstruct
-//! those in-memory indexes from the immutable local payload store.
+//! BM25 in memory as verification gates. Runtime activation reopens the HNSW
+//! graph from `hnsw-snapshot` when its configuration and payload fingerprint
+//! match the durable vectors. A missing or rejected snapshot rebuilds the
+//! graph by reinserting every vector. The sealed generation directory is not
+//! rewritten on open.
 
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 
 use akidb_common::{AkiDbError, InternalId, VectorId};
@@ -16,7 +20,10 @@ use akidb_contracts::{
     KnowledgeBundleRecord, KnowledgeEdgeKind, KnowledgeGenerationManifest, KnowledgeMutation,
     KnowledgeMutationPayload, KnowledgeNodeKind, KnowledgeOperation, KnowledgeScope,
 };
-use akidb_faiss::{DistanceMetric, HnswConfig, HnswIndex, VectorIndex, VectorPrecision};
+use akidb_faiss::{
+    durable_vector_fingerprint, DistanceMetric, DurableVectorRef, HnswConfig, HnswIndex,
+    VectorIndex, VectorPrecision, HNSW_SNAPSHOT_DIR,
+};
 use akidb_graph::{
     EdgeKind, GraphEdge, GraphEdgeId, GraphIndex, GraphNode, GraphNodeId, NativeGraphIndex,
     NodeKind,
@@ -207,10 +214,14 @@ impl GenerationMaterializer {
             })?;
         let graph_node_bytes = checked_product(&[estimated_graph_nodes, 256])?;
         let graph_edge_bytes = checked_product(&[manifest.expected_edge_count, 384])?;
+        // The sealed directory also stores a USearch snapshot about the size of
+        // the raw vectors so the next process can open the graph.
+        let snapshot_bytes = vector_bytes;
         let logical_bytes = manifest
             .bundle
             .size_bytes
             .checked_add(vector_bytes)
+            .and_then(|value| value.checked_add(snapshot_bytes))
             .and_then(|value| value.checked_add(graph_node_bytes))
             .and_then(|value| value.checked_add(graph_edge_bytes))
             .ok_or_else(|| {
@@ -292,30 +303,69 @@ impl GenerationMaterializer {
             ));
         }
 
-        let index = Arc::new(HnswIndex::new(HnswConfig {
-            dimensions,
-            capacity,
-            m: self.config.hnsw_m,
-            ef_construction: self.config.hnsw_ef_construction,
-            ef_search: self.config.hnsw_ef_search,
-            precision: self.config.vector_precision,
-            metric: self.config.distance_metric,
-        })?);
-        for (expected_internal_id, stored) in active_vectors.into_iter().enumerate() {
+        for (expected_internal_id, stored) in active_vectors.iter().enumerate() {
             if stored.internal_id != i64::try_from(expected_internal_id).unwrap_or(i64::MAX) {
                 return Err(GenerationMaterializerError::Rejected(format!(
                     "ready vector {} has non-dense internal ID {}",
                     stored.external_id, stored.internal_id
                 )));
             }
-            let internal_id = index.insert(&VectorId::new(&stored.external_id), &stored.vector)?;
-            if internal_id.0 != stored.internal_id {
-                return Err(GenerationMaterializerError::Rejected(format!(
-                    "ready vector {} rebuilt with internal ID {}, expected {}",
-                    stored.external_id, internal_id.0, stored.internal_id
-                )));
-            }
         }
+        let hnsw_config = hnsw_config_for(&self.config, dimensions, capacity);
+        let fingerprint = fingerprint_vectors(active_vectors.iter().map(|stored| {
+            (
+                stored.external_id.as_str(),
+                stored.internal_id,
+                stored.vector.as_slice(),
+            )
+        }));
+        let snapshot_dir = ready.directory.join(HNSW_SNAPSHOT_DIR);
+        let loaded = if snapshot_dir.join("manifest.json").is_file() {
+            HnswIndex::load_snapshot(&snapshot_dir, &hnsw_config, &fingerprint)
+        } else {
+            Err(AkiDbError::IndexError(
+                "HNSW snapshot is absent".to_string(),
+            ))
+        };
+        let index = match loaded {
+            Ok(index)
+                if index.stats().active_vectors == ready.marker.record_count
+                    && active_vectors.iter().all(|stored| {
+                        index.external_id_maps_to(&stored.external_id, stored.internal_id)
+                    }) =>
+            {
+                Arc::new(index)
+            }
+            Ok(_) => {
+                warn!(
+                    generation_id = %ready.manifest.generation_id,
+                    "HNSW snapshot mappings do not match durable vectors; rebuilding"
+                );
+                Arc::new(rebuild_hnsw(
+                    &hnsw_config,
+                    &active_vectors,
+                    |stored| stored.external_id.as_str(),
+                    |stored| stored.internal_id,
+                    |stored| stored.vector.as_slice(),
+                )?)
+            }
+            Err(error) => {
+                if snapshot_dir.join("manifest.json").is_file() {
+                    warn!(
+                        generation_id = %ready.manifest.generation_id,
+                        %error,
+                        "HNSW snapshot rejected; rebuilding from durable vectors"
+                    );
+                }
+                Arc::new(rebuild_hnsw(
+                    &hnsw_config,
+                    &active_vectors,
+                    |stored| stored.external_id.as_str(),
+                    |stored| stored.internal_id,
+                    |stored| stored.vector.as_slice(),
+                )?)
+            }
+        };
         let stats = index.stats();
         if stats.active_vectors != ready.marker.record_count || stats.dimensions != dimensions {
             return Err(GenerationMaterializerError::Rejected(
@@ -452,8 +502,13 @@ impl GenerationMaterializer {
             )?;
         }
         normalize_internal_ids(&id_mapping)?;
-        let (record_count, node_count, edge_count) =
-            validate_revision_indexes(&id_mapping, &graph, prepared.manifest(), &self.config)?;
+        let (record_count, node_count, edge_count) = validate_revision_indexes(
+            &id_mapping,
+            &graph,
+            prepared.manifest(),
+            &self.config,
+            &prepared.building_dir().join(HNSW_SNAPSHOT_DIR),
+        )?;
         let materialization_digest =
             logical_materialization_digest(&id_mapping, &graph, prepared.applied_sequence())?;
         storage.flush()?;
@@ -570,15 +625,7 @@ impl GenerationMaterializer {
         let storage = Arc::new(RocksDbBackend::open(prepared.rocksdb_dir())?);
         let id_mapping = IdMapping::new(storage.clone(), manifest.collection.clone());
         let graph = NativeGraphIndex::new(storage.clone());
-        let index = HnswIndex::new(HnswConfig {
-            dimensions,
-            capacity,
-            m: self.config.hnsw_m,
-            ef_construction: self.config.hnsw_ef_construction,
-            ef_search: self.config.hnsw_ef_search,
-            precision: self.config.vector_precision,
-            metric: self.config.distance_metric,
-        })?;
+        let index = HnswIndex::new(hnsw_config_for(&self.config, dimensions, capacity))?;
         let mut lexical = Bm25Index::new();
         let bundle = File::open(prepared.bundle_path())?;
         let mut context = MaterializationContext {
@@ -606,6 +653,20 @@ impl GenerationMaterializer {
             &lexical,
             &self.config,
         )?;
+        let durable_vectors = id_mapping.load_active_vectors()?;
+        if index.stats().total_vectors > 0 {
+            let fingerprint = fingerprint_vectors(durable_vectors.iter().map(|stored| {
+                (
+                    stored.external_id.as_str(),
+                    stored.internal_id,
+                    stored.vector.as_slice(),
+                )
+            }));
+            index.save_snapshot(
+                &prepared.building_dir().join(HNSW_SNAPSHOT_DIR),
+                &fingerprint,
+            )?;
+        }
         storage.flush()?;
 
         // All RocksDB handles must close before the immutable directory is
@@ -920,6 +981,7 @@ fn validate_revision_indexes(
     graph: &NativeGraphIndex<RocksDbBackend>,
     manifest: &akidb_contracts::KnowledgeGenerationManifest,
     config: &GenerationMaterializerConfig,
+    snapshot_dir: &Path,
 ) -> Result<(u64, u64, u64), GenerationMaterializerError> {
     let mut vectors = id_mapping.load_active_vectors()?;
     vectors.sort_by_key(|entry| entry.internal_id);
@@ -936,15 +998,11 @@ fn validate_revision_indexes(
             "revision embedding dimensions cannot fit this platform".to_string(),
         )
     })?;
-    let index = HnswIndex::new(HnswConfig {
+    let index = HnswIndex::new(hnsw_config_for(
+        config,
         dimensions,
-        capacity: usize::try_from(record_count).unwrap_or(usize::MAX).max(1),
-        m: config.hnsw_m,
-        ef_construction: config.hnsw_ef_construction,
-        ef_search: config.hnsw_ef_search,
-        precision: config.vector_precision,
-        metric: config.distance_metric,
-    })?;
+        usize::try_from(record_count).unwrap_or(usize::MAX).max(1),
+    ))?;
     for (expected, vector) in vectors.iter().enumerate() {
         let expected = i64::try_from(expected).unwrap_or(i64::MAX);
         if vector.internal_id != expected {
@@ -964,6 +1022,16 @@ fn validate_revision_indexes(
         return Err(GenerationMaterializerError::Rejected(
             "revision HNSW count differs from durable vectors".to_string(),
         ));
+    }
+    if index.stats().total_vectors > 0 {
+        let fingerprint = fingerprint_vectors(vectors.iter().map(|vector| {
+            (
+                vector.external_id.as_str(),
+                vector.internal_id,
+                vector.vector.as_slice(),
+            )
+        }));
+        index.save_snapshot(snapshot_dir, &fingerprint)?;
     }
 
     let texts = id_mapping.load_all_texts()?;
@@ -1095,6 +1163,56 @@ fn logical_materialization_digest(
 fn hash_part(digest: &mut Sha256, value: &[u8]) {
     digest.update((value.len() as u64).to_be_bytes());
     digest.update(value);
+}
+
+fn hnsw_config_for(
+    config: &GenerationMaterializerConfig,
+    dimensions: usize,
+    capacity: usize,
+) -> HnswConfig {
+    HnswConfig {
+        dimensions,
+        capacity,
+        m: config.hnsw_m,
+        ef_construction: config.hnsw_ef_construction,
+        ef_search: config.hnsw_ef_search,
+        precision: config.vector_precision,
+        metric: config.distance_metric,
+    }
+}
+
+fn fingerprint_vectors<'a>(vectors: impl IntoIterator<Item = (&'a str, i64, &'a [f32])>) -> String {
+    let refs: Vec<DurableVectorRef<'a>> = vectors
+        .into_iter()
+        .map(|(external_id, internal_id, vector)| DurableVectorRef {
+            external_id,
+            internal_id,
+            vector,
+        })
+        .collect();
+    durable_vector_fingerprint(&refs)
+}
+
+fn rebuild_hnsw<T>(
+    config: &HnswConfig,
+    vectors: &[T],
+    external_id: impl Fn(&T) -> &str,
+    internal_id: impl Fn(&T) -> i64,
+    vector: impl Fn(&T) -> &[f32],
+) -> Result<HnswIndex, GenerationMaterializerError> {
+    let index = HnswIndex::new(config.clone())?;
+    for stored in vectors {
+        let expected = internal_id(stored);
+        let assigned = index.insert(&VectorId::new(external_id(stored)), vector(stored))?;
+        if assigned.0 != expected {
+            return Err(GenerationMaterializerError::Rejected(format!(
+                "ready vector {} rebuilt with internal ID {}, expected {expected}",
+                external_id(stored),
+                assigned.0
+            )));
+        }
+    }
+    Ok(index)
 }
 
 fn validate_materialized_indexes(
@@ -1324,7 +1442,10 @@ fn bounded_failure_evidence(error: &GenerationMaterializerError) -> String {
 mod tests {
     use super::*;
     use akidb_contracts::KnowledgeGenerationManifest;
-    use akidb_faiss::{SearchParams, VectorIndex};
+    use akidb_faiss::{
+        durable_vector_fingerprint, DistanceMetric, DurableVectorRef, HnswConfig, HnswIndex,
+        SearchParams, VectorIndex, VectorPrecision, HNSW_SNAPSHOT_DIR,
+    };
     use akidb_storage::{GenerationBuildJournal, GenerationBuildPhase};
     use sha2::{Digest, Sha256};
     use tempfile::tempdir;
@@ -1496,6 +1617,57 @@ mod tests {
         assert_eq!(edge.properties["predicate"], "mentions_product");
         assert_eq!(edge.properties["assertion_state"], "extracted");
         assert_eq!(edge.properties["evidence_chunk_ids"][0], "chunk-a");
+    }
+
+    #[test]
+    fn open_ready_generation_loads_snapshot_and_rebuilds_when_corrupt() {
+        let (_temporary, store, prepared) = prepare(MANIFEST.as_bytes());
+        let materializer =
+            GenerationMaterializer::new(store, GenerationMaterializerConfig::default());
+        let ready = materializer
+            .install_and_materialize(&prepared, BUNDLE, 2)
+            .unwrap();
+        let snapshot = ready.directory.join(HNSW_SNAPSHOT_DIR);
+        assert!(snapshot.join("manifest.json").is_file());
+
+        let runtime = materializer.open_ready_generation(ready.clone()).unwrap();
+        let stored = runtime
+            .id_mapping
+            .get_vector(&VectorId::new("chunk-a"))
+            .unwrap()
+            .unwrap();
+        let refs = [DurableVectorRef {
+            external_id: stored.external_id.as_str(),
+            internal_id: stored.internal_id,
+            vector: stored.vector.as_slice(),
+        }];
+        let fingerprint = durable_vector_fingerprint(&refs);
+        let config = HnswConfig {
+            dimensions: stored.vector.len(),
+            capacity: 1,
+            m: 16,
+            ef_construction: 128,
+            ef_search: 64,
+            precision: VectorPrecision::F32,
+            metric: DistanceMetric::Cosine,
+        };
+        let loaded = HnswIndex::load_snapshot(&snapshot, &config, &fingerprint).unwrap();
+        assert!(loaded.external_id_maps_to("chunk-a", stored.internal_id));
+        drop(loaded);
+        drop(runtime);
+
+        let graph = snapshot.join("graph.usearch");
+        let mut bytes = std::fs::read(&graph).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        std::fs::write(&graph, bytes).unwrap();
+
+        let rebuilt = materializer.open_ready_generation(ready).unwrap();
+        let results = rebuilt
+            .index
+            .search(&[0.1, 0.2, 0.3], &SearchParams::new(1))
+            .unwrap();
+        assert_eq!(results[0].id, VectorId::new("chunk-a"));
     }
 
     #[test]

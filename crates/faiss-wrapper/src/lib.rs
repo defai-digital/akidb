@@ -6,6 +6,7 @@
 mod hnsw;
 mod index;
 pub mod rebuild;
+mod snapshot;
 mod tombstone;
 
 // Mock is available for testing
@@ -22,6 +23,7 @@ pub use rebuild::{
     // Checkpoint types
     CheckpointConfig, CheckpointManager, ResourceAwareScheduler,
 };
+pub use snapshot::{durable_vector_fingerprint, DurableVectorRef, HNSW_SNAPSHOT_DIR};
 pub use tombstone::TombstoneBitset;
 
 // Mock is available for testing

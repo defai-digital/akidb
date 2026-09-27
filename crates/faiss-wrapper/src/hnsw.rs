@@ -4,6 +4,9 @@
 //! via the `usearch` crate. It is the portable CPU vector-index backend used
 //! on supported macOS ARM64 and Ubuntu AMD64 targets.
 
+use crate::snapshot;
+#[cfg(test)]
+use crate::snapshot::{durable_vector_fingerprint, DurableVectorRef};
 use crate::{
     allocate_internal_id,
     index::{IndexStats, SearchParams, VectorIndex},
@@ -80,7 +83,7 @@ impl VectorPrecision {
         }
     }
 
-    fn to_scalar_kind(self) -> ScalarKind {
+    pub(crate) fn to_scalar_kind(self) -> ScalarKind {
         match self {
             Self::F32 => ScalarKind::F32,
             Self::F16 => ScalarKind::F16,
@@ -109,7 +112,7 @@ impl DistanceMetric {
         }
     }
 
-    fn to_metric_kind(self) -> MetricKind {
+    pub(crate) fn to_metric_kind(self) -> MetricKind {
         match self {
             Self::Cosine => MetricKind::Cos,
             Self::L2 => MetricKind::L2sq,
@@ -587,6 +590,60 @@ impl VectorIndex for HnswIndex {
 
     fn is_rebuilding(&self) -> bool {
         self.is_rebuilding.load(Ordering::SeqCst)
+    }
+}
+
+impl HnswIndex {
+    /// Write the graph, id maps, and tombstones so a later process can skip
+    /// reinserting every vector. `payload_sha256` must be
+    /// [`durable_vector_fingerprint`] of the durable vectors this graph serves.
+    pub fn save_snapshot(&self, directory: &std::path::Path, payload_sha256: &str) -> Result<()> {
+        let _rebuild_guard = self.rebuild_lock.lock();
+        let _search_guard = self.ef_search_lock.write();
+        let id_mapping = self.id_mapping.read();
+        let reverse_mapping = self.reverse_mapping.read();
+        snapshot::save(
+            &snapshot::SnapshotSource {
+                index: &self.index,
+                id_mapping: &id_mapping,
+                reverse_mapping: &reverse_mapping,
+                tombstones: &self.tombstones,
+                next_id: self.next_id.load(Ordering::SeqCst),
+                dimensions: self.dimensions,
+                ef_search: self.ef_search,
+                metric: self.metric,
+            },
+            directory,
+            payload_sha256,
+        )
+    }
+
+    /// Restore a snapshot only when its configuration and payload fingerprint match.
+    pub fn load_snapshot(
+        directory: &std::path::Path,
+        expected: &HnswConfig,
+        payload_sha256: &str,
+    ) -> Result<Self> {
+        let loaded = snapshot::load(directory, expected, payload_sha256)?;
+        Ok(Self {
+            index: loaded.index,
+            id_mapping: RwLock::new(loaded.id_mapping),
+            reverse_mapping: RwLock::new(loaded.reverse_mapping),
+            tombstones: loaded.tombstones,
+            next_id: AtomicI64::new(loaded.next_id),
+            dimensions: expected.dimensions,
+            is_ready: AtomicBool::new(true),
+            is_rebuilding: AtomicBool::new(false),
+            ef_search: expected.ef_search,
+            metric: expected.metric,
+            ef_search_lock: RwLock::new(()),
+            rebuild_lock: Mutex::new(()),
+        })
+    }
+
+    /// Report whether this external id is currently mapped to `internal_id`.
+    pub fn external_id_maps_to(&self, external_id: &str, internal_id: i64) -> bool {
+        self.id_mapping.read().get(external_id).copied() == Some(internal_id)
     }
 }
 
@@ -1101,5 +1158,118 @@ mod tests {
         for handle in handles {
             handle.join().expect("concurrent search thread panicked");
         }
+    }
+
+    fn fingerprint(records: &[(&str, i64, &[f32])]) -> String {
+        let refs: Vec<DurableVectorRef<'_>> = records
+            .iter()
+            .map(|(external_id, internal_id, vector)| DurableVectorRef {
+                external_id,
+                internal_id: *internal_id,
+                vector,
+            })
+            .collect();
+        durable_vector_fingerprint(&refs)
+    }
+
+    #[test]
+    fn test_hnsw_save_load_roundtrip_preserves_search_results() {
+        let config = HnswConfig::new(4).with_capacity(8).with_ef_search(16);
+        let index = HnswIndex::new(config.clone()).unwrap();
+        let rows = [
+            ("near", vec![1.0, 0.0, 0.0, 0.0]),
+            ("mid", vec![0.2, 0.9, 0.0, 0.0]),
+            ("far", vec![0.0, 0.0, 1.0, 0.0]),
+        ];
+        for (id, vector) in &rows {
+            index.insert(&VectorId::new(*id), vector).unwrap();
+        }
+        index.delete(InternalId(1)).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("hnsw-snapshot");
+        let fingerprint = fingerprint(&[
+            ("near", 0, rows[0].1.as_slice()),
+            ("mid", 1, rows[1].1.as_slice()),
+            ("far", 2, rows[2].1.as_slice()),
+        ]);
+        index.save_snapshot(&snapshot, &fingerprint).unwrap();
+
+        let loaded = HnswIndex::load_snapshot(&snapshot, &config, &fingerprint).unwrap();
+        let params = SearchParams::new(3);
+        let original = index.search(&rows[0].1, &params).unwrap();
+        let restored = loaded.search(&rows[0].1, &params).unwrap();
+        assert_eq!(
+            original
+                .iter()
+                .map(|result| result.id.as_str().to_string())
+                .collect::<Vec<_>>(),
+            restored
+                .iter()
+                .map(|result| result.id.as_str().to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(original
+            .iter()
+            .zip(restored.iter())
+            .all(|(left, right)| (left.score - right.score).abs() < 1e-6));
+        assert!(loaded.is_deleted(InternalId(1)));
+        assert!(!restored.iter().any(|result| result.id.as_str() == "mid"));
+        let inserted = loaded
+            .insert(&VectorId::new("fresh"), &[0.0, 0.0, 0.0, 1.0])
+            .unwrap();
+        assert_eq!(inserted.0, 3);
+        assert!(loaded.external_id_maps_to("fresh", 3));
+    }
+
+    #[test]
+    fn test_hnsw_load_rejects_checksum_mismatch() {
+        let config = HnswConfig::new(4).with_capacity(4);
+        let index = HnswIndex::new(config.clone()).unwrap();
+        let vector = vec![1.0, 0.0, 0.0, 0.0];
+        index.insert(&VectorId::new("only"), &vector).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("hnsw-snapshot");
+        let fingerprint = fingerprint(&[("only", 0, vector.as_slice())]);
+        index.save_snapshot(&snapshot, &fingerprint).unwrap();
+
+        let graph = snapshot.join("graph.usearch");
+        let mut bytes = std::fs::read(&graph).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        std::fs::write(&graph, bytes).unwrap();
+
+        let error = match HnswIndex::load_snapshot(&snapshot, &config, &fingerprint) {
+            Ok(_) => panic!("corrupt HNSW snapshot was accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("checksum"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_hnsw_load_rejects_config_or_payload_mismatch() {
+        let config = HnswConfig::new(4).with_capacity(4);
+        let index = HnswIndex::new(config.clone()).unwrap();
+        let vector = vec![1.0, 0.0, 0.0, 0.0];
+        index.insert(&VectorId::new("only"), &vector).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("hnsw-snapshot");
+        let fingerprint = fingerprint(&[("only", 0, vector.as_slice())]);
+        index.save_snapshot(&snapshot, &fingerprint).unwrap();
+
+        let wrong_dimensions = HnswConfig::new(8).with_capacity(4);
+        let error = match HnswIndex::load_snapshot(&snapshot, &wrong_dimensions, &fingerprint) {
+            Ok(_) => panic!("mismatched HNSW configuration was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("configuration"), "{error}");
+
+        let error = match HnswIndex::load_snapshot(&snapshot, &config, "deadbeef") {
+            Ok(_) => panic!("mismatched HNSW payload fingerprint was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("fingerprint"), "{error}");
     }
 }
