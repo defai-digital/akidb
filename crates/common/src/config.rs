@@ -723,14 +723,13 @@ impl Default for IndexSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebuildSettings {
-    /// RESERVED, not read anywhere in the runtime. Tombstone-driven compaction
-    /// runs from the coordinator's own `CompactionConfig` (default 0.10), which
-    /// nothing constructs from `AkiDbConfig` yet; wiring the two is deferred
-    /// until it is decided whether the shard or the coordinator owns compaction.
+    /// Tombstone ratio at or above which the shard compacts (physically removes
+    /// tombstoned vectors) from its maintenance task.
     pub tombstone_ratio_trigger: f32,
-    /// RESERVED, not read anywhere in the runtime.
+    /// RESERVED, not read anywhere in the runtime: rebuilds are not cancellable
+    /// yet, so a duration bound cannot be honored.
     pub max_duration_seconds: u64,
-    /// RESERVED, not read anywhere in the runtime.
+    /// Hours (0-23) during which the shard may compact. Empty means any hour.
     pub preferred_hours: Vec<u8>,
 }
 
@@ -746,8 +745,7 @@ impl Default for RebuildSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TombstoneSettings {
-    /// RESERVED, not read anywhere in the runtime. Physical removal happens in
-    /// the index rebuild path; no compaction is forced from this count yet.
+    /// Tombstone count at which the shard compacts regardless of the ratio.
     pub max_count: u64,
 }
 

@@ -706,6 +706,19 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
         self.rebuilding.load(Ordering::Acquire)
     }
 
+    fn tombstoned_count(&self) -> u64 {
+        0
+    }
+
+    fn total_count(&self) -> u64 {
+        0
+    }
+
+    fn compact_tombstones(&self) -> Result<u64> {
+        // Actual rebuild is orchestrated externally; nothing to compact here.
+        Ok(0)
+    }
+
     fn trigger_rebuild(&self) -> Result<()> {
         // This just marks intent - actual rebuild is orchestrated externally
         if self.is_rebuilding() {

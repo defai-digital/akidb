@@ -637,11 +637,11 @@ impl VectorIndex for HnswIndex {
         Ok(())
     }
 
+    /// Physically remove tombstoned vectors. Tombstones stay queryable through
+    /// the bitset filter until this runs, so callers invoke it from a
+    /// maintenance path rather than the mutate hot path (compaction is by
+    /// rebuild, never by deleting from the graph per delete).
     fn trigger_rebuild(&self) -> Result<()> {
-        // Hold rebuild_lock for the entire rebuild to prevent concurrent
-        // insert/delete from interleaving with physical removal and mapping cleanup.
-        let _rebuild_guard = self.rebuild_lock.lock();
-
         self.is_rebuilding.store(true, Ordering::SeqCst);
 
         // Physically remove tombstoned vectors from the usearch index. Only
@@ -691,6 +691,21 @@ impl VectorIndex for HnswIndex {
         debug!(removed = removed, "HNSW rebuild completed");
         self.is_rebuilding.store(false, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn tombstoned_count(&self) -> u64 {
+        self.tombstones.deleted_count()
+    }
+
+    fn total_count(&self) -> u64 {
+        self.index.size() as u64
+    }
+
+    fn compact_tombstones(&self) -> Result<u64> {
+        let before = self.tombstones.deleted_count();
+        self.trigger_rebuild()?;
+        let removed = before.saturating_sub(self.tombstones.deleted_count());
+        Ok(removed)
     }
 
     fn is_rebuilding(&self) -> bool {

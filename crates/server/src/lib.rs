@@ -4,7 +4,7 @@
 //! In standalone mode (`--standalone`), it runs with no external dependencies
 //! (no SeaweedFS, no NATS) and optionally uses ax-engine for text embeddings.
 
-use akidb_common::config::{AkiDbConfig, AuthMode};
+use akidb_common::config::{AkiDbConfig, AuthMode, RebuildSettings, TombstoneSettings};
 use akidb_common::scheduler::{ResourceGovernor, ResourceGovernorConfig, SimpleMetricsSource};
 use akidb_common::VectorId;
 #[cfg(feature = "generation-s3")]
@@ -42,6 +42,7 @@ use akidb_storage::{
     IdMapping, LocalSnapshotBackend, MemoryLedger, RocksDbBackend, SnapshotManager,
 };
 use bytes::Bytes;
+use chrono::{Local, Timelike};
 use http_body_util::Full;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -53,6 +54,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
@@ -274,6 +276,11 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let service = build_service(&config)?;
+    let _compaction_task = start_tombstone_compaction_task(
+        service.index_handle(),
+        config.index.rebuild.clone(),
+        config.index.tombstone.clone(),
+    );
     let data_interceptor = AuthInterceptor::new(auth_runtime.clone());
     let memory_service = if config.memory.enabled {
         let memory = build_memory_service(&config, &auth_runtime)?;
@@ -565,6 +572,73 @@ fn server_builder(config: &AkiDbConfig) -> Result<Server, Box<dyn std::error::Er
         )?;
     }
     Ok(builder)
+}
+
+/// How often the shard checks whether tombstone compaction is due.
+const TOMBSTONE_COMPACTION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Whether tombstone-driven compaction should run now.
+///
+/// Driven by `index.rebuild.tombstone_ratio_trigger`, `index.tombstone.max_count`,
+/// and `index.rebuild.preferred_hours`. An empty `preferred_hours` means
+/// compaction may run at any hour.
+fn tombstone_compaction_due(
+    ratio_trigger: f32,
+    max_count: u64,
+    tombstoned: u64,
+    total: u64,
+    preferred_hours: &[u8],
+    current_hour: u8,
+) -> bool {
+    if total == 0 || tombstoned == 0 {
+        return false;
+    }
+    if !preferred_hours.is_empty() && !preferred_hours.contains(&current_hour) {
+        return false;
+    }
+    let ratio = tombstoned as f32 / total as f32;
+    ratio >= ratio_trigger || tombstoned >= max_count
+}
+
+/// Periodically compact tombstones so deleted ids stop widening the ANN
+/// candidate window and consuming index slots (see the `index.rebuild` and
+/// `index.tombstone` settings).
+async fn start_tombstone_compaction_task<I>(
+    index: Arc<I>,
+    rebuild: RebuildSettings,
+    tombstone: TombstoneSettings,
+) -> JoinHandle<()>
+where
+    I: VectorIndex + 'static,
+{
+    let index = Arc::clone(&index);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(TOMBSTONE_COMPACTION_CHECK_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let tombstoned = index.tombstoned_count();
+            let total = index.total_count();
+            let current_hour = Local::now().hour() as u8;
+            if !tombstone_compaction_due(
+                rebuild.tombstone_ratio_trigger,
+                tombstone.max_count,
+                tombstoned,
+                total,
+                &rebuild.preferred_hours,
+                current_hour,
+            ) {
+                continue;
+            }
+            match index.compact_tombstones() {
+                Ok(removed) if removed > 0 => {
+                    info!(removed, "tombstone compaction completed");
+                }
+                Ok(_) => {}
+                Err(error) => warn!(%error, "tombstone compaction failed"),
+            }
+        }
+    })
 }
 
 async fn start_metrics_server(
@@ -1216,6 +1290,64 @@ fn build_service(
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn tombstone_compaction_triggers_on_ratio_or_count_within_hours() {
+        // 10% of 1M tombstoned hits the ratio trigger.
+        assert!(tombstone_compaction_due(
+            0.10,
+            100_000,
+            100_000,
+            1_000_000,
+            &[],
+            12
+        ));
+        // Below both the ratio trigger and the absolute cap: no compaction.
+        assert!(!tombstone_compaction_due(
+            0.10,
+            100_000,
+            5_000,
+            1_000_000,
+            &[],
+            12
+        ));
+        // The absolute tombstone cap fires even at a tiny ratio.
+        assert!(tombstone_compaction_due(
+            0.10,
+            100_000,
+            100_000,
+            10_000_000,
+            &[],
+            12
+        ));
+        // Outside the preferred hours nothing runs; empty hours means any hour.
+        assert!(!tombstone_compaction_due(
+            0.10,
+            100_000,
+            100_000,
+            1_000_000,
+            &[2, 3, 4],
+            12
+        ));
+        assert!(tombstone_compaction_due(
+            0.10,
+            100_000,
+            100_000,
+            1_000_000,
+            &[],
+            12
+        ));
+        // Nothing to compact.
+        assert!(!tombstone_compaction_due(
+            0.10,
+            100_000,
+            0,
+            1_000_000,
+            &[],
+            2
+        ));
+        assert!(!tombstone_compaction_due(0.10, 100_000, 5, 0, &[], 2));
+    }
 
     #[test]
     fn installs_rustls_crypto_provider_before_tls_configuration() {

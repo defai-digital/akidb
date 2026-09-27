@@ -166,6 +166,16 @@ pub trait VectorIndex: Send + Sync {
     /// Trigger a rebuild of the index
     fn trigger_rebuild(&self) -> Result<()>;
 
+    /// Number of tombstoned (deleted but not yet compacted) vectors.
+    fn tombstoned_count(&self) -> u64;
+
+    /// Number of slots held by the index, including tombstoned vectors.
+    fn total_count(&self) -> u64;
+
+    /// Physically remove tombstoned vectors, returning how many were removed.
+    /// A no-op for indexes without tombstone support.
+    fn compact_tombstones(&self) -> Result<u64>;
+
     /// Check if rebuild is in progress
     fn is_rebuilding(&self) -> bool;
 }

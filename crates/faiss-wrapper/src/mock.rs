@@ -268,6 +268,18 @@ impl VectorIndex for MockIndex {
         Ok(())
     }
 
+    fn tombstoned_count(&self) -> u64 {
+        0
+    }
+
+    fn total_count(&self) -> u64 {
+        0
+    }
+
+    fn compact_tombstones(&self) -> Result<u64> {
+        Ok(0)
+    }
+
     fn trigger_rebuild(&self) -> Result<()> {
         self.is_rebuilding.store(true, Ordering::SeqCst);
 

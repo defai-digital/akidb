@@ -157,15 +157,16 @@ max_postfilter_candidates = 16384
 # RESERVED: not read by the runtime yet. Changing it has no effect.
 adaptive_pre_selectivity = 0.20
 
-# RESERVED: nothing in the runtime reads [index.rebuild] yet. Tombstone-driven
-# compaction is owned by the coordinator's CompactionConfig (default 0.10),
-# which no deployment constructs from this file; wiring the two is deferred.
+# Tombstone-driven compaction: the shard compacts (physically removes deleted
+# vectors) when the tombstone ratio reaches tombstone_ratio_trigger, the count
+# reaches index.tombstone.max_count, and the local hour is in preferred_hours
+# (empty = any hour).
 [index.rebuild]
 tombstone_ratio_trigger = 0.10
+# RESERVED: rebuilds are not cancellable yet, so this bound cannot be honored.
 max_duration_seconds = 300
 preferred_hours = [2, 3, 4]
 
-# RESERVED: nothing in the runtime reads this yet; removal happens on rebuild.
 [index.tombstone]
 max_count = 100000
 

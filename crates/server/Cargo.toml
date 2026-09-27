@@ -26,6 +26,7 @@ akidb-storage = { path = "../storage" }
 akidb-grpc = { path = "../grpc-server" }
 akidb-proto = { path = "../proto" }
 
+chrono.workspace = true
 tokio.workspace = true
 tonic.workspace = true
 rustls.workspace = true

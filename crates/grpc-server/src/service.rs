@@ -747,6 +747,19 @@ where
         self.index.stats()
     }
 
+    /// Handle to the vector index, for maintenance tasks that outlive a
+    /// single request (tombstone compaction).
+    pub fn index_handle(&self) -> Arc<I> {
+        Arc::clone(&self.index)
+    }
+    /// Physically remove tombstoned vectors, returning how many were removed.
+    ///
+    /// Maintenance path for tombstone-driven compaction; serializes against
+    /// inserts and deletes.
+    pub fn compact_tombstones(&self) -> std::result::Result<u64, AkiDbError> {
+        self.index.compact_tombstones()
+    }
+
     /// Current graph statistics, when graph expansion is configured.
     pub fn graph_stats(&self) -> Option<GraphStats> {
         self.graph_index
