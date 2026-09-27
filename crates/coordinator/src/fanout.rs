@@ -1,7 +1,7 @@
 //! Fan-out search execution with connection pooling
 
 use crate::merger::ResultMerger;
-use crate::router::{ShardInfo, ShardRouter};
+use crate::router::{ShardInfo, ShardRouter, UNHEALTHY_RETRY_AFTER};
 use akidb_common::{AkiDbError, Result, SearchResult, VectorId};
 use akidb_proto::akidb_client::AkidbClient;
 use akidb_proto::{
@@ -36,10 +36,60 @@ struct PoolCreationTracker {
     state: parking_lot::Mutex<std::collections::HashMap<String, FailureState>>,
 }
 
+/// Largest `top_k` a shard accepts. A fan-out must never ask for more, because
+/// the shard rejects the request instead of truncating it.
+///
+/// This mirrors `validate_search_controls` in `crates/grpc-server/src/service.rs`
+/// and the coordinator's own client-facing check: the coordinator cannot depend
+/// on the shard crate's constant, so the three limits have to be kept equal.
+const MAX_SHARD_TOP_K: usize = 10_000;
+
+/// Over-fetch factor applied when a query groups its results, so the post-merge
+/// per-group cut still has enough candidates to fill `top_k`.
+const GROUPED_OVERFETCH: usize = 4;
+
 fn fanout_top_k(top_k: usize) -> Result<u32> {
     u32::try_from(top_k).map_err(|_| {
         AkiDbError::CoordinatorError(format!("Search top_k {} exceeds u32 range", top_k))
     })
+}
+
+/// Candidates to request from each shard for a query.
+///
+/// Grouping over-fetches because the merge happens before the per-group cut, but
+/// never past what a shard accepts: an oversized request is rejected outright,
+/// which would lose the whole query rather than shorten it.
+fn fanout_fetch_k(top_k: usize, grouping: bool) -> usize {
+    if !grouping {
+        return top_k;
+    }
+    top_k
+        .saturating_mul(GROUPED_OVERFETCH)
+        .min(MAX_SHARD_TOP_K)
+        .max(top_k)
+}
+
+/// Why one shard did not contribute results to a fan-out.
+enum ShardSearchFailure {
+    /// The shard answered with a gRPC status. It is reachable, so a rejected
+    /// request is not evidence that the shard itself is unhealthy.
+    Rejected(String),
+    /// A timeout, a dropped connection, or a panicked task: the shard's state is
+    /// unknown.
+    Unreachable(String),
+}
+
+impl ShardSearchFailure {
+    /// Whether this failure is evidence that the shard is unhealthy.
+    fn indicates_unhealthy_shard(&self) -> bool {
+        matches!(self, Self::Unreachable(_))
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::Rejected(message) | Self::Unreachable(message) => message,
+        }
+    }
 }
 
 fn shard_search_request(
@@ -335,18 +385,15 @@ impl FanoutExecutor {
         options: FanoutSearchOptions,
     ) -> Result<FanoutResult> {
         // Over-fetch when grouping so post-merge cuts still fill top_k.
-        let fetch_k = if options.group_by.trim().is_empty() {
-            top_k
-        } else {
-            top_k.saturating_mul(4).max(top_k)
-        };
+        let fetch_k = fanout_fetch_k(top_k, !options.group_by.trim().is_empty());
         let request_top_k = fanout_top_k(fetch_k)?;
         let router = self.router.read().await;
-        let shards: Vec<ShardInfo> = router
-            .healthy_shards()
-            .iter()
-            .map(|s| (*s).clone())
-            .collect();
+        let (selected, held_back) = router.fanout_selection(UNHEALTHY_RETRY_AFTER);
+        let shards: Vec<ShardInfo> = selected.iter().map(|shard| (*shard).clone()).collect();
+        // Coverage is measured against every configured shard so that a shard
+        // which is held back or currently failing cannot be hidden behind a
+        // full ratio.
+        let total_shards = router.all_shards().len();
         drop(router);
 
         if shards.is_empty() {
@@ -355,12 +402,11 @@ impl FanoutExecutor {
             ));
         }
 
-        let total_shards = shards.len();
-        debug!("Fan-out search to {} shards", total_shards);
+        debug!("Fan-out search to {} shards", shards.len());
 
         // Get connection pools for all shards
         let mut shard_pools = Vec::with_capacity(shards.len());
-        let mut missing_shards = Vec::new();
+        let mut missing_shards = held_back;
         for shard in &shards {
             match self.get_pool(&shard.address).await {
                 Ok(pool) => shard_pools.push((shard.clone(), pool)),
@@ -406,14 +452,22 @@ impl FanoutExecutor {
                             .collect();
                         Ok((shard_id, results))
                     }
-                    Ok(Err(e)) => Err((shard_id, format!("Search failed: {}", e))),
-                    Err(_) => Err((shard_id, "Search timeout".to_string())),
+                    Ok(Err(e)) => Err((
+                        shard_id,
+                        ShardSearchFailure::Rejected(format!("Search failed: {}", e)),
+                    )),
+                    Err(_) => Err((
+                        shard_id,
+                        ShardSearchFailure::Unreachable("Search timeout".to_string()),
+                    )),
                 }
             }));
         }
 
-        // Collect results
-        let mut merger = ResultMerger::new(top_k);
+        // Collect results. The merge has to retain the over-fetched window:
+        // the caller's per-group cut runs after fusion, so truncating to
+        // `top_k` here would leave grouped queries short.
+        let mut merger = ResultMerger::new(fetch_k);
         let mut responding_shards = Vec::new();
 
         // FIX BUG-071: Iterate with index to identify shard even on task panic
@@ -424,12 +478,15 @@ impl FanoutExecutor {
                     responding_shards.push(shard_id);
                     merger.add_results(results);
                 }
-                Ok(Err((shard_id, error))) => {
-                    warn!("Shard {} failed: {}", shard_id, error);
+                Ok(Err((shard_id, failure))) => {
+                    warn!("Shard {} failed: {}", shard_id, failure.message());
 
-                    // Update shard health
-                    let mut router = self.router.write().await;
-                    router.update_health(&shard_id, false);
+                    // A shard that answered is reachable; only a failure that
+                    // left its state unknown takes it out of the fan-out set.
+                    if failure.indicates_unhealthy_shard() {
+                        let mut router = self.router.write().await;
+                        router.update_health(&shard_id, false);
+                    }
 
                     missing_shards.push(shard_id);
                 }
@@ -447,6 +504,15 @@ impl FanoutExecutor {
 
                     missing_shards.push(shard_id.clone());
                 }
+            }
+        }
+
+        // A shard that answered is healthy again, including one that was
+        // retried after its retry window elapsed.
+        {
+            let mut router = self.router.write().await;
+            for shard_id in &responding_shards {
+                router.update_health(shard_id, true);
             }
         }
 
@@ -512,12 +578,16 @@ impl FanoutExecutor {
         // FIX BUG-071: Track shard IDs separately to identify failures even on panic
         let mut handles = Vec::with_capacity(shards.len());
         let mut handle_shard_ids = Vec::with_capacity(shards.len());
+        // A shard whose connection pool could not be created was never asked to
+        // delete, so it has to be reported as failed rather than dropped.
+        let mut failed_shards: Vec<String> = Vec::new();
 
         for shard in &shards {
             let pool = match self.get_pool(&shard.address).await {
                 Ok(p) => p,
                 Err(e) => {
                     warn!("Failed to get pool for {}: {}", shard.address, e);
+                    failed_shards.push(shard.id.clone());
                     continue;
                 }
             };
@@ -551,7 +621,6 @@ impl FanoutExecutor {
         // Collect results
         let mut found_on_shard: Option<String> = None;
         let mut responding_shards = Vec::new();
-        let mut failed_shards = Vec::new();
         let mut overall_status = DeleteStatus::NotFound;
 
         // FIX BUG-071: Iterate with index to identify shard even on task panic
@@ -706,12 +775,16 @@ impl FanoutExecutor {
         // FIX BUG-071: Track shard IDs separately to identify failures even on panic
         let mut handles = Vec::with_capacity(shards.len());
         let mut handle_shard_ids = Vec::with_capacity(shards.len());
+        // A shard whose connection pool could not be created was never asked to
+        // delete, so it has to be reported as failed rather than dropped.
+        let mut failed_shards: Vec<String> = Vec::new();
 
         for shard in &shards {
             let pool = match self.get_pool(&shard.address).await {
                 Ok(p) => p,
                 Err(e) => {
                     warn!("Failed to get pool for {}: {}", shard.address, e);
+                    failed_shards.push(shard.id.clone());
                     continue;
                 }
             };
@@ -745,7 +818,6 @@ impl FanoutExecutor {
         // Collect results
         let mut found_on_shard: Option<String> = None;
         let mut responding_shards = Vec::new();
-        let mut failed_shards = Vec::new();
         let mut overall_status = DeleteStatus::NotFound;
 
         // FIX BUG-071: Iterate with index to identify shard even on task panic
@@ -811,9 +883,11 @@ pub struct FanoutResult {
     pub results: Vec<SearchResult>,
     /// Shards that responded
     pub responding_shards: Vec<String>,
-    /// Shards that failed or timed out
+    /// Shards that failed, timed out, or were held back because their retry
+    /// window had not elapsed
     pub missing_shards: Vec<String>,
-    /// Total number of shards queried
+    /// Total number of configured shards, so `coverage` reports the share of
+    /// the cluster that actually answered
     pub total_shards: usize,
 }
 
@@ -891,6 +965,34 @@ mod tests {
     #[test]
     fn test_fanout_top_k_allows_u32_max() {
         assert_eq!(fanout_top_k(u32::MAX as usize).unwrap(), u32::MAX);
+    }
+
+    #[test]
+    fn test_fanout_fetch_k_stays_within_the_shard_limit() {
+        // Ungrouped queries ask for exactly top_k.
+        assert_eq!(fanout_fetch_k(10, false), 10);
+        assert_eq!(fanout_fetch_k(MAX_SHARD_TOP_K, false), MAX_SHARD_TOP_K);
+
+        // Grouped queries over-fetch so the per-group cut can still fill top_k.
+        assert_eq!(fanout_fetch_k(10, true), 40);
+
+        // Past a quarter of the limit, 4x would be rejected by every shard,
+        // which loses the whole query instead of shortening it.
+        assert_eq!(fanout_fetch_k(2_500, true), MAX_SHARD_TOP_K);
+        assert_eq!(fanout_fetch_k(10_000, true), MAX_SHARD_TOP_K);
+    }
+
+    #[test]
+    fn test_only_unreachable_shards_count_as_unhealthy() {
+        assert!(
+            ShardSearchFailure::Unreachable("Search timeout".to_string())
+                .indicates_unhealthy_shard()
+        );
+        // A shard that answered with a status is up; the request was the problem.
+        assert!(
+            !ShardSearchFailure::Rejected("top_k exceeds maximum of 10000".to_string())
+                .indicates_unhealthy_shard()
+        );
     }
 
     #[test]
@@ -1004,5 +1106,61 @@ mod tests {
 
         assert_eq!(result.coverage(), 0.5);
         assert!(result.is_partial());
+    }
+
+    /// Port 1 has no listener, so connection-pool creation for it fails
+    /// immediately without waiting for a request timeout.
+    fn unreachable_shard(id: &str) -> ShardInfo {
+        ShardInfo {
+            id: id.to_string(),
+            address: "127.0.0.1:1".to_string(),
+            healthy: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_counts_held_back_shards_as_missing() {
+        let router = Arc::new(RwLock::new(ShardRouter::new(vec![
+            unreachable_shard("shard-0"),
+            unreachable_shard("shard-1"),
+        ])));
+        let fanout = FanoutExecutor::with_pool_size(router.clone(), Duration::from_millis(50), 1);
+
+        // shard-1 failed recently, so it is held back for this fan-out.
+        router.write().await.update_health("shard-1", false);
+
+        let result = fanout
+            .search(
+                "collection",
+                &[0.1, 0.2],
+                10,
+                FanoutSearchOptions::default(),
+            )
+            .await
+            .expect("a non-empty fan-out set still returns partial results");
+
+        assert_eq!(result.total_shards, 2);
+        assert!(result.missing_shards.contains(&"shard-1".to_string()));
+        assert_eq!(result.responding_shards.len(), 0);
+        assert_eq!(result.coverage(), 0.0);
+        assert!(result.is_partial());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_delete_reports_shards_it_never_reached() {
+        let router = Arc::new(RwLock::new(ShardRouter::new(vec![unreachable_shard(
+            "shard-0",
+        )])));
+        let fanout = FanoutExecutor::with_pool_size(router, Duration::from_millis(50), 1);
+
+        let result = fanout
+            .broadcast_delete("collection", "vec-1")
+            .await
+            .expect("broadcast delete collects per-shard failures");
+
+        // A shard whose pool could not be created was never asked to delete, so
+        // the delete is not complete and must not be reported as one.
+        assert_eq!(result.failed_shards, vec!["shard-0".to_string()]);
+        assert!(!result.is_complete());
     }
 }

@@ -679,7 +679,19 @@ impl Akidb for CoordinatorService {
         self.consistency.record_delete(&req.id);
 
         let latency_secs = start.elapsed().as_secs_f64();
-        coordinator_metrics().record_request("delete", "success");
+        // A delete that never reached a shard is not a completed delete: the
+        // vector can still be served from the skipped shard, so the caller must
+        // not be told the delete succeeded.
+        let complete = result.is_complete();
+        if !complete {
+            warn!(
+                id = %req.id,
+                failed_shards = ?result.failed_shards,
+                "Broadcast delete did not reach every shard"
+            );
+        }
+        coordinator_metrics()
+            .record_request("delete", if complete { "success" } else { "partial" });
 
         debug!(
             "Delete {} completed in {:.2}ms: status={:?}, found_on={:?}",
@@ -690,7 +702,7 @@ impl Akidb for CoordinatorService {
         );
 
         Ok(Response::new(DeleteResponse {
-            success: true,
+            success: complete,
             id: req.id,
             status: result.status as i32,
             visibility: "immediate".to_string(),

@@ -1,6 +1,7 @@
 //! Configuration types for AkiDB
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 /// Main AkiDB configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -799,12 +800,71 @@ pub struct SeaweedFsConfig {
 impl Default for SeaweedFsConfig {
     fn default() -> Self {
         Self {
-            endpoint: "localhost:8333".to_string(),
+            endpoint: "http://localhost:8333".to_string(),
             bucket: "akidb-snapshots".to_string(),
-            access_key: "akidb-admin".to_string(),
-            secret_key: "akidb-secret-key".to_string(),
+            // Credentials come from the deployment (environment variable or
+            // secret store). SeaweedFS serves every operation anonymously when
+            // it has no identity configuration, so a baked-in default here would
+            // be either a published secret or a silent anonymous path.
+            access_key: String::new(),
+            secret_key: String::new(),
             use_ssl: false,
         }
+    }
+}
+
+impl SeaweedFsConfig {
+    /// S3 credentials for the gateway, which are mandatory.
+    ///
+    /// SeaweedFS grants anonymous access to every operation when it is started
+    /// without an identity configuration, so an empty credential has to fail
+    /// here rather than let a request reach an open gateway.
+    pub fn credentials(&self) -> Result<(&str, &str), String> {
+        if self.access_key.trim().is_empty() || self.secret_key.trim().is_empty() {
+            return Err(
+                "storage.seaweedfs.access_key and storage.seaweedfs.secret_key are required; supply them from an environment variable or secret store"
+                    .to_string(),
+            );
+        }
+        Ok((self.access_key.as_str(), self.secret_key.as_str()))
+    }
+
+    /// Gateway origin, with the scheme implied by `use_ssl` when the operator
+    /// omitted it.
+    ///
+    /// Only a credential-free `http`/`https` origin is accepted: userinfo, a
+    /// path, a query, or a fragment would either leak a credential or change
+    /// what the signed request addresses.
+    pub fn normalized_endpoint(&self) -> Result<String, String> {
+        let endpoint = self.endpoint.trim();
+        if endpoint.is_empty() {
+            return Err("storage.seaweedfs.endpoint must not be empty".to_string());
+        }
+        let required_scheme = if self.use_ssl { "https" } else { "http" };
+        let candidate = if endpoint.contains("://") {
+            endpoint.to_string()
+        } else {
+            format!("{required_scheme}://{endpoint}")
+        };
+        let parsed = Url::parse(&candidate)
+            .map_err(|_| "storage.seaweedfs.endpoint is not a valid URL".to_string())?;
+        if parsed.scheme() != required_scheme
+            || parsed.host_str().is_none()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || !matches!(parsed.path(), "" | "/")
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(format!(
+                "storage.seaweedfs.endpoint must be a credential-free {required_scheme} origin"
+            ));
+        }
+
+        // Hand back the canonical origin rather than the operator's spelling:
+        // every request URL is built by concatenating onto this value, so it
+        // must already be a usable origin.
+        Ok(parsed.origin().ascii_serialization())
     }
 }
 
@@ -1052,5 +1112,104 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.log_format, LogFormat::Pretty);
+    }
+
+    #[test]
+    fn test_seaweedfs_defaults_carry_no_credentials() {
+        let seaweedfs = SeaweedFsConfig::default();
+
+        assert_eq!(seaweedfs.endpoint, "http://localhost:8333");
+        assert!(seaweedfs.access_key.is_empty());
+        assert!(seaweedfs.secret_key.is_empty());
+        // SeaweedFS serves every operation anonymously without an identity
+        // configuration, so the shipped default must not resolve to a usable
+        // credential.
+        assert!(seaweedfs.credentials().is_err());
+    }
+
+    #[test]
+    fn test_seaweedfs_endpoint_gains_the_scheme_implied_by_tls() {
+        let plain = SeaweedFsConfig {
+            endpoint: "seaweedfs.internal:8333".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            plain.normalized_endpoint().unwrap(),
+            "http://seaweedfs.internal:8333"
+        );
+
+        let tls = SeaweedFsConfig {
+            endpoint: "seaweedfs.internal:8333/".to_string(),
+            use_ssl: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            tls.normalized_endpoint().unwrap(),
+            "https://seaweedfs.internal:8333"
+        );
+    }
+
+    #[test]
+    fn test_seaweedfs_endpoint_rejects_non_origin_values() {
+        for endpoint in [
+            "",
+            "   ",
+            "http://",
+            "ftp://seaweedfs.internal:8333",
+            "http://seaweedfs.internal:8333/prefix",
+            "http://seaweedfs.internal:8333?token=secret",
+            "http://user:secret@seaweedfs.internal:8333",
+            "not a url",
+        ] {
+            let seaweedfs = SeaweedFsConfig {
+                endpoint: endpoint.to_string(),
+                ..Default::default()
+            };
+            assert!(
+                seaweedfs.normalized_endpoint().is_err(),
+                "{endpoint} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_seaweedfs_endpoint_is_returned_as_a_canonical_origin() {
+        let seaweedfs = SeaweedFsConfig {
+            endpoint: "  HTTP://SeaweedFS.Internal:8333/  ".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            seaweedfs.normalized_endpoint().unwrap(),
+            "http://seaweedfs.internal:8333"
+        );
+    }
+
+    #[test]
+    fn test_seaweedfs_endpoint_scheme_must_match_tls_configuration() {
+        let seaweedfs = SeaweedFsConfig {
+            endpoint: "http://seaweedfs.internal:8333".to_string(),
+            use_ssl: true,
+            ..Default::default()
+        };
+
+        assert!(seaweedfs.normalized_endpoint().is_err());
+    }
+
+    #[test]
+    fn test_seaweedfs_credentials_must_be_present() {
+        let seaweedfs = SeaweedFsConfig {
+            access_key: "access".to_string(),
+            secret_key: "secret".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(seaweedfs.credentials().unwrap(), ("access", "secret"));
+
+        let blank_secret = SeaweedFsConfig {
+            access_key: "access".to_string(),
+            secret_key: "   ".to_string(),
+            ..Default::default()
+        };
+        assert!(blank_secret.credentials().is_err());
     }
 }

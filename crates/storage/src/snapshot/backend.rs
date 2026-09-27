@@ -4,6 +4,7 @@
 //! to various storage systems including local filesystem and S3-compatible
 //! object stores (like SeaweedFS).
 
+use akidb_common::config::SeaweedFsConfig;
 use akidb_common::{AkiDbError, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -521,20 +522,41 @@ pub struct S3SnapshotBackend {
 }
 
 impl S3SnapshotBackend {
-    pub fn new(
+    /// Build a backend against the configured SeaweedFS S3 gateway.
+    ///
+    /// Every request URL is assembled by string concatenation, so the endpoint
+    /// must already carry its scheme: a value such as `localhost:8333` would be
+    /// parsed as the scheme `localhost` and rejected at request time. The
+    /// gateway credentials are mandatory because SeaweedFS serves every
+    /// operation anonymously when it has no identity configuration.
+    pub fn try_new(
         endpoint: impl Into<String>,
         bucket: impl Into<String>,
         access_key: impl Into<String>,
         secret_key: impl Into<String>,
-    ) -> Self {
-        Self {
-            endpoint: endpoint.into(),
+    ) -> Result<Self> {
+        let endpoint = endpoint.into();
+        let seaweedfs = SeaweedFsConfig {
+            use_ssl: endpoint.trim().starts_with("https://"),
+            endpoint,
             bucket: bucket.into(),
             access_key: access_key.into(),
             secret_key: secret_key.into(),
+        };
+        let endpoint = seaweedfs
+            .normalized_endpoint()
+            .map_err(AkiDbError::ConfigError)?;
+        let (access_key, secret_key) = seaweedfs.credentials().map_err(AkiDbError::ConfigError)?;
+        let (access_key, secret_key) = (access_key.to_string(), secret_key.to_string());
+
+        Ok(Self {
+            endpoint,
+            bucket: seaweedfs.bucket,
+            access_key,
+            secret_key,
             region: "us-east-1".to_string(),
             client: reqwest::Client::new(),
-        }
+        })
     }
 
     pub fn with_region(mut self, region: impl Into<String>) -> Self {
@@ -1089,11 +1111,43 @@ mod tests {
 
     #[test]
     fn test_s3_object_url_uses_encoded_path() {
-        let backend = S3SnapshotBackend::new("http://localhost:9000", "bucket", "ak", "sk");
+        let backend = S3SnapshotBackend::try_new("http://localhost:9000", "bucket", "ak", "sk")
+            .expect("valid endpoint and credentials");
 
         assert_eq!(
             backend.object_url("snapshots/snap 1/data/a?b#c.txt"),
             "http://localhost:9000/bucket/snapshots/snap%201/data/a%3Fb%23c.txt"
+        );
+    }
+
+    #[test]
+    fn test_s3_backend_normalizes_schemeless_endpoint() {
+        let backend = S3SnapshotBackend::try_new("seaweedfs.internal:8333", "bucket", "ak", "sk")
+            .expect("schemeless endpoint gains the implied scheme");
+
+        assert_eq!(
+            backend.object_url("snapshots/snap-1/data.bin"),
+            "http://seaweedfs.internal:8333/bucket/snapshots/snap-1/data.bin"
+        );
+    }
+
+    #[test]
+    fn test_s3_backend_rejects_anonymous_and_malformed_configuration() {
+        // SeaweedFS serves every operation anonymously without an identity
+        // configuration, so an empty credential must not build a backend.
+        assert!(S3SnapshotBackend::try_new("http://localhost:9000", "bucket", "", "sk").is_err());
+        assert!(S3SnapshotBackend::try_new("http://localhost:9000", "bucket", "ak", "").is_err());
+        assert!(S3SnapshotBackend::try_new("", "bucket", "ak", "sk").is_err());
+        assert!(S3SnapshotBackend::try_new(
+            "https://user:secret@localhost:9000",
+            "bucket",
+            "ak",
+            "sk"
+        )
+        .is_err());
+        assert!(
+            S3SnapshotBackend::try_new("http://localhost:9000/prefix", "bucket", "ak", "sk")
+                .is_err()
         );
     }
 

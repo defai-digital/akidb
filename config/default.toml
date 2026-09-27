@@ -167,10 +167,14 @@ wal_enabled = false
 wal_path = "./data/wal"
 
 [storage.seaweedfs]
-endpoint = "localhost:8333"
+# Object storage for immutable knowledge bundles and snapshots. Credentials are
+# deliberately empty: supply them per deployment (STORAGE_ACCESS_KEY /
+# STORAGE_SECRET_KEY, or a secret store) instead of committing a secret here.
+# An empty credential fails closed rather than signing with a placeholder.
+endpoint = "http://localhost:8333"
 bucket = "akidb-snapshots"
-access_key = "akidb-admin"
-secret_key = "akidb-secret-key"
+access_key = ""
+secret_key = ""
 use_ssl = false
 
 [sql]

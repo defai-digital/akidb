@@ -1035,31 +1035,26 @@ fn build_service(
         let mut assigned = Vec::with_capacity(stored_vectors.len());
         for (position, stored) in stored_vectors.iter().enumerate() {
             let vector_id = VectorId::new(&stored.external_id);
-            match index.insert(&vector_id, &stored.vector) {
-                Ok(internal_id) => {
-                    if let Err(error) = id_mapping.upsert_with_vector(
-                        &vector_id,
-                        internal_id,
-                        &stored.vector,
-                        &stored.metadata,
-                    ) {
-                        warn!(
-                            vector_id = %stored.external_id,
-                            %error,
-                            "Failed to update mapping for reloaded vector"
-                        );
-                    } else {
-                        assigned.push((position, internal_id.0));
-                    }
-                }
-                Err(error) => {
-                    warn!(
-                        vector_id = %stored.external_id,
-                        %error,
-                        "Failed to reload persisted vector into index"
-                    );
-                }
-            }
+            // Both halves of the reload record the same identity: the index maps
+            // external id -> internal id and the payload store must agree. If
+            // only one half were written the store would point at a different
+            // vector, so a later delete would tombstone the wrong one. Fail the
+            // reload instead of serving a divergent index.
+            let internal_id = index.insert(&vector_id, &stored.vector).map_err(|error| {
+                format!(
+                    "failed to reload persisted vector '{}' into the HNSW index: {error}",
+                    stored.external_id
+                )
+            })?;
+            id_mapping
+                .upsert_with_vector(&vector_id, internal_id, &stored.vector, &stored.metadata)
+                .map_err(|error| {
+                    format!(
+                        "failed to restore the id mapping for reloaded vector '{}': {error}",
+                        stored.external_id
+                    )
+                })?;
+            assigned.push((position, internal_id.0));
         }
         if !assigned.is_empty() {
             info!(
@@ -1317,6 +1312,46 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&rocksdb_path);
         let _ = std::fs::remove_dir_all(snapshot);
+    }
+
+    #[test]
+    fn reload_rejects_persisted_vectors_the_index_cannot_hold() {
+        let rocksdb_path = unique_temp_path("reload-mismatch");
+        let mut config = AkiDbConfig::default();
+        config.storage.rocksdb_path = rocksdb_path.display().to_string();
+        config.slo.reference.dimensions = 4;
+        config.slo.reference.vectors_per_shard = 8;
+        config.embedding.enabled = false;
+        config.sql.enabled = false;
+
+        {
+            let storage = Arc::new(RocksDbBackend::open(&rocksdb_path).unwrap());
+            let mapping = IdMapping::new(storage, "default");
+            // A durable vector the configured index cannot accept. Reloading it
+            // used to log and continue, which left the index mapping the id to a
+            // different internal id than the payload store records, so a later
+            // delete tombstoned the wrong vector.
+            mapping
+                .upsert_with_vector(
+                    &VectorId::new("mismatched"),
+                    akidb_common::InternalId(1),
+                    &[1.0, 0.0, 0.0, 0.0, 0.0],
+                    b"{}",
+                )
+                .unwrap();
+        }
+
+        let error = match build_service(&config) {
+            Ok(_) => panic!("reload must fail rather than serve a divergent index"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("mismatched"),
+            "reload error should name the offending vector: {error}"
+        );
+
+        let _ = std::fs::remove_dir_all(&rocksdb_path);
+        let _ = std::fs::remove_dir_all(hnsw_snapshot_dir(Path::new(&rocksdb_path)));
     }
 
     #[test]

@@ -412,6 +412,9 @@ impl WriteAheadLog {
     /// Entry format: [magic:4][len:4][data:len][crc32:4]
     fn read_entries_from_reader(mut reader: BufReader<File>) -> impl Iterator<Item = Result<WalEntry>> {
         let mut corruption_recovery_mode = false;
+        // A pre-magic legacy entry can only be the file's first record, because
+        // only that record was written without the magic prefix.
+        let mut at_file_start = true;
 
         std::iter::from_fn(move || {
             loop {
@@ -439,11 +442,25 @@ impl WriteAheadLog {
                         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return None,
                         Err(e) => return Some(Err(AkiDbError::StorageError(format!("WAL read error: {}", e)))),
                     }
+                    let is_file_header = at_file_start;
+                    at_file_start = false;
 
                     // Check magic bytes
                     if magic_buf != WAL_ENTRY_MAGIC {
-                        // BUG-HUNT-014: Magic mismatch - likely legacy format or corruption
-                        // Try reading as legacy format (no magic, no checksum)
+                        // BUG-HUNT-014: Magic mismatch - legacy format or corruption.
+                        // The legacy format (no magic, no checksum) carries no
+                        // integrity tag, so the four bytes are only meaningful as
+                        // a length at the start of the file. Anywhere else they
+                        // are arbitrary corruption, and decoding them as a length
+                        // could hand the replay pipeline a fabricated entry.
+                        if !is_file_header {
+                            warn!(
+                                "WAL corruption detected: record lacks magic bytes. Scanning for next valid entry."
+                            );
+                            corruption_recovery_mode = true;
+                            continue;
+                        }
+
                         let len = u32::from_le_bytes(magic_buf) as usize;
 
                         // FIX BUG-HUNT-403: Use constant for max entry size
@@ -806,5 +823,80 @@ mod tests {
             Err(AkiDbError::StorageError(_))
         ));
         assert_eq!(wal.current_lsn(), u64::MAX);
+    }
+
+    /// Build a WAL record body with the magic bytes stripped, the shape a torn
+    /// or shifted write leaves behind: the leading four bytes are the body's
+    /// length prefix rather than the entry magic.
+    fn torn_record_body(entry: &WalEntry) -> Vec<u8> {
+        let body = bincode::serialize(entry).unwrap();
+        let mut torn = Vec::new();
+        torn.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        torn.extend_from_slice(&body);
+        torn.extend_from_slice(&0u32.to_le_bytes());
+        assert_ne!(&torn[..4], &WAL_ENTRY_MAGIC[..]);
+        torn
+    }
+
+    fn append_raw_bytes(path: &Path, bytes: &[u8]) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        file.write_all(bytes).unwrap();
+        file.sync_all().unwrap();
+    }
+
+    #[test]
+    fn test_wal_does_not_reconstruct_entries_from_mid_file_corruption() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        {
+            let wal = WriteAheadLog::open(&wal_path, WalSyncMode::Sync).unwrap();
+            wal.append_insert("vec-1", 0, &[1.0, 2.0], None).unwrap();
+            wal.flush().unwrap();
+        }
+
+        // A record whose magic was lost still holds a perfectly good bincode
+        // body, so reading the leading length and decoding what follows would
+        // hand the replay pipeline an entry that was never committed.
+        let ghost = WalEntry::Checkpoint {
+            lsn: 4_242,
+            timestamp: 0,
+        };
+        append_raw_bytes(&wal_path, &torn_record_body(&ghost));
+
+        let wal = WriteAheadLog::open(&wal_path, WalSyncMode::Sync).unwrap();
+        let entries = wal.read_entries().unwrap();
+
+        assert_eq!(
+            entries.iter().map(WalEntry::lsn).collect::<Vec<_>>(),
+            vec![1],
+            "a magic-less record must be treated as corruption, not replayed"
+        );
+    }
+
+    #[test]
+    fn test_wal_reads_a_legacy_first_record_without_magic() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        // Only the file's first record may predate the magic prefix, so the
+        // legacy fallback stays reachable there.
+        let legacy = WalEntry::Checkpoint {
+            lsn: 7,
+            timestamp: 0,
+        };
+        append_raw_bytes(&wal_path, &torn_record_body(&legacy));
+
+        let wal = WriteAheadLog::open(&wal_path, WalSyncMode::Sync).unwrap();
+        let entries = wal.read_entries().unwrap();
+
+        assert_eq!(
+            entries.iter().map(WalEntry::lsn).collect::<Vec<_>>(),
+            vec![7]
+        );
     }
 }

@@ -18,6 +18,7 @@ async-trait.workspace = true
 tokio = { workspace = true, features = ["time", "sync"] }
 parking_lot.workspace = true
 prometheus.workspace = true
+url.workspace = true
 lazy_static = "1.4"
 
 [dev-dependencies]

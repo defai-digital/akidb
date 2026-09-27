@@ -142,14 +142,13 @@ impl S3GenerationBundleFetcher {
         region: impl Into<String>,
         config: S3GenerationBundleFetcherConfig,
     ) -> Result<Self, GenerationFetchError> {
-        let endpoint = normalized_seaweedfs_endpoint(&seaweedfs.endpoint, seaweedfs.use_ssl)?;
-        let credentials = Credentials::new(
-            &seaweedfs.access_key,
-            &seaweedfs.secret_key,
-            None,
-            None,
-            "akidb-generation",
-        );
+        let endpoint = seaweedfs
+            .normalized_endpoint()
+            .map_err(GenerationFetchError::Rejected)?;
+        let (access_key, secret_key) = seaweedfs
+            .credentials()
+            .map_err(GenerationFetchError::Rejected)?;
+        let credentials = Credentials::new(access_key, secret_key, None, None, "akidb-generation");
         let sdk_config = S3ClientConfigBuilder::new()
             .behavior_version(BehaviorVersion::latest())
             .region(Region::new(region.into()))
@@ -374,40 +373,6 @@ fn create_private_download_directory(path: &Path) -> Result<(), GenerationFetchE
     Ok(())
 }
 
-#[cfg(feature = "generation-s3")]
-fn normalized_seaweedfs_endpoint(
-    endpoint: &str,
-    use_ssl: bool,
-) -> Result<String, GenerationFetchError> {
-    let endpoint = endpoint.trim().trim_end_matches('/');
-    if endpoint.is_empty() {
-        return Err(GenerationFetchError::Rejected(
-            "SeaweedFS endpoint must not be empty".to_string(),
-        ));
-    }
-    let endpoint = if endpoint.contains("://") {
-        endpoint.to_string()
-    } else {
-        format!("{}://{endpoint}", if use_ssl { "https" } else { "http" })
-    };
-    let parsed = Url::parse(&endpoint)
-        .map_err(|_| GenerationFetchError::Rejected("invalid SeaweedFS endpoint".to_string()))?;
-    let required_scheme = if use_ssl { "https" } else { "http" };
-    if parsed.scheme() != required_scheme
-        || parsed.host_str().is_none()
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || !matches!(parsed.path(), "" | "/")
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-    {
-        return Err(GenerationFetchError::Rejected(format!(
-            "SeaweedFS endpoint must be a credential-free {required_scheme} origin"
-        )));
-    }
-    Ok(endpoint)
-}
-
 fn validate_regular_file(path: &Path) -> Result<(), GenerationFetchError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
@@ -527,14 +492,15 @@ mod tests {
 
     #[cfg(feature = "generation-s3")]
     #[test]
-    fn seaweedfs_endpoint_scheme_must_match_tls_configuration() {
-        assert_eq!(
-            normalized_seaweedfs_endpoint("seaweedfs.internal:9000", true).unwrap(),
-            "https://seaweedfs.internal:9000"
-        );
-        assert!(normalized_seaweedfs_endpoint("http://seaweedfs.internal:9000", true).is_err());
-        assert!(
-            normalized_seaweedfs_endpoint("https://user:secret@seaweedfs.internal", true).is_err()
-        );
+    fn seaweedfs_credentials_are_required() {
+        let seaweedfs = akidb_common::config::SeaweedFsConfig {
+            endpoint: "http://seaweedfs.internal:8333".to_string(),
+            bucket: "knowledge".to_string(),
+            ..Default::default()
+        };
+
+        // SeaweedFS serves every operation anonymously without an identity
+        // configuration, so the fetcher must refuse to be built credential-less.
+        assert!(seaweedfs.credentials().is_err());
     }
 }

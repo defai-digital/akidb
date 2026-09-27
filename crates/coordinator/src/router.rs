@@ -2,9 +2,19 @@
 
 use akidb_common::VectorId;
 use std::collections::{BTreeMap, HashMap};
+use std::time::{Duration, Instant};
 
 /// Number of virtual nodes per shard for consistent hashing
 const VIRTUAL_NODES_PER_SHARD: u32 = 150;
+
+/// How long a shard stays out of the fan-out set after a failed request before
+/// the coordinator retries it.
+///
+/// Shards are only ever marked unhealthy by a failed request, so without a
+/// retry window a single transient timeout would exclude a shard's data for the
+/// lifetime of the process. Each new failure restarts the window, so a shard
+/// that stays down costs at most one timed-out probe per window.
+pub const UNHEALTHY_RETRY_AFTER: Duration = Duration::from_secs(30);
 
 /// Shard information
 #[derive(Debug, Clone)]
@@ -26,6 +36,9 @@ pub struct ShardRouter {
     shards: Vec<ShardInfo>,
     /// Consistent hashing ring: hash -> shard index
     ring: BTreeMap<u64, RingEntry>,
+    /// When each currently-unhealthy shard was last marked unhealthy, used to
+    /// decide whether its retry window has elapsed.
+    unhealthy_since: HashMap<String, Instant>,
 }
 
 impl ShardRouter {
@@ -34,6 +47,7 @@ impl ShardRouter {
         let mut router = Self {
             shards,
             ring: BTreeMap::new(),
+            unhealthy_since: HashMap::new(),
         };
         router.rebuild_ring();
         router
@@ -126,15 +140,72 @@ impl ShardRouter {
         self.shards.iter().filter(|s| s.healthy).collect()
     }
 
+    /// Select the shards a fan-out should query, plus the IDs of the shards
+    /// deliberately held back.
+    ///
+    /// Healthy shards are always selected. A shard marked unhealthy by an
+    /// earlier failure is selected again once `retry_after` has elapsed since
+    /// that failure, so a shard that recovers rejoins without a coordinator
+    /// restart; until then it is held back and must be reported as missing so
+    /// the response does not claim full coverage.
+    ///
+    /// If every configured shard is inside its retry window, all of them are
+    /// probed anyway: holding back the whole cluster would turn a transient
+    /// blip into a total search outage, and the resulting failures still land in
+    /// the missing list.
+    pub fn fanout_selection(&self, retry_after: Duration) -> (Vec<&ShardInfo>, Vec<String>) {
+        let now = Instant::now();
+        let mut selected = Vec::new();
+        let mut held_back = Vec::new();
+
+        for shard in &self.shards {
+            if shard.healthy {
+                selected.push(shard);
+                continue;
+            }
+            let retry_due = self
+                .unhealthy_since
+                .get(&shard.id)
+                .map(|since| now.duration_since(*since) >= retry_after)
+                // A shard that was never seen failing has no retry window to
+                // wait out.
+                .unwrap_or(true);
+            if retry_due {
+                selected.push(shard);
+            } else {
+                held_back.push(shard.id.clone());
+            }
+        }
+
+        if selected.is_empty() && !self.shards.is_empty() {
+            return (self.shards.iter().collect(), Vec::new());
+        }
+
+        (selected, held_back)
+    }
+
     /// Get all shards
     pub fn all_shards(&self) -> &[ShardInfo] {
         &self.shards
     }
 
-    /// Update shard health status
+    /// Update shard health status.
+    ///
+    /// Marking a shard unhealthy records the failure time and restarts the
+    /// retry window, so a shard that keeps failing is probed at most once per
+    /// [`UNHEALTHY_RETRY_AFTER`].
     pub fn update_health(&mut self, shard_id: &str, healthy: bool) {
+        if !self.shards.iter().any(|s| s.id == shard_id) {
+            return;
+        }
         if let Some(shard) = self.shards.iter_mut().find(|s| s.id == shard_id) {
             shard.healthy = healthy;
+        }
+        if healthy {
+            self.unhealthy_since.remove(shard_id);
+        } else {
+            self.unhealthy_since
+                .insert(shard_id.to_string(), Instant::now());
         }
     }
 
@@ -260,5 +331,89 @@ mod tests {
             assert!(*pct > 40.0, "Shard got {}% - too uneven", pct);
             assert!(*pct < 60.0, "Shard got {}% - too uneven", pct);
         }
+    }
+
+    fn two_shards() -> Vec<ShardInfo> {
+        vec![
+            ShardInfo {
+                id: "shard-0".to_string(),
+                address: "localhost:50051".to_string(),
+                healthy: true,
+            },
+            ShardInfo {
+                id: "shard-1".to_string(),
+                address: "localhost:50052".to_string(),
+                healthy: true,
+            },
+        ]
+    }
+
+    fn selected_ids(router: &ShardRouter, retry_after: Duration) -> Vec<String> {
+        router
+            .fanout_selection(retry_after)
+            .0
+            .iter()
+            .map(|shard| shard.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn test_unhealthy_shard_is_held_back_then_retried() {
+        let mut router = ShardRouter::new(two_shards());
+
+        router.update_health("shard-1", false);
+
+        // A shard that just failed leaves the fan-out set so its timeout is not
+        // paid on every search, and it is reported as missing rather than
+        // silently dropped.
+        let (selected, held_back) = router.fanout_selection(UNHEALTHY_RETRY_AFTER);
+        assert_eq!(
+            selected.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["shard-0"]
+        );
+        assert_eq!(held_back, vec!["shard-1".to_string()]);
+
+        // It rejoins on its own once the retry window elapses.
+        assert_eq!(
+            selected_ids(&router, Duration::ZERO),
+            vec!["shard-0".to_string(), "shard-1".to_string()]
+        );
+
+        // A successful probe clears the failure.
+        router.update_health("shard-1", true);
+        assert!(router.get_shard("shard-1").unwrap().healthy);
+        assert!(router.fanout_selection(UNHEALTHY_RETRY_AFTER).1.is_empty());
+    }
+
+    #[test]
+    fn test_repeated_failures_restart_the_retry_window() {
+        let mut router = ShardRouter::new(two_shards());
+        let window = Duration::from_millis(50);
+
+        router.update_health("shard-1", false);
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(
+            selected_ids(&router, window).contains(&"shard-1".to_string()),
+            "window elapsed"
+        );
+
+        // The probe failed as well, so the next attempt waits a full window
+        // instead of inheriting the first failure's expired stamp.
+        router.update_health("shard-1", false);
+        assert_eq!(selected_ids(&router, window), vec!["shard-0".to_string()]);
+    }
+
+    #[test]
+    fn test_all_shards_held_back_are_probed_anyway() {
+        let mut router = ShardRouter::new(two_shards());
+
+        router.update_health("shard-0", false);
+        router.update_health("shard-1", false);
+
+        // Holding back the entire cluster would turn a blip into a total search
+        // outage, so the fan-out falls back to probing every shard.
+        let (selected, held_back) = router.fanout_selection(UNHEALTHY_RETRY_AFTER);
+        assert_eq!(selected.len(), 2);
+        assert!(held_back.is_empty());
     }
 }
