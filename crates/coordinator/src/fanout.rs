@@ -219,13 +219,17 @@ impl ShardConnectionPool {
         let mut clients = Vec::with_capacity(pool_size);
 
         for _ in 0..pool_size {
+            // Connect lazily: dialing eagerly serializes pool creation on the
+            // search path, where a black-holed host costs `pool_size` ×
+            // `connect_timeout` before fan-out even starts -- against a shorter
+            // search timeout. A lazily connected channel reports the failure as
+            // a transport status on the first request instead, which the shard
+            // health classification already understands.
             let channel = Endpoint::from_shared(endpoint.clone())
                 .map_err(|e| AkiDbError::CoordinatorError(format!("Invalid endpoint: {}", e)))?
                 .connect_timeout(Duration::from_secs(5))
                 .timeout(Duration::from_secs(10))
-                .connect()
-                .await
-                .map_err(|e| AkiDbError::CoordinatorError(format!("Connection failed: {}", e)))?;
+                .connect_lazy();
 
             clients.push(AkidbClient::new(channel));
         }
