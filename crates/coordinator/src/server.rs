@@ -39,15 +39,10 @@ use tracing_subscriber::FmtSubscriber;
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// gRPC listen address
-    ///
-    /// Loopback by default: the coordinator forwards shard requests without
-    /// authenticating the caller, so binding a reachable interface must be an
-    /// explicit operator decision. Remote deployments set this (Ansible passes
-    /// `--listen`, Docker sets `AKIDB_COORDINATOR_LISTEN_ADDR`).
     #[arg(
         short,
         long,
-        default_value = "127.0.0.1:50050",
+        default_value = "0.0.0.0:50050",
         env = "AKIDB_COORDINATOR_LISTEN_ADDR"
     )]
     pub listen: String,
