@@ -15,7 +15,7 @@ profile.
 - Native gRPC TLS, gateway HTTPS, PostgreSQL TLS, bearer authentication, and
   private-network binding are mandatory.
 
-The canonical recovery set is PostgreSQL plus MinIO/OpenWiki. Local
+The canonical recovery set is PostgreSQL plus MinIO. Local
 RocksDB/HNSW/BM25/graph directories are disposable projections and must never
 be copied from a live peer.
 

@@ -26,7 +26,7 @@ The product boundary is:
 
 This preserves AkiDB's embedded, local-first deployment model while adding the
 relationship retrieval needed by private enterprise AI. In immutable
-generation mode, AX Fabric/OpenWiki remain authoritative and the graph is
+generation mode, AX Fabric remains authoritative and the graph is
 rebuilt alongside vector, lexical, and payload state from one logical bundle;
 see the [knowledge-serving architecture](../architecture/knowledge-serving.md).
 
@@ -46,7 +46,7 @@ an evidence-bearing retrieval projection rather than an unrestricted database.
 
 ### Source of truth and consistency
 
-AX Fabric/OpenWiki identities and versioned source objects in MinIO are
+AX Fabric identities and versioned source objects in MinIO are
 canonical. AkiDB's vector, lexical, payload, and native graph structures are
 retrieval projections.
 
@@ -71,7 +71,7 @@ have the highest value and lowest risk:
 
 - document, section, page, and chunk containment;
 - email thread membership, sender/recipient, and attachments;
-- OpenWiki document/revision identity and typed relationships;
+- AX Wiki page and source-file references, and DocProc block/span containment;
 - MinIO object identity and source version;
 - PDF page/image extraction;
 - ticket creation and source evidence when supplied by a trusted system.

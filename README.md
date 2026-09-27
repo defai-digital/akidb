@@ -36,7 +36,7 @@ targets. See [Platform Support](docs/platform/SUPPORT.md).
 > AMD64 three-replica knowledge cell is qualified for a bounded 100k × 768
 > envelope. Broader market ANN, graph, and competitor-parity claims remain an
 > active release gate, not a completed verdict. AkiDB is not a consensus
-> database: canonical data remains in MinIO/OpenWiki and PostgreSQL. The
+> database: canonical data remains in MinIO and AX Fabric object storage, plus PostgreSQL. The
 > multi-shard coordinator remains a separate capacity path.
 
 ## Why AkiDB
@@ -147,7 +147,7 @@ The target knowledge-serving cell separates canonical data, publication
 authority, local retrieval state, and request routing:
 
 ```text
-OpenWiki + source objects
+AX Wiki / DocProc inputs + source objects
             │
             ▼
   AX Fabric ingestion/distillation
@@ -168,7 +168,7 @@ OpenWiki + source objects
                                          Agents / GenAI
 ```
 
-MinIO and OpenWiki remain canonical. PostgreSQL is the publication and ordered
+MinIO remains the canonical object store. PostgreSQL is the publication and ordered
 checkpoint authority. Each AkiDB node owns an independent, rebuildable full
 copy on local storage; live RocksDB or index files are never shared between
 replicas. NATS may later accelerate notifications, but it is not the

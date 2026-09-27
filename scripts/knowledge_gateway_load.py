@@ -36,7 +36,7 @@ from typing import Any
 SCHEMA_VERSION = 1
 MAX_FAILURE_SAMPLES = 20
 CONTENT_HASH = re.compile(r"^[0-9a-f]{64}$")
-ALLOWED_SOURCE_SCHEMES = {"s3", "https", "openwiki"}
+ALLOWED_SOURCE_SCHEMES = {"s3", "https"}
 
 
 class ConfigurationError(ValueError):

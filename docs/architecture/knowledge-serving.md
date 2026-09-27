@@ -20,21 +20,21 @@ AkiDB process.
 
 | Plane | Owner and technology | Authority |
 | --- | --- | --- |
-| Source and canonical artifacts | AX Fabric, OpenWiki, and MinIO | Documents, relationships, source versions, and immutable logical bundles |
+| Source and canonical artifacts | AX Fabric and MinIO | Documents, relationships, source versions, and immutable logical bundles. AX Wiki and DocProc are Fabric inputs |
 | Publication control | AX Fabric on HA PostgreSQL | Generation lifecycle, active pointer, ordered sequence, replica checkpoints, and audit |
 | Retrieval serving | Independent AkiDB replicas on local storage | Rebuildable RocksDB, HNSW, BM25, payload, and bounded-graph projections |
 | Request routing | Stateless AX retrieval gateway | Generation/checkpoint barriers and selection among eligible replicas |
 | Optional notification | NATS JetStream | Wake-up/acceleration only; never replay or activation authority |
 
 Serving an already active local generation must not synchronously depend on
-PostgreSQL, MinIO, OpenWiki, or NATS.
+PostgreSQL, MinIO, or NATS.
 
 ## Logical architecture
 
 ```text
- OpenWiki ─────┐
-               ├─► AX Fabric ingestion and distillation
- MinIO sources ┘                 │
+ AX Wiki / DocProc ─┐
+                    ├─► AX Fabric ingestion and distillation
+ MinIO sources ─────┘            │
                                  │ immutable logical bundle + checksum
                                  ▼
                             MinIO artifacts
@@ -124,7 +124,7 @@ in place.
 
 | Data | Contract |
 | --- | --- |
-| Published documents, OpenWiki content, and distilled knowledge | Atomic generation publication; stable after activation |
+| Published documents and distilled knowledge | Atomic generation publication; stable after activation |
 | Curated updates between generations | Ordered, idempotent mutation sequence with an explicit checkpoint barrier |
 | Agent session state and immediate working memory | Strongly consistent PostgreSQL path first, or an explicit wait/fallback barrier before querying AkiDB |
 
@@ -164,7 +164,7 @@ The graph is a generation-scoped retrieval projection:
 - default one-hop traversal, a hard maximum of three, and strict fan-out,
   result, token, workspace, and generation limits.
 
-OpenWiki and AX Fabric remain authoritative for semantic relationships. AkiDB
+AX Fabric remains authoritative for semantic relationships. AkiDB
 does not add Cypher, arbitrary graph transactions, unbounded traversal, or an
 independent canonical graph write API.
 

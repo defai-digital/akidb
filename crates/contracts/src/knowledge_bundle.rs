@@ -644,10 +644,10 @@ fn validate_source_uri(value: &str) -> ContractResult<()> {
             ContractViolationKind::InvalidFormat,
         )
     })?;
-    if !matches!(parsed.scheme(), "s3" | "https" | "openwiki") {
+    if !matches!(parsed.scheme(), "s3" | "https") {
         return Err(violation(
             "source_uri",
-            "source_uri scheme must be s3, https, or openwiki",
+            "source_uri scheme must be s3 or https",
             ContractViolationKind::InvalidFormat,
         ));
     }
@@ -818,6 +818,23 @@ mod tests {
         header().validate_against(&manifest()).unwrap();
         record().validate(&header()).unwrap();
         edge().validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_openwiki_source_uri() {
+        let mut bad_edge = edge();
+        bad_edge.source_uri = "openwiki://tenant-a/pages/page-a".to_string();
+        assert_eq!(bad_edge.validate().unwrap_err().field, "source_uri");
+
+        let mut bad_record = record();
+        bad_record.metadata.insert(
+            "source_uri".to_string(),
+            Value::String("openwiki://tenant-a/pages/page-a".to_string()),
+        );
+        assert_eq!(
+            bad_record.validate(&header()).unwrap_err().field,
+            "source_uri"
+        );
     }
 
     #[test]

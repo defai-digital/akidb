@@ -34,8 +34,8 @@ This decision does not qualify:
 
 ## Product and data ownership
 
-AkiDB remains a rebuildable retrieval projection. MinIO/OpenWiki hold
-canonical knowledge, while HA PostgreSQL is the authority for generations,
+AkiDB remains a rebuildable retrieval projection. AX Fabric publishes
+canonical knowledge to MinIO, while HA PostgreSQL is the authority for generations,
 ordered mutations, activation, audit, and replica checkpoints. Each AkiDB
 replica owns independent RocksDB, HNSW, BM25, and bounded-graph state on its
 local data volume. NATS is not an authority and was not required by the
