@@ -13,9 +13,7 @@ mod tombstone;
 mod mock;
 
 pub use hnsw::{DistanceMetric, HnswConfig, HnswIndex, VectorPrecision};
-pub use index::{
-    IndexStats, SearchFilter, SearchParams, SearchReport, VectorIndex, VectorIndexAsync,
-};
+pub use index::{IndexStats, SearchFilter, SearchParams, VectorIndex, VectorIndexAsync};
 pub use rebuild::{
     // Original rebuild types
     RebuildConfig, RebuildManager, RebuildProgress, RebuildState,

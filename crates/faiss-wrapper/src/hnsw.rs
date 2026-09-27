@@ -9,13 +9,13 @@ use crate::snapshot;
 use crate::snapshot::{durable_vector_fingerprint, DurableVectorRef};
 use crate::{
     allocate_internal_id,
-    index::{IndexStats, SearchFilter, SearchParams, SearchReport, VectorIndex},
+    index::{IndexStats, SearchParams, VectorIndex},
     tombstone::TombstoneBitset,
     validate_finite_vector_values, AkiDbError, InternalId, Result, SearchResult, VectorId,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tracing::{debug, warn};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
@@ -223,10 +223,6 @@ pub struct HnswIndex {
     /// Prevents concurrent insert/delete operations during trigger_rebuild.
     /// Searches do NOT acquire this lock (tombstone filtering remains correct).
     rebuild_lock: Mutex<()>,
-    /// ANN candidates requested by the most recent [`Self::search`] or
-    /// [`Self::search_batch`] call. `search_with_report` is what those trait
-    /// methods run.
-    last_ann_candidates: AtomicUsize,
 }
 
 impl HnswIndex {
@@ -282,7 +278,6 @@ impl HnswIndex {
             exact_vectors: RwLock::new(Vec::new()),
             ef_search_lock: RwLock::new(()),
             rebuild_lock: Mutex::new(()),
-            last_ann_candidates: AtomicUsize::new(0),
         })
     }
 
@@ -340,172 +335,6 @@ impl HnswIndex {
                 .zip(vector)
                 .map(|(left, right)| left * right)
                 .sum(),
-        }
-    }
-
-    /// Search and report how many ANN candidates were requested.
-    ///
-    /// A selective predicate is exact-scored from the id map when the number of
-    /// matches fits in `filter_candidate_limit`, so that path requests zero ANN
-    /// candidates. Muse recommended this enumeration. Claude Code recommended a
-    /// caller-supplied allow-list, which still leaves a predicate-only query on
-    /// the post-filter window and cannot return the full matching set. The
-    /// search API only receives the predicate, so enumeration is the path that
-    /// satisfies that contract. USearch `filtered_search` is not used: a
-    /// selective predicate can make that walk continue until its result list is
-    /// full.
-    pub fn search_with_report(
-        &self,
-        query: &[f32],
-        params: &SearchParams,
-    ) -> Result<SearchReport> {
-        if query.len() != self.dimensions {
-            return Err(AkiDbError::DimensionMismatch {
-                expected: self.dimensions,
-                actual: query.len(),
-            });
-        }
-        validate_finite_vector_values(query, "Search")?;
-
-        if let Some(filter) = &params.filter {
-            return self.filtered_search_with_report(query, params, filter);
-        }
-
-        let tombstoned = usize::try_from(self.tombstones.deleted_count()).unwrap_or(usize::MAX);
-        let mut search_count =
-            candidate_count(params.top_k, self.index.size(), tombstoned, false);
-        if search_count == 0 {
-            return Ok(SearchReport {
-                results: Vec::new(),
-                ann_candidates_requested: 0,
-            });
-        }
-        if self.precision == VectorPrecision::I8 {
-            let floor = I8_RERANK_CANDIDATES
-                .min(self.index.size())
-                .max(params.top_k);
-            search_count = search_count.max(floor);
-        }
-        let results = self.ann_window(query, params, search_count, search_count)?;
-        Ok(SearchReport {
-            results,
-            ann_candidates_requested: search_count,
-        })
-    }
-
-    fn filtered_search_with_report(
-        &self,
-        query: &[f32],
-        params: &SearchParams,
-        filter: &SearchFilter,
-    ) -> Result<SearchReport> {
-        let candidate_limit = params
-            .filter_candidate_limit
-            .max(params.top_k)
-            .min(self.index.size());
-        let matches = self.collect_matching_ids(filter, candidate_limit);
-        if matches.len() <= candidate_limit {
-            return Ok(SearchReport {
-                results: self.score_matching_ids(query, &matches, filter, params.top_k)?,
-                ann_candidates_requested: 0,
-            });
-        }
-
-        let tombstoned = usize::try_from(self.tombstones.deleted_count()).unwrap_or(usize::MAX);
-        let mut search_count = candidate_count(
-            params.top_k,
-            self.index.size(),
-            tombstoned,
-            true,
-        )
-        .min(candidate_limit);
-        if self.precision == VectorPrecision::I8 {
-            let floor = I8_RERANK_CANDIDATES
-                .min(self.index.size())
-                .max(params.top_k);
-            search_count = search_count.max(floor).min(candidate_limit);
-        }
-        if search_count == 0 {
-            return Ok(SearchReport {
-                results: Vec::new(),
-                ann_candidates_requested: 0,
-            });
-        }
-        let results = self.ann_window(query, params, search_count, search_count)?;
-        Ok(SearchReport {
-            results,
-            ann_candidates_requested: search_count,
-        })
-    }
-
-    /// Ids that pass `filter`, stopping once `limit + 1` matches prove the set
-    /// does not fit in the ANN cap.
-    fn collect_matching_ids(&self, filter: &SearchFilter, limit: usize) -> Vec<(i64, VectorId)> {
-        let reverse = self.reverse_mapping.read();
-        let mut matches = Vec::new();
-        for (&internal_id, external_id) in reverse.iter() {
-            if self.tombstones.is_deleted(InternalId(internal_id)) {
-                continue;
-            }
-            if !filter(external_id) {
-                continue;
-            }
-            matches.push((internal_id, external_id.clone()));
-            if matches.len() > limit {
-                break;
-            }
-        }
-        matches
-    }
-
-    fn score_matching_ids(
-        &self,
-        query: &[f32],
-        matches: &[(i64, VectorId)],
-        filter: &SearchFilter,
-        top_k: usize,
-    ) -> Result<Vec<SearchResult>> {
-        let mut results = Vec::with_capacity(matches.len().min(top_k));
-        for (internal_id, external_id) in matches {
-            if self.tombstones.is_deleted(InternalId(*internal_id)) || !filter(external_id) {
-                continue;
-            }
-            let Some(vector) = self.get_vector(InternalId(*internal_id))? else {
-                continue;
-            };
-            results.push(SearchResult::new(
-                external_id.clone(),
-                self.exact_score(query, &vector),
-            ));
-        }
-        results.sort_by(|left, right| right.score.total_cmp(&left.score));
-        results.truncate(top_k);
-        Ok(results)
-    }
-
-    fn ann_window(
-        &self,
-        query: &[f32],
-        params: &SearchParams,
-        search_count: usize,
-        candidate_limit: usize,
-    ) -> Result<Vec<SearchResult>> {
-        // Usearch exposes expansion_search as shared mutable index state
-        // rather than a per-call option. Every default search therefore holds
-        // a shared guard; a custom nprobe search exclusively performs the
-        // change-search-restore sequence. This avoids a C++ read/write data
-        // race while preserving concurrency at the configured operating point.
-        if params.nprobe as usize == self.ef_search {
-            let _guard = self.ef_search_lock.read();
-            self.search_candidate_window(query, params, search_count, candidate_limit)
-        } else {
-            let _guard = self.ef_search_lock.write();
-            self.index.change_expansion_search(params.nprobe as usize);
-            let _reset = ExpansionSearchReset {
-                index: &self.index,
-                default: self.ef_search,
-            };
-            self.search_candidate_window(query, params, search_count, candidate_limit)
         }
     }
 
@@ -666,10 +495,62 @@ impl VectorIndex for HnswIndex {
     }
 
     fn search(&self, query: &[f32], params: &SearchParams) -> Result<Vec<SearchResult>> {
-        let report = self.search_with_report(query, params)?;
-        self.last_ann_candidates
-            .store(report.ann_candidates_requested, Ordering::Relaxed);
-        Ok(report.results)
+        if query.len() != self.dimensions {
+            return Err(AkiDbError::DimensionMismatch {
+                expected: self.dimensions,
+                actual: query.len(),
+            });
+        }
+        validate_finite_vector_values(query, "Search")?;
+
+        // The service already expands top_k according to its configured
+        // post-filter policy. Add one bounded window here rather than asking
+        // usearch to return the entire index whenever the mandatory workspace
+        // ACL contributes a predicate. Compensate proportionally for
+        // tombstones so normal delete churn does not starve the final top_k.
+        let tombstoned = usize::try_from(self.tombstones.deleted_count()).unwrap_or(usize::MAX);
+        let mut search_count = candidate_count(
+            params.top_k,
+            self.index.size(),
+            tombstoned,
+            params.filter.is_some(),
+        );
+        if search_count == 0 {
+            return Ok(Vec::new());
+        }
+        if self.precision == VectorPrecision::I8 {
+            let floor = I8_RERANK_CANDIDATES
+                .min(self.index.size())
+                .max(params.top_k);
+            search_count = search_count.max(floor);
+        }
+        let candidate_limit = if params.filter.is_some() {
+            params
+                .filter_candidate_limit
+                .max(params.top_k)
+                .min(self.index.size())
+        } else {
+            search_count
+        };
+        search_count = search_count.min(candidate_limit);
+
+        // Usearch exposes expansion_search as shared mutable index state
+        // rather than a per-call option. Every default search therefore holds
+        // a shared guard; a custom nprobe search exclusively performs the
+        // change-search-restore sequence. This avoids a C++ read/write data
+        // race while preserving concurrency at the configured operating point.
+        if params.nprobe as usize == self.ef_search {
+            let _guard = self.ef_search_lock.read();
+            self.search_candidate_window(query, params, search_count, candidate_limit)
+        } else {
+            let _guard = self.ef_search_lock.write();
+            self.index.change_expansion_search(params.nprobe as usize);
+            let _reset = ExpansionSearchReset {
+                index: &self.index,
+                default: self.ef_search,
+            };
+            self.search_candidate_window(query, params, search_count, candidate_limit)
+        }
     }
 
     fn search_batch(
@@ -677,15 +558,7 @@ impl VectorIndex for HnswIndex {
         queries: &[Vec<f32>],
         params: &SearchParams,
     ) -> Result<Vec<Vec<SearchResult>>> {
-        queries
-            .iter()
-            .map(|query| {
-                let report = self.search_with_report(query, params)?;
-                self.last_ann_candidates
-                    .store(report.ann_candidates_requested, Ordering::Relaxed);
-                Ok(report.results)
-            })
-            .collect()
+        queries.iter().map(|q| self.search(q, params)).collect()
     }
 
     fn delete(&self, internal_id: InternalId) -> Result<()> {
@@ -871,14 +744,7 @@ impl HnswIndex {
             exact_vectors: RwLock::new(loaded.exact_vectors),
             ef_search_lock: RwLock::new(()),
             rebuild_lock: Mutex::new(()),
-            last_ann_candidates: AtomicUsize::new(0),
         })
-    }
-
-    /// ANN candidates requested by the last [`VectorIndex::search`] or
-    /// [`VectorIndex::search_batch`] call on this index.
-    pub fn ann_candidates_requested(&self) -> usize {
-        self.last_ann_candidates.load(Ordering::Relaxed)
     }
 
     /// Report whether this external id is currently mapped to `internal_id`.
@@ -1001,112 +867,15 @@ mod tests {
             }))
             .with_filter_candidate_limit(100);
 
-        let results = VectorIndex::search(&index, &create_random_vector(128, 0.0), &params).unwrap();
+        let results = index
+            .search(&create_random_vector(128, 0.0), &params)
+            .unwrap();
 
         assert!(results.is_empty());
-        // Nothing matches, so the id map is exact-scored and the ANN is not asked
-        // to grow a candidate window. The predicate runs once per live id.
-        assert_eq!(index.ann_candidates_requested(), 0);
-        assert_eq!(predicate_calls.load(Ordering::Relaxed), 100);
-    }
-
-    #[test]
-    fn selective_filter_returns_the_full_match_set_within_the_candidate_cap() {
-        let index = HnswIndex::new(
-            HnswConfig::new(32)
-                .with_capacity(2_000)
-                .with_m(8)
-                .with_ef_construction(32)
-                .with_ef_search(16),
-        )
-        .unwrap();
-        let mut expected = Vec::new();
-        for row in 0..1_500 {
-            let id = if row < 5 {
-                format!("match-{row}")
-            } else {
-                format!("other-{row}")
-            };
-            if row < 5 {
-                expected.push(id.clone());
-            }
-            index
-                .insert(
-                    &VectorId::new(&id),
-                    &create_random_vector(32, row as f32),
-                )
-                .unwrap();
-        }
-        let params = SearchParams::new(8)
-            .with_filter(std::sync::Arc::new(|id: &VectorId| {
-                id.as_str().starts_with("match-")
-            }))
-            .with_filter_candidate_limit(256);
-        let query = create_random_vector(32, 0.0);
-        let results = VectorIndex::search(&index, &query, &params).unwrap();
-
-        assert_eq!(index.ann_candidates_requested(), 0);
-        let mut got: Vec<_> = results
-            .iter()
-            .map(|result| result.id.as_str().to_string())
-            .collect();
-        got.sort();
-        expected.sort();
-        assert_eq!(got, expected);
-        assert!(results.windows(2).all(|pair| pair[0].score >= pair[1].score));
-        assert!(results.iter().all(|result| result.score.is_finite()));
-
-        let batched = VectorIndex::search_batch(&index, &[query], &params).unwrap();
-        assert_eq!(batched.len(), 1);
-        let mut batched_ids: Vec<_> = batched[0]
-            .iter()
-            .map(|result| result.id.as_str().to_string())
-            .collect();
-        batched_ids.sort();
-        assert_eq!(batched_ids, expected);
-        assert_eq!(index.ann_candidates_requested(), 0);
-    }
-
-    #[test]
-    fn filtered_search_above_the_cap_requests_at_most_that_cap() {
-        let index = HnswIndex::new(
-            HnswConfig::new(32)
-                .with_capacity(2_000)
-                .with_m(8)
-                .with_ef_construction(32)
-                .with_ef_search(16),
-        )
-        .unwrap();
-        for row in 0..1_500 {
-            index
-                .insert(
-                    &VectorId::new(format!("row-{row}")),
-                    &create_random_vector(32, row as f32),
-                )
-                .unwrap();
-        }
-        let cap = 256;
-        let params = SearchParams::new(10)
-            .with_filter(std::sync::Arc::new(|id: &VectorId| {
-                id.as_str()
-                    .rsplit_once('-')
-                    .and_then(|(_, suffix)| suffix.parse::<usize>().ok())
-                    .is_some_and(|row| row % 3 != 0)
-            }))
-            .with_filter_candidate_limit(cap);
-        let results = VectorIndex::search(&index, &create_random_vector(32, 1.0), &params).unwrap();
-
-        assert!(index.ann_candidates_requested() > 0);
-        assert!(index.ann_candidates_requested() <= cap);
-        assert!(index.ann_candidates_requested() < 1_500);
-        assert!(results.iter().all(|result| {
-            result
-                .id
-                .as_str()
-                .rsplit_once('-')
-                .and_then(|(_, suffix)| suffix.parse::<usize>().ok())
-                .is_some_and(|row| row % 3 != 0)
-        }));
+        // Windows are 32, 64, and 100. Repeated candidates make cumulative
+        // predicate work larger than the final window, but geometric growth
+        // keeps it below twice that configured maximum.
+        assert!(predicate_calls.load(Ordering::Relaxed) < 200);
     }
 
     #[test]
