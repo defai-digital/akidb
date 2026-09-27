@@ -738,7 +738,20 @@ impl Akidb for CoordinatorService {
         self.consistency.confirm_write(&id_clone);
 
         let latency_secs = start.elapsed().as_secs_f64();
-        coordinator_metrics().record_request("update", "success");
+        // The insert made the new vector durable on the target shard, but the
+        // cleanup delete of older copies is what makes it cluster-wide. If that
+        // phase never reached a shard, the old copy is still served there and
+        // can win a search by score, so the update is not complete.
+        let cleanup_complete = result.delete_result.is_complete();
+        let success = result.update_success && cleanup_complete;
+        if result.update_success && !cleanup_complete {
+            warn!(
+                id = %req.id,
+                failed_shards = ?result.delete_result.failed_shards,
+                "Update cleanup delete did not reach every shard"
+            );
+        }
+        coordinator_metrics().record_request("update", if success { "success" } else { "partial" });
 
         debug!(
             "Update {} completed in {:.2}ms: success={}, target_shard={}",
@@ -756,7 +769,7 @@ impl Akidb for CoordinatorService {
         };
 
         Ok(Response::new(UpdateResponse {
-            success: result.update_success,
+            success,
             id: req.id,
             status: status as i32,
             visibility: Some(VisibilityInfo {

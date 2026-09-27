@@ -943,9 +943,13 @@ pub struct BroadcastUpdateResult {
 }
 
 impl BroadcastUpdateResult {
-    /// Check if the overall update was successful
+    /// Check if the overall update was successful.
+    ///
+    /// The insert succeeded on the target shard, and the cleanup delete of older
+    /// copies reached every other shard. A failure that only leaves stale copies
+    /// behind is still reported as incomplete.
     pub fn is_success(&self) -> bool {
-        self.update_success
+        self.update_success && self.delete_result.is_complete()
     }
 }
 
@@ -1162,5 +1166,31 @@ mod tests {
         // the delete is not complete and must not be reported as one.
         assert_eq!(result.failed_shards, vec!["shard-0".to_string()]);
         assert!(!result.is_complete());
+    }
+
+    #[test]
+    fn test_update_is_not_success_when_cleanup_did_not_complete() {
+        // The insert landed on the target shard, but the cleanup delete never
+        // reached shard-2, whose older copy can still win a search by score.
+        let incomplete = BroadcastUpdateResult {
+            delete_result: BroadcastDeleteResult {
+                status: DeleteStatus::Deleted,
+                found_on_shard: Some("shard-1".to_string()),
+                responding_shards: vec!["shard-1".to_string()],
+                failed_shards: vec!["shard-2".to_string()],
+            },
+            update_success: true,
+            target_shard: "shard-0".to_string(),
+        };
+        assert!(!incomplete.is_success());
+
+        let complete = BroadcastUpdateResult {
+            delete_result: BroadcastDeleteResult {
+                failed_shards: Vec::new(),
+                ..incomplete.delete_result
+            },
+            ..incomplete
+        };
+        assert!(complete.is_success());
     }
 }
