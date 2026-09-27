@@ -294,6 +294,18 @@ fn local_state_name(state: LocalGenerationState) -> &'static str {
 fn fetch_status(error: GenerationFetchError) -> Status {
     match error {
         GenerationFetchError::Unauthorized(message) => Status::permission_denied(message),
+        GenerationFetchError::Remote { operation, status } => {
+            let message = format!("S3 {operation} returned HTTP {status}");
+            match status {
+                401 | 403 => Status::permission_denied(message),
+                404 => Status::not_found(message),
+                408 | 429 | 500..=599 => Status::unavailable(message),
+                _ => Status::failed_precondition(message),
+            }
+        }
+        GenerationFetchError::Timeout(operation) => {
+            Status::deadline_exceeded(format!("S3 {operation} deadline exceeded"))
+        }
         GenerationFetchError::Unavailable(message) => Status::unavailable(message),
         GenerationFetchError::Transport(message) => {
             warn!(error = %message, "generation object fetch failed");

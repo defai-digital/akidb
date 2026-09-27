@@ -353,6 +353,16 @@ impl GenerationController {
         Ok(after)
     }
 
+    /// Verify historical contract identity before skipping a payload download.
+    pub fn verify_applied_mutation(
+        &self,
+        mutation: &KnowledgeMutation,
+    ) -> Result<(), GenerationControlError> {
+        self.state
+            .verify_applied_mutation(mutation)
+            .map_err(Into::into)
+    }
+
     /// Atomically install a fully sealed post-bundle revision into whichever
     /// local role currently retains the generation.
     pub fn install_revision(

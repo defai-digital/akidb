@@ -46,6 +46,42 @@ const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_CHECKPOINT_ERROR_CHARS: usize = 16_000;
 const MAX_MUTATION_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 const MUTATION_PAGE_SIZE: i64 = 1_000;
+const MAX_MUTATION_TAIL_CONTRACTS: u64 = 100_000;
+const MAX_MUTATION_TAIL_CONTRACT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_MUTATION_TAIL_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
+
+struct LoadedMutationTail {
+    contracts: Vec<KnowledgeMutation>,
+    pending: Vec<MaterializedKnowledgeMutation>,
+}
+
+struct ConnectionTask<T = ()>(JoinHandle<T>);
+
+impl<T> Drop for ConnectionTask<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[derive(Default)]
+struct RetryBackoff {
+    failures: u32,
+}
+
+impl RetryBackoff {
+    fn reset(&mut self) {
+        self.failures = 0;
+    }
+
+    fn next_delay(&mut self) -> Duration {
+        let ceiling_ms = (1_000u64.saturating_mul(1u64 << self.failures.min(5)))
+            .min(MAX_RECONNECT_BACKOFF.as_millis() as u64);
+        self.failures = self.failures.saturating_add(1);
+        // Equal jitter avoids both lockstep retries and zero-delay retry storms.
+        let entropy = Uuid::new_v4().as_u128() as u64;
+        Duration::from_millis(ceiling_ms / 2 + entropy % (ceiling_ms / 2 + 1))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ReplicaWorkerConfig {
@@ -241,13 +277,12 @@ impl PostgresReplicaWorker {
     /// Run forever with bounded reconnect backoff. Callers should spawn this
     /// alongside the gRPC server and abort it only during process shutdown.
     pub async fn run(self: Arc<Self>) {
-        let mut backoff = Duration::from_secs(1);
+        let mut backoff = RetryBackoff::default();
         loop {
             match connect_postgres(&self.config).await {
                 Ok((mut client, connection_task)) => {
-                    backoff = Duration::from_secs(1);
-                    let result = self.run_connected(&mut client).await;
-                    connection_task.abort();
+                    let _connection = ConnectionTask(connection_task);
+                    let result = self.run_connected(&mut client, &mut backoff).await;
                     if let Err(error) = result {
                         warn!(
                             replica_id = %self.config.replica_id,
@@ -264,40 +299,68 @@ impl PostgresReplicaWorker {
                     );
                 }
             }
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
+            tokio::time::sleep(backoff.next_delay()).await;
         }
     }
 
-    async fn run_connected(&self, client: &mut Client) -> Result<(), ReplicaWorkerError> {
+    async fn run_connected(
+        self: &Arc<Self>,
+        client: &mut Client,
+        backoff: &mut RetryBackoff,
+    ) -> Result<(), ReplicaWorkerError> {
         verify_control_schema(client).await?;
-        self.heartbeat(client).await?;
-        self.reconcile_once(client).await?;
-
-        let mut poll = tokio::time::interval(self.config.poll_interval);
-        let mut heartbeat = tokio::time::interval(self.config.heartbeat_interval);
-        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // The initial reconciliation above replaces each interval's immediate
-        // first tick.
-        poll.tick().await;
-        heartbeat.tick().await;
-
+        // A separate connection keeps routing freshness current during downloads and blocking
+        // projection builds as well as during delayed retries. Either loop failing
+        // reconnects both; dropping the guard also handles task cancellation.
+        let (heartbeat_client, heartbeat_task) = connect_postgres(&self.config).await?;
+        let heartbeat_worker = self.clone();
+        let mut heartbeats = ConnectionTask(tokio::spawn(async move {
+            let _heartbeat_connection = ConnectionTask(heartbeat_task);
+            let mut heartbeat = tokio::time::interval(heartbeat_worker.config.heartbeat_interval);
+            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                heartbeat.tick().await;
+                heartbeat_worker.heartbeat(&heartbeat_client).await?;
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), ReplicaWorkerError>(())
+        }));
         loop {
+            let reconcile = self.reconcile_once_outcome(client);
+            tokio::pin!(reconcile);
+            let succeeded = tokio::select! {
+                result = &mut heartbeats.0 => {
+                    // Never detach a blocking materialization or commit by cancelling
+                    // reconcile. Drain it before reconnecting either control session.
+                    let _ = reconcile.await;
+                    return result?;
+                },
+                result = &mut reconcile => result?,
+            };
+            let delay = if succeeded {
+                backoff.reset();
+                self.config.poll_interval
+            } else {
+                backoff.next_delay().max(self.config.poll_interval)
+            };
             tokio::select! {
-                _ = poll.tick() => self.reconcile_once(client).await?,
-                _ = heartbeat.tick() => {
-                    self.heartbeat(client).await?;
-                    self.report_local_states(client).await?;
-                }
+                result = &mut heartbeats.0 => return result?,
+                _ = tokio::time::sleep(delay) => {},
             }
         }
     }
 
     pub async fn reconcile_once(&self, client: &mut Client) -> Result<(), ReplicaWorkerError> {
+        self.reconcile_once_outcome(client).await.map(|_| ())
+    }
+
+    async fn reconcile_once_outcome(
+        &self,
+        client: &mut Client,
+    ) -> Result<bool, ReplicaWorkerError> {
         self.heartbeat(client).await?;
         let Some(directive) = self.load_directive(client).await? else {
-            return Ok(());
+            return Ok(true);
         };
         if directive.drained {
             debug!(
@@ -311,7 +374,7 @@ impl PostgresReplicaWorker {
             if let Err(error) = self.ensure_built(client, &active).await {
                 self.report_generation_failure(client, &active, &error)
                     .await?;
-                return Ok(());
+                return Ok(false);
             }
             if active.required_sequence != directive.active_target_sequence {
                 return Err(ReplicaWorkerError::Contract(format!(
@@ -329,14 +392,15 @@ impl PostgresReplicaWorker {
                     if let Err(error) = self.ensure_built(client, &publication).await {
                         self.report_generation_failure(client, &publication, &error)
                             .await?;
-                        return Ok(());
+                        return Ok(false);
                     }
                 }
             }
         }
 
         self.report_local_states(client).await?;
-        self.maybe_garbage_collect(client, &directive).await
+        self.maybe_garbage_collect(client, &directive).await?;
+        Ok(true)
     }
 
     async fn maybe_garbage_collect(
@@ -683,7 +747,10 @@ impl PostgresReplicaWorker {
         })?;
         ensure_local_identity(&local, generation)?;
         if local.applied_sequence < generation.required_sequence {
-            let mutations = match self.load_materialized_mutations(client, generation).await {
+            let mutations = match self
+                .load_materialized_mutations(client, generation, local.applied_sequence)
+                .await
+            {
                 Ok(mutations) => mutations,
                 Err(error) => {
                     if matches!(&error, ReplicaWorkerError::MutationTail(_)) {
@@ -695,28 +762,10 @@ impl PostgresReplicaWorker {
                     return Err(error);
                 }
             };
-            let contracts: Vec<KnowledgeMutation> =
-                mutations.iter().map(|item| item.mutation.clone()).collect();
-            let already_applied = local
-                .applied_sequence
-                .checked_sub(generation.manifest.target_sequence)
-                .ok_or_else(|| {
-                    ReplicaWorkerError::Divergence(format!(
-                        "local checkpoint {} precedes immutable target {}",
-                        local.applied_sequence, generation.manifest.target_sequence
-                    ))
-                })?;
-            let suffix_start = usize::try_from(already_applied).map_err(|_| {
-                ReplicaWorkerError::Contract(
-                    "local mutation checkpoint cannot fit this platform".to_string(),
-                )
-            })?;
-            let suffix = mutations.get(suffix_start..).ok_or_else(|| {
-                ReplicaWorkerError::MutationTail(format!(
-                    "local checkpoint {} exceeds fetched mutation tail",
-                    local.applied_sequence
-                ))
-            })?;
+            let LoadedMutationTail {
+                contracts,
+                pending: suffix,
+            } = mutations;
             if suffix.is_empty() {
                 return Err(ReplicaWorkerError::MutationTail(format!(
                     "generation {} requires sequence {} but has no unapplied mutation",
@@ -732,8 +781,14 @@ impl PostgresReplicaWorker {
                         "local revision source runtime is not retained".to_string(),
                     )
                 })?;
+            if source.ready.marker.applied_sequence != local.applied_sequence
+                || source.ready.marker.manifest_sha256 != local.manifest_sha256
+            {
+                return Err(ReplicaWorkerError::Divergence(
+                    "source runtime differs from the validated local checkpoint".to_string(),
+                ));
+            }
             let materializer = self.data_plane.controller().materializer().clone();
-            let suffix = suffix.to_vec();
             let applied_mutation_count = u64::try_from(suffix.len()).unwrap_or(u64::MAX);
             let updated_at_ms = now_ms()?;
             let runtime = tokio::task::spawn_blocking(move || {
@@ -774,9 +829,23 @@ impl PostgresReplicaWorker {
         &self,
         client: &Client,
         generation: &AuthoritativeGeneration,
-    ) -> Result<Vec<MaterializedKnowledgeMutation>, ReplicaWorkerError> {
+        applied_sequence: u64,
+    ) -> Result<LoadedMutationTail, ReplicaWorkerError> {
         let mut after = generation.manifest.target_sequence;
-        let mut mutations = Vec::new();
+        if applied_sequence < after || applied_sequence > generation.required_sequence {
+            return Err(ReplicaWorkerError::Divergence(
+                "local checkpoint is outside the authoritative mutation range".to_string(),
+            ));
+        }
+        if generation.required_sequence.saturating_sub(after) > MAX_MUTATION_TAIL_CONTRACTS {
+            return Err(ReplicaWorkerError::Contract(
+                "mutation tail exceeds contract limit; publish a new base generation".to_string(),
+            ));
+        }
+        let mut contracts = Vec::new();
+        let mut pending = Vec::new();
+        let mut contract_bytes = 0usize;
+        let mut payload_bytes = 0u64;
         while after < generation.required_sequence {
             let rows = client
                 .query(
@@ -809,6 +878,14 @@ impl PostgresReplicaWorker {
             }
             for row in rows {
                 let contract: Value = row.try_get("contract")?;
+                contract_bytes =
+                    contract_bytes.saturating_add(serde_json::to_vec(&contract)?.len());
+                if contract_bytes > MAX_MUTATION_TAIL_CONTRACT_BYTES {
+                    return Err(ReplicaWorkerError::Contract(
+                        "mutation tail exceeds contract byte limit; publish a new base generation"
+                            .to_string(),
+                    ));
+                }
                 let mutation: KnowledgeMutation = serde_json::from_value(contract)?;
                 mutation
                     .validate()
@@ -828,42 +905,90 @@ impl PostgresReplicaWorker {
                         mutation.generation_id
                     )));
                 }
-                let payload = match (&mutation.operation, &mutation.payload) {
-                    (KnowledgeOperation::Upsert, Some(reference)) => {
-                        if reference.size_bytes > MAX_MUTATION_PAYLOAD_BYTES {
-                            return Err(ReplicaWorkerError::Contract(format!(
-                                "mutation {} payload exceeds {} bytes",
-                                mutation.mutation_id, MAX_MUTATION_PAYLOAD_BYTES
-                            )));
-                        }
-                        let fetched = self.fetcher.fetch(reference).await?;
-                        let mut bytes =
-                            Vec::with_capacity(usize::try_from(reference.size_bytes).unwrap_or(0));
-                        fetched
-                            .open()?
-                            .take(MAX_MUTATION_PAYLOAD_BYTES.saturating_add(1))
-                            .read_to_end(&mut bytes)
-                            .map_err(GenerationFetchError::from)?;
-                        Some(parse_verified_mutation_payload(
-                            reference,
-                            &mutation,
-                            &generation.manifest,
-                            &bytes,
-                        )?)
+                if mutation
+                    .payload
+                    .as_ref()
+                    .is_some_and(|reference| reference.size_bytes > MAX_MUTATION_PAYLOAD_BYTES)
+                {
+                    return Err(ReplicaWorkerError::Contract(
+                        "mutation payload exceeds byte limit".to_string(),
+                    ));
+                }
+                if mutation.sequence <= applied_sequence {
+                    after = mutation.sequence;
+                    contracts.push(mutation);
+                    continue;
+                }
+                if let Some(reference) = &mutation.payload {
+                    payload_bytes = payload_bytes.saturating_add(reference.size_bytes);
+                    if payload_bytes > MAX_MUTATION_TAIL_PAYLOAD_BYTES {
+                        return Err(ReplicaWorkerError::Contract("mutation tail exceeds payload byte limit; publish a new base generation".to_string()));
                     }
-                    (KnowledgeOperation::Delete, None) => None,
-                    _ => {
-                        return Err(ReplicaWorkerError::Contract(format!(
-                            "mutation {} operation/payload contract is inconsistent",
-                            mutation.mutation_id
-                        )));
-                    }
-                };
+                }
                 after = mutation.sequence;
-                mutations.push(MaterializedKnowledgeMutation { mutation, payload });
+                contracts.push(mutation);
             }
         }
-        Ok(mutations)
+        let controller = self.data_plane.controller().clone();
+        let contracts = tokio::task::spawn_blocking(move || {
+            for mutation in contracts
+                .iter()
+                .filter(|item| item.sequence <= applied_sequence)
+            {
+                controller.verify_applied_mutation(mutation)?;
+            }
+            Ok::<_, GenerationControlError>(contracts)
+        })
+        .await??;
+        // Check the entire ordered contract chain and resource budget before any
+        // download. Historical markers remain checked again by revision commit.
+        for mutation in contracts
+            .iter()
+            .filter(|item| item.sequence > applied_sequence)
+        {
+            let payload = match (&mutation.operation, &mutation.payload) {
+                (KnowledgeOperation::Upsert, Some(reference)) => {
+                    if reference.size_bytes > MAX_MUTATION_PAYLOAD_BYTES {
+                        return Err(ReplicaWorkerError::Contract(format!(
+                            "mutation {} payload exceeds {} bytes",
+                            mutation.mutation_id, MAX_MUTATION_PAYLOAD_BYTES
+                        )));
+                    }
+                    let fetched = self.fetcher.fetch(reference).await?;
+                    let reference = reference.clone();
+                    let mutation = mutation.clone();
+                    let manifest = generation.manifest.clone();
+                    Some(
+                        tokio::task::spawn_blocking(move || {
+                            let mut bytes = Vec::with_capacity(
+                                usize::try_from(reference.size_bytes).unwrap_or(0),
+                            );
+                            fetched
+                                .open()?
+                                .take(MAX_MUTATION_PAYLOAD_BYTES.saturating_add(1))
+                                .read_to_end(&mut bytes)
+                                .map_err(GenerationFetchError::from)?;
+                            parse_verified_mutation_payload(
+                                &reference, &mutation, &manifest, &bytes,
+                            )
+                        })
+                        .await??,
+                    )
+                }
+                (KnowledgeOperation::Delete, None) => None,
+                _ => {
+                    return Err(ReplicaWorkerError::Contract(format!(
+                        "mutation {} operation/payload contract is inconsistent",
+                        mutation.mutation_id
+                    )));
+                }
+            };
+            pending.push(MaterializedKnowledgeMutation {
+                mutation: mutation.clone(),
+                payload,
+            });
+        }
+        Ok(LoadedMutationTail { contracts, pending })
     }
 
     async fn align_local_active(
@@ -1240,6 +1365,14 @@ fn metric_failure_reason(error: &ReplicaWorkerError) -> &'static str {
         ReplicaWorkerError::MutationTail(_) => "mutation_tail",
         ReplicaWorkerError::Divergence(_) => "divergence",
         ReplicaWorkerError::Fetch(GenerationFetchError::Rejected(_)) => "bundle_rejected",
+        ReplicaWorkerError::Fetch(GenerationFetchError::Timeout(_)) => "bundle_timeout",
+        ReplicaWorkerError::Fetch(GenerationFetchError::Remote {
+            status: 401 | 403, ..
+        }) => "bundle_access_denied",
+        ReplicaWorkerError::Fetch(GenerationFetchError::Remote { status: 404, .. }) => {
+            "bundle_missing"
+        }
+        ReplicaWorkerError::Fetch(GenerationFetchError::Remote { .. }) => "bundle_http",
         ReplicaWorkerError::Control(_) => "materialization",
         ReplicaWorkerError::Contract(_) => "contract",
         ReplicaWorkerError::Json(_) => "manifest_json",
@@ -1280,6 +1413,18 @@ async fn connect_postgres(
 ) -> Result<(Client, JoinHandle<()>), ReplicaWorkerError> {
     let mut postgres = PostgresConfig::from_str(&config.postgres_url)
         .map_err(|error| ReplicaWorkerError::Configuration(error.to_string()))?;
+    // Bound dead peers and server-side stalls without cancelling materialization.
+    postgres.connect_timeout(Duration::from_secs(10));
+    postgres.tcp_user_timeout(Duration::from_secs(30));
+    postgres.keepalives(true);
+    postgres.keepalives_idle(Duration::from_secs(10));
+    postgres.keepalives_interval(Duration::from_secs(5));
+    postgres.keepalives_retries(3);
+    let options = format!(
+        "{} -c statement_timeout=30000 -c idle_in_transaction_session_timeout=30000",
+        postgres.get_options().unwrap_or("")
+    );
+    postgres.options(&options);
     match config.postgres_tls_mode {
         ReplicaPostgresTlsMode::Disable => {
             ensure_loopback_postgres(&postgres)?;
@@ -1605,10 +1750,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn retry_backoff_grows_without_a_successful_reconcile_and_resets_on_success() {
+        let mut backoff = RetryBackoff::default();
+        for ceiling in [1000, 2000, 4000, 8000, 16000, 30000, 30000] {
+            let delay = backoff.next_delay().as_millis();
+            assert!(delay >= ceiling / 2 && delay <= ceiling);
+        }
+        backoff.reset();
+        assert!(backoff.next_delay() <= Duration::from_secs(1));
+    }
+
     #[derive(Clone)]
     struct RetainedFixtureFetcher {
         objects: Arc<HashMap<String, PathBuf>>,
         unavailable: Arc<AtomicBool>,
+        calls: Arc<Mutex<Vec<String>>>,
+        delay_ms: Arc<std::sync::atomic::AtomicU64>,
     }
 
     #[async_trait]
@@ -1617,6 +1775,10 @@ mod tests {
             &self,
             reference: &akidb_contracts::ImmutableObjectReference,
         ) -> Result<crate::FetchedGenerationBundle, GenerationFetchError> {
+            self.calls.lock().push(reference.uri.clone());
+            // Deliberately occupy the reconcile task before yielding. The heartbeat
+            // heartbeat must run in a different task during synchronous work.
+            std::thread::sleep(Duration::from_millis(self.delay_ms.load(Ordering::SeqCst)));
             if self.unavailable.load(Ordering::SeqCst) {
                 return Err(GenerationFetchError::Unavailable(
                     "fixture object store is unavailable".to_string(),
@@ -1761,6 +1923,8 @@ mod tests {
                 ),
             ])),
             unavailable: unavailable.clone(),
+            calls: Arc::new(Mutex::new(Vec::new())),
+            delay_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         });
 
         let mut replicas = vec![
@@ -1788,6 +1952,100 @@ mod tests {
             replica.worker.reconcile_once(client).await.unwrap();
         }
         assert_ready_checkpoint_parity(&admin, 3).await;
+
+        // Reading full historical contracts no longer downloads their payloads.
+        let generation = replicas[0]
+            .worker
+            .load_generation(&connections[0].0, "generation-bundle-fixture")
+            .await
+            .unwrap();
+        fetcher.calls.lock().clear();
+        let tail = replicas[0]
+            .worker
+            .load_materialized_mutations(&connections[0].0, &generation, 11)
+            .await
+            .unwrap();
+        assert_eq!(tail.contracts.len(), 1);
+        assert!(tail.pending.is_empty());
+        assert!(fetcher.calls.lock().is_empty());
+        let mut out_of_range = generation.clone();
+        out_of_range.required_sequence =
+            generation.manifest.target_sequence + MAX_MUTATION_TAIL_CONTRACTS + 1;
+        assert!(replicas[0]
+            .worker
+            .load_materialized_mutations(&connections[0].0, &out_of_range, 11)
+            .await
+            .is_err());
+        assert!(replicas[0]
+            .worker
+            .load_materialized_mutations(&connections[0].0, &generation, 9)
+            .await
+            .is_err());
+        assert!(replicas[0]
+            .worker
+            .load_materialized_mutations(&connections[0].0, &generation, 12)
+            .await
+            .is_err());
+
+        // Even an otherwise valid changed historical contract must match BOTH
+        // durable identity markers before the worker may skip its payload.
+        admin.execute("update knowledge_mutations set contract = jsonb_set(contract, '{created_at_ms}', to_jsonb((contract->>'created_at_ms')::bigint + 1)) where sequence=11", &[]).await.unwrap();
+        assert!(replicas[0]
+            .worker
+            .load_materialized_mutations(&connections[0].0, &generation, 11)
+            .await
+            .is_err());
+        assert!(fetcher.calls.lock().is_empty());
+        admin.execute("update knowledge_mutations set contract = jsonb_set(contract, '{created_at_ms}', to_jsonb((contract->>'created_at_ms')::bigint - 1)) where sequence=11", &[]).await.unwrap();
+
+        // A real suffix still skips the applied prefix, while retaining both
+        // contracts for atomic revision commit.
+        let original: KnowledgeMutation = serde_json::from_slice(include_bytes!(
+            "../../../contracts/fixtures/knowledge/v1/valid/mutation-upsert-bundle.json"
+        ))
+        .unwrap();
+        let mut deletion = original.clone();
+        deletion.sequence = 12;
+        deletion.mutation_id = "delete-12".to_string();
+        deletion.operation = KnowledgeOperation::Delete;
+        deletion.payload = None;
+        admin.execute("insert into knowledge_mutations(workspace_id,collection,sequence,mutation_id,generation_id,contract) values ('workspace-a','knowledge',12,'delete-12','generation-bundle-fixture',$1)", &[&serde_json::to_value(&deletion).unwrap()]).await.unwrap();
+        let mut advanced = generation.clone();
+        advanced.required_sequence = 12;
+        let tail = replicas[0]
+            .worker
+            .load_materialized_mutations(&connections[0].0, &advanced, 11)
+            .await
+            .unwrap();
+        assert_eq!(tail.contracts.len(), 2);
+        assert_eq!(tail.pending.len(), 1);
+        assert_eq!(tail.pending[0].mutation.sequence, 12);
+        assert!(fetcher.calls.lock().is_empty());
+        admin
+            .execute("delete from knowledge_mutations where sequence=12", &[])
+            .await
+            .unwrap();
+
+        // Resource admission checks the complete suffix before downloading any
+        // payload, rather than discovering the bound after expensive transfers.
+        for sequence in 12i64..=16 {
+            let mut contract = original.clone();
+            contract.sequence = sequence as u64;
+            contract.mutation_id = format!("large-{sequence}");
+            contract.payload.as_mut().unwrap().size_bytes = MAX_MUTATION_PAYLOAD_BYTES;
+            admin.execute("insert into knowledge_mutations(workspace_id,collection,sequence,mutation_id,generation_id,contract) values ('workspace-a','knowledge',$1,$2,'generation-bundle-fixture',$3)", &[&sequence, &contract.mutation_id, &serde_json::to_value(&contract).unwrap()]).await.unwrap();
+        }
+        advanced.required_sequence = 16;
+        assert!(replicas[0]
+            .worker
+            .load_materialized_mutations(&connections[0].0, &advanced, 11)
+            .await
+            .is_err());
+        assert!(fetcher.calls.lock().is_empty());
+        admin
+            .execute("delete from knowledge_mutations where sequence>11", &[])
+            .await
+            .unwrap();
 
         // A drained replica is excluded from request routing, but must still
         // reconcile. Otherwise blank rebuilds and rolling upgrades deadlock.
@@ -1832,11 +2090,11 @@ mod tests {
         // A gap marks only the polling replica failed and preserves its last
         // known-good local runtime.
         seed_sequence_gap(&admin).await;
-        replicas[2]
+        assert!(!replicas[2]
             .worker
-            .reconcile_once(&mut connections[2].0)
+            .reconcile_once_outcome(&mut connections[2].0)
             .await
-            .unwrap();
+            .unwrap());
         let states = admin
             .query(
                 "select replica_id, state, applied_sequence \
@@ -1867,6 +2125,68 @@ mod tests {
             .unwrap();
         admin
             .batch_execute(&format!("drop schema \"{schema}\" cascade"))
+            .await
+            .unwrap();
+        admin_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires AKIDB_KNOWLEDGE_POSTGRES_URL pointing at disposable PostgreSQL"]
+    async fn replica_heartbeat_survives_slow_fetch_and_failed_fetch_backoff() {
+        let postgres_url = std::env::var("AKIDB_KNOWLEDGE_POSTGRES_URL").unwrap();
+        let (admin, admin_task) = connect_test_postgres(&postgres_url).await;
+        let schema = format!("akidb_heartbeat_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!(
+                "create schema {schema}; set search_path to {schema};"
+            ))
+            .await
+            .unwrap();
+        admin.batch_execute(TEST_CONTROL_SCHEMA).await.unwrap();
+        seed_generation_and_mutation(&admin).await;
+        let mut scoped_url = url::Url::parse(&postgres_url).unwrap();
+        scoped_url
+            .query_pairs_mut()
+            .append_pair("options", &format!("-csearch_path={schema}"));
+        let fetcher = Arc::new(RetainedFixtureFetcher {
+            objects: Arc::new(HashMap::new()),
+            unavailable: Arc::new(AtomicBool::new(true)),
+            calls: Arc::new(Mutex::new(Vec::new())),
+            delay_ms: Arc::new(std::sync::atomic::AtomicU64::new(2000)),
+        });
+        let replica = ReplicaHarness::new(
+            "heartbeat-replica",
+            "zone-a",
+            scoped_url.as_str(),
+            fetcher.clone(),
+        );
+        let worker = replica.worker.clone();
+        let task = tokio::spawn(async move { worker.run().await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fetcher.calls.lock().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let initial: f64 = admin.query_one("select extract(epoch from heartbeat_at)::float8 from knowledge_replicas where replica_id='heartbeat-replica'", &[]).await.unwrap().get(0);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let updated: f64 = admin.query_one("select extract(epoch from heartbeat_at)::float8 from knowledge_replicas where replica_id='heartbeat-replica'", &[]).await.unwrap().get(0);
+        assert!(updated > initial, "slow S3 body must not starve heartbeat");
+        fetcher.delay_ms.store(0, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let attempts = fetcher.calls.lock().len();
+        assert!(
+            (2..=4).contains(&attempts),
+            "healthy PostgreSQL must not reset failed-fetch backoff: {attempts}"
+        );
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        drop(replica);
+        admin
+            .batch_execute(&format!(
+                "set search_path to public; drop schema {schema} cascade;"
+            ))
             .await
             .unwrap();
         admin_task.abort();
@@ -2025,89 +2345,6 @@ mod tests {
         }
     }
 
-    const TEST_CONTROL_SCHEMA: &str = r#"
-create table knowledge_schema_migrations (
-  version integer primary key,
-  name text not null
-);
-insert into knowledge_schema_migrations(version, name)
-values (1, 'authoritative_knowledge_control_plane');
-
-create table knowledge_streams (
-  workspace_id text not null,
-  collection text not null,
-  next_sequence bigint not null,
-  active_generation_id text,
-  active_manifest_sha256 char(64),
-  active_target_sequence bigint not null,
-  publication_generation_id text,
-  stream_version bigint not null,
-  minimum_ready_replicas smallint not null,
-  minimum_failure_domains smallint not null,
-  heartbeat_ttl_ms integer not null,
-  updated_at timestamptz not null default clock_timestamp(),
-  primary key (workspace_id, collection)
-);
-
-create table knowledge_generations (
-  generation_id text primary key,
-  workspace_id text not null,
-  collection text not null,
-  status text not null,
-  manifest jsonb not null,
-  manifest_bytes bytea not null,
-  manifest_sha256 char(64) not null,
-  bundle_uri text not null,
-  bundle_sha256 char(64) not null,
-  required_sequence bigint not null,
-  materialization_digest char(64),
-  materialized_vector_count bigint,
-  materialized_edge_count bigint
-);
-
-create table knowledge_mutations (
-  workspace_id text not null,
-  collection text not null,
-  sequence bigint not null,
-  mutation_id text not null unique,
-  generation_id text not null,
-  contract jsonb not null,
-  primary key (workspace_id, collection, sequence)
-);
-
-create table knowledge_replicas (
-  replica_id text primary key,
-  endpoint text not null,
-  failure_domain text not null,
-  software_version text not null,
-  index_format_version text not null,
-  supported_knowledge_schema_versions jsonb not null,
-  supported_graph_schema_versions jsonb not null,
-  process_ready boolean not null,
-  drained boolean not null,
-  heartbeat_at timestamptz not null,
-  registered_at timestamptz not null default clock_timestamp(),
-  updated_at timestamptz not null
-);
-
-create table knowledge_replica_checkpoints (
-  replica_id text not null,
-  workspace_id text not null,
-  collection text not null,
-  generation_id text not null,
-  manifest_sha256 char(64) not null,
-  applied_sequence bigint not null,
-  state text not null,
-  last_error text,
-  vector_count bigint not null,
-  edge_count bigint not null,
-  generation_digest char(64) not null,
-  index_ready boolean not null,
-  updated_at timestamptz not null,
-  primary key (replica_id, workspace_id, collection, generation_id)
-);
-
-create function knowledge_reconcile_generation_ready(text)
-returns boolean language sql as $$ select true $$;
-"#;
+    const TEST_CONTROL_SCHEMA: &str =
+        include_str!("../../../contracts/fixtures/knowledge/postgres/control-schema.sql");
 }

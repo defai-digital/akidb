@@ -218,6 +218,32 @@ jobs:
           three_blank_replicas_converge_rebuild_and_isolate_a_gap
           -- --ignored --nocapture
 
+      - name: Verify heartbeat liveness and failed-fetch backoff
+        env:
+          AKIDB_KNOWLEDGE_POSTGRES_URL: postgres://postgres:phase3-ci-only@127.0.0.1:5432/akidb_test
+        run: >-
+          cargo test -p akidb-grpc --features generation-postgres
+          replica_heartbeat_survives_slow_fetch_and_failed_fetch_backoff
+          -- --ignored --nocapture
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install canonical restore verifier dependencies
+        run: |
+          python -m venv .venv-restore
+          .venv-restore/bin/pip install -e ./sdks/python boto3 zstandard
+
+      - name: Build the replica-enabled CLI
+        run: cargo build -p akidb-cli --features akidb-server/generation-postgres
+
+      - name: Restore PostgreSQL and SeaweedFS into a blank retrieval replica
+        run: >-
+          .venv-restore/bin/python scripts/test_knowledge_restore.py
+          --server-bin target/debug/akidb
+          --output qa-results/knowledge-restore.json
+
   # Security audit
   security:
     name: Security Audit

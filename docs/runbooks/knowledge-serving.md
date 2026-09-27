@@ -235,12 +235,19 @@ Verify without touching production state:
 
 ```bash
 export AKIDB_KNOWLEDGE_BACKUP_SHA256=<recorded-sha256>
+export AKIDB_QA_PYTHON=/absolute/restore-venv/bin/python
+export AKIDB_RESTORE_SERVER_BIN=/absolute/path/to/akidb
+export AKIDB_KNOWLEDGE_RESTORE_EVIDENCE=/absolute/new/restore-receipt.json
 ansible-playbook playbooks/knowledge-restore-verify.yml
 ```
 
-The drill restores PostgreSQL into a disposable database, checks control
-tables and canonical objects, removes the disposable database, and records
-audit evidence. Complete DR additionally provisions a fresh cell, restores
+The drill uses the pinned archive already saved on the controller and runs isolated
+PostgreSQL and authenticated SeaweedFS containers plus a blank local replica.
+It validates referenced objects, generation identity, records and retrieval
+citations, then stops both dependencies and repeats local reads. Containers and
+scratch data are removed; a receipt records the exact binary and archive hashes.
+See [restore verification](knowledge-restore-verification.md) for prerequisites,
+resource limits, and the distinction between a single-replica drill and cell DR. Complete DR additionally provisions a fresh cell, restores
 PostgreSQL/S3, performs a blank three-replica rebuild, and reruns golden
 queries. Target RPO is the managed PostgreSQL/S3 policy; target routing RTO for
 one replica is 30 seconds p95. Full-cell recovery RTO must be measured per

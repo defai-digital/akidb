@@ -360,7 +360,11 @@ AKIDB_AWSCLI_SHA256=<sha256> \
 ansible-playbook playbooks/knowledge-backup.yml
 
 AKIDB_KNOWLEDGE_BACKUP_ID=<same-backup-id> \
+AKIDB_KNOWLEDGE_BACKUP_DIR=/qualification/backups \
 AKIDB_KNOWLEDGE_BACKUP_SHA256=<archive-sha256> \
+AKIDB_QA_PYTHON=/absolute/restore-venv/bin/python \
+AKIDB_RESTORE_SERVER_BIN=/absolute/path/to/akidb \
+AKIDB_KNOWLEDGE_RESTORE_EVIDENCE=/absolute/new/restore-receipt.json \
 ansible-playbook playbooks/knowledge-restore-verify.yml
 ```
 
