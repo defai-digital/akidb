@@ -788,13 +788,37 @@ impl Default for SqlMetadataConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SeaweedFsConfig {
     pub endpoint: String,
     pub bucket: String,
     pub access_key: String,
     pub secret_key: String,
     pub use_ssl: bool,
+}
+
+impl std::fmt::Debug for SeaweedFsConfig {
+    /// Redacts both credentials. A `?config` log field, a panic message, or a
+    /// config dump must not print the gateway secret.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SeaweedFsConfig")
+            .field("endpoint", &self.endpoint)
+            .field("bucket", &self.bucket)
+            .field("access_key", &describe_credential(&self.access_key))
+            .field("secret_key", &describe_credential(&self.secret_key))
+            .field("use_ssl", &self.use_ssl)
+            .finish()
+    }
+}
+
+/// Whether a credential is present, without ever exposing its value.
+fn describe_credential(value: &str) -> &'static str {
+    if value.trim().is_empty() {
+        "<unset>"
+    } else {
+        "<redacted>"
+    }
 }
 
 impl Default for SeaweedFsConfig {
@@ -1211,5 +1235,19 @@ mod tests {
             ..Default::default()
         };
         assert!(blank_secret.credentials().is_err());
+    }
+
+    #[test]
+    fn test_seaweedfs_debug_redacts_credentials() {
+        let seaweedfs = SeaweedFsConfig {
+            access_key: "real-access".to_string(),
+            secret_key: "real-secret".to_string(),
+            ..Default::default()
+        };
+
+        let rendered = format!("{seaweedfs:?}");
+        assert!(!rendered.contains("real-access"), "{rendered}");
+        assert!(!rendered.contains("real-secret"), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
     }
 }
