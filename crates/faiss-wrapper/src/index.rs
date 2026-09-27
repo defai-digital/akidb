@@ -5,6 +5,16 @@ use std::sync::Arc;
 
 pub type SearchFilter = Arc<dyn Fn(&VectorId) -> bool + Send + Sync>;
 
+/// Outcome of one index search, including how many ANN candidates were requested.
+///
+/// `ann_candidates_requested` is zero when a selective predicate was exact-scored
+/// from the id map because the matching set fit in `filter_candidate_limit`.
+#[derive(Debug, Clone)]
+pub struct SearchReport {
+    pub results: Vec<SearchResult>,
+    pub ann_candidates_requested: usize,
+}
+
 /// Search parameters for vector queries
 #[derive(Clone)]
 pub struct SearchParams {
