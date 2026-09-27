@@ -701,7 +701,7 @@ impl VectorIndex for HnswIndex {
 impl HnswIndex {
     /// Write the graph, id maps, and tombstones so a later process can skip
     /// reinserting every vector. `payload_sha256` must be
-    /// [`durable_vector_fingerprint`] of the durable vectors this graph serves.
+    /// `durable_vector_fingerprint` of the durable vectors this graph serves.
     pub fn save_snapshot(&self, directory: &std::path::Path, payload_sha256: &str) -> Result<()> {
         let _rebuild_guard = self.rebuild_lock.lock();
         let _search_guard = self.ef_search_lock.write();
