@@ -139,7 +139,10 @@ index_type = "HNSW"
 hnsw_m = 16
 hnsw_ef_construction = 128
 hnsw_ef_search = 64
-# f32 (default) or f16 for lower RAM (GAP-010)
+# f32 (default), f16 for lower RAM (GAP-010), or i8 for faster graph routing.
+# i8 keeps a full f32 copy of every vector in RAM for exact rescoring, so it
+# uses MORE memory than f32 -- its benefit is routing speed with exact scores,
+# not a smaller footprint.
 vector_precision = "f32"
 # cosine | l2 | ip
 metric = "cosine"

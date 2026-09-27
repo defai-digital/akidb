@@ -87,7 +87,7 @@ impl VectorPrecision {
             "f16" | "float16" | "half" => Ok(Self::F16),
             "i8" | "int8" | "sq8" => Ok(Self::I8),
             other => Err(AkiDbError::InvalidParameter(format!(
-                "unsupported vector_precision '{other}'; expected f32 or f16"
+                "unsupported vector_precision '{other}'; expected f32, f16, or i8"
             ))),
         }
     }
@@ -1390,6 +1390,14 @@ mod tests {
         assert_eq!(VectorPrecision::parse("int8").unwrap(), VectorPrecision::I8);
         assert_eq!(VectorPrecision::parse("sq8").unwrap(), VectorPrecision::I8);
         assert!(VectorPrecision::parse("f8").is_err());
+    }
+
+    #[test]
+    fn test_vector_precision_error_lists_every_accepted_value() {
+        let error = VectorPrecision::parse("f8").unwrap_err().to_string();
+        assert!(error.contains("f32"), "{error}");
+        assert!(error.contains("f16"), "{error}");
+        assert!(error.contains("i8"), "{error}");
     }
 
     #[test]
