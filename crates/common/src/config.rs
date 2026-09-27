@@ -387,7 +387,7 @@ pub struct GenerationServingConfig {
     /// production.
     #[serde(default)]
     pub control_token: Option<String>,
-    /// Empty means only `storage.minio.bucket`.
+    /// Empty means only `storage.seaweedfs.bucket`.
     #[serde(default)]
     pub allowed_buckets: Vec<String>,
     #[serde(default = "default_s3_region")]
@@ -746,7 +746,7 @@ pub struct StorageConfig {
     pub rocksdb_path: String,
     pub wal_enabled: bool,
     pub wal_path: String,
-    pub minio: MinioConfig,
+    pub seaweedfs: SeaweedFsConfig,
 }
 
 impl Default for StorageConfig {
@@ -758,7 +758,7 @@ impl Default for StorageConfig {
             // matches runtime behavior; set true only when WAL is integrated.
             wal_enabled: false,
             wal_path: "./data/wal".to_string(),
-            minio: MinioConfig::default(),
+            seaweedfs: SeaweedFsConfig::default(),
         }
     }
 }
@@ -787,7 +787,7 @@ impl Default for SqlMetadataConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MinioConfig {
+pub struct SeaweedFsConfig {
     pub endpoint: String,
     pub bucket: String,
     pub access_key: String,
@@ -795,13 +795,13 @@ pub struct MinioConfig {
     pub use_ssl: bool,
 }
 
-impl Default for MinioConfig {
+impl Default for SeaweedFsConfig {
     fn default() -> Self {
         Self {
-            endpoint: "localhost:9000".to_string(),
+            endpoint: "localhost:8333".to_string(),
             bucket: "akidb-snapshots".to_string(),
-            access_key: "minioadmin".to_string(),
-            secret_key: "minioadmin".to_string(),
+            access_key: "akidb-admin".to_string(),
+            secret_key: "akidb-secret-key".to_string(),
             use_ssl: false,
         }
     }
@@ -970,7 +970,7 @@ mod tests {
             wal_enabled = false
             wal_path = "./data/wal"
 
-            [storage.minio]
+            [storage.seaweedfs]
             endpoint = ""
             bucket = ""
             access_key = ""

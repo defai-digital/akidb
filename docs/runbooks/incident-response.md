@@ -8,8 +8,8 @@ Compose stacks. Linux ARM64, NVIDIA Thor, CUDA/GPU index paths, and Kubernetes
 production incidents are outside the active support scope.
 
 The immutable single-node path is a preview. The PostgreSQL-led Ubuntu AMD64
-cell provides generation-aware read failover; PostgreSQL and MinIO availability
-remain external responsibilities. Keep the
+cell provides generation-aware read failover; PostgreSQL and SeaweedFS
+availability remain external responsibilities. Keep the
 [knowledge-serving architecture](../architecture/knowledge-serving.md) open
 when responding to a generation-mode incident.
 
@@ -109,8 +109,8 @@ Resolution:
 
 ## Replica Or Control-Plane Degradation
 
-A PostgreSQL or MinIO outage should pause new convergence without invalidating
-an already active local generation. Capture heartbeat age, replica identity,
+A PostgreSQL or SeaweedFS outage should pause new convergence without
+invalidating an already active local generation. Capture heartbeat age, replica identity,
 failure domain, generation/digest/checkpoint, and build state before changing
 anything.
 
@@ -119,7 +119,7 @@ anything.
   failed replicas; verify its eligibility and evidence-mismatch metrics.
 - Never reuse an existing generation volume under a different `replica_id`.
 - If local projection state is corrupt, isolate the volume and rebuild a blank
-  replica from the canonical MinIO bundle and PostgreSQL control state; do not
+  replica from the canonical SeaweedFS bundle and PostgreSQL control state; do not
   copy a live RocksDB or HNSW directory from a peer.
 
 ## Post-Incident

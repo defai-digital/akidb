@@ -1,6 +1,6 @@
 //! Ingestion Scheduler
 //!
-//! Hourly scheduled synchronization with MinIO to:
+//! Hourly scheduled synchronization with SeaweedFS to:
 //! - Discover new files missed by event-driven ingestion
 //! - Detect modified files (changed ETag)
 //! - Track missing files for soft delete
@@ -72,7 +72,7 @@ pub enum SyncState {
     Skipped,
 }
 
-/// Ingestion scheduler for hourly MinIO sync
+/// Ingestion scheduler for hourly SeaweedFS sync
 pub struct IngestionScheduler {
     config: SchedulerConfig,
     run_lock: Arc<Mutex<()>>,
@@ -265,15 +265,15 @@ impl IngestionScheduler {
     }
 }
 
-/// Change detected during MinIO sync
+/// Change detected during SeaweedFS sync
 #[derive(Debug, Clone)]
-pub struct MinIOChange {
+pub struct StorageChange {
     pub key: String,
     pub etag: Option<String>,
     pub change_type: ChangeType,
 }
 
-/// MinIO change detector using streaming manifest comparison
+/// SeaweedFS change detector using streaming manifest comparison
 pub struct ChangeDetector {
     manifest: Arc<ManifestStore>,
     deletion_threshold: u8,
@@ -294,14 +294,14 @@ impl ChangeDetector {
         }
     }
 
-    /// Detect changes by comparing MinIO listing with manifest
+    /// Detect changes by comparing SeaweedFS listing with manifest
     ///
     /// Both inputs should be sorted by key for efficient merge-join
     pub fn detect_changes(
         &self,
-        minio_objects: Vec<MinIOObject>,
+        storage_objects: Vec<StorageObject>,
         epoch: u64,
-    ) -> Result<Vec<MinIOChange>> {
+    ) -> Result<Vec<StorageChange>> {
         let mut changes = Vec::new();
 
         // Get all manifests as a sorted map
@@ -315,14 +315,14 @@ impl ChangeDetector {
         // Track which manifest keys we've seen
         let mut seen_keys = std::collections::HashSet::new();
 
-        // Process MinIO objects
-        for obj in minio_objects {
+        // Process SeaweedFS objects
+        for obj in storage_objects {
             seen_keys.insert(obj.key.clone());
 
             match manifest_map.get(&obj.key) {
                 None => {
                     // New object
-                    changes.push(MinIOChange {
+                    changes.push(StorageChange {
                         key: obj.key,
                         etag: obj.etag,
                         change_type: ChangeType::New,
@@ -331,7 +331,7 @@ impl ChangeDetector {
                 Some(manifest) => {
                     // Check if ETag changed
                     if obj.etag.as_deref() != Some(&manifest.etag) {
-                        changes.push(MinIOChange {
+                        changes.push(StorageChange {
                             key: obj.key.clone(),
                             etag: obj.etag,
                             change_type: ChangeType::Updated,
@@ -343,7 +343,7 @@ impl ChangeDetector {
             }
         }
 
-        // Find missing objects (in manifest but not in MinIO)
+        // Find missing objects (in manifest but not in SeaweedFS)
         for (key, manifest) in &manifest_map {
             if !seen_keys.contains(key)
                 && matches!(
@@ -357,13 +357,13 @@ impl ChangeDetector {
                     .increment_missing_with_threshold(key, self.deletion_threshold)?;
 
                 if count >= self.deletion_threshold {
-                    changes.push(MinIOChange {
+                    changes.push(StorageChange {
                         key: key.clone(),
                         etag: None,
                         change_type: ChangeType::ConfirmedDelete,
                     });
                 } else {
-                    changes.push(MinIOChange {
+                    changes.push(StorageChange {
                         key: key.clone(),
                         etag: None,
                         change_type: ChangeType::Missing,
@@ -376,9 +376,9 @@ impl ChangeDetector {
     }
 }
 
-/// MinIO object from listing
+/// SeaweedFS object from listing
 #[derive(Debug, Clone)]
-pub struct MinIOObject {
+pub struct StorageObject {
     pub key: String,
     pub etag: Option<String>,
     pub size: u64,
@@ -484,26 +484,26 @@ mod tests {
 
         let detector = ChangeDetector::new(manifest);
 
-        // MinIO listing: file1 unchanged, file2 updated, file3 new
-        let minio_objects = vec![
-            MinIOObject {
+        // SeaweedFS listing: file1 unchanged, file2 updated, file3 new
+        let storage_objects = vec![
+            StorageObject {
                 key: "file1.pdf".to_string(),
                 etag: Some("etag1".to_string()),
                 size: 100,
             },
-            MinIOObject {
+            StorageObject {
                 key: "file2.pdf".to_string(),
                 etag: Some("etag2-new".to_string()), // Changed!
                 size: 200,
             },
-            MinIOObject {
+            StorageObject {
                 key: "file3.pdf".to_string(), // New!
                 etag: Some("etag3".to_string()),
                 size: 300,
             },
         ];
 
-        let changes = detector.detect_changes(minio_objects, 1).unwrap();
+        let changes = detector.detect_changes(storage_objects, 1).unwrap();
 
         assert_eq!(changes.len(), 2);
         assert!(changes.iter().any(|c| c.key == "file2.pdf" && c.change_type == ChangeType::Updated));
@@ -521,10 +521,10 @@ mod tests {
 
         let detector = ChangeDetector::new(Arc::clone(&manifest));
 
-        // Empty MinIO listing - file is missing
-        let minio_objects = vec![];
+        // Empty SeaweedFS listing - file is missing
+        let storage_objects = vec![];
 
-        let changes = detector.detect_changes(minio_objects, 1).unwrap();
+        let changes = detector.detect_changes(storage_objects, 1).unwrap();
 
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].key, "old_file.pdf");

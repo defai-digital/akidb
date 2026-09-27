@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Prepare and exercise the immutable generation-serving preview.
 
-The shell harness owns MinIO and server process lifecycle. This helper creates
-two deterministic generation bundles and drives the authenticated gRPC
+The shell harness owns SeaweedFS and server process lifecycle. This helper
+creates two deterministic generation bundles and drives the authenticated gRPC
 publication/read/rollback assertions on either side of a real process restart.
 """
 
@@ -182,11 +182,11 @@ def command_prepare(args: argparse.Namespace) -> None:
         ("generation_serving", "allowed_buckets", json.dumps(["knowledge"])),
         ("storage", "rocksdb_path", json.dumps(str(output / "legacy-rocksdb"))),
         ("storage", "wal_path", json.dumps(str(output / "legacy-wal"))),
-        ("storage.minio", "endpoint", json.dumps(args.minio_endpoint)),
-        ("storage.minio", "bucket", json.dumps("knowledge")),
-        ("storage.minio", "access_key", json.dumps(args.minio_access_key)),
-        ("storage.minio", "secret_key", json.dumps(args.minio_secret_key)),
-        ("storage.minio", "use_ssl", "false"),
+        ("storage.seaweedfs", "endpoint", json.dumps(args.seaweedfs_endpoint)),
+        ("storage.seaweedfs", "bucket", json.dumps("knowledge")),
+        ("storage.seaweedfs", "access_key", json.dumps(args.seaweedfs_access_key)),
+        ("storage.seaweedfs", "secret_key", json.dumps(args.seaweedfs_secret_key)),
+        ("storage.seaweedfs", "use_ssl", "false"),
     ]
     for section, key, value in updates:
         config = set_toml_value(config, section, key, value)
@@ -454,9 +454,9 @@ def parser() -> argparse.ArgumentParser:
 
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--output", required=True)
-    prepare.add_argument("--minio-endpoint", required=True)
-    prepare.add_argument("--minio-access-key", required=True)
-    prepare.add_argument("--minio-secret-key", required=True)
+    prepare.add_argument("--seaweedfs-endpoint", required=True)
+    prepare.add_argument("--seaweedfs-access-key", required=True)
+    prepare.add_argument("--seaweedfs-secret-key", required=True)
     prepare.set_defaults(handler=command_prepare)
 
     exercise = commands.add_parser("exercise")

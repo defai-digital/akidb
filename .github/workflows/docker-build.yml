@@ -170,15 +170,15 @@ jobs:
       - name: Create secrets directory
         run: |
           mkdir -p deploy/compose/secrets
-          echo "minioadmin" > deploy/compose/secrets/minio_root_user.txt
-          echo "minioadmin" > deploy/compose/secrets/minio_root_password.txt
+          echo "akidb-admin" > deploy/compose/secrets/seaweedfs_access_key.txt
+          echo "akidb-secret-key" > deploy/compose/secrets/seaweedfs_secret_key.txt
           echo "admin" > deploy/compose/secrets/grafana_admin_password.txt
 
       - name: Build and start services
         working-directory: deploy/compose
         run: |
           docker compose build --parallel
-          docker compose up -d nats-1 minio
+          docker compose up -d nats-1 seaweedfs
 
       - name: Wait for services
         run: |

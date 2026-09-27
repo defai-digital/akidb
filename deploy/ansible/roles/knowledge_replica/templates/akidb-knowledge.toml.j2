@@ -31,7 +31,7 @@ control_rocksdb_path = "{{ akidb_data_root }}/generation-control"
 download_path = "{{ akidb_data_root }}/generation-downloads"
 default_collection = "{{ akidb_knowledge_collection }}"
 control_token_file = "{{ akidb_config_root }}/knowledge-control.token"
-allowed_buckets = ["{{ akidb_knowledge_minio_bucket }}"]
+allowed_buckets = ["{{ akidb_knowledge_seaweedfs_bucket }}"]
 s3_region = "us-east-1"
 require_version_or_digest_key = true
 max_bundle_size_bytes = 53687091200
@@ -83,11 +83,11 @@ rocksdb_path = "{{ akidb_data_root }}/rocksdb"
 wal_enabled = true
 wal_path = "{{ akidb_data_root }}/wal"
 
-[storage.minio]
-endpoint = "https://{{ hostvars[groups['akidb_knowledge_dependencies'][0]].akidb_overlay_address }}:{{ akidb_knowledge_minio_port }}"
-bucket = "{{ akidb_knowledge_minio_bucket }}"
-access_key = "{{ akidb_knowledge_minio_access_key }}"
-secret_key = "{{ akidb_knowledge_minio_secret_key }}"
+[storage.seaweedfs]
+endpoint = "https://{{ hostvars[groups['akidb_knowledge_dependencies'][0]].akidb_overlay_address }}:{{ akidb_knowledge_seaweedfs_port }}"
+bucket = "{{ akidb_knowledge_seaweedfs_bucket }}"
+access_key = "{{ akidb_knowledge_seaweedfs_access_key }}"
+secret_key = "{{ akidb_knowledge_seaweedfs_secret_key }}"
 use_ssl = true
 
 [sql]

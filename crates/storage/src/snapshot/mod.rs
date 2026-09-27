@@ -2,11 +2,11 @@
 //!
 //! This module provides snapshot storage backends for persisting index state
 //! to various storage systems including local filesystem and S3-compatible
-//! object stores (like MinIO).
+//! object stores (like SeaweedFS).
 //!
 //! ## Features
 //!
-//! - **Multiple backends**: Local filesystem and S3/MinIO support
+//! - **Multiple backends**: Local filesystem and S3/SeaweedFS support
 //! - **Crash-safe state machine**: Operations persist state to RocksDB
 //! - **Resumable uploads**: Multipart uploads with checkpoint recovery
 //! - **Cleanup utilities**: Automatic orphan and old snapshot cleanup

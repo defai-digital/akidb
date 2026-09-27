@@ -67,10 +67,15 @@ remains the preferred Apple Silicon capacity host; Mac Mini and MacBook are
 valid standalone hosts with smaller practical envelopes.
 
 The knowledge cell provides full-copy retrieval replicas and read failover; it
-does not provide PostgreSQL or MinIO HA. The `generation-postgres` build
+does not provide PostgreSQL or SeaweedFS HA. The `generation-postgres` build
 feature enables the replica worker, but a feature-enabled binary by itself is
 not an HA deployment. See the
 [knowledge-serving architecture](../architecture/knowledge-serving.md).
+
+The single-node object-store dependency is SeaweedFS, whose S3 gateway serves
+requests **anonymously when it is started without a credential configuration**.
+Every deployment must start the gateway with an S3 identity config
+(`-s3.config`); an unconfigured gateway is never an acceptable deployment.
 
 Measured AMD64 envelope, failure drills, and control-plane limits:
 [Ubuntu AMD64 qualification report](../quality/linux-amd64-knowledge-cell-qualification.md).
@@ -168,7 +173,7 @@ GitHub Actions exercises:
 - the Apple Silicon build script on macOS 26;
 - release builds for macOS Apple Silicon and Linux AMD64;
 - the immutable Linux cluster artifact on Ubuntu 24.04 AMD64;
-- the real-MinIO immutable generation-serving gate on Ubuntu 24.04 AMD64;
+- the real-SeaweedFS immutable generation-serving gate on Ubuntu 24.04 AMD64;
 - Ansible syntax checks for knowledge-cell and market-qualification playbooks
   (no live SIFT1M, competitor, or soak execution).
 

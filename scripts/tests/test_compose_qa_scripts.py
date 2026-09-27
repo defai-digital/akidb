@@ -13,7 +13,12 @@ ROOT = Path(__file__).resolve().parents[2]
 LOAD_TEST = ROOT / "deploy" / "compose" / "scripts" / "load-test.sh"
 E2E_TEST = ROOT / "deploy" / "compose" / "scripts" / "e2e-test.sh"
 COMPOSE_FILE = ROOT / "deploy" / "compose" / "docker-compose.yml"
-MINIO_SETUP = ROOT / "deploy" / "compose" / "minio" / "setup-minio.sh"
+PROD_COMPOSE_FILE = ROOT / "deploy" / "compose" / "docker-compose.prod.yml"
+STANDALONE_COMPOSE_FILE = ROOT / "deploy" / "seaweedfs" / "docker-compose.yml"
+SEAWEEDFS_DIR = ROOT / "deploy" / "compose" / "seaweedfs"
+S3_CONFIG_GENERATOR = SEAWEEDFS_DIR / "gen-s3-config.sh"
+BUCKET_SETUP = SEAWEEDFS_DIR / "create-buckets.sh"
+GENERATION_GATE = ROOT / "scripts" / "test-generation-serving-seaweedfs.sh"
 
 
 def write_executable(path: Path, contents: str) -> None:
@@ -22,16 +27,163 @@ def write_executable(path: Path, contents: str) -> None:
 
 
 class ComposeQaScriptTests(unittest.TestCase):
-    def test_minio_setup_uses_writable_config_and_registered_nats_target(
+    def run_script(
         self,
-    ) -> None:
-        compose = COMPOSE_FILE.read_text(encoding="utf-8")
-        setup = MINIO_SETUP.read_text(encoding="utf-8")
+        source: Path,
+        *,
+        env: dict[str, str],
+        interpreter: str,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [interpreter, str(source)],
+            cwd=ROOT,
+            env={**os.environ, **env},
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
 
-        self.assertIn("MC_CONFIG_DIR: /tmp/.mc", compose)
-        self.assertIn("MINIO_NOTIFY_NATS_ENABLE_PRIMARY", compose)
-        self.assertIn("arn:minio:sqs::PRIMARY:nats", setup)
-        self.assertNotIn("arn:minio:sqs::primary:nats", setup)
+    def test_seaweedfs_stack_always_loads_generated_s3_credentials(self) -> None:
+        compose = COMPOSE_FILE.read_text(encoding="utf-8")
+        generator = S3_CONFIG_GENERATOR.read_text(encoding="utf-8")
+        bucket_setup = BUCKET_SETUP.read_text(encoding="utf-8")
+        gate = GENERATION_GATE.read_text(encoding="utf-8")
+
+        # SeaweedFS allows anonymous access to everything when -s3.config is
+        # absent, so the config file is mounted and its generator is a gate.
+        self.assertIn("image: chrislusf/seaweedfs:4.47", compose)
+        self.assertNotIn("seaweedfs:latest", compose)
+        self.assertIn("-s3.config=/etc/seaweedfs/s3.json", compose)
+        self.assertIn("seaweedfs-config:/etc/seaweedfs:ro", compose)
+        self.assertIn("SEAWEEDFS_ACCESS_KEY_FILE: /run/secrets/seaweedfs_access_key", compose)
+        self.assertIn(
+            "SEAWEEDFS_SECRET_KEY_FILE: /run/secrets/seaweedfs_secret_key", compose
+        )
+        self.assertIn("file: ./secrets/seaweedfs_access_key.txt", compose)
+        self.assertIn("file: ./secrets/seaweedfs_secret_key.txt", compose)
+        self.assertIn("condition: service_completed_successfully", compose)
+        self.assertIn(
+            '"actions": ["Admin", "Read", "Write", "List", "Tagging"]', generator
+        )
+        self.assertIn("set -eu", generator)
+
+        # Clients reach the gateway at the SeaweedFS S3 port.
+        self.assertIn(
+            "UPLOAD_GATEWAY_SEAWEEDFS_ENDPOINT: http://seaweedfs:8333", compose
+        )
+        self.assertIn("STORAGE_ENDPOINT: http://seaweedfs:8333", compose)
+        self.assertIn('"127.0.0.1:${SEAWEEDFS_API_PORT:-8333}:8333"', compose)
+        self.assertIn('"127.0.0.1:${SEAWEEDFS_MASTER_PORT:-9333}:9333"', compose)
+
+        # Buckets come from one `weed shell` invocation each.
+        self.assertIn(
+            'echo "s3.bucket.create -name ${bucket}" | weed shell', bucket_setup
+        )
+        self.assertIn("akidb-documents", compose)
+        self.assertIn("akidb-documents akidb-snapshots", compose)
+
+        # The generation gate keeps the same shape against the SeaweedFS image.
+        self.assertIn(
+            'AKIDB_SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:4.47', gate
+        )
+        self.assertIn("--aws-sigv4", gate)
+        self.assertIn("curl --fail --silent \"$SEAWEEDFS_ENDPOINT/healthz\"", gate)
+        self.assertNotIn("9000", gate)
+
+    def test_standalone_seaweedfs_compose_is_pinned_and_authenticated(self) -> None:
+        standalone = STANDALONE_COMPOSE_FILE.read_text(encoding="utf-8")
+        prod = PROD_COMPOSE_FILE.read_text(encoding="utf-8")
+
+        self.assertIn("image: chrislusf/seaweedfs:4.47", standalone)
+        self.assertIn("./s3.json:/etc/seaweedfs/s3.json:ro", standalone)
+        self.assertIn("-s3.config=/etc/seaweedfs/s3.json", standalone)
+        self.assertIn("seaweedfs-data:", standalone)
+        self.assertIn("s3.bucket.create -name $$bucket", standalone)
+        self.assertIn("akidb-snapshots", standalone)
+        self.assertIn("akidb-wal", standalone)
+        self.assertIn("seaweedfs:", prod)
+
+    def test_seaweedfs_stack_drops_the_bucket_notification_path(self) -> None:
+        compose = COMPOSE_FILE.read_text(encoding="utf-8")
+        standalone = STANDALONE_COMPOSE_FILE.read_text(encoding="utf-8")
+        prod = PROD_COMPOSE_FILE.read_text(encoding="utf-8")
+        e2e = E2E_TEST.read_text(encoding="utf-8")
+        load = LOAD_TEST.read_text(encoding="utf-8")
+
+        # SeaweedFS does not implement S3 bucket notifications. The upload
+        # gateway's own NATS publish is the event path and the ingestion
+        # scheduler's periodic sync is the recovery path.
+        self.assertNotIn("MINIO_NOTIFY", compose)
+        self.assertIn("upload gateway's own NATS publish", compose)
+        self.assertIn("periodic", compose)
+        for name, text in (
+            ("docker-compose.yml", compose),
+            ("docker-compose.prod.yml", prod),
+            ("deploy/seaweedfs/docker-compose.yml", standalone),
+            ("e2e-test.sh", e2e),
+            ("load-test.sh", load),
+        ):
+            self.assertNotIn("minio", text.lower(), name)
+        self.assertIn("seaweedfs.uploads", e2e)
+        self.assertIn("seaweedfs.uploads.>", e2e)
+
+    def test_s3_credentials_generator_fails_closed_on_bad_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            # The generator chowns the volume for uid/gid 1000; the test
+            # runner is not root, so the ownership call is stubbed out.
+            shim = fake_bin / "chown"
+            shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            shim.chmod(0o755)
+            env = {
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "SEAWEEDFS_ACCESS_KEY_FILE": str(root / "access"),
+                "SEAWEEDFS_SECRET_KEY_FILE": str(root / "secret"),
+                "SEAWEEDFS_S3_CONFIG": str(root / "out" / "s3.json"),
+            }
+
+            missing = self.run_script(S3_CONFIG_GENERATOR, env=env, interpreter="sh")
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn(
+                "cannot read the SeaweedFS access key secret", missing.stderr
+            )
+
+            (root / "access").write_text("akidb-admin\n", encoding="utf-8")
+            (root / "secret").write_text("\n", encoding="utf-8")
+            empty = self.run_script(S3_CONFIG_GENERATOR, env=env, interpreter="sh")
+            self.assertNotEqual(empty.returncode, 0)
+            self.assertIn("is empty", empty.stderr)
+
+            for label, value in (
+                ("double quote", 'sec"ret\n'),
+                ("backslash", "sec\\ret\n"),
+                ("newline", "sec\nret\n"),
+            ):
+                with self.subTest(label):
+                    (root / "secret").write_text(value, encoding="utf-8")
+                    rejected = self.run_script(
+                        S3_CONFIG_GENERATOR, env=env, interpreter="sh"
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertNotEqual(rejected.stderr.strip(), "")
+
+            (root / "secret").write_text("akidb-secret-key\n", encoding="utf-8")
+            rendered = self.run_script(S3_CONFIG_GENERATOR, env=env, interpreter="sh")
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            identity = json.loads(
+                (root / "out" / "s3.json").read_text(encoding="utf-8")
+            )["identities"][0]
+            self.assertEqual(identity["name"], "akidb-admin")
+            self.assertEqual(
+                identity["actions"], ["Admin", "Read", "Write", "List", "Tagging"]
+            )
+            self.assertEqual(
+                identity["credentials"],
+                [{"accessKey": "akidb-admin", "secretKey": "akidb-secret-key"}],
+            )
 
     def test_e2e_requires_every_service_check(self) -> None:
         script = E2E_TEST.read_text(encoding="utf-8")

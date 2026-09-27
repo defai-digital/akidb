@@ -4736,10 +4736,7 @@ mod tests {
             .unwrap()
             .into_inner();
         assert_eq!(delete_resp.status, DeleteStatus::Deleted as i32);
-        assert!(service
-            .id_mapping
-            .is_deleted(&VectorId::new(id))
-            .unwrap());
+        assert!(service.id_mapping.is_deleted(&VectorId::new(id)).unwrap());
 
         let err = service
             .insert(Request::new(InsertRequest {
@@ -4758,10 +4755,7 @@ mod tests {
             err.message()
         );
         // Storage still owns the soft-delete; active lookup must stay empty.
-        assert!(service
-            .id_mapping
-            .is_deleted(&VectorId::new(id))
-            .unwrap());
+        assert!(service.id_mapping.is_deleted(&VectorId::new(id)).unwrap());
         assert!(service
             .id_mapping
             .get_internal_id(&VectorId::new(id))

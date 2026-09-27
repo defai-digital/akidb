@@ -4,8 +4,13 @@
     name: postgresql
     state: restarted
 
-- name: Restart knowledge MinIO
+- name: Restart knowledge SeaweedFS
   ansible.builtin.systemd_service:
-    name: minio-knowledge
+    name: seaweedfs-knowledge
     state: restarted
     daemon_reload: true
+
+- name: Reload knowledge SeaweedFS S3 credentials
+  ansible.builtin.systemd_service:
+    name: seaweedfs-knowledge
+    state: reloaded

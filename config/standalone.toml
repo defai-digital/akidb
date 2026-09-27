@@ -1,5 +1,5 @@
 # AkiDB Standalone Configuration
-# Single-machine mode with no external dependencies (no MinIO, no NATS, no GPU)
+# Single-machine mode with no external dependencies (no SeaweedFS, no NATS, no GPU)
 # Use with: akidb-server --config config/standalone.toml --standalone
 
 [server]
@@ -57,7 +57,7 @@ rocksdb_path = "./data/rocksdb"
 wal_enabled = false
 wal_path = "./data/wal"
 
-[storage.minio]
+[storage.seaweedfs]
 endpoint = ""
 bucket = ""
 access_key = ""

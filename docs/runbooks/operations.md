@@ -14,8 +14,8 @@ See `docs/platform/SUPPORT.md` for packaging-specific limits.
 | Profile | Write and recovery authority | Operational status |
 | --- | --- | --- |
 | Mutable standalone | Direct AkiDB writes; local RocksDB and snapshots | Primary supported profile |
-| Immutable single node | MinIO bundle plus privileged local generation control | Opt-in atomic-publication preview |
-| PostgreSQL-led full replicas | AX Fabric PostgreSQL control state plus immutable MinIO bundles | Supported Ubuntu AMD64 knowledge-serving profile |
+| Immutable single node | SeaweedFS bundle plus privileged local generation control | Opt-in atomic-publication preview |
+| PostgreSQL-led full replicas | AX Fabric PostgreSQL control state plus immutable SeaweedFS bundles | Supported Ubuntu AMD64 knowledge-serving profile |
 | Multi-shard coordinator | Independent shard-local state | Qualification/capacity path, not replication |
 
 Do not mix recovery procedures between these profiles. In particular, a
@@ -61,10 +61,16 @@ Use Compose for local supporting services and integration testing:
 
 ```bash
 cd deploy/compose
-docker compose up -d nats-1 nats-2 nats-3 minio doc-parser upload-gateway
+docker compose up -d nats-1 nats-2 nats-3 seaweedfs doc-parser upload-gateway
 docker compose up -d akidb-server akidb-coordinator ingestion prometheus grafana
 docker compose ps
 ```
+
+The SeaweedFS S3 gateway is started with an S3 identity config assembled from
+`deploy/compose/secrets/seaweedfs_access_key.txt` and
+`seaweedfs_secret_key.txt`. Without a credential config the gateway would serve
+requests anonymously, so those files must always be present. Keep them
+mode-`0600`; `secrets/` is gitignored.
 
 Stop the stack:
 
@@ -77,7 +83,7 @@ docker compose down -v --remove-orphans
 
 ```bash
 curl http://localhost:8222/healthz
-curl http://localhost:9000/minio/health/live
+curl http://localhost:8333/healthz
 curl http://localhost:8080/health
 curl http://localhost:8081/health
 curl http://localhost:8000/health
@@ -116,7 +122,7 @@ cargo build --release -p akidb-server --features generation-s3
 
 `generation_serving.enabled` must be true, the server must not use
 `--standalone`, and the generation, control, and download paths must be
-distinct. Use a read-only MinIO credential on the replica and keep the
+distinct. Use a read-only SeaweedFS S3 identity on the replica and keep the
 generation-control bearer token separate from the read data-plane token.
 This privileged gRPC control service is exposed only when
 `generation_serving.replica_control.enabled` is false.
@@ -136,12 +142,12 @@ PostgreSQL is the publication authority.
 
 The worker rebuilds a complete local revision from the immutable base bundle
 plus every ordered mutation through the required checkpoint. Upserts reference
-bounded checksum-addressed payloads in MinIO; deletes have no payload. A
+bounded checksum-addressed payloads in SeaweedFS; deletes have no payload. A
 duplicate is idempotent, while a sequence gap, identity conflict, invalid
 payload, or cross-replica digest/count mismatch blocks readiness and must not
 be bypassed.
 
-During a PostgreSQL or MinIO outage, do not delete or deactivate a known-good
+During a PostgreSQL or SeaweedFS outage, do not delete or deactivate a known-good
 local generation merely because publication cannot progress. Existing reads
 are designed to remain local; new build, checkpoint, and activation work
 pauses. A failed shadow build must not disturb the active pointer.
@@ -152,11 +158,15 @@ The full configuration, current limitations, and focused checks are in
 ## Maintenance
 
 For mutable standalone mode, create a manual snapshot through the admin API
-when available, then verify the snapshot in MinIO:
+when available, then verify the snapshot in the object store:
 
 ```bash
-mc ls local/akidb-snapshots/
+aws --endpoint-url http://localhost:8333 s3 ls s3://akidb-snapshots/
 ```
+
+The snapshot S3 backend signs requests with AWS Signature V2. The SeaweedFS S3
+gateway accepts SigV2, but only under path-style addressing: never enable
+virtual-host style (`-s3.domainName`) on an endpoint that serves this backend.
 
 For local data recovery, stop traffic, restore the RocksDB and snapshot data,
 restart services, and run a health check plus a known-query validation.

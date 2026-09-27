@@ -1,7 +1,7 @@
 //! AkiDB Storage - Persistence layer abstraction
 //!
 //! Provides storage backends for vector metadata, ID mappings, WAL,
-//! snapshot storage for S3/MinIO integration, and tag indexing.
+//! snapshot storage for S3/SeaweedFS integration, and tag indexing.
 
 mod backend;
 pub mod generation_bundle;

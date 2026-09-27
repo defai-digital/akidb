@@ -1,7 +1,7 @@
 //! Document Lifecycle Manager
 //!
 //! Handles soft delete and hard delete operations for documents
-//! that are missing from MinIO during scheduled syncs.
+//! that are missing from SeaweedFS during scheduled syncs.
 //!
 //! Features:
 //! - Missing count threshold checking

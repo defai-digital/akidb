@@ -124,7 +124,7 @@ compaction, checkpointing, and rebuild traffic. A 100M-vector qualification
 must use a separately sized disk budget derived from measured bytes per vector.
 
 For fair single-engine comparisons, use one isolated server host and one
-isolated client host. Do not run PostgreSQL, MinIO, gateways, or a competing
+isolated client host. Do not run PostgreSQL, SeaweedFS, gateways, or a competing
 database on the benchmark server during that run. Run each product separately,
 recreate the data volume between products, and retain resource telemetry.
 
@@ -356,7 +356,7 @@ Inject one bounded fault at a time while paced traffic is already running:
 - reboot one replica host;
 - stop each gateway in turn behind the client/load-balancer path;
 - interrupt one replica's PostgreSQL control-plane connection;
-- make one replica's MinIO source temporarily unavailable;
+- make one replica's SeaweedFS source temporarily unavailable;
 - fill a dedicated test volume to its configured watermark;
 - replace one replica from a blank volume;
 - restore from a backup to a separate path; and
@@ -390,8 +390,8 @@ never disappear or regress. Probe IDs are deleted, the active count must
 return to exactly 1,000,000, and full SIFT1M Recall@10 is rerun before the
 crash, after crash recovery, and after a graceful restart.
 
-The lab's PostgreSQL and MinIO may remain single-node only for AkiDB process
-qualification. A production-HA claim additionally requires managed or
+The lab's PostgreSQL and SeaweedFS may remain single-node only for AkiDB
+process qualification. A production-HA claim additionally requires managed or
 independently qualified HA PostgreSQL and object storage.
 
 ## Phased execution plan
@@ -564,8 +564,8 @@ retain Recall@10 of at least 0.95 with P99 no more than 250 ms.
 
 After the immutable AkiDB SIFT1M matrix passes, run both competitors
 sequentially on the same isolated server and driver. Inject
-`AKIDB_COMPETITOR_MINIO_ACCESS_KEY` and
-`AKIDB_COMPETITOR_MINIO_SECRET_KEY` from the CI secret store or an ephemeral
+`AKIDB_COMPETITOR_SEAWEEDFS_ACCESS_KEY` and
+`AKIDB_COMPETITOR_SEAWEEDFS_SECRET_KEY` from the CI secret store or an ephemeral
 lab credential helper first; never put either value in the command line or an
 inventory file.
 

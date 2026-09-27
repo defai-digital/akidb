@@ -8,7 +8,7 @@ set -euo pipefail
 UPLOAD_GATEWAY_URL="${UPLOAD_GATEWAY_URL:-http://localhost:8081}"
 AKIDB_SERVER="${AKIDB_SERVER:-localhost:50051}"
 AKIDB_COLLECTION="${AKIDB_COLLECTION:-default}"
-MINIO_ENDPOINT="${MINIO_ENDPOINT:-http://localhost:9000}"
+SEAWEEDFS_ENDPOINT="${SEAWEEDFS_ENDPOINT:-http://localhost:8333}"
 PROMETHEUS_URL="${PROMETHEUS_URL:-http://localhost:9090}"
 
 # Test parameters
@@ -150,11 +150,11 @@ check_prerequisites() {
     print_status "Upload Gateway: ${UPLOAD_GATEWAY_URL}"
 
     if ! curl -sf --max-time "$HEALTH_REQUEST_TIMEOUT_SECONDS" \
-        "${MINIO_ENDPOINT}/minio/health/live" > /dev/null 2>&1; then
-        print_error "MinIO not reachable at ${MINIO_ENDPOINT}"
+        "${SEAWEEDFS_ENDPOINT}/healthz" > /dev/null 2>&1; then
+        print_error "SeaweedFS not reachable at ${SEAWEEDFS_ENDPOINT}"
         exit 1
     fi
-    print_status "MinIO: ${MINIO_ENDPOINT}"
+    print_status "SeaweedFS: ${SEAWEEDFS_ENDPOINT}"
 
     if ! prometheus_query_value "vector(1)" > /dev/null; then
         print_error "Prometheus not reachable at ${PROMETHEUS_URL}"

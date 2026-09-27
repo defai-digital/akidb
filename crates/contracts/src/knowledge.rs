@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(manifest.validate().unwrap_err().field, "uri");
 
         let mut manifest = valid.clone();
-        manifest.bundle.uri = "http://minio.internal/object".to_string();
+        manifest.bundle.uri = "http://seaweedfs.internal/object".to_string();
         assert_eq!(manifest.validate().unwrap_err().field, "uri");
 
         let mut manifest = valid.clone();

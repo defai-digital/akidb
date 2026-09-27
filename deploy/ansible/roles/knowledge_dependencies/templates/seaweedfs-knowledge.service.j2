@@ -1,0 +1,39 @@
+{# Prefer akidb_service_network_mode; fall back to legacy akidb_manage_wireguard. #}
+{% set _mode = akidb_service_network_mode | default('') %}
+{% set _use_wg = (_mode == 'wireguard') if (_mode | length > 0) else (akidb_manage_wireguard | default(true) | bool) %}
+[Unit]
+Description=SeaweedFS canonical object store for AkiDB qualification
+After=network-online.target{% if _use_wg %} wg-quick@{{ akidb_wireguard_interface }}.service{% endif %}
+
+Wants=network-online.target
+{% if _use_wg %}
+Requires=wg-quick@{{ akidb_wireguard_interface }}.service
+{% endif %}
+
+[Service]
+# The SeaweedFS process does not send sd_notify messages, so it is Type=simple.
+Type=simple
+User=seaweedfs
+Group=seaweedfs
+UMask=0027
+# -s3.key.file with -s3.port.https left at 0 makes the S3 gateway serve TLS on
+# -s3.port and skips the plaintext listener entirely. See weed/command/s3.go.
+# -volume.max=0 means "free space divided by -master.volumeSizeLimitMB", so the
+# volume size limit is what decides how many volumes this host can offer.
+ExecStart=/usr/local/bin/weed server -filer -s3 -dir=/var/lib/seaweedfs/knowledge -ip={{ akidb_overlay_address }} -ip.bind=0.0.0.0 -master.port={{ akidb_knowledge_seaweedfs_master_port }} -s3.port={{ akidb_knowledge_seaweedfs_port }} -s3.config=/etc/seaweedfs/s3.json -s3.key.file=/etc/seaweedfs/certs/server.key -s3.cert.file=/etc/seaweedfs/certs/server.crt -volume.max=0 -master.volumeSizeLimitMB={{ akidb_knowledge_seaweedfs_volume_size_limit_mb }} -metricsPort=9320
+# The S3 gateway reloads a file-based -s3.config on SIGHUP.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/seaweedfs
+
+[Install]
+WantedBy=multi-user.target

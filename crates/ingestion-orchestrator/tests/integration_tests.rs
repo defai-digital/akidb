@@ -1,6 +1,7 @@
 //! Integration tests for the ingestion orchestrator
 //!
-//! These tests use testcontainers to spin up real NATS and MinIO instances.
+//! These tests run against local fixtures and in-process components; no NATS
+//! or SeaweedFS container is started.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -23,9 +24,9 @@ use tempfile::TempDir;
 #[tokio::test]
 async fn test_storage_client_configuration() {
     let config = StorageConfig {
-        endpoint: "http://localhost:9000".to_string(),
-        access_key: "minioadmin".to_string(),
-        secret_key: "minioadmin".to_string(),
+        endpoint: "http://localhost:8333".to_string(),
+        access_key: "akidb-admin".to_string(),
+        secret_key: "akidb-secret-key".to_string(),
         bucket: "test-bucket".to_string(),
         region: "us-east-1".to_string(),
     };
@@ -328,7 +329,7 @@ async fn test_config_defaults() {
     assert_eq!(nats.url, "nats://localhost:4222");
 
     let storage = StorageConfig::default();
-    assert_eq!(storage.endpoint, "http://localhost:9000");
+    assert_eq!(storage.endpoint, "http://localhost:8333");
     assert_eq!(storage.bucket, "akidb-documents");
 
     let akidb = AkiDbConfig::default();

@@ -104,7 +104,7 @@ rocksdb_path = "./data/memory-preview/vector-rocksdb"
 wal_enabled = false
 wal_path = "./data/memory-preview/vector-wal"
 
-[storage.minio]
+[storage.seaweedfs]
 endpoint = ""
 bucket = ""
 access_key = ""

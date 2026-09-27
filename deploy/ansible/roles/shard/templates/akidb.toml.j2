@@ -47,8 +47,8 @@ rocksdb_path = "{{ akidb_data_root }}/rocksdb"
 wal_enabled = true
 wal_path = "{{ akidb_data_root }}/wal"
 
-[storage.minio]
-endpoint = "127.0.0.1:9000"
+[storage.seaweedfs]
+endpoint = "127.0.0.1:8333"
 bucket = "akidb-snapshots"
 access_key = "unused-in-standalone-mode"
 secret_key = "unused-in-standalone-mode"

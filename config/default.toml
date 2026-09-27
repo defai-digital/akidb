@@ -102,7 +102,7 @@ default_collection = "default"
 # read data-plane token. AKIDB_GENERATION_CONTROL_TOKEN overrides this file.
 control_token_file = "./data/generation-control.token"
 # control_token = "set-explicitly-or-use-AKIDB_GENERATION_CONTROL_TOKEN"
-# Empty restricts publication to storage.minio.bucket.
+# Empty restricts publication to storage.seaweedfs.bucket.
 allowed_buckets = []
 s3_region = "us-east-1"
 # Require ?versionId=... or a checksum-addressed S3 key.
@@ -166,8 +166,8 @@ rocksdb_path = "./data/rocksdb"
 wal_enabled = false
 wal_path = "./data/wal"
 
-[storage.minio]
-endpoint = "localhost:9000"
+[storage.seaweedfs]
+endpoint = "localhost:8333"
 bucket = "akidb-snapshots"
 access_key = "akidb-admin"
 secret_key = "akidb-secret-key"

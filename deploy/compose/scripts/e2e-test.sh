@@ -2,8 +2,9 @@
 # AkiDB End-to-End Test Script
 #
 # This script verifies the Docker Compose document-ingress path through NATS,
-# MinIO, the parser, and the upload gateway. Full embedding-to-AkiDB ingestion
-# is covered separately because the native embedding service runs on the host.
+# SeaweedFS, the parser, and the upload gateway. Full embedding-to-AkiDB
+# ingestion is covered separately because the native embedding service runs on
+# the host.
 #
 # Usage: ./e2e-test.sh [--timeout seconds]
 
@@ -165,8 +166,8 @@ main() {
     fi
     export NATS_CLIENT_PORT="$E2E_PORT_BASE"
     export NATS_MONITOR_PORT=$((E2E_PORT_BASE + 1))
-    export MINIO_API_PORT=$((E2E_PORT_BASE + 2))
-    export MINIO_CONSOLE_PORT=$((E2E_PORT_BASE + 3))
+    export SEAWEEDFS_API_PORT=$((E2E_PORT_BASE + 2))
+    export SEAWEEDFS_MASTER_PORT=$((E2E_PORT_BASE + 3))
     export DOC_PARSER_PORT=$((E2E_PORT_BASE + 4))
     export UPLOAD_GATEWAY_PORT=$((E2E_PORT_BASE + 5))
 
@@ -178,10 +179,10 @@ echo "=========================================="
 echo ""
 
 # Step 1: Start infrastructure services
-log_info "Starting infrastructure services (NATS, MinIO)..."
+log_info "Starting infrastructure services (NATS, SeaweedFS)..."
 cd "$COMPOSE_DIR"
 
-docker compose up -d nats-1 nats-2 nats-3 minio
+docker compose up -d nats-1 nats-2 nats-3 seaweedfs
 
 # Wait for services to be healthy
 log_info "Waiting for services to be healthy..."
@@ -205,20 +206,20 @@ else
     exit 1
 fi
 
-# Step 3: Check MinIO
-log_info "Checking MinIO status..."
-MINIO_HEALTHY=false
+# Step 3: Check SeaweedFS
+log_info "Checking SeaweedFS status..."
+SEAWEEDFS_HEALTHY=false
 if wait_for_http \
-    "http://localhost:${MINIO_API_PORT}/minio/health/live" \
+    "http://localhost:${SEAWEEDFS_API_PORT}/healthz" \
     "$DEADLINE" \
-    "minio"; then
-    MINIO_HEALTHY=true
+    "seaweedfs"; then
+    SEAWEEDFS_HEALTHY=true
 fi
 
-if [ "$MINIO_HEALTHY" = true ]; then
-    log_success "MinIO is healthy"
+if [ "$SEAWEEDFS_HEALTHY" = true ]; then
+    log_success "SeaweedFS is healthy"
 else
-    log_error "MinIO failed to start"
+    log_error "SeaweedFS failed to start"
     exit 1
 fi
 
@@ -386,8 +387,8 @@ async def verify_stream() -> None:
             os.environ["UPLOAD_GATEWAY_NATS_STREAM"]
         )
         subjects = set(info.config.subjects or [])
-        assert "minio.uploads" in subjects
-        assert "minio.uploads.>" in subjects
+        assert "seaweedfs.uploads" in subjects
+        assert "seaweedfs.uploads.>" in subjects
         assert info.config.num_replicas == int(
             os.environ["UPLOAD_GATEWAY_NATS_REPLICAS"]
         )
@@ -447,7 +448,7 @@ TESTS_TOTAL=5
 if [ "$NATS_HEALTHY" = true ]; then
     TESTS_PASSED=$((TESTS_PASSED + 1))
 fi
-if [ "$MINIO_HEALTHY" = true ]; then
+if [ "$SEAWEEDFS_HEALTHY" = true ]; then
     TESTS_PASSED=$((TESTS_PASSED + 1))
 fi
 if [ "$DOC_PARSER_HEALTHY" = true ]; then

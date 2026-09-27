@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "akidb-admin",
+      "credentials": [
+        {
+          "accessKey": "REPLACE-WITH-YOUR-ACCESS-KEY",
+          "secretKey": "REPLACE-WITH-YOUR-SECRET-KEY"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

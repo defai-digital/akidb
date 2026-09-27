@@ -25,10 +25,10 @@ class EventPublisher:
         self._stream_ready = False
 
     def _stream_config(self) -> StreamConfig:
-        subjects = ["minio.uploads", "minio.uploads.>"]
+        subjects = ["seaweedfs.uploads", "seaweedfs.uploads.>"]
         if not (
-            self.subject == "minio.uploads"
-            or self.subject.startswith("minio.uploads.")
+            self.subject == "seaweedfs.uploads"
+            or self.subject.startswith("seaweedfs.uploads.")
         ):
             subjects.append(self.subject)
         return StreamConfig(

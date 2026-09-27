@@ -57,9 +57,9 @@ services:
           memory: 64M
 
   # ============================================
-  # MinIO - Production Settings
+  # SeaweedFS - Production Settings
   # ============================================
-  minio:
+  seaweedfs:
     restart: always
     deploy:
       resources:

@@ -36,7 +36,7 @@ targets. See [Platform Support](docs/platform/SUPPORT.md).
 > AMD64 three-replica knowledge cell is qualified for a bounded 100k × 768
 > envelope. Broader market ANN, graph, and competitor-parity claims remain an
 > active release gate, not a completed verdict. AkiDB is not a consensus
-> database: canonical data remains in MinIO and AX Fabric object storage, plus PostgreSQL. The
+> database: canonical data remains in AX Fabric object storage and PostgreSQL. The
 > multi-shard coordinator remains a separate capacity path.
 
 ## Why AkiDB
@@ -54,8 +54,8 @@ core retrieval path behind one API and one operational boundary:
 - **Structured filtering:** typed metadata and tag filters, plus an optional
   SQLite metadata index; PostgreSQL support is feature-gated.
 - **Two durability models:** RocksDB-backed mutable standalone state, or
-  immutable knowledge generations rebuilt from canonical MinIO artifacts and
-  control records.
+  immutable knowledge generations rebuilt from canonical SeaweedFS artifacts
+  and control records.
 - **Agent-ready interfaces:** gRPC, Python and TypeScript SDKs, an MCP stdio
   server, a terminal UI, and JSON-oriented operations commands.
 - **Local-first security:** loopback-first defaults, bearer-token and workspace
@@ -152,7 +152,7 @@ AX Wiki / DocProc inputs + source objects
             ▼
   AX Fabric ingestion/distillation
             │
-            ├── immutable logical bundles ──► MinIO
+            ├── immutable logical bundles ──► SeaweedFS
             └── generation + outbox ────────► HA PostgreSQL
                                                 │
                               ┌─────────────────┼─────────────────┐
@@ -168,7 +168,7 @@ AX Wiki / DocProc inputs + source objects
                                          Agents / GenAI
 ```
 
-MinIO remains the canonical object store. PostgreSQL is the publication and ordered
+SeaweedFS remains the canonical object store. PostgreSQL is the publication and ordered
 checkpoint authority. Each AkiDB node owns an independent, rebuildable full
 copy on local storage; live RocksDB or index files are never shared between
 replicas. NATS may later accelerate notifications, but it is not the
@@ -186,10 +186,10 @@ the ownership, consistency, and release boundaries.
 | Shape | Components | Status and intended use |
 | --- | --- | --- |
 | Mutable standalone | One `akidb` server and local storage | Best-fit single-user path on Mac Studio or AMD64 PC; also Mac Mini / MacBook |
-| Immutable single node | MinIO plus one generation-enabled AkiDB server | Opt-in atomic-publication preview; no replication or failover |
-| Full-replica cell | HA PostgreSQL, MinIO, three independent AkiDB replicas, and two or more AX gateways | Enterprise design: Mac Studio cluster or AMD64 cloud cell. Ubuntu AMD64 envelope is the checked-in qualification; PostgreSQL and object-store HA remain external |
+| Immutable single node | SeaweedFS plus one generation-enabled AkiDB server | Opt-in atomic-publication preview; no replication or failover |
+| Full-replica cell | HA PostgreSQL, SeaweedFS, three independent AkiDB replicas, and two or more AX gateways | Enterprise design: Mac Studio cluster or AMD64 cloud cell. Ubuntu AMD64 envelope is the checked-in qualification; PostgreSQL and object-store HA remain external |
 | Multi-shard | Coordinator plus two or more independent shard servers | Fan-out search and capacity experiments; not the HA replica design |
-| Ingestion stack | Upload gateway, parsers, NATS, MinIO, ingestion workers, embedding service, and AkiDB | Document-processing and integration workflows; its NATS stream is separate from knowledge-generation authority |
+| Ingestion stack | Upload gateway, parsers, NATS, SeaweedFS, ingestion workers, embedding service, and AkiDB | Document-processing and integration workflows; its NATS stream is separate from knowledge-generation authority |
 
 The coordinator merges results across shards and applies backpressure, but it
 is not yet a replication layer. The current coordinator also does not forward
@@ -356,6 +356,7 @@ reference.
 | `generation_serving.replica_control` | Disabled-by-default PostgreSQL replica-worker settings for the Ubuntu AMD64 knowledge-serving profile |
 | `index` | HNSW construction/search settings, metric, precision, filtering, and rebuild thresholds |
 | `storage` | RocksDB and snapshot-related paths; WAL settings are reserved for the not-yet-wired server WAL path |
+| `storage.seaweedfs` | S3-compatible object-store endpoint (SeaweedFS S3 gateway, port 8333 by default), bucket, credentials, and TLS for snapshots and generation bundles |
 | `sql` | Optional SQLite or feature-gated PostgreSQL metadata index |
 | `embedding` | Optional text embedding endpoint, model identity, dimensions, and timeouts |
 | `observability` / `slo` | Logs, metrics, tracing, backpressure, and reference targets |
@@ -375,8 +376,12 @@ Security defaults and requirements:
   `AKIDB_GENERATION_CONTROL_TOKEN`; PostgreSQL replica mode removes that local
   control API and reads its database URL only from the configured environment
   variable, with verified TLS by default.
+- The SeaweedFS S3 gateway serves every request anonymously when it is started
+  without a credential configuration. Every documented deployment must start it
+  with an S3 identity config (`-s3.config`); never point AkiDB at an
+  unauthenticated object-store gateway.
 - Built-in server TLS is supported. The knowledge-cell profile also uses an
-  encrypted private overlay, HTTPS at the gateway and MinIO, and verified
+  encrypted private overlay, HTTPS at the gateway and SeaweedFS, and verified
   PostgreSQL TLS.
 - Real Ansible inventories, vault-password files, SSH keys, and local agent
   instructions are gitignored and rejected by the CI sensitive-file policy.
@@ -498,7 +503,7 @@ akidb/
   convergence and generation-aware read failover. The Ubuntu AMD64 cell is
   qualified for a bounded retrieval envelope (100k vectors × 768 dimensions
   with smaller deterministic generation/failover drills). It does not make
-  PostgreSQL or MinIO highly available; production must supply those durable
+  PostgreSQL or SeaweedFS highly available; production must supply those durable
   HA services.
 - Privileged single-node publication remains an opt-in preview. The PostgreSQL
   replica worker rebuilds deterministic post-bundle revisions from ordered

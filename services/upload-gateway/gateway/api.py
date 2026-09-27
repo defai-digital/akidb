@@ -106,16 +106,16 @@ async def health_check(response: Response) -> HealthResponse:
     """Health check endpoint."""
     storage = get_storage_client()
     publisher = await get_event_publisher()
-    minio_connected = await run_in_threadpool(storage.is_connected)
+    seaweedfs_connected = await run_in_threadpool(storage.is_connected)
     nats_connected = publisher.is_connected()
-    healthy = minio_connected and nats_connected
+    healthy = seaweedfs_connected and nats_connected
     if not healthy:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return HealthResponse(
         status="healthy" if healthy else "degraded",
         version=__version__,
-        minio_connected=minio_connected,
+        seaweedfs_connected=seaweedfs_connected,
         nats_connected=nats_connected,
     )
 
@@ -143,7 +143,7 @@ async def upload_document(
 ) -> UploadResponse:
     """Upload a document for processing.
 
-    The document will be stored in MinIO and an event will be published
+    The document will be stored in SeaweedFS and an event will be published
     to NATS for the ingestion pipeline to process.
 
     Args:
@@ -201,7 +201,7 @@ async def upload_document(
     else:
         key = f"{timestamp}_{content_hash}_{unique_id}_{filename}"
 
-    # Upload to MinIO
+    # Upload to SeaweedFS
     storage = get_storage_client()
     try:
         await run_in_threadpool(
@@ -224,7 +224,7 @@ async def upload_document(
     # Publish event to NATS
     publisher = await get_event_publisher()
     event = UploadEvent(
-        bucket=settings.minio_bucket,
+        bucket=settings.seaweedfs_bucket,
         key=key,
         size=len(content),
         content_type=file.content_type,
@@ -248,7 +248,7 @@ async def upload_document(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "error": "Event publication failed after object storage",
-                "bucket": settings.minio_bucket,
+                "bucket": settings.seaweedfs_bucket,
                 "key": key,
             },
         )
@@ -258,7 +258,7 @@ async def upload_document(
 
     return UploadResponse(
         key=key,
-        bucket=settings.minio_bucket,
+        bucket=settings.seaweedfs_bucket,
         size=len(content),
         content_type=file.content_type,
         event_published=event_published,

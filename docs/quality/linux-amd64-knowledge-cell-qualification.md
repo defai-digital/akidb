@@ -8,6 +8,14 @@
 
 **Measured host OS:** Ubuntu 26.04 on `x86_64`
 
+**Object store at the time of this run:** MinIO. The repository now uses
+SeaweedFS as its object store, and the procedure for a new cell is in the
+[Knowledge-Serving Cell Runbook](../runbooks/knowledge-serving.md). Every MinIO
+reference below belongs to the recorded 2026-07-25 run and its measured
+environment; the scope exclusions and the single-node object-store limitation it
+records apply equally to the current SeaweedFS dependency, and no measured
+number or result has been changed.
+
 ## Decision
 
 The PostgreSQL-led AkiDB knowledge cell is qualified for a single logical
@@ -35,7 +43,7 @@ This decision does not qualify:
 ## Product and data ownership
 
 AkiDB remains a rebuildable retrieval projection. AX Fabric publishes
-canonical knowledge to MinIO, while HA PostgreSQL is the authority for generations,
+canonical knowledge to MinIO or another S3-compatible store, while HA PostgreSQL is the authority for generations,
 ordered mutations, activation, audit, and replica checkpoints. Each AkiDB
 replica owns independent RocksDB, HNSW, BM25, and bounded-graph state on its
 local data volume. NATS is not an authority and was not required by the

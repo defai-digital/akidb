@@ -15,7 +15,7 @@ PostgreSQL-authoritative knowledge-serving control path.
 
 ```bash
 cd deploy/compose
-docker compose up -d nats-1 nats-2 nats-3 minio
+docker compose up -d nats-1 nats-2 nats-3 seaweedfs
 docker compose up -d doc-parser upload-gateway ingestion prometheus grafana
 ```
 
@@ -30,7 +30,7 @@ docker compose down -v --remove-orphans
 
 ```bash
 curl http://localhost:8222/healthz
-curl http://localhost:9000/minio/health/live
+curl http://localhost:8333/healthz
 curl http://localhost:8080/health
 curl http://localhost:8081/health
 curl http://localhost:8000/health
@@ -43,9 +43,14 @@ docker compose logs --tail=100 ingestion
 nats stream ls
 nats stream info akidb-uploads
 nats consumer info akidb-uploads ingestion-orchestrator
-docker compose exec minio mc ls local/
+docker compose exec seaweedfs sh -c 'echo "s3.bucket.list" | weed shell -master=localhost:9333'
 docker compose logs -f ingestion
 ```
+
+Uploads reach the orchestrator through the upload gateway's NATS publish
+(`seaweedfs.uploads`). The SeaweedFS S3 gateway does not emit S3 bucket
+notifications, so an object written directly into the bucket is picked up only
+by the orchestrator's next scheduled bucket/manifest sync.
 
 ## Backpressure Active
 

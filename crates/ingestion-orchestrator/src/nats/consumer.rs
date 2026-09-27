@@ -1,6 +1,13 @@
 //! NATS JetStream Consumer
 //!
-//! Consumes document upload events from MinIO bucket notifications.
+//! Consumes document upload events published on the upload stream.
+//!
+//! Two input shapes are accepted: the upload gateway's own canonical JSON
+//! event, and an S3-event-shaped JSON notification. The S3-event shape is one
+//! accepted input shape only. SeaweedFS's S3 gateway does not emit S3 bucket
+//! notifications, so the upload gateway's own NATS publish is the event path,
+//! and the scheduled bucket/manifest sync covers objects written by other
+//! means.
 
 use async_nats::jetstream::{self, consumer::PullConsumer};
 use futures::StreamExt;
@@ -12,7 +19,7 @@ use crate::config::NatsConfig;
 use crate::nats::ensure_stream;
 use crate::{IngestionError, Result};
 
-/// Document upload event from MinIO
+/// Document upload event from SeaweedFS
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadEvent {
     /// Bucket name
@@ -32,33 +39,33 @@ pub struct UploadEvent {
 }
 
 #[derive(Debug, Deserialize)]
-struct MinioNotification {
+struct S3EventNotification {
     #[serde(rename = "Records")]
-    records: Vec<MinioRecord>,
+    records: Vec<S3EventRecord>,
 }
 
 #[derive(Debug, Deserialize)]
-struct MinioRecord {
+struct S3EventRecord {
     #[serde(rename = "eventName")]
     event_name: String,
     #[serde(rename = "eventTime")]
     event_time: String,
-    s3: MinioS3,
+    s3: S3EventS3,
 }
 
 #[derive(Debug, Deserialize)]
-struct MinioS3 {
-    bucket: MinioBucket,
-    object: MinioObject,
+struct S3EventS3 {
+    bucket: S3EventBucket,
+    object: S3EventObject,
 }
 
 #[derive(Debug, Deserialize)]
-struct MinioBucket {
+struct S3EventBucket {
     name: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct MinioObject {
+struct S3EventObject {
     key: String,
     size: u64,
     #[serde(rename = "contentType")]
@@ -91,7 +98,7 @@ fn parse_upload_events(data: &[u8]) -> Result<Vec<UploadEvent>> {
         return validate_upload_event(event).map(|event| vec![event]);
     }
 
-    let notification: MinioNotification = serde_json::from_slice(data)?;
+    let notification: S3EventNotification = serde_json::from_slice(data)?;
     let events = notification
         .records
         .into_iter()
@@ -129,14 +136,15 @@ impl NatsConsumer {
         let jetstream = jetstream::new(client);
 
         // Get or create the stream
-        // Note: MinIO publishes to "minio.uploads", so we need both exact and wildcard subjects
+        // The upload gateway publishes to "seaweedfs.uploads", so both the exact
+        // subject and the wildcard are needed for hierarchical subjects.
         let stream = ensure_stream(
             &jetstream,
             jetstream::stream::Config {
                 name: config.stream.clone(),
                 subjects: vec![
-                    "minio.uploads".to_string(),   // Exact match for MinIO notifications
-                    "minio.uploads.>".to_string(), // Wildcard for hierarchical subjects
+                    "seaweedfs.uploads".to_string(),   // Exact match for gateway events
+                    "seaweedfs.uploads.>".to_string(), // Wildcard for hierarchical subjects
                 ],
                 retention: jetstream::stream::RetentionPolicy::WorkQueue,
                 max_messages: 1_000_000,
@@ -213,7 +221,7 @@ pub struct NatsMessage {
 }
 
 impl NatsMessage {
-    /// Get canonical upload events from a gateway or MinIO notification.
+    /// Get canonical upload events from a gateway or SeaweedFS notification.
     pub fn payloads(&self) -> Result<Vec<UploadEvent>> {
         parse_upload_events(&self.inner.payload)
     }
@@ -272,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_minio_created_records_and_decodes_object_keys() {
+    fn parses_s3_created_records_and_decodes_object_keys() {
         let events = parse_upload_events(
             br#"{
                 "Records":[

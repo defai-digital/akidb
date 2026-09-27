@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     """Service configuration loaded from environment variables.
 
     Supports Docker secrets via _FILE suffix environment variables (ADR-021).
-    Example: UPLOAD_GATEWAY_MINIO_ACCESS_KEY_FILE=/run/secrets/minio_access_key
+    Example: UPLOAD_GATEWAY_SEAWEEDFS_ACCESS_KEY_FILE=/run/secrets/seaweedfs_access_key
     """
 
     model_config = SettingsConfigDict(
@@ -39,12 +39,13 @@ class Settings(BaseSettings):
     port: int = 8081
     workers: int = 4
 
-    # MinIO settings
-    minio_endpoint: str = "minio:9000"
-    minio_access_key: str = Field(default="minioadmin", min_length=1)
-    minio_secret_key: str = Field(default="minioadmin", min_length=1)
-    minio_secure: bool = False
-    minio_bucket: str = "akidb-documents"
+    # SeaweedFS settings. The endpoint is a bare `host:port` or a full URL;
+    # a full URL wins over `seaweedfs_secure`.
+    seaweedfs_endpoint: str = "seaweedfs:8333"
+    seaweedfs_access_key: str = Field(default="akidb-admin", min_length=1)
+    seaweedfs_secret_key: str = Field(default="akidb-secret-key", min_length=1)
+    seaweedfs_secure: bool = False
+    seaweedfs_bucket: str = "akidb-documents"
 
     # NATS settings
     nats_url: str = "nats://nats:4222"
@@ -53,7 +54,7 @@ class Settings(BaseSettings):
         pattern=r"^[^.*>\s/\\]+$",
     )
     nats_subject: str = Field(
-        default="minio.uploads.document",
+        default="seaweedfs.uploads.document",
         pattern=r"^[^.*>\s]+(?:\.[^.*>\s]+)*$",
     )
     nats_replicas: int = Field(default=1, ge=1, le=5)
@@ -78,22 +79,22 @@ class Settings(BaseSettings):
         prefix = "UPLOAD_GATEWAY_"
 
         # Check for _FILE variants and load secrets
-        access_key_file = os.environ.get(f"{prefix}MINIO_ACCESS_KEY_FILE")
+        access_key_file = os.environ.get(f"{prefix}SEAWEEDFS_ACCESS_KEY_FILE")
         if access_key_file:
             secret = _read_secret_file(access_key_file)
             if secret:
-                object.__setattr__(self, "minio_access_key", secret)
+                object.__setattr__(self, "seaweedfs_access_key", secret)
 
-        secret_key_file = os.environ.get(f"{prefix}MINIO_SECRET_KEY_FILE")
+        secret_key_file = os.environ.get(f"{prefix}SEAWEEDFS_SECRET_KEY_FILE")
         if secret_key_file:
             secret = _read_secret_file(secret_key_file)
             if secret:
-                object.__setattr__(self, "minio_secret_key", secret)
+                object.__setattr__(self, "seaweedfs_secret_key", secret)
 
-        if not self.minio_access_key.strip():
-            raise ValueError("minio_access_key must not be blank")
-        if not self.minio_secret_key.strip():
-            raise ValueError("minio_secret_key must not be blank")
+        if not self.seaweedfs_access_key.strip():
+            raise ValueError("seaweedfs_access_key must not be blank")
+        if not self.seaweedfs_secret_key.strip():
+            raise ValueError("seaweedfs_secret_key must not be blank")
 
         return self
 

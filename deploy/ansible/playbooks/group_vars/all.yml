@@ -101,13 +101,17 @@ akidb_knowledge_control_token: "{{ lookup('env', 'AKIDB_GENERATION_CONTROL_TOKEN
 ax_knowledge_gateway_token: "{{ lookup('env', 'AX_KNOWLEDGE_GATEWAY_TOKEN') }}"
 ax_knowledge_postgres_url: "{{ lookup('env', 'AX_KNOWLEDGE_POSTGRES_URL') }}"
 ax_knowledge_postgres_server_name: "{{ groups['akidb_knowledge_dependencies'][0] }}"
-akidb_knowledge_minio_root_access_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_ROOT_ACCESS_KEY') }}"
-akidb_knowledge_minio_root_secret_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_ROOT_SECRET_KEY') }}"
-akidb_knowledge_minio_access_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_READ_ACCESS_KEY') }}"
-akidb_knowledge_minio_secret_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_READ_SECRET_KEY') }}"
-ax_knowledge_minio_publish_access_key: "{{ lookup('env', 'AX_KNOWLEDGE_MINIO_PUBLISH_ACCESS_KEY') }}"
-ax_knowledge_minio_publish_secret_key: "{{ lookup('env', 'AX_KNOWLEDGE_MINIO_PUBLISH_SECRET_KEY') }}"
-akidb_knowledge_minio_bucket: knowledge-generations
+# SeaweedFS S3 gateway identities. Each pair is a separate identity in
+# /etc/seaweedfs/s3.json: root holds the bare "Admin" action (setup only), read
+# is bucket-scoped Read/List for the replicas, and publish is bucket-scoped
+# Read/Write/List/Tagging for AX Fabric.
+akidb_knowledge_seaweedfs_root_access_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_SEAWEEDFS_ROOT_ACCESS_KEY') }}"
+akidb_knowledge_seaweedfs_root_secret_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_SEAWEEDFS_ROOT_SECRET_KEY') }}"
+akidb_knowledge_seaweedfs_access_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_SEAWEEDFS_READ_ACCESS_KEY') }}"
+akidb_knowledge_seaweedfs_secret_key: "{{ lookup('env', 'AKIDB_KNOWLEDGE_SEAWEEDFS_READ_SECRET_KEY') }}"
+ax_knowledge_seaweedfs_publish_access_key: "{{ lookup('env', 'AX_KNOWLEDGE_SEAWEEDFS_PUBLISH_ACCESS_KEY') }}"
+ax_knowledge_seaweedfs_publish_secret_key: "{{ lookup('env', 'AX_KNOWLEDGE_SEAWEEDFS_PUBLISH_SECRET_KEY') }}"
+akidb_knowledge_seaweedfs_bucket: knowledge-generations
 
 # A lab CA can be created by scripts/generate-knowledge-cell-pki.sh. Production
 # deployments supply certificates from their established PKI.
@@ -132,15 +136,52 @@ akidb_knowledge_generation_gc_minimum_age_ms: 86400000
 akidb_knowledge_generation_gc_dry_run: false
 
 # Lab dependency host. Production normally points the same replica/gateway
-# roles at managed HA PostgreSQL and durable S3/MinIO.
+# roles at managed HA PostgreSQL and a durable S3-compatible object store.
 akidb_knowledge_manage_lab_dependencies: false
 akidb_knowledge_postgres_database: ax_knowledge
 akidb_knowledge_postgres_user: ax_knowledge
 akidb_knowledge_postgres_password: "{{ lookup('env', 'AKIDB_KNOWLEDGE_POSTGRES_PASSWORD') }}"
 akidb_knowledge_postgres_port: 5432
-akidb_knowledge_minio_port: 9000
-akidb_knowledge_minio_console_port: 9001
-akidb_knowledge_minio_url: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_URL') }}"
-akidb_knowledge_minio_sha256: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MINIO_SHA256') }}"
-akidb_knowledge_mc_url: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MC_URL') }}"
-akidb_knowledge_mc_sha256: "{{ lookup('env', 'AKIDB_KNOWLEDGE_MC_SHA256') }}"
+# S3 gateway port, the only SeaweedFS listener exposed to the service plane.
+akidb_knowledge_seaweedfs_port: 8333
+# Master HTTP port. It serves the cluster health endpoint and the local
+# `weed shell` bucket setup; it is not opened on the service plane.
+akidb_knowledge_seaweedfs_master_port: 9333
+# SeaweedFS volume size. The unit runs -volume.max=0, which means "free space
+# divided by this value", and every bucket needs a volume of its own: a host
+# with little free space gets very few volumes and later buckets become
+# unwritable. Raise it only when the disk can still afford several volumes;
+# lower it on a small disk (see roles/knowledge_dependencies/README.md).
+akidb_knowledge_seaweedfs_volume_size_limit_mb: 1024
+# Upstream publishes only .md5 for release assets, so the operator-supplied
+# SHA256 stays mandatory: the role verifies it before extracting the archive.
+akidb_knowledge_seaweedfs_tag: "{{ lookup('env', 'AKIDB_KNOWLEDGE_SEAWEEDFS_TAG') | default('4.47', true) }}"
+akidb_knowledge_seaweedfs_url: >-
+  {{
+    lookup('env', 'AKIDB_KNOWLEDGE_SEAWEEDFS_URL')
+    | default(
+      'https://github.com/seaweedfs/seaweedfs/releases/download/'
+      ~ akidb_knowledge_seaweedfs_tag ~ '/linux_amd64.tar.gz',
+      true
+    )
+  }}
+akidb_knowledge_seaweedfs_sha256: "{{ lookup('env', 'AKIDB_KNOWLEDGE_SEAWEEDFS_SHA256') }}"
+
+# Canonical backups read the bucket through the S3 API with the AWS CLI.
+# Ubuntu 24.04 ships no awscli package at all, so the role installs the AWS CLI
+# v2 bundle from AWS. Upstream publishes a PGP signature (no SHA256), so the
+# operator-supplied SHA256 is verified before the installer runs.
+akidb_awscli_version: "{{ lookup('env', 'AKIDB_AWSCLI_VERSION') | default('2.34.56', true) }}"
+akidb_awscli_url: >-
+  {{
+    lookup('env', 'AKIDB_AWSCLI_URL')
+    | default(
+      'https://awscli.amazonaws.com/awscli-exe-linux-x86_64-'
+      ~ akidb_awscli_version ~ '.zip',
+      true
+    )
+  }}
+akidb_awscli_sha256: "{{ lookup('env', 'AKIDB_AWSCLI_SHA256') }}"
+akidb_awscli_install_dir: /usr/local/aws-cli
+akidb_awscli_bin_dir: /usr/local/bin
+akidb_awscli_unpack_dir: /var/tmp/akidb-awscli-installer

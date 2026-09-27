@@ -100,7 +100,7 @@ pub struct S3GenerationBundleFetcherConfig {
     pub require_version_or_digest_key: bool,
 }
 
-/// Bounded, streaming S3/MinIO fetcher using an already-configured SDK client.
+/// Bounded, streaming S3/SeaweedFS fetcher using an already-configured SDK client.
 ///
 /// The SDK client fixes the endpoint and credentials. This layer additionally
 /// restricts buckets, URI query parameters, object immutability, and bytes
@@ -137,15 +137,15 @@ impl S3GenerationBundleFetcher {
         Ok(Self { client, config })
     }
 
-    pub fn for_minio(
-        minio: &akidb_common::config::MinioConfig,
+    pub fn for_seaweedfs(
+        seaweedfs: &akidb_common::config::SeaweedFsConfig,
         region: impl Into<String>,
         config: S3GenerationBundleFetcherConfig,
     ) -> Result<Self, GenerationFetchError> {
-        let endpoint = normalized_minio_endpoint(&minio.endpoint, minio.use_ssl)?;
+        let endpoint = normalized_seaweedfs_endpoint(&seaweedfs.endpoint, seaweedfs.use_ssl)?;
         let credentials = Credentials::new(
-            &minio.access_key,
-            &minio.secret_key,
+            &seaweedfs.access_key,
+            &seaweedfs.secret_key,
             None,
             None,
             "akidb-generation",
@@ -375,14 +375,14 @@ fn create_private_download_directory(path: &Path) -> Result<(), GenerationFetchE
 }
 
 #[cfg(feature = "generation-s3")]
-fn normalized_minio_endpoint(
+fn normalized_seaweedfs_endpoint(
     endpoint: &str,
     use_ssl: bool,
 ) -> Result<String, GenerationFetchError> {
     let endpoint = endpoint.trim().trim_end_matches('/');
     if endpoint.is_empty() {
         return Err(GenerationFetchError::Rejected(
-            "MinIO endpoint must not be empty".to_string(),
+            "SeaweedFS endpoint must not be empty".to_string(),
         ));
     }
     let endpoint = if endpoint.contains("://") {
@@ -391,7 +391,7 @@ fn normalized_minio_endpoint(
         format!("{}://{endpoint}", if use_ssl { "https" } else { "http" })
     };
     let parsed = Url::parse(&endpoint)
-        .map_err(|_| GenerationFetchError::Rejected("invalid MinIO endpoint".to_string()))?;
+        .map_err(|_| GenerationFetchError::Rejected("invalid SeaweedFS endpoint".to_string()))?;
     let required_scheme = if use_ssl { "https" } else { "http" };
     if parsed.scheme() != required_scheme
         || parsed.host_str().is_none()
@@ -402,7 +402,7 @@ fn normalized_minio_endpoint(
         || parsed.fragment().is_some()
     {
         return Err(GenerationFetchError::Rejected(format!(
-            "MinIO endpoint must be a credential-free {required_scheme} origin"
+            "SeaweedFS endpoint must be a credential-free {required_scheme} origin"
         )));
     }
     Ok(endpoint)
@@ -527,12 +527,14 @@ mod tests {
 
     #[cfg(feature = "generation-s3")]
     #[test]
-    fn minio_endpoint_scheme_must_match_tls_configuration() {
+    fn seaweedfs_endpoint_scheme_must_match_tls_configuration() {
         assert_eq!(
-            normalized_minio_endpoint("minio.internal:9000", true).unwrap(),
-            "https://minio.internal:9000"
+            normalized_seaweedfs_endpoint("seaweedfs.internal:9000", true).unwrap(),
+            "https://seaweedfs.internal:9000"
         );
-        assert!(normalized_minio_endpoint("http://minio.internal:9000", true).is_err());
-        assert!(normalized_minio_endpoint("https://user:secret@minio.internal", true).is_err());
+        assert!(normalized_seaweedfs_endpoint("http://seaweedfs.internal:9000", true).is_err());
+        assert!(
+            normalized_seaweedfs_endpoint("https://user:secret@seaweedfs.internal", true).is_err()
+        );
     }
 }

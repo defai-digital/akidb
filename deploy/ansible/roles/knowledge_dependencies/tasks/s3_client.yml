@@ -1,0 +1,53 @@
+---
+# Reusable S3 client install for the dependency host. Included from this role's
+# main task list (for the write probe) and from knowledge-backup.yml.
+#
+# Ubuntu 24.04 ships no awscli package at all, so the AWS CLI v2 bundle is
+# installed from AWS. Upstream publishes a PGP signature for the bundle, never a
+# SHA256, so the operator-supplied SHA256 stays mandatory and is verified before
+# the installer runs.
+- name: Install archive extraction support
+  ansible.builtin.apt:
+    name: unzip
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Require the checksum-pinned S3 client
+  ansible.builtin.assert:
+    that:
+      - akidb_awscli_version | length > 0
+      - akidb_awscli_url | length > 0
+      - akidb_awscli_sha256 is match('^[a-fA-F0-9]{64}$')
+
+- name: Download the checksum-pinned AWS CLI v2 bundle
+  ansible.builtin.get_url:
+    url: "{{ akidb_awscli_url }}"
+    dest: "/var/tmp/awscli-v2-{{ akidb_awscli_version }}.zip"
+    checksum: "sha256:{{ akidb_awscli_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Extract the AWS CLI v2 installer
+  ansible.builtin.unarchive:
+    src: "/var/tmp/awscli-v2-{{ akidb_awscli_version }}.zip"
+    dest: "{{ akidb_awscli_unpack_dir }}/{{ akidb_awscli_version }}"
+    remote_src: true
+    owner: root
+    group: root
+    creates: "{{ akidb_awscli_unpack_dir }}/{{ akidb_awscli_version }}/aws/install"
+
+- name: Install the pinned AWS CLI v2
+  ansible.builtin.command:
+    argv:
+      - "{{ akidb_awscli_unpack_dir }}/{{ akidb_awscli_version }}/aws/install"
+      - --install-dir
+      - "{{ akidb_awscli_install_dir }}"
+      - --bin-dir
+      - "{{ akidb_awscli_bin_dir }}"
+      - --update
+  register: knowledge_dependencies_awscli_install
+  # The installer prints "Skipping install" when the pinned version is already
+  # present, so a rerun reports no change.
+  changed_when: "'Skipping install' not in knowledge_dependencies_awscli_install.stdout"

@@ -33,7 +33,11 @@ pub struct ContractViolation {
 
 impl ContractViolation {
     /// Create a new contract violation
-    pub fn new(field: &'static str, message: impl Into<String>, kind: ContractViolationKind) -> Self {
+    pub fn new(
+        field: &'static str,
+        message: impl Into<String>,
+        kind: ContractViolationKind,
+    ) -> Self {
         Self {
             field,
             message: message.into(),
@@ -63,7 +67,10 @@ impl ContractViolation {
     pub fn invalid_number(field: &'static str, index: usize) -> Self {
         Self::new(
             field,
-            format!("{} contains NaN or infinite value at index {}", field, index),
+            format!(
+                "{} contains NaN or infinite value at index {}",
+                field, index
+            ),
             ContractViolationKind::InvalidNumber,
         )
     }

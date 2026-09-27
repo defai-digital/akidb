@@ -58,15 +58,15 @@
           - akidb_knowledge_read_token != akidb_knowledge_control_token
           - ax_knowledge_gateway_token | length >= 24
           - ax_knowledge_postgres_url | length > 0
-          - akidb_knowledge_minio_root_access_key | length >= 3
-          - akidb_knowledge_minio_root_secret_key | length >= 24
-          - akidb_knowledge_minio_access_key | length >= 3
-          - akidb_knowledge_minio_secret_key | length >= 24
-          - ax_knowledge_minio_publish_access_key | length >= 3
-          - ax_knowledge_minio_publish_secret_key | length >= 24
-          - akidb_knowledge_minio_root_access_key != akidb_knowledge_minio_access_key
-          - akidb_knowledge_minio_root_access_key != ax_knowledge_minio_publish_access_key
-          - akidb_knowledge_minio_access_key != ax_knowledge_minio_publish_access_key
+          - akidb_knowledge_seaweedfs_root_access_key | length >= 3
+          - akidb_knowledge_seaweedfs_root_secret_key | length >= 24
+          - akidb_knowledge_seaweedfs_access_key | length >= 3
+          - akidb_knowledge_seaweedfs_secret_key | length >= 24
+          - ax_knowledge_seaweedfs_publish_access_key | length >= 3
+          - ax_knowledge_seaweedfs_publish_secret_key | length >= 24
+          - akidb_knowledge_seaweedfs_root_access_key != akidb_knowledge_seaweedfs_access_key
+          - akidb_knowledge_seaweedfs_root_access_key != ax_knowledge_seaweedfs_publish_access_key
+          - akidb_knowledge_seaweedfs_access_key != ax_knowledge_seaweedfs_publish_access_key
           - "'\n' not in ax_knowledge_postgres_url"
           - "'\n' not in akidb_knowledge_read_token"
           - "'\n' not in ax_knowledge_gateway_token"

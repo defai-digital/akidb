@@ -46,7 +46,7 @@ an evidence-bearing retrieval projection rather than an unrestricted database.
 
 ### Source of truth and consistency
 
-AX Fabric identities and versioned source objects in MinIO are
+AX Fabric identities and versioned source objects in SeaweedFS are
 canonical. AkiDB's vector, lexical, payload, and native graph structures are
 retrieval projections.
 
@@ -72,7 +72,7 @@ have the highest value and lowest risk:
 - document, section, page, and chunk containment;
 - email thread membership, sender/recipient, and attachments;
 - AX Wiki page and source-file references, and DocProc block/span containment;
-- MinIO object identity and source version;
+- object-store source identity and source version (SeaweedFS object key);
 - PDF page/image extraction;
 - ticket creation and source evidence when supplied by a trusted system.
 
@@ -186,8 +186,8 @@ leave no partial state, and graph projections survive restart/rebuild.
 
 ### Phase 1 — Deterministic document graph
 
-The initial foundation emits MinIO source identity, document/file containment,
-chunk offsets, pipeline version, and deterministic provenance. Complete this
+The initial foundation emits SeaweedFS source identity, document/file
+containment, chunk offsets, pipeline version, and deterministic provenance. Complete this
 phase with:
 
 - email thread, sender/recipient, and attachment adapters;

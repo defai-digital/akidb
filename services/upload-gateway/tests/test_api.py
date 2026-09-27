@@ -34,33 +34,33 @@ def test_settings_defaults():
     """Test that settings have sensible defaults."""
     assert settings.port == 8081
     assert settings.max_file_size_mb > 0
-    assert settings.minio_bucket == "akidb-documents"
+    assert settings.seaweedfs_bucket == "akidb-documents"
 
 
 def test_invalid_publish_subject_is_rejected():
     with pytest.raises(ValueError, match="nats_subject"):
-        Settings(nats_subject="minio.uploads.>")
+        Settings(nats_subject="seaweedfs.uploads.>")
 
 
 def test_invalid_stream_name_and_blank_credentials_are_rejected():
     with pytest.raises(ValueError, match="nats_stream"):
         Settings(nats_stream="INGESTION.bad")
-    with pytest.raises(ValueError, match="minio_access_key"):
-        Settings(minio_access_key="   ")
-    with pytest.raises(ValueError, match="minio_secret_key"):
-        Settings(minio_secret_key="\t")
+    with pytest.raises(ValueError, match="seaweedfs_access_key"):
+        Settings(seaweedfs_access_key="   ")
+    with pytest.raises(ValueError, match="seaweedfs_secret_key"):
+        Settings(seaweedfs_secret_key="\t")
 
 
-def test_nats_stream_accepts_gateway_and_minio_events():
-    """The shared stream must cover both canonical and MinIO subjects."""
+def test_nats_stream_accepts_gateway_and_seaweedfs_events():
+    """The shared stream must cover both canonical and SeaweedFS subjects."""
     config = EventPublisher()._stream_config()
 
-    assert config.subjects == ["minio.uploads", "minio.uploads.>"]
+    assert config.subjects == ["seaweedfs.uploads", "seaweedfs.uploads.>"]
     assert config.num_replicas == settings.nats_replicas
 
 
 def test_custom_nats_subject_is_added_to_stream(monkeypatch):
-    """A configured subject outside minio.uploads.> must remain publishable."""
+    """A configured subject outside seaweedfs.uploads.> must remain publishable."""
     monkeypatch.setattr(settings, "nats_subject", "akidb.uploads.document")
 
     config = EventPublisher()._stream_config()
@@ -70,7 +70,7 @@ def test_custom_nats_subject_is_added_to_stream(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_existing_nats_stream_is_reconciled(monkeypatch):
-    """An existing wildcard-only stream must be updated for exact MinIO events."""
+    """An existing wildcard-only stream must be updated for exact upload events."""
 
     class JetStream:
         updated = None
@@ -79,7 +79,7 @@ async def test_existing_nats_stream_is_reconciled(monkeypatch):
             return SimpleNamespace(
                 config=StreamConfig(
                     name="INGESTION",
-                    subjects=["minio.uploads.>", "custom.>"],
+                    subjects=["seaweedfs.uploads.>", "custom.>"],
                     num_replicas=1,
                 )
             )
@@ -94,9 +94,9 @@ async def test_existing_nats_stream_is_reconciled(monkeypatch):
     await publisher._ensure_stream()
 
     assert publisher.js.updated.subjects == [
-        "minio.uploads.>",
+        "seaweedfs.uploads.>",
         "custom.>",
-        "minio.uploads",
+        "seaweedfs.uploads",
     ]
     assert publisher.js.updated.num_replicas == 3
 
@@ -127,7 +127,7 @@ async def test_failed_stream_setup_is_disconnected_and_can_retry(monkeypatch):
             return SimpleNamespace(
                 config=StreamConfig(
                     name="INGESTION",
-                    subjects=["minio.uploads", "minio.uploads.>"],
+                    subjects=["seaweedfs.uploads", "seaweedfs.uploads.>"],
                     num_replicas=settings.nats_replicas,
                 )
             )
@@ -172,7 +172,7 @@ def test_configured_secret_files_fail_closed(monkeypatch, tmp_path):
     """Missing or empty Docker secrets must not fall back to default credentials."""
     missing = tmp_path / "missing"
     monkeypatch.setenv(
-        "UPLOAD_GATEWAY_MINIO_ACCESS_KEY_FILE",
+        "UPLOAD_GATEWAY_SEAWEEDFS_ACCESS_KEY_FILE",
         str(missing),
     )
     with pytest.raises(ValueError, match="cannot read configured secret file"):
@@ -181,7 +181,7 @@ def test_configured_secret_files_fail_closed(monkeypatch, tmp_path):
     empty = tmp_path / "empty"
     empty.write_text("", encoding="utf-8")
     monkeypatch.setenv(
-        "UPLOAD_GATEWAY_MINIO_ACCESS_KEY_FILE",
+        "UPLOAD_GATEWAY_SEAWEEDFS_ACCESS_KEY_FILE",
         str(empty),
     )
     with pytest.raises(ValueError, match="configured secret file is empty"):
@@ -190,7 +190,7 @@ def test_configured_secret_files_fail_closed(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_health_is_unavailable_when_a_dependency_is_down(monkeypatch):
-    """HTTP health must fail closed when MinIO or NATS is unavailable."""
+    """HTTP health must fail closed when SeaweedFS or NATS is unavailable."""
 
     class Storage:
         @staticmethod
@@ -213,7 +213,7 @@ async def test_health_is_unavailable_when_a_dependency_is_down(monkeypatch):
 
     assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
     assert health.status == "degraded"
-    assert not health.minio_connected
+    assert not health.seaweedfs_connected
     assert health.nats_connected
 
 

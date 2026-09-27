@@ -1,0 +1,83 @@
+# SeaweedFS Docker Compose for AkiDB Development
+#
+# Single-node shape: one process runs master, volume, filer, and the S3
+# gateway. Replace the placeholder credentials in ./s3.json before starting
+# this stack, and never commit real credentials to that file.
+#
+# SeaweedFS allows anonymous access to everything when -s3.config is absent,
+# so the gateway always starts with the config mounted below.
+
+services:
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.47
+    container_name: akidb-seaweedfs
+    user: "1000:1000"
+    ports:
+      - "127.0.0.1:8333:8333"   # S3 API
+      - "127.0.0.1:9333:9333"   # Master UI/API
+    command:
+      - server
+      - -dir=/data
+      - -ip.bind=0.0.0.0
+      - -s3
+      - -s3.port=8333
+      - -s3.config=/etc/seaweedfs/s3.json
+      - -volume.max=0
+      # `-volume.max=0` derives the volume count from free space divided by the
+      # volume size, and every bucket (collection) needs its own volume, so a
+      # small data disk needs a small volume size.
+      - -master.volumeSizeLimitMB=128
+      - -metricsPort=9327
+    volumes:
+      - ./s3.json:/etc/seaweedfs/s3.json:ro
+      - seaweedfs-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8333/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # Initialize buckets on startup. `weed shell` reports only the status of the
+  # last command in a piped script, so each bucket gets its own invocation.
+  # `s3.bucket.create` is not idempotent, so an existing bucket is accepted and
+  # any other failure aborts the service.
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.47
+    container_name: akidb-seaweedfs-init
+    user: "1000:1000"
+    read_only: true
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    environment:
+      HOME: /tmp
+    tmpfs:
+      - /tmp:mode=1777,size=64M
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for bucket in akidb-snapshots akidb-wal; do
+          echo "Ensuring bucket: $$bucket"
+          if output="$$(echo "s3.bucket.create -name $$bucket" | weed shell -master=seaweedfs:9333 2>&1)"; then
+            continue
+          fi
+          case "$$output" in
+            *"already exists"*) echo "Bucket $$bucket already exists." ;;
+            *) echo "$$output" >&2; exit 1 ;;
+          esac
+        done
+        echo "SeaweedFS bucket setup complete."
+
+volumes:
+  seaweedfs-data:
+    driver: local

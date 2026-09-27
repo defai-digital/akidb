@@ -52,8 +52,8 @@ impl IngestionPipeline {
         let consumer = NatsConsumer::new(&config.nats).await?;
         let dlq = DlqPublisher::new(&config.nats).await?;
 
-        // Initialize MinIO/S3 storage client
-        info!("Connecting to MinIO/S3 storage");
+        // Initialize the S3 storage client (SeaweedFS gateway)
+        info!("Connecting to the SeaweedFS S3 gateway");
         let storage = StorageClient::new(&config.storage).await?;
 
         // Initialize AkiDB client
@@ -279,7 +279,7 @@ impl IngestionPipeline {
 
         info!(bucket = %event.bucket, key = %event.key, "Processing upload");
 
-        // Fetch document from MinIO
+        // Fetch document from SeaweedFS
         debug!(bucket = %event.bucket, key = %event.key, "Fetching document from storage");
         let data = self.storage.fetch(&event.bucket, &event.key).await?;
 
@@ -516,7 +516,7 @@ fn build_vector_metadata(
     metadata.insert("source_uri".to_string(), source_uri.clone());
     metadata.insert("source_object_id".to_string(), source_uri);
     metadata.insert("source_version".to_string(), content_hash.to_string());
-    metadata.insert("source_system".to_string(), "minio".to_string());
+    metadata.insert("source_system".to_string(), "seaweedfs".to_string());
     metadata.insert("source_observed_at".to_string(), event.timestamp.clone());
     metadata.insert("extraction_method".to_string(), "deterministic".to_string());
     metadata.insert(
@@ -749,7 +749,7 @@ mod tests {
         assert_eq!(metadata["source_uri"], "s3://docs/reports/annual.pdf");
         assert_eq!(metadata["source_object_id"], "s3://docs/reports/annual.pdf");
         assert_eq!(metadata["source_version"], "hash123");
-        assert_eq!(metadata["source_system"], "minio");
+        assert_eq!(metadata["source_system"], "seaweedfs");
         assert_eq!(metadata["source_observed_at"], "2026-06-28T08:00:00Z");
         assert_eq!(metadata["extraction_method"], "deterministic");
         assert_eq!(metadata["pipeline_version"], env!("CARGO_PKG_VERSION"));

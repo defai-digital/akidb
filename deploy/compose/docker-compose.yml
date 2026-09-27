@@ -100,42 +100,32 @@ services:
         condition: service_healthy
 
   # ============================================
-  # MinIO Object Storage
+  # SeaweedFS Object Storage
   # ============================================
-  minio-init:
-    image: minio/minio:latest
-    user: "0:0"
-    read_only: true
-    entrypoint: ["/bin/sh", "-c"]
-    command: ["chown -R 1000:1000 /data"]
-    volumes:
-      - minio-data:/data
-    networks:
-      - akidb-net
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-
-  minio:
-    image: minio/minio:latest
+  # One process per node runs master, volume, filer, and the S3 gateway
+  # (`-s3` implies `-filer`). The gateway authenticates every request against
+  # the identities in /etc/seaweedfs/s3.json; with no configuration file it
+  # allows anonymous access to everything, so the generator below is the gate
+  # that keeps the gateway authenticated.
+  #
+  # SeaweedFS does not implement S3 bucket notifications, so object-created
+  # events no longer fan out from the object store into NATS. Stored objects
+  # reach the ingestion path through the upload gateway's own NATS publish
+  # (seaweedfs.uploads...), and the ingestion scheduler's periodic
+  # bucket/manifest sync covers objects written by any other route.
+  seaweedfs-config:
+    image: chrislusf/seaweedfs:4.47
     user: "1000:1000"
-    command: server /data --console-address ":9001"
-    ports:
-      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"       # API
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"   # Console
+    read_only: true
+    entrypoint: ["/bin/sh"]
+    command: ["/setup/gen-s3-config.sh"]
     environment:
-      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
-      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
-      MINIO_NOTIFY_NATS_ENABLE_PRIMARY: "on"
-      MINIO_NOTIFY_NATS_ADDRESS_PRIMARY: "nats-1:4222"
-      MINIO_NOTIFY_NATS_SUBJECT_PRIMARY: "minio.uploads"
-      MINIO_NOTIFY_NATS_JETSTREAM_PRIMARY: "on"
-      MINIO_NOTIFY_NATS_STREAMING_ASYNC_PRIMARY: "on"
+      SEAWEEDFS_ACCESS_KEY_FILE: /run/secrets/seaweedfs_access_key
+      SEAWEEDFS_SECRET_KEY_FILE: /run/secrets/seaweedfs_secret_key
+      SEAWEEDFS_S3_CONFIG: /etc/seaweedfs/s3.json
     volumes:
-      - minio-data:/data
+      - ./seaweedfs/gen-s3-config.sh:/setup/gen-s3-config.sh:ro
+      - seaweedfs-config:/etc/seaweedfs
     networks:
       - akidb-net
     security_opt:
@@ -143,32 +133,63 @@ services:
     cap_drop:
       - ALL
     secrets:
-      - minio_root_user
-      - minio_root_password
+      - seaweedfs_access_key
+      - seaweedfs_secret_key
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.47
+    user: "1000:1000"
+    command:
+      - server
+      - -dir=/data
+      - -ip.bind=0.0.0.0
+      - -s3
+      - -s3.port=8333
+      - -s3.config=/etc/seaweedfs/s3.json
+      - -volume.max=0
+      # `-volume.max=0` derives the volume count from free space divided by the
+      # volume size, and every bucket (collection) needs its own volume. At the
+      # 1024 MB default a host with ~6 GB free gets 5 volumes, so the second
+      # bucket can be created but not written to. 128 MB keeps a small dev host
+      # usable.
+      - -master.volumeSizeLimitMB=128
+      - -metricsPort=9327
+    ports:
+      - "127.0.0.1:${SEAWEEDFS_API_PORT:-8333}:8333"       # S3 API
+      - "127.0.0.1:${SEAWEEDFS_MASTER_PORT:-9333}:9333"   # Master UI/API
+    volumes:
+      - seaweedfs-data:/data
+      - seaweedfs-config:/etc/seaweedfs:ro
+    networks:
+      - akidb-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8333/healthz"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 15s
     depends_on:
-      nats-1:
-        condition: service_healthy
-      minio-init:
+      seaweedfs-config:
         condition: service_completed_successfully
 
-  # MinIO setup - creates bucket and configures notifications
-  minio-setup:
-    image: minio/mc:latest
+  # SeaweedFS bucket setup - one `weed shell` invocation per bucket because the
+  # shell reports only the status of the last piped command.
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.47
     user: "1000:1000"
     read_only: true
-    entrypoint: /bin/sh
-    command: /setup/setup-minio.sh
+    entrypoint: ["/bin/sh"]
+    command: ["/setup/create-buckets.sh"]
     environment:
-      MC_CONFIG_DIR: /tmp/.mc
-      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
-      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      HOME: /tmp
+      SEAWEEDFS_MASTER: seaweedfs:9333
+      SEAWEEDFS_BUCKETS: akidb-documents akidb-snapshots
     volumes:
-      - ./minio/setup-minio.sh:/setup/setup-minio.sh:ro
+      - ./seaweedfs/create-buckets.sh:/setup/create-buckets.sh:ro
     tmpfs:
       - /tmp:mode=1777,size=64M
     networks:
@@ -177,11 +198,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    secrets:
-      - minio_root_user
-      - minio_root_password
     depends_on:
-      minio:
+      seaweedfs:
         condition: service_healthy
 
   # ============================================
@@ -196,9 +214,9 @@ services:
     ports:
       - "127.0.0.1:${UPLOAD_GATEWAY_PORT:-8081}:8081"
     environment:
-      UPLOAD_GATEWAY_MINIO_ENDPOINT: minio:9000
-      UPLOAD_GATEWAY_MINIO_ACCESS_KEY_FILE: /run/secrets/minio_root_user
-      UPLOAD_GATEWAY_MINIO_SECRET_KEY_FILE: /run/secrets/minio_root_password
+      UPLOAD_GATEWAY_SEAWEEDFS_ENDPOINT: http://seaweedfs:8333
+      UPLOAD_GATEWAY_SEAWEEDFS_ACCESS_KEY_FILE: /run/secrets/seaweedfs_access_key
+      UPLOAD_GATEWAY_SEAWEEDFS_SECRET_KEY_FILE: /run/secrets/seaweedfs_secret_key
       UPLOAD_GATEWAY_NATS_URL: ${NATS_URL:-nats://nats-1:4222}
       UPLOAD_GATEWAY_NATS_STREAM: ${NATS_STREAM:-INGESTION}
       UPLOAD_GATEWAY_NATS_REPLICAS: ${NATS_REPLICAS:-3}
@@ -212,10 +230,10 @@ services:
     cap_drop:
       - ALL
     secrets:
-      - minio_root_user
-      - minio_root_password
+      - seaweedfs_access_key
+      - seaweedfs_secret_key
     depends_on:
-      minio:
+      seaweedfs:
         condition: service_healthy
       nats-1:
         condition: service_healthy
@@ -223,7 +241,7 @@ services:
         condition: service_healthy
       nats-3:
         condition: service_healthy
-      minio-setup:
+      seaweedfs-init:
         condition: service_completed_successfully
 
   # ============================================
@@ -263,9 +281,9 @@ services:
       NATS_CONSUMER: ${NATS_CONSUMER:-ingestion-orchestrator}
       NATS_DLQ_STREAM: ${NATS_DLQ_STREAM:-akidb-dlq}
       NATS_REPLICAS: ${NATS_REPLICAS:-3}
-      STORAGE_ENDPOINT: http://minio:9000
-      STORAGE_ACCESS_KEY_FILE: /run/secrets/minio_root_user
-      STORAGE_SECRET_KEY_FILE: /run/secrets/minio_root_password
+      STORAGE_ENDPOINT: http://seaweedfs:8333
+      STORAGE_ACCESS_KEY_FILE: /run/secrets/seaweedfs_access_key
+      STORAGE_SECRET_KEY_FILE: /run/secrets/seaweedfs_secret_key
       STORAGE_BUCKET: akidb-documents
       AKIDB_ENDPOINT: http://akidb-server:50051
       AKIDB_TIMEOUT_MS: ${AKIDB_TIMEOUT_MS:-30000}
@@ -289,14 +307,14 @@ services:
     cap_drop:
       - ALL
     secrets:
-      - minio_root_user
-      - minio_root_password
+      - seaweedfs_access_key
+      - seaweedfs_secret_key
     depends_on:
       nats-1:
         condition: service_healthy
       doc-parser:
         condition: service_started
-      minio:
+      seaweedfs:
         condition: service_healthy
       akidb-server:
         condition: service_healthy
@@ -427,7 +445,8 @@ volumes:
   nats-1-data:
   nats-2-data:
   nats-3-data:
-  minio-data:
+  seaweedfs-data:
+  seaweedfs-config:
   ingestion-state:
   akidb-server-data:
   prometheus-data:
@@ -437,9 +456,9 @@ volumes:
 # Secrets (ADR-021 Security Hardening)
 # ============================================
 secrets:
-  minio_root_user:
-    file: ./secrets/minio_root_user.txt
-  minio_root_password:
-    file: ./secrets/minio_root_password.txt
+  seaweedfs_access_key:
+    file: ./secrets/seaweedfs_access_key.txt
+  seaweedfs_secret_key:
+    file: ./secrets/seaweedfs_secret_key.txt
   grafana_admin_password:
     file: ./secrets/grafana_admin_password.txt

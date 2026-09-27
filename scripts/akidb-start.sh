@@ -60,8 +60,8 @@ rocksdb_path = "$DATA_DIR/rocksdb"
 wal_enabled = true
 wal_path = "$DATA_DIR/wal"
 
-[storage.minio]
-endpoint = "localhost:9000"
+[storage.seaweedfs]
+endpoint = "localhost:8333"
 bucket = "akidb-snapshots"
 access_key = "akidb-admin"
 secret_key = "akidb-secret-key"

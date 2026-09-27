@@ -9,13 +9,20 @@ profile.
 - Ubuntu 24.04 or newer on AMD64 with systemd.
 - Three independent full AkiDB replicas, each on its own local data volume.
 - Two stateless AX knowledge gateways.
-- Managed HA PostgreSQL and durable S3/MinIO in production.
+- Managed HA PostgreSQL and durable S3 (SeaweedFS) in production.
 - The checked-in dependency role is a single-host qualification dependency,
   not a production HA database or object-store topology.
 - Native gRPC TLS, gateway HTTPS, PostgreSQL TLS, bearer authentication, and
   private-network binding are mandatory.
 
-The canonical recovery set is PostgreSQL plus MinIO. Local
+The object-store dependency is SeaweedFS. On Ubuntu AMD64 the dependency role
+installs the upstream `weed` release tarball, and upstream publishes only an
+`.md5` per asset with no SHA-256 or signature, so the operator-supplied SHA-256
+pin stays mandatory rather than being dropped. The S3 gateway must be started
+with a credential configuration (`-s3.config`): without one it serves every
+request anonymously.
+
+The canonical recovery set is PostgreSQL plus SeaweedFS. Local
 RocksDB/HNSW/BM25/graph directories are disposable projections and must never
 be copied from a live peer.
 
@@ -40,8 +47,8 @@ existing managed PostgreSQL and S3 services.
 
 Publication is complete only when:
 
-1. the immutable logical bundle exists in MinIO and its byte length and SHA-256
-   match the manifest;
+1. the immutable logical bundle exists in SeaweedFS and its byte length and
+   SHA-256 match the manifest;
 2. PostgreSQL records the staged generation and outbox event transactionally;
 3. the activation policy observes at least two ready replicas in two failure
    domains;
@@ -102,7 +109,7 @@ Alert: `AkiDBKnowledgeControlCacheStale`.
 
 Existing active reads continue from the last verified gateway route snapshot
 and local AkiDB generations. New publication, activation, membership change,
-checkpoint progress, drain, and rollback are frozen. MinIO and PostgreSQL
+checkpoint progress, drain, and rollback are frozen. SeaweedFS and PostgreSQL
 outages must not remove the last known-good local generation. Restore the
 authority, verify checkpoints, then resume publication.
 
@@ -222,7 +229,7 @@ ansible-playbook playbooks/knowledge-backup.yml
 
 Production uses managed PostgreSQL point-in-time recovery and versioned,
 replicated/object-locked S3. The lab playbook creates a checksum-evidenced
-`pg_dump` plus MinIO object archive and records it in authority audit.
+`pg_dump` plus SeaweedFS object archive and records it in authority audit.
 
 Verify without touching production state:
 

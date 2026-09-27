@@ -1,6 +1,6 @@
 //! Object Manifest Store
 //!
-//! Tracks MinIO objects for scheduled ingestion sync.
+//! Tracks SeaweedFS objects for scheduled ingestion sync.
 //! Maintains a manifest of all known objects with their ETags,
 //! content hashes, and deletion states for reconciliation.
 
@@ -19,7 +19,7 @@ const EPOCH_KEY: &[u8] = b"manifest_meta:epoch";
 /// Legacy epoch key used before metadata was moved outside MANIFEST_PREFIX.
 const LEGACY_EPOCH_KEY: &[u8] = b"manifest:_epoch";
 
-/// Object manifest store for tracking MinIO objects
+/// Object manifest store for tracking SeaweedFS objects
 pub struct ManifestStore {
     backend: Arc<RocksDbBackend>,
     /// BUG-002 FIX: Write lock for atomic read-modify-write operations
@@ -55,7 +55,7 @@ impl ManifestStore {
         key
     }
 
-    /// Get a manifest entry by MinIO object key
+    /// Get a manifest entry by SeaweedFS object key
     pub fn get(&self, object_key: &str) -> Result<Option<ObjectManifest>> {
         let key = Self::manifest_key(object_key);
         match self.backend.get(&key) {

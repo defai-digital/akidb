@@ -203,14 +203,17 @@
     - akidb_manage_ufw | bool
     - inventory_hostname in groups.get('akidb_knowledge_dependencies', [])
 
-- name: Allow knowledge MinIO through the service plane
+- name: Allow knowledge SeaweedFS S3 through the service plane
   ansible.builtin.command:
-    argv: "{{ ['ufw', 'allow'] + (['in', 'on', akidb_service_firewall_interface] if (akidb_service_firewall_interface | length) > 0 else []) + ['from', akidb_overlay_cidr, 'to', 'any', 'port', akidb_knowledge_minio_port | string, 'proto', 'tcp', 'comment', 'AkiDB knowledge MinIO service plane'] }}"
-  register: akidb_ufw_knowledge_minio_rule
-  changed_when: "'Rule added' in akidb_ufw_knowledge_minio_rule.stdout"
+    argv: "{{ ['ufw', 'allow'] + (['in', 'on', akidb_service_firewall_interface] if (akidb_service_firewall_interface | length) > 0 else []) + ['from', akidb_overlay_cidr, 'to', 'any', 'port', akidb_knowledge_seaweedfs_port | string, 'proto', 'tcp', 'comment', 'AkiDB knowledge SeaweedFS S3 service plane'] }}"
+  register: akidb_ufw_knowledge_seaweedfs_rule
+  changed_when: "'Rule added' in akidb_ufw_knowledge_seaweedfs_rule.stdout"
   when:
     - akidb_manage_ufw | bool
     - inventory_hostname in groups.get('akidb_knowledge_dependencies', [])
+# The master, filer, volume, metrics, and S3 gRPC listeners stay closed: the
+# knowledge replicas only reach the S3 gateway port, and bucket setup runs
+# locally on the dependency host through `weed shell`.
 
 - name: Enable UFW after administration and service-plane rules exist
   ansible.builtin.command:

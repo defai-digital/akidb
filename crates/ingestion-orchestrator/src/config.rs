@@ -13,10 +13,10 @@ pub struct IngestionConfig {
     /// NATS configuration
     pub nats: NatsConfig,
 
-    /// MinIO configuration (legacy)
-    pub minio: MinioConfig,
+    /// SeaweedFS configuration (legacy)
+    pub seaweedfs: SeaweedFsConfig,
 
-    /// Storage configuration (S3/MinIO)
+    /// Storage configuration (S3/SeaweedFS)
     pub storage: StorageConfig,
 
     /// AkiDB configuration
@@ -72,8 +72,8 @@ pub struct NatsConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct MinioConfig {
-    /// MinIO endpoint
+pub struct SeaweedFsConfig {
+    /// SeaweedFS endpoint
     pub endpoint: String,
 
     /// Access key
@@ -86,10 +86,10 @@ pub struct MinioConfig {
     pub upload_bucket: String,
 }
 
-/// Storage configuration (S3/MinIO)
+/// Storage configuration (S3/SeaweedFS)
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageConfig {
-    /// S3/MinIO endpoint URL
+    /// S3/SeaweedFS endpoint URL
     pub endpoint: String,
 
     /// Access key
@@ -108,9 +108,9 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            endpoint: "http://localhost:9000".to_string(),
-            access_key: "minioadmin".to_string(),
-            secret_key: "minioadmin".to_string(),
+            endpoint: "http://localhost:8333".to_string(),
+            access_key: "akidb-admin".to_string(),
+            secret_key: "akidb-secret-key".to_string(),
             bucket: "akidb-documents".to_string(),
             region: "us-east-1".to_string(),
         }
@@ -325,32 +325,32 @@ impl IngestionConfig {
                     .unwrap_or_else(|_| "akidb-dlq".to_string()),
                 replicas: nats_replicas,
             },
-            minio: MinioConfig {
-                endpoint: std::env::var("MINIO_ENDPOINT")
-                    .unwrap_or_else(|_| "localhost:9000".to_string()),
-                access_key: env_or_file("MINIO_ACCESS_KEY", "MINIO_ACCESS_KEY_FILE")?
-                    .unwrap_or_else(|| "minioadmin".to_string()),
-                secret_key: env_or_file("MINIO_SECRET_KEY", "MINIO_SECRET_KEY_FILE")?
-                    .unwrap_or_else(|| "minioadmin".to_string()),
-                upload_bucket: std::env::var("MINIO_UPLOAD_BUCKET")
+            seaweedfs: SeaweedFsConfig {
+                endpoint: std::env::var("SEAWEEDFS_ENDPOINT")
+                    .unwrap_or_else(|_| "localhost:8333".to_string()),
+                access_key: env_or_file("SEAWEEDFS_ACCESS_KEY", "SEAWEEDFS_ACCESS_KEY_FILE")?
+                    .unwrap_or_else(|| "akidb-admin".to_string()),
+                secret_key: env_or_file("SEAWEEDFS_SECRET_KEY", "SEAWEEDFS_SECRET_KEY_FILE")?
+                    .unwrap_or_else(|| "akidb-secret-key".to_string()),
+                upload_bucket: std::env::var("SEAWEEDFS_UPLOAD_BUCKET")
                     .unwrap_or_else(|_| "uploads".to_string()),
             },
             storage: StorageConfig {
                 endpoint: std::env::var("STORAGE_ENDPOINT")
-                    .unwrap_or_else(|_| "http://localhost:9000".to_string()),
+                    .unwrap_or_else(|_| "http://localhost:8333".to_string()),
                 access_key: credential_from_env(
                     "STORAGE_ACCESS_KEY",
                     "STORAGE_ACCESS_KEY_FILE",
-                    "MINIO_ACCESS_KEY",
-                    "MINIO_ACCESS_KEY_FILE",
-                    "minioadmin",
+                    "SEAWEEDFS_ACCESS_KEY",
+                    "SEAWEEDFS_ACCESS_KEY_FILE",
+                    "akidb-admin",
                 )?,
                 secret_key: credential_from_env(
                     "STORAGE_SECRET_KEY",
                     "STORAGE_SECRET_KEY_FILE",
-                    "MINIO_SECRET_KEY",
-                    "MINIO_SECRET_KEY_FILE",
-                    "minioadmin",
+                    "SEAWEEDFS_SECRET_KEY",
+                    "SEAWEEDFS_SECRET_KEY_FILE",
+                    "akidb-secret-key",
                 )?,
                 bucket: std::env::var("STORAGE_BUCKET")
                     .unwrap_or_else(|_| "akidb-documents".to_string()),

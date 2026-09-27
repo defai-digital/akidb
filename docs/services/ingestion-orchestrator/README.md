@@ -2,11 +2,17 @@
 
 The Ingestion Orchestrator is a hybrid Rust/Python document-processing pipeline
 for AkiDB on macOS 26 Apple Silicon and Ubuntu 24.04+ AMD64. It
-processes documents uploaded to MinIO, extracts text, generates embeddings, and
-stores vectors in AkiDB.
+processes documents uploaded to SeaweedFS, extracts text, generates embeddings,
+and stores vectors in AkiDB.
 
-The NATS stream described here coordinates document-processing work. It is not
-the authority for immutable knowledge generations or replica replay. In the
+The NATS stream described here coordinates document-processing work. The upload
+gateway publishes an object-created event after it stores an upload, on
+`seaweedfs.uploads` / `seaweedfs.uploads.document`, and the orchestrator
+consumes it. The SeaweedFS S3 gateway does not implement S3 bucket
+notifications, so the object store itself is not an event source. Objects
+written by any other route are discovered by the orchestrator's hourly
+scheduled bucket/manifest sync. This stream is not the authority for immutable
+knowledge generations or replica replay. In the
 generation-serving profile, AX Fabric publishes checksum-addressed bundles and
 PostgreSQL owns generation activation/checkpoints; see the
 [knowledge-serving architecture](../../architecture/knowledge-serving.md).
@@ -29,7 +35,7 @@ PostgreSQL owns generation activation/checkpoints; see the
 │  └─────────────┘  └─────────────┘  └─────────────┘               │
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │                    MinIO Storage Client                      │ │
+│  │                  SeaweedFS Storage Client                   │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │                             │                                     │
 │         ┌───────────────────┴───────────────────┐                │
@@ -92,7 +98,7 @@ PostgreSQL owns generation activation/checkpoints; see the
 ### Processing Pipeline
 
 1. **Idempotency Check**: SHA-256 content hash
-2. **Document Fetch**: MinIO/S3 storage
+2. **Document Fetch**: S3 storage (SeaweedFS S3 gateway)
 3. **Format Detection**: Extension-based routing
 4. **Parsing**: Rust-native or Python sidecar
 5. **Chunking**: Sentence-boundary aware, tiktoken token counting
@@ -110,10 +116,10 @@ NATS_STREAM=akidb-uploads
 NATS_CONSUMER=ingestion-orchestrator
 NATS_DLQ_STREAM=akidb-dlq
 
-# Storage Configuration
-STORAGE_ENDPOINT=http://localhost:9000
-STORAGE_ACCESS_KEY=minioadmin
-STORAGE_SECRET_KEY=minioadmin
+# Storage Configuration (SeaweedFS S3 gateway)
+STORAGE_ENDPOINT=http://localhost:8333
+STORAGE_ACCESS_KEY=akidb-admin
+STORAGE_SECRET_KEY=akidb-secret-key
 STORAGE_BUCKET=akidb-documents
 STORAGE_REGION=us-east-1
 

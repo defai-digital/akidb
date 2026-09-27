@@ -3,7 +3,7 @@
 //! This module provides types for managing the lifecycle of documents in AkiDB:
 //! - Soft delete with confirmation threshold
 //! - Hard delete scheduling
-//! - Object manifest for MinIO synchronization
+//! - Object manifest for SeaweedFS synchronization
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ pub const DEFAULT_HARD_DELETE_DELAY_DAYS: u32 = 7;
 /// ```text
 /// Active -> MarkedForDeletion -> ConfirmedMissing -> HardDeleteScheduled
 ///   ^              |                                        |
-///   |______________|  (if file reappears in MinIO)          |
+///   |______________|  (if file reappears in SeaweedFS)      |
 ///                                                           v
 ///                                                    [Permanently Deleted]
 /// ```
@@ -35,7 +35,7 @@ pub enum DeleteState {
     #[default]
     Active,
 
-    /// Source file missing from MinIO, awaiting confirmation
+    /// Source file missing from SeaweedFS, awaiting confirmation
     /// Requires consecutive misses to transition to ConfirmedMissing
     MarkedForDeletion {
         /// When the deletion was first detected
@@ -109,16 +109,16 @@ impl DeleteState {
     }
 }
 
-/// Manifest entry for tracking MinIO objects.
+/// Manifest entry for tracking SeaweedFS objects.
 ///
-/// The manifest maintains a record of all objects in the source MinIO bucket,
+/// The manifest maintains a record of all objects in the source SeaweedFS bucket,
 /// enabling efficient change detection through streaming ETag comparison.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ObjectManifest {
-    /// MinIO object key (path)
+    /// SeaweedFS object key (path)
     pub key: String,
 
-    /// ETag from MinIO (usually MD5 for single-part uploads)
+    /// ETag from SeaweedFS (usually MD5 for single-part uploads)
     pub etag: String,
 
     /// SHA-256 content hash for deduplication
@@ -252,14 +252,14 @@ impl ObjectManifest {
     }
 }
 
-/// Change type detected during MinIO sync
+/// Change type detected during SeaweedFS sync
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChangeType {
-    /// New object discovered in MinIO
+    /// New object discovered in SeaweedFS
     New,
     /// Object ETag changed (content modified)
     Updated,
-    /// Object missing from MinIO
+    /// Object missing from SeaweedFS
     Missing,
     /// Deletion confirmed after threshold misses
     ConfirmedDelete,

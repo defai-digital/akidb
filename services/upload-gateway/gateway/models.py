@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class UploadEvent(BaseModel):
     """Event published to NATS when a document is uploaded."""
 
-    bucket: str = Field(..., description="MinIO bucket name")
+    bucket: str = Field(..., description="SeaweedFS bucket name")
     key: str = Field(..., description="Object key (file path)")
     size: int = Field(..., description="File size in bytes")
     content_type: str | None = Field(None, description="MIME content type")
@@ -39,7 +39,7 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
-    minio_connected: bool
+    seaweedfs_connected: bool
     nats_connected: bool
 
 

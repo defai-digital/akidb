@@ -53,13 +53,16 @@ mod tests {
     fn stream_reconciliation_preserves_subjects_and_updates_replication() {
         let current = jetstream::stream::Config {
             name: "INGESTION".to_string(),
-            subjects: vec!["minio.uploads.>".to_string(), "custom.>".to_string()],
+            subjects: vec!["seaweedfs.uploads.>".to_string(), "custom.>".to_string()],
             num_replicas: 1,
             ..Default::default()
         };
         let desired = jetstream::stream::Config {
             name: "INGESTION".to_string(),
-            subjects: vec!["minio.uploads".to_string(), "minio.uploads.>".to_string()],
+            subjects: vec![
+                "seaweedfs.uploads".to_string(),
+                "seaweedfs.uploads.>".to_string(),
+            ],
             num_replicas: 3,
             ..Default::default()
         };
@@ -69,7 +72,7 @@ mod tests {
         assert_eq!(updated.num_replicas, 3);
         assert_eq!(
             updated.subjects,
-            vec!["minio.uploads.>", "custom.>", "minio.uploads"]
+            vec!["seaweedfs.uploads.>", "custom.>", "seaweedfs.uploads"]
         );
     }
 }

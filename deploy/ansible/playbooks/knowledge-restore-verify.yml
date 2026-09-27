@@ -125,7 +125,7 @@
 
         - name: Count restored canonical object files
           ansible.builtin.find:
-            paths: "{{ knowledge_restore_dir }}/{{ knowledge_backup_id }}/minio/{{ akidb_knowledge_minio_bucket }}"
+            paths: "{{ knowledge_restore_dir }}/{{ knowledge_backup_id }}/objects/{{ akidb_knowledge_seaweedfs_bucket }}"
             file_type: file
             recurse: true
           register: knowledge_restore_objects

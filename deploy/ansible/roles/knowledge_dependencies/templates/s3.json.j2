@@ -1,0 +1,54 @@
+{# SeaweedFS S3 gateway identities for the immutable generation bucket.
+   Action literals are case-sensitive: Admin, Read, Write, List, Tagging.
+   Only the setup identity carries the bare global "Admin" action, which is what
+   bucket creation and -s3.autoCreateBucket require; the long-lived replica and
+   publisher credentials hold bucket-scoped actions only.
+   The gateway denies anonymous requests as soon as -s3.config is supplied. #}
+{
+  "identities": [
+    {
+      "name": "knowledge-admin",
+      "credentials": [
+        {
+          "accessKey": {{ akidb_knowledge_seaweedfs_root_access_key | to_json }},
+          "secretKey": {{ akidb_knowledge_seaweedfs_root_secret_key | to_json }}
+        }
+      ],
+      "actions": [
+        "Admin",
+        "Read",
+        "Write",
+        "List",
+        "Tagging"
+      ]
+    },
+    {
+      "name": "knowledge-replica-read",
+      "credentials": [
+        {
+          "accessKey": {{ akidb_knowledge_seaweedfs_access_key | to_json }},
+          "secretKey": {{ akidb_knowledge_seaweedfs_secret_key | to_json }}
+        }
+      ],
+      "actions": [
+        "Read:{{ akidb_knowledge_seaweedfs_bucket }}",
+        "List:{{ akidb_knowledge_seaweedfs_bucket }}"
+      ]
+    },
+    {
+      "name": "knowledge-publisher",
+      "credentials": [
+        {
+          "accessKey": {{ ax_knowledge_seaweedfs_publish_access_key | to_json }},
+          "secretKey": {{ ax_knowledge_seaweedfs_publish_secret_key | to_json }}
+        }
+      ],
+      "actions": [
+        "Read:{{ akidb_knowledge_seaweedfs_bucket }}",
+        "Write:{{ akidb_knowledge_seaweedfs_bucket }}",
+        "List:{{ akidb_knowledge_seaweedfs_bucket }}",
+        "Tagging:{{ akidb_knowledge_seaweedfs_bucket }}"
+      ]
+    }
+  ]
+}

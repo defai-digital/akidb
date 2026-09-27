@@ -31,7 +31,7 @@ rocksdb_path = "/var/lib/akidb-benchmark/rocksdb"
 wal_enabled = false
 wal_path = "/var/lib/akidb-benchmark/wal"
 
-[storage.minio]
+[storage.seaweedfs]
 endpoint = ""
 bucket = ""
 access_key = ""

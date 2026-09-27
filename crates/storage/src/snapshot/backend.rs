@@ -2,7 +2,7 @@
 //!
 //! This module provides snapshot storage backends for persisting index state
 //! to various storage systems including local filesystem and S3-compatible
-//! object stores (like MinIO).
+//! object stores (like SeaweedFS).
 
 use akidb_common::{AkiDbError, Result};
 use async_trait::async_trait;
@@ -500,9 +500,13 @@ impl SnapshotBackend for LocalSnapshotBackend {
     }
 }
 
-/// S3/MinIO compatible snapshot backend
+/// S3/SeaweedFS compatible snapshot backend
+///
+/// Requests are signed with AWS Signature Version 2 over path-style URLs
+/// (`<endpoint>/<bucket>/<key>`), so the gateway must not be configured with
+/// `-s3.domainName` (virtual-host style), which this signer cannot cover.
 pub struct S3SnapshotBackend {
-    /// S3 endpoint URL (e.g., http://minio:9000)
+    /// S3 endpoint URL (e.g., http://seaweedfs:8333)
     endpoint: String,
     /// Bucket name
     bucket: String,

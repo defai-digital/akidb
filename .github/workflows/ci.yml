@@ -163,10 +163,10 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install -e .
 
-      - name: Run real MinIO generation gate
+      - name: Run real SeaweedFS generation gate
         env:
           CARGO_TARGET_DIR: target
-        run: ./scripts/test-generation-serving-minio.sh
+        run: ./scripts/test-generation-serving-seaweedfs.sh
 
   # Phase 3 correctness gate: three independent blank replica volumes rebuild
   # the same bundle + mutation tail through the PostgreSQL authority.
@@ -301,8 +301,8 @@ jobs:
           AKIDB_COMPETITOR_DATASET_DIR: /var/tmp/akidb-market-data/sift1m
           AKIDB_COMPETITOR_OUTPUT_DIR: /tmp/akidb-competitor-syntax
           AKIDB_COMPETITOR_CONFIRM: yes-run-isolated-market-competitors
-          AKIDB_COMPETITOR_MINIO_ACCESS_KEY: qualification
-          AKIDB_COMPETITOR_MINIO_SECRET_KEY: qualification-only-secret
+          AKIDB_COMPETITOR_SEAWEEDFS_ACCESS_KEY: qualification
+          AKIDB_COMPETITOR_SEAWEEDFS_SECRET_KEY: qualification-only-secret
           AKIDB_PARITY_AKI_EVIDENCE_DIR: /tmp/akidb-ann-syntax
           AKIDB_PARITY_AKI_RUN_ID: sift1m-syntax-run
           AKIDB_RELEASE_ID: syntax-release

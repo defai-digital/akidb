@@ -51,8 +51,8 @@ scrape_configs:
       - targets: ["akidb-coordinator:9091"]
     metrics_path: /metrics
 
-  # MinIO (if metrics enabled)
-  # - job_name: "minio"
-  #   static_configs:
-  #     - targets: ["minio:9000"]
-  #   metrics_path: /minio/v2/metrics/cluster
+  # SeaweedFS object storage (S3 gateway, master, volume, filer in one process)
+  - job_name: "seaweedfs"
+    static_configs:
+      - targets: ["seaweedfs:9327"]
+    metrics_path: /metrics

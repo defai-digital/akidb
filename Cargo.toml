@@ -74,7 +74,7 @@ parking_lot = "0.12"
 dashmap = "5.5"
 crossbeam = "0.8"
 
-# Object Storage (S3/MinIO compatible)
+# Object storage (S3-compatible, served by the SeaweedFS S3 gateway)
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], default-features = false }
 base64 = "0.22"
 hmac = "0.12"

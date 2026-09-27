@@ -48,8 +48,8 @@
           - >-
             competitor_weaviate_image
             == 'cr.weaviate.io/semitechnologies/weaviate@sha256:6ea713f8085dd0ba5c7714271d85f6c7d5ba951ac4b1a9d97ba735918cca3450'
-          - lookup('env', 'AKIDB_COMPETITOR_MINIO_ACCESS_KEY') | length >= 8
-          - lookup('env', 'AKIDB_COMPETITOR_MINIO_SECRET_KEY') | length >= 16
+          - lookup('env', 'AKIDB_COMPETITOR_SEAWEEDFS_ACCESS_KEY') | length >= 8
+          - lookup('env', 'AKIDB_COMPETITOR_SEAWEEDFS_SECRET_KEY') | length >= 16
 
     - name: Inspect the exact competitor driver
       ansible.builtin.stat:
@@ -187,8 +187,12 @@
       milvusdb/milvus@sha256:d88d0548f9d69748a5ea42bdbc246411398615e2360fe4667505c863b4445f6a
     competitor_etcd_image: >-
       quay.io/coreos/etcd@sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366
-    competitor_minio_image: >-
-      minio/minio@sha256:391d1d45fdbe79944cb6de9337b073864bb9ee38c4c24280bfb39572e925af08
+    # Milvus's object store for this isolated comparison run. The competitor
+    # baseline previously used a MinIO container here; the object store is not
+    # the engine under test, but numbers recorded before this migration were
+    # produced with MinIO and are not directly comparable with runs that use
+    # SeaweedFS.
+    competitor_seaweedfs_image: chrislusf/seaweedfs:4.47
     competitor_weaviate_image: >-
       cr.weaviate.io/semitechnologies/weaviate@sha256:6ea713f8085dd0ba5c7714271d85f6c7d5ba951ac4b1a9d97ba735918cca3450
     competitor_milvus_port: 19530
@@ -231,7 +235,7 @@
           - --quiet
           - --filter
           - >-
-            name=^/akidb-market-(milvus|etcd|minio|weaviate)$
+            name=^/akidb-market-(milvus|etcd|seaweedfs|weaviate)$
       register: competitor_existing_containers
       changed_when: false
 
@@ -251,7 +255,7 @@
         - "{{ competitor_data_root }}"
         - "{{ competitor_data_root }}/milvus"
         - "{{ competitor_data_root }}/milvus/etcd"
-        - "{{ competitor_data_root }}/milvus/minio"
+        - "{{ competitor_data_root }}/milvus/seaweedfs"
         - "{{ competitor_data_root }}/milvus/data"
         - "{{ competitor_data_root }}/weaviate"
 
@@ -261,7 +265,7 @@
       loop:
         - "{{ competitor_milvus_image }}"
         - "{{ competitor_etcd_image }}"
-        - "{{ competitor_minio_image }}"
+        - "{{ competitor_seaweedfs_image }}"
         - "{{ competitor_weaviate_image }}"
       register: competitor_image_pulls
       changed_when: true
@@ -311,34 +315,100 @@
               - --data-dir=/etcd
           changed_when: true
 
-        - name: Start the pinned private MinIO dependency
+        - name: Render the isolated SeaweedFS S3 gateway identities
+          ansible.builtin.copy:
+            content: >-
+              {{
+                {
+                  'identities': [
+                    {
+                      'name': 'akidb-market-milvus',
+                      'credentials': [
+                        {
+                          'accessKey': lookup('env', 'AKIDB_COMPETITOR_SEAWEEDFS_ACCESS_KEY'),
+                          'secretKey': lookup('env', 'AKIDB_COMPETITOR_SEAWEEDFS_SECRET_KEY')
+                        }
+                      ],
+                      'actions': ['Admin', 'Read', 'Write', 'List', 'Tagging']
+                    }
+                  ]
+                } | to_nice_json
+              }}
+            dest: "{{ competitor_data_root }}/milvus/seaweedfs/s3.json"
+            owner: root
+            group: root
+            mode: "0600"
+          no_log: true
+
+        - name: Render the Milvus external object-store override
+          ansible.builtin.copy:
+            content: |
+              # Extra config to override the default milvus.yaml.
+              #
+              # Milvus is pointed at SeaweedFS. The competitor baseline used a
+              # MinIO container here before this migration, so numbers recorded
+              # before the migration are not directly comparable.
+              #
+              # SeaweedFS serves path-style S3 when -s3.domainName is not set, so
+              # minio.useVirtualHost must stay false: virtual-host addressing
+              # would not resolve on the isolated container network.
+              common:
+                storageType: remote
+
+              minio:
+                address: akidb-market-seaweedfs:8333
+                port: 8333
+                accessKeyID: {{ lookup('env', 'AKIDB_COMPETITOR_SEAWEEDFS_ACCESS_KEY') | to_json }}
+                secretAccessKey: {{ lookup('env', 'AKIDB_COMPETITOR_SEAWEEDFS_SECRET_KEY') | to_json }}
+                useSSL: false
+                bucketName: a-bucket
+                rootPath: files
+                useIAM: false
+                cloudProvider: aws
+                region: us-east-1
+                useVirtualHost: false
+                logLevel: fatal
+            dest: "{{ competitor_data_root }}/milvus/user.yaml"
+            owner: root
+            group: root
+            mode: "0600"
+          no_log: true
+
+        - name: Start the pinned private SeaweedFS dependency
           ansible.builtin.command:
             argv:
               - docker
               - run
               - --detach
               - --name
-              - akidb-market-minio
+              - akidb-market-seaweedfs
               - --network
               - akidb-market-milvus
               - --volume
-              - "{{ competitor_data_root }}/milvus/minio:/minio_data"
-              - --env
-              - >-
-                MINIO_ACCESS_KEY={{
-                  lookup('env', 'AKIDB_COMPETITOR_MINIO_ACCESS_KEY')
-                }}
-              - --env
-              - >-
-                MINIO_SECRET_KEY={{
-                  lookup('env', 'AKIDB_COMPETITOR_MINIO_SECRET_KEY')
-                }}
-              - "{{ competitor_minio_image }}"
-              - minio
+              - "{{ competitor_data_root }}/milvus/seaweedfs:/data"
+              - "{{ competitor_seaweedfs_image }}"
               - server
-              - /minio_data
+              - -filer
+              - -s3
+              - -ip.bind=0.0.0.0
+              - -s3.port=8333
+              - -s3.config=/data/s3.json
           changed_when: true
-          no_log: true
+
+        - name: Wait for the private SeaweedFS S3 gateway
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - akidb-market-seaweedfs
+              - curl
+              - -fsS
+              - "http://127.0.0.1:8333/healthz"
+          register: competitor_seaweedfs_ready
+          changed_when: false
+          retries: 30
+          delay: 2
+          until: competitor_seaweedfs_ready.rc == 0
 
         - name: Start the pinned Milvus standalone server
           ansible.builtin.command:
@@ -364,28 +434,18 @@
                 }}:9091
               - --volume
               - "{{ competitor_data_root }}/milvus/data:/var/lib/milvus"
+              - --volume
+              - >-
+                {{
+                  competitor_data_root
+                }}/milvus/user.yaml:/milvus/configs/user.yaml:ro
               - --env
               - ETCD_ENDPOINTS=akidb-market-etcd:2379
-              - --env
-              - MINIO_ADDRESS=akidb-market-minio:9000
-              - --env
-              - MINIO_REGION=us-east-1
-              - --env
-              - >-
-                MINIO_ACCESS_KEY_ID={{
-                  lookup('env', 'AKIDB_COMPETITOR_MINIO_ACCESS_KEY')
-                }}
-              - --env
-              - >-
-                MINIO_SECRET_ACCESS_KEY={{
-                  lookup('env', 'AKIDB_COMPETITOR_MINIO_SECRET_KEY')
-                }}
               - "{{ competitor_milvus_image }}"
               - milvus
               - run
               - standalone
           changed_when: true
-          no_log: true
 
         - name: Wait for Milvus standalone health
           ansible.builtin.uri:
@@ -511,7 +571,7 @@
               - image
               - inspect
               - "{{ competitor_etcd_image }}"
-              - "{{ competitor_minio_image }}"
+              - "{{ competitor_seaweedfs_image }}"
           register: competitor_milvus_dependency_inspect
           changed_when: false
 
@@ -598,7 +658,7 @@
               - "{{ item }}"
           loop:
             - akidb-market-milvus
-            - akidb-market-minio
+            - akidb-market-seaweedfs
             - akidb-market-etcd
           changed_when: true
 
@@ -852,7 +912,7 @@
           loop:
             - akidb-market-weaviate
             - akidb-market-milvus
-            - akidb-market-minio
+            - akidb-market-seaweedfs
             - akidb-market-etcd
           changed_when: true
           failed_when: false

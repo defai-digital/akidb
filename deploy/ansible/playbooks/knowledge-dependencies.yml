@@ -1,5 +1,5 @@
 ---
-- name: Reconcile lab PostgreSQL and MinIO dependencies
+- name: Reconcile lab PostgreSQL and SeaweedFS dependencies
   hosts: akidb_knowledge_dependencies
   become: true
   gather_facts: true

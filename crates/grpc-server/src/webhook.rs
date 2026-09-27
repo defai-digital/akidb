@@ -363,9 +363,7 @@ impl WebhookSender {
             };
 
             let Some(PendingWebhook {
-                payload,
-                attempts,
-                ..
+                payload, attempts, ..
             }) = item
             else {
                 break;
@@ -694,10 +692,7 @@ mod tests {
         // when we use the canonical body we actually transmit.
         let body2 = serde_json::to_vec(&payload).unwrap();
         assert_eq!(body, body2);
-        assert_eq!(
-            compute_hmac_signature("webhook-secret", &body2),
-            signature
-        );
+        assert_eq!(compute_hmac_signature("webhook-secret", &body2), signature);
     }
 
     #[test]
@@ -766,7 +761,9 @@ mod tests {
         // The not-ready item remains; the ready item is either delivered or
         // requeued with a future ready_at after failure.
         assert!(
-            pending.iter().any(|p| p.payload.task_id.as_deref() == Some("late")),
+            pending
+                .iter()
+                .any(|p| p.payload.task_id.as_deref() == Some("late")),
             "deferred not-ready item must stay queued"
         );
         assert!(
@@ -817,7 +814,8 @@ mod tests {
             "first drain must not sleep until ready_at"
         );
         assert_eq!(
-            sender.get_stats().total_sent, 0,
+            sender.get_stats().total_sent,
+            0,
             "not-ready item must not be delivered yet"
         );
         assert!(

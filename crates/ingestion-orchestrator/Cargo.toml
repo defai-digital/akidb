@@ -37,7 +37,7 @@ tiktoken-rs = "0.6"         # Token counting
 # SQLite for state tracking
 rusqlite = { version = "0.33", features = ["bundled"] }
 
-# MinIO/S3 client
+# S3 client (SeaweedFS S3 gateway)
 aws-sdk-s3 = { version = "1.137", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-config = { version = "1.8", default-features = false, features = ["default-https-client", "rt-tokio", "credentials-process"] }
 
@@ -89,7 +89,7 @@ tokio-test = "0.4"
 tempfile = "3.14"
 mockall = "0.12"
 testcontainers = "0.27"
-testcontainers-modules = { version = "0.15", features = ["minio", "nats"] }
+testcontainers-modules = { version = "0.15", features = ["nats"] }
 wiremock = "0.6"
 criterion = { version = "0.5", features = ["async_tokio"] }
 

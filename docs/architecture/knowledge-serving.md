@@ -20,24 +20,24 @@ AkiDB process.
 
 | Plane | Owner and technology | Authority |
 | --- | --- | --- |
-| Source and canonical artifacts | AX Fabric and MinIO | Documents, relationships, source versions, and immutable logical bundles. AX Wiki and DocProc are Fabric inputs |
+| Source and canonical artifacts | AX Fabric and SeaweedFS | Documents, relationships, source versions, and immutable logical bundles. AX Wiki and DocProc are Fabric inputs |
 | Publication control | AX Fabric on HA PostgreSQL | Generation lifecycle, active pointer, ordered sequence, replica checkpoints, and audit |
 | Retrieval serving | Independent AkiDB replicas on local storage | Rebuildable RocksDB, HNSW, BM25, payload, and bounded-graph projections |
 | Request routing | Stateless AX retrieval gateway | Generation/checkpoint barriers and selection among eligible replicas |
 | Optional notification | NATS JetStream | Wake-up/acceleration only; never replay or activation authority |
 
 Serving an already active local generation must not synchronously depend on
-PostgreSQL, MinIO, or NATS.
+PostgreSQL, SeaweedFS, or NATS.
 
 ## Logical architecture
 
 ```text
  AX Wiki / DocProc ─┐
                     ├─► AX Fabric ingestion and distillation
- MinIO sources ─────┘            │
-                                 │ immutable logical bundle + checksum
-                                 ▼
-                            MinIO artifacts
+ SeaweedFS ─────────┘                 │
+                                      │ immutable logical bundle + checksum
+                                      ▼
+                            SeaweedFS artifacts
                                  │
                                  │ generation/outbox transaction
                                  ▼
@@ -61,7 +61,7 @@ PostgreSQL, MinIO, or NATS.
 Every AkiDB replica owns a full logical copy for the configured
 `(workspace_id, collection)` scope. Each copy is built independently from the
 same logical contract. Live RocksDB, HNSW, or graph directories are never
-copied from a running peer, shared through NFS, or mounted from MinIO.
+copied from a running peer, shared through NFS, or mounted from SeaweedFS.
 
 ## Why full replicas come before sharding
 
@@ -89,7 +89,7 @@ Its manifest binds:
 - embedding model and dimensions;
 - graph schema version;
 - deterministic NDJSON bundle format and compression;
-- immutable S3/MinIO object URI, byte length, and SHA-256;
+- immutable S3 object URI, byte length, and SHA-256;
 - base and immutable-bundle target sequence;
 - expected vector and edge counts.
 
@@ -102,7 +102,7 @@ from the base bundle plus every ordered mutation through that checkpoint.
 
 The target publication flow is:
 
-1. AX Fabric writes and verifies an immutable bundle in MinIO.
+1. AX Fabric writes and verifies an immutable bundle in SeaweedFS.
 2. AX Fabric records the generation and ordered publication event in one
    PostgreSQL transaction.
 3. Each replica validates the manifest, downloads the bounded bundle, verifies
@@ -139,7 +139,7 @@ two generations.
 | Versioned Rust knowledge contracts and JSON fixtures | Implemented |
 | Crash-persistent local staged/active/previous state | Implemented |
 | Deterministic logical bundle materialization | Implemented |
-| Single-node S3/MinIO stage, verify, activate, and rollback | Implemented preview |
+| Single-node S3 stage, verify, activate, and rollback | Implemented preview |
 | Generation/checkpoint evidence on retrieval responses | Implemented in generation mode |
 | Ordered mutation payload validation and deterministic post-bundle revisions | Implemented |
 | PostgreSQL-led independent replica convergence | Implemented with exact checkpoint/digest/count gates |
@@ -176,7 +176,7 @@ progress:
 - a failed shadow build leaves the active generation serving;
 - a corrupt or wrong-model bundle never becomes ready;
 - a sequence gap or digest/count divergence blocks only the affected replica;
-- PostgreSQL or MinIO outage pauses new convergence/activation but must not
+- PostgreSQL or SeaweedFS outage pauses new convergence/activation but must not
   tear down the last known-good local generation;
 - deleting a replica volume requires a blank rebuild from canonical artifacts
   and control state;
@@ -193,8 +193,8 @@ progress:
   not the checked-in TOML file.
 - PostgreSQL TLS verification is the default; plaintext is limited to
   loopback-only development and tests.
-- Replica MinIO credentials are read-only and bundle keys are immutable or
-  checksum-addressed.
+- Replica SeaweedFS S3 identities are read-only and bundle keys are immutable
+  or checksum-addressed.
 - Workspace and collection scope is validated at every contract and serving
   boundary.
 - AkiDB data/control ports stay on a private network and use built-in gRPC TLS.

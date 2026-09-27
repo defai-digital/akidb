@@ -16,7 +16,7 @@ KPI proves they work?”
 | Quality knobs | score_threshold, group_by, ACL, graph_hybrid | `qa_quality_knobs.py` (cargo tests) |
 | Code retrieval | Language chunking fixtures | `qa_code_retrieval.py` |
 | Correctness KPI table | Missing data / wrong ingest / wrong retrieval | `qa_correctness_kpi.py` |
-| Generation serving | Stage/activate/rollback generations | `qa_generation_serving.py` + compose/MinIO |
+| Generation serving | Stage/activate/rollback generations | `qa_generation_serving.py` + compose/SeaweedFS |
 | Authoritative Memory | Observe/Remember/Recall/history | `qualify-agentic-memory-amd64.sh`, memory scripts |
 | Market ANN | SIFT1M Recall@K, competitors, recovery | Ansible market playbooks + summarizers |
 | Multi-shard / HA entry | Coordinator fan-out, active-active leadership | Deploy `verify.yml` + cluster correctness KPI |

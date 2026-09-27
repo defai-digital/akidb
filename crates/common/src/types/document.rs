@@ -18,7 +18,7 @@ use super::tag::Tags;
 ///
 /// - `content_hash`: SHA-256 of document content for deduplication
 /// - `category_uid`: Optional user-defined category for grouping
-/// - `source_path`: MinIO object key for source lineage
+/// - `source_path`: SeaweedFS object key for source lineage
 /// - `instance_id`: UUIDv7 for time-ordered unique identification
 /// - `tags`: Optional key-value metadata for filtering and access control
 ///
@@ -41,7 +41,7 @@ pub struct DocumentIdentifier {
     /// Example: "legal-docs/contracts", "hr/policies/2024"
     pub category_uid: Option<String>,
 
-    /// MinIO object key for lineage tracking
+    /// SeaweedFS object key for lineage tracking
     pub source_path: String,
 
     /// Time-ordered unique ID (UUIDv7)

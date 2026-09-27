@@ -1,4 +1,4 @@
-//! Resumable upload support for S3/MinIO snapshot storage
+//! Resumable upload support for S3/SeaweedFS snapshot storage
 //!
 //! Implements multipart uploads with checkpoint persistence for crash recovery.
 

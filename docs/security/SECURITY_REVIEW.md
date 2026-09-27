@@ -1,14 +1,15 @@
 # AkiDB Security Review
 
-**Version:** 1.2
-**Date:** 2026-07-25
+**Version:** 1.3
+**Date:** 2026-09-26
 **Status:** Baseline Review (partial refresh)
 **Classification:** Public baseline
 
 > **Notice:** This review was originally written in January 2026 when the vector
 > index was FAISS-based. The codebase has since migrated to HNSW (usearch),
-> bearer-authenticated gRPC, and ax-engine embeddings. This refresh corrects
-> the service-boundary and transport status, but several recommendation code
+> bearer-authenticated gRPC, ax-engine embeddings, and a SeaweedFS object store.
+> This refresh corrects the service-boundary, object-storage, and transport
+> status, but several recommendation code
 > samples remain aspirational templates. Treat open items as a backlog, not as
 > a complete current-state audit. The immutable replica threat boundary is
 > summarized in the [knowledge-serving
@@ -35,7 +36,7 @@ yet been refreshed against current code.
 - Document parser service (Python)
 - Upload gateway (Python)
 - NATS JetStream cluster
-- MinIO object storage
+- SeaweedFS object storage (S3 gateway)
 - Prometheus/Grafana monitoring
 - Docker Compose deployment
 
@@ -60,7 +61,7 @@ yet been refreshed against current code.
 | AX knowledge gateway | Separate required bearer token over HTTPS | One configured workspace/collection and generation/checkpoint barriers |
 | PostgreSQL replica control | Database credential from a named environment variable; verified TLS by default | External least-privilege database role is required |
 | Upload Gateway | None | None |
-| MinIO | Username/Password | IAM Policies |
+| SeaweedFS S3 gateway | S3 access key / secret key from a required identity config (`-s3.config`) | Per-identity action list in that config (`Admin`, `Read`, `Write`, `List`, `Tagging`) |
 | NATS | None | None |
 | Grafana | Username/Password | Role-based |
 | Prometheus | None | None |
@@ -73,7 +74,7 @@ yet been refreshed against current code.
 | Bearer credential not bound to allowed workspace set | High | Open |
 | Built-in gRPC TLS lacks optional client-certificate identity | Medium | Server TLS implemented; mTLS remains open |
 | Unauthenticated upload endpoint | High | Open |
-| Default MinIO credentials | Critical | Mitigated |
+| Unauthenticated SeaweedFS S3 gateway (the gateway serves anonymously unless a credential config is supplied) | Critical | Mitigated by configuration requirement: every deployment must start the gateway with an S3 identity config |
 | No NATS authentication | Medium | Open |
 
 #### Recommendations
@@ -114,9 +115,9 @@ yet been refreshed against current code.
 | Vectors | HNSW Index (usearch) | None |
 | Metadata | RocksDB | None |
 | Immutable generation projection | Local RocksDB/HNSW/BM25/graph paths | None; rely on encrypted host volume |
-| Generation bundle | MinIO | Server-side encryption is deployment policy |
+| Generation bundle | SeaweedFS | Server-side encryption is deployment policy |
 | Publication/checkpoint authority | PostgreSQL | Encryption is deployment policy |
-| Documents | MinIO | Server-side (optional) |
+| Documents | SeaweedFS | Server-side (optional) |
 | Ingestion state | SQLite | None |
 | Optional SQL metadata | SQLite/PostgreSQL | None |
 
@@ -127,9 +128,9 @@ yet been refreshed against current code.
 | Client → AkiDB | gRPC | Built-in TLS; qualified knowledge cell also uses an encrypted private overlay |
 | Coordinator → Shards | gRPC | No TLS; qualified lab uses WireGuard |
 | Replica → PostgreSQL | PostgreSQL protocol | Verified TLS by default; plaintext restricted to loopback development |
-| Replica → MinIO | S3-compatible HTTPS | Configurable; TLS required for remote deployments |
+| Replica → SeaweedFS | S3-compatible HTTPS | Configurable; TLS required for remote deployments |
 | Ingestion → NATS | TCP | None |
-| Ingestion → MinIO | HTTP | None |
+| Ingestion → SeaweedFS | HTTP | None |
 | Ingestion → Embedding | HTTP | None |
 
 #### Recommendations
@@ -144,11 +145,12 @@ yet been refreshed against current code.
          TLS_KEY_PATH: /certs/server.key
    ```
 
-2. **MinIO Encryption**
-   ```bash
-   # Enable server-side encryption
-   mc admin config set local/ storage_class standard_sse AES256
-   ```
+2. **Object-Store Encryption**
+
+   Server-side encryption of generation bundles and documents is deployment
+   policy, not an AkiDB setting. Encrypt the object-store volumes or enable the
+   store's own encryption at rest, and verify that configuration before
+   accepting production data.
 
 3. **Environment-Based Secrets**
    ```bash
@@ -212,9 +214,9 @@ yet been refreshed against current code.
                     │                         │
         ┌───────────┼───────────┐            │
         │           │           │            │
-   ┌────▼───┐  ┌────▼───┐  ┌────▼───┐  ┌────▼───┐
-   │ NATS-1 │  │ NATS-2 │  │ NATS-3 │  │  MinIO │
-   └────────┘  └────────┘  └────────┘  └────────┘
+   ┌────▼───┐  ┌────▼───┐  ┌────▼───┐  ┌────▼────┐
+   │ NATS-1 │  │ NATS-2 │  │ NATS-3 │  │SeaweedFS│
+   └────────┘  └────────┘  └────────┘  └─────────┘
 ```
 
 #### Risks
@@ -245,7 +247,7 @@ yet been refreshed against current code.
    ```bash
    # Use pf (packet filter) on macOS to restrict local ports
    # Example: block external access to internal-only services
-   echo "block in from any to any port {4222, 9000}" | sudo pfctl -ef -
+   echo "block in from any to any port {4222, 8333}" | sudo pfctl -ef -
    ```
 
 ### 5. Secrets Management
@@ -254,7 +256,7 @@ yet been refreshed against current code.
 
 | Secret | Storage | Rotation |
 |--------|---------|----------|
-| MinIO credentials | Environment file | Manual |
+| SeaweedFS S3 identities | S3 identity config file (`-s3.config`) | Manual: edit the identity file and reload the S3 gateway with SIGHUP |
 | Grafana password | Environment file | Manual |
 | TLS certificates | Restricted host files supplied by deployment PKI | External PKI rotation |
 | AkiDB/gateway bearer tokens | Restricted environment/token files | Manual or external secret manager |
@@ -273,10 +275,11 @@ yet been refreshed against current code.
 
 2. **Rotate Credentials**
    ```bash
-   # Automated rotation script
-   #!/bin/bash
-   NEW_PASSWORD=$(openssl rand -base64 32)
-   mc admin user update local akidb-admin $NEW_PASSWORD
+   # Rotate one SeaweedFS S3 identity: rewrite its credentials in the
+   # -s3.config identity file, then reload the gateway.
+   NEW_SECRET=$(openssl rand -base64 32)
+   # edit '"secretKey": "<old>"' -> "$NEW_SECRET" in the identity file, then:
+   kill -HUP "$(pgrep -f 'weed .*s3')"
    ```
 
 ### 6. Logging & Audit
@@ -353,7 +356,7 @@ yet been refreshed against current code.
 
 | ID | Description | Mitigation | Status |
 |----|-------------|------------|--------|
-| SEC-001 | Default MinIO credentials in prod | Use strong passwords | Mitigated |
+| SEC-001 | The SeaweedFS S3 gateway serves every request anonymously unless it is started with a credential config | Require an S3 identity config (`-s3.config`) in every deployment and rotate its keys | Mitigated by configuration requirement |
 
 ### High
 
@@ -383,13 +386,14 @@ yet been refreshed against current code.
 The bounded Ubuntu AMD64 knowledge-cell profile has no accepted Critical or
 High blocker:
 
-- AkiDB gRPC, gateway HTTP, MinIO, and PostgreSQL links use verified TLS;
+- AkiDB gRPC, gateway HTTP, SeaweedFS, and PostgreSQL links use verified TLS;
 - WireGuard and host firewall rules keep service listeners off public
   interfaces;
-- read, generation-control, gateway, MinIO root, MinIO read-only, and MinIO
-  publisher credentials are distinct;
-- replicas receive read-only object access, while the publisher is limited to
-  the `ax-fabric/` prefix;
+- read, generation-control, gateway, and object-store identities are distinct:
+  the SeaweedFS S3 gateway is configured with separate admin, read-only replica,
+  and publisher identities;
+- replicas receive read-only object access, while the publisher identity is
+  limited to the `ax-fabric/` prefix;
 - the cell is configured for one authenticated workspace/collection, and
   traversal/routing never broadens that scope;
 - checksum-addressed immutable bundles, exact generation evidence, quorum

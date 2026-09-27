@@ -5,7 +5,7 @@ plus isolated market-qualification playbooks:
 
 | Profile | Playbooks | Status and purpose |
 | --- | --- | --- |
-| Knowledge-serving cell | `knowledge-preflight.yml`, `knowledge-site.yml`, `knowledge-verify.yml`, load/failure/backup drills | Supported availability design: three independently rebuilt full replicas, two AX gateways, PostgreSQL authority, MinIO artifacts. Bounded Ubuntu AMD64 envelope is qualified. |
+| Knowledge-serving cell | `knowledge-preflight.yml`, `knowledge-site.yml`, `knowledge-verify.yml`, load/failure/backup drills | Supported availability design: three independently rebuilt full replicas, two AX gateways, PostgreSQL authority, SeaweedFS artifacts. Bounded Ubuntu AMD64 envelope is qualified. |
 | Market qualification | `knowledge-market-ann.yml`, `knowledge-market-recovery.yml`, `knowledge-market-competitors.yml`, `knowledge-market-graph.yml` | Active release gate automation. Isolates one replica or runs competitors; not production reconciliation. |
 | Independent-shard lab (N=1, 2, or 4+) | `preflight.yml`, `network.yml`, `deploy.yml`, `verify.yml`, `site.yml` | Capacity path: 1 standalone, 2 dual-shard, or 4+ multi-shard with one or more active-active coordinators. Entrypoint HA only — not data replication / not the agent-facing replica design. N=3 is not a supported size. |
 
@@ -268,7 +268,7 @@ ansible-playbook playbooks/knowledge-verify.yml
 `knowledge-site.yml` is safely rerunnable. It composes preflight, network,
 optional lab dependencies, deploy, and verify. Lab dependency management is
 gated by inventory (`akidb_knowledge_manage_lab_dependencies`); production
-points at managed PostgreSQL and S3/MinIO instead.
+points at managed PostgreSQL and a durable S3-compatible object store instead.
 
 Additional knowledge drills (separate from market isolation):
 
@@ -277,6 +277,92 @@ Additional knowledge drills (separate from market isolation):
 - `knowledge-blank-rebuild.yml` — blank volume rebuild from canonical state
 - `knowledge-backup.yml` / `knowledge-restore-verify.yml`
 - `knowledge-rolling-upgrade.yml` / `knowledge-rollback.yml`
+
+### Lab object store (SeaweedFS)
+
+`roles/knowledge_dependencies` installs SeaweedFS (`weed server -filer -s3`) as
+the canonical object store. Details, including the exact listener
+configuration, are in
+[`roles/knowledge_dependencies/README.md`](roles/knowledge_dependencies/README.md).
+Operator-supplied inputs:
+
+| Variable | Environment | Required |
+| --- | --- | --- |
+| `akidb_knowledge_seaweedfs_tag` | `AKIDB_KNOWLEDGE_SEAWEEDFS_TAG` | no; defaults to `4.47` |
+| `akidb_knowledge_seaweedfs_url` | `AKIDB_KNOWLEDGE_SEAWEEDFS_URL` | no; derived from the tag |
+| `akidb_knowledge_seaweedfs_sha256` | `AKIDB_KNOWLEDGE_SEAWEEDFS_SHA256` | **yes** |
+| `akidb_knowledge_seaweedfs_root_access_key` | `AKIDB_KNOWLEDGE_SEAWEEDFS_ROOT_ACCESS_KEY` | yes |
+| `akidb_knowledge_seaweedfs_root_secret_key` | `AKIDB_KNOWLEDGE_SEAWEEDFS_ROOT_SECRET_KEY` | yes |
+| `akidb_knowledge_seaweedfs_access_key` | `AKIDB_KNOWLEDGE_SEAWEEDFS_READ_ACCESS_KEY` | yes |
+| `akidb_knowledge_seaweedfs_secret_key` | `AKIDB_KNOWLEDGE_SEAWEEDFS_READ_SECRET_KEY` | yes |
+| `ax_knowledge_seaweedfs_publish_access_key` | `AX_KNOWLEDGE_SEAWEEDFS_PUBLISH_ACCESS_KEY` | yes |
+| `ax_knowledge_seaweedfs_publish_secret_key` | `AX_KNOWLEDGE_SEAWEEDFS_PUBLISH_SECRET_KEY` | yes |
+| `akidb_knowledge_seaweedfs_volume_size_limit_mb` | — (inventory) | no; defaults to `1024` |
+
+SeaweedFS publishes only `.md5` for release assets, so the operator-supplied
+`AKIDB_KNOWLEDGE_SEAWEEDFS_SHA256` is deliberate and mandatory: the role
+verifies it before extracting the archive and never falls back to the
+upstream `.md5`. The root pair is the setup identity in `/etc/seaweedfs/s3.json`
+and holds the bare `Admin` action; the read pair is bucket-scoped `Read`/`List`
+for the replicas, and the publish pair is bucket-scoped `Read`/`Write`/`List`/
+`Tagging`. Preflight requires all three access keys to differ.
+
+The S3 gateway is TLS-only over the service plane on
+`akidb_knowledge_seaweedfs_port` (8333, `https://`). It carries the only
+service-plane firewall rule for the object store; the master, filer, volume,
+metrics, and S3 gRPC listeners stay closed.
+
+Because the unit runs `-volume.max=0`, the volume size limit decides how many
+volumes the host offers (free space divided by the limit) and every bucket needs
+a volume of its own. On a small disk, leave the limit low enough that the host
+can hold more volumes than it has buckets — otherwise later buckets accept no
+writes with `No writable volumes and no free volumes left for
+{"collection":"..."}`. The sizing rule and the failure signature are in
+[`roles/knowledge_dependencies/README.md`](roles/knowledge_dependencies/README.md).
+
+What the role proves: master health, S3 gateway liveness, disk-type allowance
+(`cluster.check`, which is **not** a writability verdict), bucket presence, and
+a bounded write probe — the publish identity uploads one tiny
+`.akidb-write-probe` object through the S3 gateway and removes it again.
+
+### Canonical backup and restore
+
+`knowledge-backup.yml` reads the bucket through the S3 API with the AWS CLI
+(`aws s3 sync --delete`), not with a filesystem client. Ubuntu 24.04 ships no
+`awscli` package, so the playbook installs AWS CLI v2 from AWS and verifies an
+operator-supplied `AKIDB_AWSCLI_SHA256` before running the installer; AWS
+publishes only a PGP signature, never a SHA256, for the v2 bundle. The install
+lives in `roles/knowledge_dependencies/tasks/s3_client.yml` and is included by
+both this playbook and the dependency role (which uses the same client for its
+write probe). Defaults:
+`AKIDB_AWSCLI_VERSION` (`2.34.56`) and the matching
+`https://awscli.amazonaws.com/awscli-exe-linux-x86_64-<version>.zip`.
+
+The archive layout under one immutable backup id is:
+
+```text
+<backup-id>/knowledge-control.pgdump
+<backup-id>/objects/<bucket>/...
+<backup-id>/backup-scope.json
+```
+
+`backup-scope.json` is now `"schema_version": 2` and names the object store with
+the key `bucket`; schema version 1 used `minio_bucket` and an on-disk
+`minio/<bucket>` tree. This is a deliberate breaking change: archives written
+before the migration cannot be verified by `knowledge-restore-verify.yml`
+without being unpacked and re-rooted from `minio/<bucket>` to
+`objects/<bucket>`.
+
+```bash
+AKIDB_KNOWLEDGE_BACKUP_ID=<unique-backup-id> \
+AKIDB_KNOWLEDGE_BACKUP_DIR=/qualification/backups \
+AKIDB_AWSCLI_SHA256=<sha256> \
+ansible-playbook playbooks/knowledge-backup.yml
+
+AKIDB_KNOWLEDGE_BACKUP_ID=<same-backup-id> \
+AKIDB_KNOWLEDGE_BACKUP_SHA256=<archive-sha256> \
+ansible-playbook playbooks/knowledge-restore-verify.yml
+```
 
 ## Market qualification
 
@@ -349,8 +435,16 @@ Pinned comparison set reviewed 2026-07-26:
 - Milvus server `v2.6.21` with `pymilvus==2.6.17`
 - Weaviate server `1.38.6` with `weaviate-client==4.22.0`
 
-Inject `AKIDB_COMPETITOR_MINIO_ACCESS_KEY` and
-`AKIDB_COMPETITOR_MINIO_SECRET_KEY` from the CI secret store or an ephemeral
+Milvus keeps its vectors in a private object store inside the isolated run.
+That object store is now `chrislusf/seaweedfs:4.47` (a `weed server -filer -s3`
+container with its own `s3.json`), reached by Milvus through a mounted
+`/milvus/configs/user.yaml` with `minio.useVirtualHost: false` so the S3
+requests stay path-style. **Competitor numbers recorded before this migration
+were produced with a `minio/minio` container as Milvus's object store and are
+not directly comparable with runs made afterwards.**
+
+Inject `AKIDB_COMPETITOR_SEAWEEDFS_ACCESS_KEY` and
+`AKIDB_COMPETITOR_SEAWEEDFS_SECRET_KEY` from the CI secret store or an ephemeral
 lab credential helper before invoking the playbook. Do not place either value
 in the command line or an inventory file.
 
@@ -371,6 +465,9 @@ Qualification-only behavior:
 - installs a temporary Docker runtime on the isolated server;
 - binds database ports only to the WireGuard address;
 - runs one engine at a time with `scripts/competitor_ann_bench.py`;
+- serves Milvus's object store from the pinned `chrislusf/seaweedfs:4.47`
+  container, authenticated by its own `s3.json` and reachable only on the
+  isolated container network;
 - records resolved container `RepoDigest` values, not tags alone;
 - removes containers and data directories after each engine;
 - always restores exact-generation AkiDB readiness;

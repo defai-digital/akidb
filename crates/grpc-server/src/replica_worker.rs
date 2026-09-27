@@ -1851,7 +1851,7 @@ mod tests {
         assert_eq!(states[2].get::<_, i64>("applied_sequence"), 11);
         replicas[2].assert_golden_projection();
 
-        // MinIO and control connections are not on the active read path.
+        // SeaweedFS and control connections are not on the active read path.
         unavailable.store(true, Ordering::SeqCst);
         for (_, task) in connections.drain(..) {
             task.abort();

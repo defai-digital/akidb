@@ -56,7 +56,7 @@ The unified `akidb` CLI is built without cloud generation features by default.
 Build the server binary explicitly for generation work:
 
 ```bash
-# Single-node S3/MinIO publication surface
+# Single-node S3 (SeaweedFS) publication surface
 cargo build --release -p akidb-server --features generation-s3
 
 # PostgreSQL replica worker; includes generation-s3
@@ -64,7 +64,7 @@ cargo build --release -p akidb-server --features generation-postgres
 ```
 
 Start the resulting binary without `--standalone`, because immutable
-publication requires S3/MinIO:
+publication requires S3 (SeaweedFS):
 
 ```bash
 ./target/release/akidb-server --config config/default.toml
@@ -89,8 +89,9 @@ require_version_or_digest_key = true
 ```
 
 The three local paths must be distinct and non-overlapping. Configure
-`storage.minio` for the fixed S3/MinIO endpoint and read-only replica
-credentials. Use TLS for MinIO.
+`[storage.seaweedfs]` for the fixed S3 endpoint (the SeaweedFS S3 gateway,
+port 8333 by default) and read-only replica credentials. Use TLS for SeaweedFS
+in any non-loopback deployment.
 
 In single-node mode, `GenerationManagement` always requires its own bearer
 token from `AKIDB_GENERATION_CONTROL_TOKEN` or `control_token_file`; startup
@@ -162,7 +163,7 @@ The replica worker is designed to:
 3. observe the configured workspace/collection publication directive;
 4. independently fetch and materialize the authoritative base bundle;
 5. page mutation contracts strictly in sequence from PostgreSQL and fetch
-   checksum-addressed upsert payloads from MinIO;
+   checksum-addressed upsert payloads from SeaweedFS;
 6. validate each payload's scope, identity, record, graph nodes, graph edges,
    evidence, size, and digest; deletes carry no payload;
 7. rebuild a complete shadow revision from the immutable base plus the ordered
@@ -194,7 +195,7 @@ later, PostgreSQL remains the replay and activation authority.
 - A drained worker stops convergence work and the gateway excludes it.
 - Active, previous, staged, and publication generations are retained;
   age-bounded local and object-store GC produces audit evidence.
-- S3/MinIO is the only bundle fetch backend.
+- S3 (SeaweedFS) is the only bundle fetch backend.
 - MCP startup is refused in generation mode to prevent a mutable-path bypass.
 - The full replica cell and its capacity envelope are not implied by native
   runtime support on a platform; see
@@ -216,10 +217,10 @@ cargo test -p akidb-server --features generation-s3 --lib
 cargo clippy -p akidb-grpc -p akidb-server \
   --features generation-s3 --all-targets -- -D warnings
 cargo check --workspace
-./scripts/test-generation-serving-minio.sh
+./scripts/test-generation-serving-seaweedfs.sh
 ```
 
-The MinIO gate publishes two checksum-addressed bundles, verifies concurrent
+The SeaweedFS gate publishes two checksum-addressed bundles, verifies concurrent
 atomic cutover, restarts the real server process, checks generation evidence,
 rolls back, and compares the original results and citation context exactly.
 

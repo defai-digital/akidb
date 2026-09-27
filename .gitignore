@@ -51,8 +51,8 @@ __pycache__/
 *.pb.go
 *.pb.rs
 
-# MinIO data (local dev)
-minio-data/
+# SeaweedFS data (local dev)
+seaweedfs-data/
 
 # Secrets (never commit)
 *.pem

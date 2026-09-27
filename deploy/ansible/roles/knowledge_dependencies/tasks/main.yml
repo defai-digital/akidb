@@ -2,17 +2,20 @@
 - name: Require pinned dependency artifacts and credentials
   ansible.builtin.assert:
     that:
-      - akidb_knowledge_minio_url | length > 0
-      - akidb_knowledge_minio_sha256 is match('^[a-fA-F0-9]{64}$')
-      - akidb_knowledge_mc_url | length > 0
-      - akidb_knowledge_mc_sha256 is match('^[a-fA-F0-9]{64}$')
+      - akidb_knowledge_seaweedfs_tag | length > 0
+      - akidb_knowledge_seaweedfs_url | length > 0
+      # Upstream publishes only .md5 for release assets, so the operator must
+      # supply and the role must verify a SHA256 for the release archive.
+      - akidb_knowledge_seaweedfs_sha256 is match('^[a-fA-F0-9]{64}$')
+      - akidb_knowledge_seaweedfs_bucket | length > 0
+      - akidb_knowledge_seaweedfs_volume_size_limit_mb | int > 0
       - akidb_knowledge_postgres_password | length >= 24
-      - akidb_knowledge_minio_root_access_key | length >= 3
-      - akidb_knowledge_minio_root_secret_key | length >= 24
-      - akidb_knowledge_minio_access_key | length >= 3
-      - akidb_knowledge_minio_secret_key | length >= 24
-      - ax_knowledge_minio_publish_access_key | length >= 3
-      - ax_knowledge_minio_publish_secret_key | length >= 24
+      - akidb_knowledge_seaweedfs_root_access_key | length >= 3
+      - akidb_knowledge_seaweedfs_root_secret_key | length >= 24
+      - akidb_knowledge_seaweedfs_access_key | length >= 3
+      - akidb_knowledge_seaweedfs_secret_key | length >= 24
+      - ax_knowledge_seaweedfs_publish_access_key | length >= 3
+      - ax_knowledge_seaweedfs_publish_secret_key | length >= 24
   no_log: true
 
 - name: Install PostgreSQL and control dependencies
@@ -132,23 +135,23 @@
     login_unix_socket: /var/run/postgresql
   become_user: postgres
 
-- name: Create MinIO service identity and directories
+- name: Create SeaweedFS service group
   ansible.builtin.group:
-    name: minio
+    name: seaweedfs
     system: true
     state: present
 
-- name: Create MinIO service user
+- name: Create SeaweedFS service user
   ansible.builtin.user:
-    name: minio
-    group: minio
-    home: /var/lib/minio
+    name: seaweedfs
+    group: seaweedfs
+    home: /var/lib/seaweedfs
     shell: /usr/sbin/nologin
     system: true
     create_home: false
     state: present
 
-- name: Create MinIO data and TLS directories
+- name: Create SeaweedFS data and TLS directories
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory
@@ -156,233 +159,253 @@
     group: "{{ item.group }}"
     mode: "{{ item.mode }}"
   loop:
-    - path: /var/lib/minio/knowledge
-      owner: minio
-      group: minio
+    - path: /var/lib/seaweedfs/knowledge
+      owner: seaweedfs
+      group: seaweedfs
       mode: "0750"
-    - path: /etc/minio
+    - path: /etc/seaweedfs
       owner: root
-      group: minio
+      group: seaweedfs
       mode: "0750"
-    - path: /etc/minio/certs
+    - path: /etc/seaweedfs/certs
       owner: root
-      group: minio
+      group: seaweedfs
       mode: "0750"
-    - path: /etc/minio/certs/CAs
+    - path: /etc/seaweedfs/certs/CAs
       owner: root
-      group: minio
+      group: seaweedfs
       mode: "0750"
 
-- name: Install checksum-pinned MinIO binaries
+- name: Download the checksum-pinned SeaweedFS release archive
   ansible.builtin.get_url:
-    url: "{{ item.url }}"
-    dest: "{{ item.dest }}"
-    checksum: "sha256:{{ item.sha256 }}"
+    url: "{{ akidb_knowledge_seaweedfs_url }}"
+    dest: "/var/tmp/seaweedfs-{{ akidb_knowledge_seaweedfs_tag }}.tar.gz"
+    checksum: "sha256:{{ akidb_knowledge_seaweedfs_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Extract the pinned SeaweedFS release archive
+  ansible.builtin.unarchive:
+    src: "/var/tmp/seaweedfs-{{ akidb_knowledge_seaweedfs_tag }}.tar.gz"
+    dest: "/var/tmp/seaweedfs-{{ akidb_knowledge_seaweedfs_tag }}"
+    remote_src: true
+    owner: root
+    group: root
+    creates: "/var/tmp/seaweedfs-{{ akidb_knowledge_seaweedfs_tag }}/weed"
+
+- name: Install the verified weed binary
+  ansible.builtin.copy:
+    src: "/var/tmp/seaweedfs-{{ akidb_knowledge_seaweedfs_tag }}/weed"
+    dest: /usr/local/bin/weed
+    remote_src: true
     owner: root
     group: root
     mode: "0755"
-  loop:
-    - url: "{{ akidb_knowledge_minio_url }}"
-      dest: /usr/local/bin/minio
-      sha256: "{{ akidb_knowledge_minio_sha256 }}"
-    - url: "{{ akidb_knowledge_mc_url }}"
-      dest: /usr/local/bin/mc
-      sha256: "{{ akidb_knowledge_mc_sha256 }}"
-  notify: Restart knowledge MinIO
+  notify: Restart knowledge SeaweedFS
 
-- name: Install MinIO TLS materials
+- name: Install SeaweedFS TLS materials
   ansible.builtin.copy:
     src: "{{ item.src }}"
     dest: "{{ item.dest }}"
     owner: root
-    group: minio
+    group: seaweedfs
     mode: "{{ item.mode }}"
   loop:
     - src: "{{ akidb_knowledge_pki_dir }}/ca.crt"
-      dest: /etc/minio/certs/CAs/ca.crt
+      dest: /etc/seaweedfs/certs/CAs/ca.crt
       mode: "0644"
     - src: "{{ akidb_knowledge_pki_dir }}/hosts/{{ inventory_hostname }}.crt"
-      dest: /etc/minio/certs/public.crt
+      dest: /etc/seaweedfs/certs/server.crt
       mode: "0644"
     - src: "{{ akidb_knowledge_pki_dir }}/hosts/{{ inventory_hostname }}.key"
-      dest: /etc/minio/certs/private.key
+      dest: /etc/seaweedfs/certs/server.key
       mode: "0640"
   no_log: true
-  notify: Restart knowledge MinIO
+  notify: Restart knowledge SeaweedFS
 
-- name: Install protected MinIO environment
-  ansible.builtin.copy:
-    content: |
-      MINIO_ROOT_USER="{{ akidb_knowledge_minio_root_access_key | replace('\\', '\\\\') | replace('"', '\\"') }}"
-      MINIO_ROOT_PASSWORD="{{ akidb_knowledge_minio_root_secret_key | replace('\\', '\\\\') | replace('"', '\\"') }}"
-    dest: /etc/minio/knowledge.env
+- name: Install protected SeaweedFS S3 gateway identities
+  ansible.builtin.template:
+    src: s3.json.j2
+    dest: /etc/seaweedfs/s3.json
     owner: root
-    group: minio
+    group: seaweedfs
     mode: "0640"
   no_log: true
-  notify: Restart knowledge MinIO
+  notify: Reload knowledge SeaweedFS S3 credentials
 
-- name: Install MinIO systemd unit
+- name: Install SeaweedFS systemd unit
   ansible.builtin.template:
-    src: minio-knowledge.service.j2
-    dest: /etc/systemd/system/minio-knowledge.service
+    src: seaweedfs-knowledge.service.j2
+    dest: /etc/systemd/system/seaweedfs-knowledge.service
     owner: root
     group: root
     mode: "0644"
-  notify: Restart knowledge MinIO
+  notify: Restart knowledge SeaweedFS
 
-- name: Start MinIO
+- name: Start SeaweedFS
   ansible.builtin.systemd_service:
-    name: minio-knowledge
+    name: seaweedfs-knowledge
     state: started
     enabled: true
     daemon_reload: true
 
-- name: Apply pending MinIO restart
+- name: Apply pending SeaweedFS restart
   ansible.builtin.meta: flush_handlers
 
-- name: Wait for MinIO TLS liveness
+- name: Wait for SeaweedFS master health
   ansible.builtin.uri:
-    url: "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_minio_port }}/minio/health/live"
-    ca_path: /etc/minio/certs/CAs/ca.crt
+    url: "http://{{ akidb_overlay_address }}:{{ akidb_knowledge_seaweedfs_master_port }}/cluster/healthz"
     status_code: 200
-  register: knowledge_minio_liveness
+  register: knowledge_seaweedfs_master_health
   retries: 20
   delay: 2
-  until: knowledge_minio_liveness.status == 200
+  until: knowledge_seaweedfs_master_health.status == 200
 
-- name: Configure local MinIO client alias
+- name: Wait for SeaweedFS S3 TLS liveness
+  ansible.builtin.uri:
+    url: "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_seaweedfs_port }}/healthz"
+    ca_path: /etc/seaweedfs/certs/CAs/ca.crt
+    status_code: 200
+  register: knowledge_seaweedfs_s3_liveness
+  retries: 20
+  delay: 2
+  until: knowledge_seaweedfs_s3_liveness.status == 200
+
+# `cluster.check` is a coarse reachability and disk-type allowance check, not a
+# writability gate. Measured on SeaweedFS 4.47: a cluster whose volumes were all
+# full (volume.list reported hdd(volume:5/5 active:5 free:0)) still exited 0 and
+# printed only benign per-hop ping lines, including
+# `unknown ping target localhost:9333 of type master`. The command only fails
+# when a disk type has no volume allowance at all (no disk types reported, or
+# MaxVolumeCount == 0). Real write capacity is verified by the S3 write probe
+# below, not by this task.
+- name: Check SeaweedFS cluster reachability and disk-type allowance
   ansible.builtin.command:
     argv:
-      - /usr/local/bin/mc
-      - alias
-      - set
-      - knowledge
-      - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_minio_port }}"
-      - "{{ akidb_knowledge_minio_root_access_key }}"
-      - "{{ akidb_knowledge_minio_root_secret_key }}"
-  environment:
-    MC_CONFIG_DIR: /root/.mc-akidb-knowledge
-    SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
+      - /usr/local/bin/weed
+      - shell
+      - "-master={{ akidb_overlay_address }}:{{ akidb_knowledge_seaweedfs_master_port }}"
+    stdin: "cluster.check\n"
+  register: knowledge_seaweedfs_cluster_check
   changed_when: false
-  no_log: true
 
-- name: Install bounded read and publication policy documents
+- name: Install the pinned S3 client
+  ansible.builtin.include_tasks: s3_client.yml
+
+- name: Read the existing SeaweedFS buckets
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/weed
+      - shell
+      - "-master={{ akidb_overlay_address }}:{{ akidb_knowledge_seaweedfs_master_port }}"
+    stdin: "s3.bucket.list\n"
+  register: knowledge_seaweedfs_bucket_list
+  changed_when: false
+
+# s3.bucket.list prints one "  <bucket>\tsize:...\t..." line per bucket, so the
+# bucket name is the first tab-separated field after trimming the indent.
+- name: Resolve the existing SeaweedFS bucket names
+  ansible.builtin.set_fact:
+    knowledge_seaweedfs_existing_buckets: >-
+      {{
+        knowledge_seaweedfs_bucket_list.stdout_lines
+        | map('trim')
+        | map('regex_replace', '\t.*$', '')
+        | list
+      }}
+
+- name: Create the immutable-generation bucket
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/weed
+      - shell
+      - "-master={{ akidb_overlay_address }}:{{ akidb_knowledge_seaweedfs_master_port }}"
+    stdin: "s3.bucket.create -name {{ akidb_knowledge_seaweedfs_bucket }}\n"
+  register: knowledge_seaweedfs_bucket_create
+  # `weed shell` only reports the status of the last piped command, so exactly
+  # one command is piped per invocation. The bucket is listed first and created
+  # only when absent, because on the pinned 4.47 release `s3.bucket.create` is
+  # not idempotent: creating an existing bucket still exits 0 and prints
+  # "created bucket <name>", so a create-on-every-run task would report a change
+  # every run. The "already exists" tolerance stays for releases that do surface
+  # the error path (weed/shell/command_s3_bucket_create.go returns
+  # "bucket <name> already exists" when the filer reports ErrEntryAlreadyExists).
+  when: akidb_knowledge_seaweedfs_bucket not in knowledge_seaweedfs_existing_buckets
+  changed_when: true
+  failed_when: >-
+    knowledge_seaweedfs_bucket_create.rc != 0
+    and 'already exists' not in knowledge_seaweedfs_bucket_create.stderr
+
+- name: Report the immutable-generation bucket state
+  ansible.builtin.debug:
+    msg: >-
+      {{ akidb_knowledge_seaweedfs_bucket }}:
+      {{ 'already present, no create issued'
+         if knowledge_seaweedfs_bucket_create.skipped | default(false)
+         else ('create reported success'
+               if 'created bucket' in knowledge_seaweedfs_bucket_create.stdout | default('')
+               else ('create reported that the bucket already exists'
+                     if 'already exists' in knowledge_seaweedfs_bucket_create.stderr | default('')
+                     else 'create output was not recognised')) }}
+
+- name: Create a bounded S3 write probe object
   ansible.builtin.copy:
-    content: "{{ item.document | to_nice_json }}\n"
-    dest: "/etc/minio/{{ item.name }}.json"
+    content: "akidb seaweedfs write probe\n"
+    dest: /var/tmp/akidb-write-probe
     owner: root
-    group: minio
-    mode: "0640"
-  loop:
-    - name: knowledge-replica-read
-      document:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Action:
-              - s3:GetBucketLocation
-              - s3:ListBucket
-            Resource:
-              - "arn:aws:s3:::{{ akidb_knowledge_minio_bucket }}"
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-            Resource:
-              - "arn:aws:s3:::{{ akidb_knowledge_minio_bucket }}/*"
-    - name: knowledge-publisher
-      document:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Action:
-              - s3:GetBucketLocation
-              - s3:ListBucket
-            Resource:
-              - "arn:aws:s3:::{{ akidb_knowledge_minio_bucket }}"
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:PutObject
-              - s3:DeleteObject
-            Resource:
-              - "arn:aws:s3:::{{ akidb_knowledge_minio_bucket }}/ax-fabric/*"
-  loop_control:
-    label: "{{ item.name }}"
+    group: root
+    mode: "0600"
 
-- name: Reconcile bounded MinIO policies
+# The only end-to-end proof that this deployment can publish: it goes through
+# the S3 gateway over TLS, with the same publish identity AX Fabric uses. A
+# bucket whose volumes are exhausted accepts no write even though every health
+# endpoint above still answers 200.
+- name: Require the publish identity to write through the S3 gateway
   ansible.builtin.command:
     argv:
-      - /usr/local/bin/mc
-      - admin
-      - policy
-      - create
-      - knowledge
-      - "{{ item }}"
-      - "/etc/minio/{{ item }}.json"
-  loop:
-    - knowledge-replica-read
-    - knowledge-publisher
+      - "{{ akidb_awscli_bin_dir }}/aws"
+      - --endpoint-url
+      - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_seaweedfs_port }}"
+      - s3
+      - cp
+      - /var/tmp/akidb-write-probe
+      - "s3://{{ akidb_knowledge_seaweedfs_bucket }}/.akidb-write-probe"
+      - --no-progress
   environment:
-    MC_CONFIG_DIR: /root/.mc-akidb-knowledge
-    SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
-  changed_when: false
-
-- name: Reconcile least-privilege MinIO service users
-  ansible.builtin.command:
-    argv:
-      - /usr/local/bin/mc
-      - admin
-      - user
-      - add
-      - knowledge
-      - "{{ item.access_key }}"
-      - "{{ item.secret_key }}"
-  loop:
-    - access_key: "{{ akidb_knowledge_minio_access_key }}"
-      secret_key: "{{ akidb_knowledge_minio_secret_key }}"
-    - access_key: "{{ ax_knowledge_minio_publish_access_key }}"
-      secret_key: "{{ ax_knowledge_minio_publish_secret_key }}"
-  loop_control:
-    label: "{{ item.access_key }}"
-  environment:
-    MC_CONFIG_DIR: /root/.mc-akidb-knowledge
-    SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
+    AWS_ACCESS_KEY_ID: "{{ ax_knowledge_seaweedfs_publish_access_key }}"
+    AWS_SECRET_ACCESS_KEY: "{{ ax_knowledge_seaweedfs_publish_secret_key }}"
+    AWS_DEFAULT_REGION: us-east-1
+    AWS_CA_BUNDLE: /etc/seaweedfs/certs/CAs/ca.crt
   changed_when: false
   no_log: true
 
-- name: Attach bounded policies to MinIO service users
+- name: Remove the S3 write probe object
   ansible.builtin.command:
     argv:
-      - /usr/local/bin/mc
-      - admin
-      - policy
-      - attach
-      - knowledge
-      - "{{ item.policy }}"
-      - --user
-      - "{{ item.access_key }}"
-  loop:
-    - policy: knowledge-replica-read
-      access_key: "{{ akidb_knowledge_minio_access_key }}"
-    - policy: knowledge-publisher
-      access_key: "{{ ax_knowledge_minio_publish_access_key }}"
-  loop_control:
-    label: "{{ item.policy }} -> {{ item.access_key }}"
+      - "{{ akidb_awscli_bin_dir }}/aws"
+      - --endpoint-url
+      - "https://{{ akidb_overlay_address }}:{{ akidb_knowledge_seaweedfs_port }}"
+      - s3
+      - rm
+      - "s3://{{ akidb_knowledge_seaweedfs_bucket }}/.akidb-write-probe"
+      # `aws s3 rm` has no --no-progress flag (only cp/sync/mv do); this is the
+      # smallest-output option it does accept, and it still prints errors.
+      - --only-show-errors
   environment:
-    MC_CONFIG_DIR: /root/.mc-akidb-knowledge
-    SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
+    AWS_ACCESS_KEY_ID: "{{ ax_knowledge_seaweedfs_publish_access_key }}"
+    AWS_SECRET_ACCESS_KEY: "{{ ax_knowledge_seaweedfs_publish_secret_key }}"
+    AWS_DEFAULT_REGION: us-east-1
+    AWS_CA_BUNDLE: /etc/seaweedfs/certs/CAs/ca.crt
   changed_when: false
   no_log: true
 
-- name: Create immutable-generation bucket idempotently
-  ansible.builtin.command:
-    argv:
-      - /usr/local/bin/mc
-      - mb
-      - --ignore-existing
-      - "knowledge/{{ akidb_knowledge_minio_bucket }}"
-  environment:
-    MC_CONFIG_DIR: /root/.mc-akidb-knowledge
-    SSL_CERT_FILE: /etc/minio/certs/CAs/ca.crt
-  changed_when: false
+- name: Report the verified object-store outcome
+  ansible.builtin.debug:
+    msg: >-
+      {{ akidb_knowledge_seaweedfs_bucket }} is writable over
+      https://{{ akidb_overlay_address }}:{{ akidb_knowledge_seaweedfs_port }}
+      with the publish identity: a probe object was written and removed.
+      Probed object keys are cleaned up on success; a failure between the write
+      and the removal leaves .akidb-write-probe in the bucket, which the next
+      role run removes and a canonical backup would include.

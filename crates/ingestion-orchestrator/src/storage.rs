@@ -1,6 +1,6 @@
-//! MinIO/S3 Storage Client
+//! S3 Storage Client
 //!
-//! Fetches documents from MinIO object storage.
+//! Fetches documents from the SeaweedFS S3 gateway.
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client as S3Client;
@@ -14,7 +14,7 @@ use crate::Result;
 /// Documents larger than this will be rejected to prevent OOM
 const MAX_DOCUMENT_SIZE: u64 = 100 * 1024 * 1024;
 
-/// MinIO/S3 storage client for fetching documents
+/// S3 storage client for fetching documents from the SeaweedFS S3 gateway
 pub struct StorageClient {
     client: S3Client,
     default_bucket: String,
@@ -24,14 +24,14 @@ pub struct StorageClient {
 impl StorageClient {
     /// Create a new storage client
     pub async fn new(config: &StorageConfig) -> Result<Self> {
-        info!(endpoint = %config.endpoint, bucket = %config.bucket, "Connecting to MinIO");
+        info!(endpoint = %config.endpoint, bucket = %config.bucket, "Connecting to SeaweedFS");
 
         let credentials = Credentials::new(
             &config.access_key,
             &config.secret_key,
             None,
             None,
-            "minio",
+            "seaweedfs",
         );
 
         let s3_config = Builder::new()
@@ -39,7 +39,8 @@ impl StorageClient {
             .region(Region::new(config.region.clone()))
             .endpoint_url(&config.endpoint)
             .credentials_provider(credentials)
-            .force_path_style(true) // Required for MinIO
+            // Required for the SeaweedFS S3 gateway (path-style addressing)
+            .force_path_style(true)
             .build();
 
         let client = S3Client::from_conf(s3_config);
@@ -51,11 +52,11 @@ impl StorageClient {
                     .iter()
                     .filter_map(|b| b.name())
                     .collect();
-                info!(?bucket_names, "Connected to MinIO");
+                info!(?bucket_names, "Connected to SeaweedFS");
             }
             Err(e) => {
-                error!(?e, "Failed to connect to MinIO");
-                return Err(crate::IngestionError::Storage(format!("MinIO connection failed: {}", e)));
+                error!(?e, "Failed to connect to SeaweedFS");
+                return Err(crate::IngestionError::Storage(format!("SeaweedFS connection failed: {}", e)));
             }
         }
 
