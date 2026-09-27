@@ -71,7 +71,8 @@ fn fanout_fetch_k(top_k: usize, grouping: bool) -> usize {
 
 /// Why one shard did not contribute results to a fan-out.
 enum ShardSearchFailure {
-    /// The shard answered with a gRPC status. It is reachable, so a rejected
+    /// The shard answered with an application-level gRPC status (for example
+    /// `InvalidArgument` on an over-large `top_k`). It is up, so rejecting the
     /// request is not evidence that the shard itself is unhealthy.
     Rejected(String),
     /// A timeout, a dropped connection, or a panicked task: the shard's state is
@@ -80,6 +81,23 @@ enum ShardSearchFailure {
 }
 
 impl ShardSearchFailure {
+    /// Classify a gRPC status returned for one shard request.
+    ///
+    /// Tonic surfaces transport failures as statuses too, so "returned a status"
+    /// does not by itself mean the shard answered. Only transport-level codes
+    /// count as evidence that the shard is unhealthy; an application-level
+    /// status came from a live shard.
+    fn from_status(status: &tonic::Status) -> Self {
+        let message = format!("Search failed: {}", status);
+        match status.code() {
+            tonic::Code::Unavailable
+            | tonic::Code::DeadlineExceeded
+            | tonic::Code::Cancelled
+            | tonic::Code::Unknown => Self::Unreachable(message),
+            _ => Self::Rejected(message),
+        }
+    }
+
     /// Whether this failure is evidence that the shard is unhealthy.
     fn indicates_unhealthy_shard(&self) -> bool {
         matches!(self, Self::Unreachable(_))
@@ -452,10 +470,7 @@ impl FanoutExecutor {
                             .collect();
                         Ok((shard_id, results))
                     }
-                    Ok(Err(e)) => Err((
-                        shard_id,
-                        ShardSearchFailure::Rejected(format!("Search failed: {}", e)),
-                    )),
+                    Ok(Err(e)) => Err((shard_id, ShardSearchFailure::from_status(&e))),
                     Err(_) => Err((
                         shard_id,
                         ShardSearchFailure::Unreachable("Search timeout".to_string()),
@@ -987,16 +1002,34 @@ mod tests {
     }
 
     #[test]
-    fn test_only_unreachable_shards_count_as_unhealthy() {
-        assert!(
-            ShardSearchFailure::Unreachable("Search timeout".to_string())
-                .indicates_unhealthy_shard()
-        );
-        // A shard that answered with a status is up; the request was the problem.
-        assert!(
-            !ShardSearchFailure::Rejected("top_k exceeds maximum of 10000".to_string())
-                .indicates_unhealthy_shard()
-        );
+    fn test_transport_statuses_mark_a_shard_unreachable_but_validation_does_not() {
+        // Tonic surfaces transport failures as statuses too, so a connection
+        // refusal or a timeout must still count against shard health.
+        for status in [
+            tonic::Status::unavailable("connection refused"),
+            tonic::Status::deadline_exceeded("shard timeout"),
+            tonic::Status::cancelled("call cancelled"),
+            tonic::Status::unknown("h2 connection error"),
+        ] {
+            assert!(
+                ShardSearchFailure::from_status(&status).indicates_unhealthy_shard(),
+                "{} should mark the shard unhealthy",
+                status
+            );
+        }
+
+        // A live shard rejecting the request says nothing about its health.
+        for status in [
+            tonic::Status::invalid_argument("top_k exceeds maximum of 10000"),
+            tonic::Status::permission_denied("workspace outside grant"),
+            tonic::Status::unauthenticated("missing bearer token"),
+        ] {
+            assert!(
+                !ShardSearchFailure::from_status(&status).indicates_unhealthy_shard(),
+                "{} should not mark the shard unhealthy",
+                status
+            );
+        }
     }
 
     #[test]
