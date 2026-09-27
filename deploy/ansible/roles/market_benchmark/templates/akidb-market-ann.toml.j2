@@ -38,7 +38,9 @@ max_count = 1000000
 
 [storage]
 rocksdb_path = "{{ akidb_market_data_dir }}/rocksdb"
-wal_enabled = true
+# The application WAL is not wired into the mutate path yet, so this flag
+# has no effect; durability comes from RocksDB synced writes.
+wal_enabled = false
 wal_path = "{{ akidb_market_data_dir }}/wal"
 
 [storage.seaweedfs]

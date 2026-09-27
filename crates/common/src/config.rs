@@ -614,6 +614,12 @@ impl Default for AclConfig {
 }
 
 /// Filtered ANN strategy (ADR-0002.3).
+///
+/// Only `post` and `adaptive` are implemented, and `adaptive` currently behaves
+/// exactly like `post` (post-filter over-fetch; true prefilter bitmap
+/// integration is tracked as GAP-003). `pre` sizes the candidate window at bare
+/// `top_k`, so with a selective predicate it returns fewer results than `top_k`
+/// -- it is not a recall-preserving pre-filter today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FilterMode {
@@ -634,6 +640,10 @@ pub struct FilterSettings {
     #[serde(default = "default_max_postfilter_candidates")]
     pub max_postfilter_candidates: usize,
     /// When estimated selectivity is at or below this, adaptive prefers pre-filter.
+    ///
+    /// RESERVED, not read anywhere in the runtime: adaptive filtering currently
+    /// behaves exactly like post-filtering (see [`FilterMode`]). Keeping the
+    /// field so shipped configs keep parsing; changing it has no effect.
     #[serde(default = "default_adaptive_pre_selectivity")]
     pub adaptive_pre_selectivity: f32,
 }
@@ -713,11 +723,14 @@ impl Default for IndexSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebuildSettings {
-    /// Trigger rebuild when tombstone ratio exceeds this
+    /// RESERVED, not read anywhere in the runtime. Tombstone-driven compaction
+    /// runs from the coordinator's own `CompactionConfig` (default 0.10), which
+    /// nothing constructs from `AkiDbConfig` yet; wiring the two is deferred
+    /// until it is decided whether the shard or the coordinator owns compaction.
     pub tombstone_ratio_trigger: f32,
-    /// Maximum rebuild duration in seconds
+    /// RESERVED, not read anywhere in the runtime.
     pub max_duration_seconds: u64,
-    /// Schedule rebuilds during these hours (0-23)
+    /// RESERVED, not read anywhere in the runtime.
     pub preferred_hours: Vec<u8>,
 }
 
@@ -733,7 +746,8 @@ impl Default for RebuildSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TombstoneSettings {
-    /// Maximum tombstones before forced compaction
+    /// RESERVED, not read anywhere in the runtime. Physical removal happens in
+    /// the index rebuild path; no compaction is forced from this count yet.
     pub max_count: u64,
 }
 
