@@ -38,7 +38,10 @@ fn candidate_count(top_k: usize, index_size: usize, tombstoned: usize, filtered:
     };
     let active = index_size.saturating_sub(tombstoned.min(index_size));
     if active == 0 {
-        return index_size;
+        // Every vector is deleted, so no query can return a result. Asking
+        // usearch for the whole index would be a full scan plus a window-sized
+        // allocation only to discard every candidate.
+        return 0;
     }
     let compensated = (base as u128)
         .saturating_mul(index_size as u128)
@@ -931,7 +934,9 @@ mod tests {
         assert_eq!(candidate_count(1, 2, 0, true), 2);
         assert_eq!(candidate_count(50, 100_000, 50_000, true), 200);
         assert_eq!(candidate_count(10, 100_000, 0, false), 15);
-        assert_eq!(candidate_count(10, 100, 100, true), 100);
+        // An index whose every vector is deleted cannot answer a query, so no
+        // window is requested at all rather than one spanning the whole index.
+        assert_eq!(candidate_count(10, 100, 100, true), 0);
         assert_eq!(next_candidate_count(32, 1_000), 64);
         assert_eq!(next_candidate_count(768, 1_000), 1_000);
         assert_eq!(next_candidate_count(1_000, 1_000), 1_000);
