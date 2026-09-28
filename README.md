@@ -33,9 +33,13 @@ AkiDB is the service that does this in one process. A request can combine:
 - bounded graph expansion over a native GraphRAG index, without a second
   graph database
 
-The response is a token-budgeted list of cited passages. Clients use gRPC, the
-Python and TypeScript SDKs, or MCP. A terminal UI and JSON operations commands
-are included for the operator.
+The agent call is `TextSearch` with `pack` set. That request returns
+`ContextPackV1`: each passage has text, a score, a reason, and a citation,
+plus the token budget, the counter name (`conservative_v1`), and whether the
+budget or a filter candidate window cut the result. Vector `Search` stays a
+top-k call and does not build that pack. Clients use gRPC, the Python and
+TypeScript SDKs, or the MCP `pack` tool. A terminal UI and JSON operations
+commands are included for the operator.
 
 Loopback is the default bind. Bearer tokens and workspace controls apply when
 the server is reachable beyond the local machine.

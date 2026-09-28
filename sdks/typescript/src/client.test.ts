@@ -78,7 +78,15 @@ describe('AkiDBClient (hardened)', () => {
 
   it('textSearch sets flags + budget and returns context pack', async () => {
     const { raw, calls } = fakeClient({
-      TextSearch: { results: [{ id: 'x', score: 1, metadata: '' }], context_pack: '[x] ctx' },
+      TextSearch: {
+        results: [{ id: 'x', score: 1, metadata: '' }],
+        context_pack: '[x] ctx',
+        context_pack_v1: {
+          schema_version: 'akidb.context-pack.v1',
+          token_counter: 'conservative_v1',
+          items: [{ chunk_id: 'x', text: 'ctx', score: 1, reason: 'direct_match' }],
+        },
+      },
     });
     const client = new AkiDBClient({ rawClient: raw });
     const result = await client.textSearch('q', {
@@ -93,6 +101,8 @@ describe('AkiDBClient (hardened)', () => {
     expect([r.top_k, r.hybrid, r.rerank, r.diversity, r.pack]).toEqual([7, true, true, true, true]);
     expect(r.pack_token_budget).toBe(256);
     expect(result.contextPack).toBe('[x] ctx');
+    expect(result.contextPackV1?.token_counter).toBe('conservative_v1');
+    expect(result.contextPackV1?.items?.[0]?.reason).toBe('direct_match');
   });
 
   it('textSearch forwards metadata filters', async () => {

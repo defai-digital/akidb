@@ -138,6 +138,15 @@ pub struct IndexStats {
     pub rebuild_in_progress: bool,
 }
 
+/// One dense search, plus whether a filter candidate cap stopped it early.
+#[derive(Debug, Clone)]
+pub struct SearchWindow {
+    pub results: Vec<SearchResult>,
+    /// True when a metadata filter was active, fewer than `top_k` hits were
+    /// accepted, and the scan reached `filter_candidate_limit`.
+    pub candidate_limited: bool,
+}
+
 /// Trait for vector index implementations
 ///
 /// This trait abstracts over different FAISS backends (CPU, GPU) and allows
@@ -154,6 +163,17 @@ pub trait VectorIndex: Send + Sync {
 
     /// Search for similar vectors
     fn search(&self, query: &[f32], params: &SearchParams) -> Result<Vec<SearchResult>>;
+
+    /// Search and report whether the filter candidate cap stopped the scan.
+    ///
+    /// The default reports `candidate_limited = false`. Indexes that enforce
+    /// `filter_candidate_limit` override this.
+    fn search_window(&self, query: &[f32], params: &SearchParams) -> Result<SearchWindow> {
+        Ok(SearchWindow {
+            results: self.search(query, params)?,
+            candidate_limited: false,
+        })
+    }
 
     /// Search for similar vectors in batch
     fn search_batch(

@@ -7,7 +7,7 @@
 //! set:
 //!
 //! - `search` — hybrid retrieval, returns ranked ids + scores.
-//! - `pack` — hybrid retrieval assembled into a cited context pack.
+//! - `pack` — `TextSearch` with `pack=true`, returning the typed context pack.
 //! - `memory_write` — store an agent-memory entry (embedded + indexed).
 //! - `memory_read` — retrieve memory, optionally scoped to a conversation.
 //! - `memory_remember` — commit typed authoritative Memory preview data.
@@ -30,10 +30,11 @@ use crate::proto::akidb_server::Akidb;
 use crate::proto::memory_content;
 use crate::proto::memory_service_server::MemoryService;
 use crate::proto::{
-    tag_filter::FilterType, tag_value::Value as TagVal, InsertRequest, MemoryContent,
-    MemoryEpistemicFormation, MemoryEvidenceInput, MemoryRecallRequest, MemoryRememberRequest,
-    MemoryRequestContext, MemoryScopeInput, MemorySensitivity, MemoryTextFact, SearchRequest,
-    TagCondition, TagFilter, TagOperator, TagValue, TextSearchRequest,
+    tag_filter::FilterType, tag_value::Value as TagVal, ContextPackV1, InsertRequest,
+    MemoryContent, MemoryEpistemicFormation, MemoryEvidenceInput, MemoryRecallRequest,
+    MemoryRememberRequest, MemoryRequestContext, MemoryScopeInput, MemorySensitivity,
+    MemoryTextFact, SearchRequest, TagCondition, TagFilter, TagOperator, TagValue,
+    TextSearchRequest,
 };
 use crate::service::AkiDbService;
 use crate::MemoryAuthContext;
@@ -210,13 +211,22 @@ fn tool_definitions(authoritative_memory: bool) -> Value {
         json!(
         {
             "name": "pack",
-            "description": "Retrieve and assemble a source-grounded, cited context pack.",
+            "description": "TextSearch with pack=true. Returns a cited, token-budgeted context pack.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string" },
+                    "collection": { "type": "string" },
                     "top_k": { "type": "integer" },
                     "token_budget": { "type": "integer" },
+                    "rerank": { "type": "boolean" },
+                    "diversity": { "type": "boolean" },
+                    "mmr_lambda": { "type": "number" },
+                    "retrieval_mode": { "type": "string" },
+                    "filter": { "type": "object" },
+                    "graph_max_depth": { "type": "integer" },
+                    "graph_per_seed_fanout": { "type": "integer" },
+                    "graph_max_expanded_nodes": { "type": "integer" },
                     "workspace": { "type": "string" },
                     "workspace_id": { "type": "string" }
                 },
@@ -374,6 +384,16 @@ fn arg_u32(args: &Value, key: &str, default: u32) -> Result<u32, String> {
     u32::try_from(n).map_err(|_| format!("'{key}' exceeds u32 range"))
 }
 
+fn arg_f32(args: &Value, key: &str) -> Result<Option<f32>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    value
+        .as_f64()
+        .map(|number| Some(number as f32))
+        .ok_or_else(|| format!("'{key}' must be a number"))
+}
+
 fn arg_bool(args: &Value, key: &str, default: bool) -> Result<bool, String> {
     let Some(value) = args.get(key) else {
         return Ok(default);
@@ -445,6 +465,46 @@ where
     Ok(serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string()))
 }
 
+fn context_pack_json(pack: &ContextPackV1) -> Value {
+    let items: Vec<Value> = pack
+        .items
+        .iter()
+        .map(|item| {
+            let citation = item.citation.as_ref().map(|citation| {
+                json!({
+                    "chunk_id": citation.chunk_id,
+                    "document_id": citation.document_id,
+                    "document_version": citation.document_version,
+                    "source_uri": citation.source_uri,
+                    "source_version": citation.source_version,
+                    "content_hash": citation.content_hash,
+                    "start_offset": citation.start_offset,
+                    "end_offset": citation.end_offset,
+                    "generation_id": citation.generation_id,
+                    "citation_status": citation.citation_status,
+                })
+            });
+            json!({
+                "chunk_id": item.chunk_id,
+                "text": item.text,
+                "score": item.score,
+                "reason": item.reason,
+                "citation": citation,
+            })
+        })
+        .collect();
+    json!({
+        "schema_version": pack.schema_version,
+        "items": items,
+        "token_budget": pack.token_budget,
+        "used_tokens": pack.used_tokens,
+        "truncated": pack.truncated,
+        "text": pack.text,
+        "token_counter": pack.token_counter,
+        "candidate_limited": pack.candidate_limited,
+    })
+}
+
 async fn tool_pack<I, S>(service: &AkiDbService<I, S>, args: &Value) -> Result<String, String>
 where
     I: VectorIndex + 'static,
@@ -454,15 +514,46 @@ where
     let top_k = arg_u32(args, "top_k", 10)?;
     let budget = arg_u32(args, "token_budget", 1024)?;
     let workspace = arg_workspace(args)?;
+    let mut request = text_search_request(query, top_k, true, true, Some(budget));
+    if let Some(collection) = arg_str(args, "collection")? {
+        if !collection.is_empty() {
+            request.collection = collection;
+        }
+    }
+    request.rerank = arg_bool(args, "rerank", false)?;
+    request.diversity = arg_bool(args, "diversity", false)?;
+    request.mmr_lambda = arg_f32(args, "mmr_lambda")?;
+    if let Some(mode) = arg_str(args, "retrieval_mode")? {
+        request.retrieval_mode = mode;
+    }
+    if let Some(filter) = args.get("filter") {
+        if !filter.is_null() {
+            if !filter.is_object() {
+                return Err("'filter' must be a JSON object".to_string());
+            }
+            request.filter = serde_json::to_vec(filter)
+                .map_err(|error| format!("failed to encode filter: {error}"))?;
+        }
+    }
+    if args.get("graph_max_depth").is_some() {
+        request.graph_max_depth = Some(arg_u32(args, "graph_max_depth", 1)?);
+    }
+    if args.get("graph_per_seed_fanout").is_some() {
+        request.graph_per_seed_fanout = Some(arg_u32(args, "graph_per_seed_fanout", 16)?);
+    }
+    if args.get("graph_max_expanded_nodes").is_some() {
+        request.graph_max_expanded_nodes = Some(arg_u32(args, "graph_max_expanded_nodes", 64)?);
+    }
     let resp = service
-        .text_search(request_with_workspace(
-            text_search_request(query, top_k, true, true, Some(budget)),
-            workspace.as_deref(),
-        ))
+        .text_search(request_with_workspace(request, workspace.as_deref()))
         .await
         .map_err(|e| e.message().to_string())?
         .into_inner();
-    Ok(resp.context_pack)
+    let body = json!({
+        "context_pack": resp.context_pack,
+        "context_pack_v1": resp.context_pack_v1.as_ref().map(context_pack_json),
+    });
+    Ok(serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string()))
 }
 
 fn request_with_workspace<T>(inner: T, workspace: Option<&str>) -> Request<T> {

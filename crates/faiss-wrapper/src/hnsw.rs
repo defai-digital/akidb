@@ -9,7 +9,7 @@ use crate::snapshot;
 use crate::snapshot::{durable_vector_fingerprint, DurableVectorRef};
 use crate::{
     allocate_internal_id,
-    index::{IndexStats, SearchParams, VectorIndex},
+    index::{IndexStats, SearchParams, SearchWindow, VectorIndex},
     tombstone::TombstoneBitset,
     validate_finite_vector_values, AkiDbError, InternalId, Result, SearchResult, VectorId,
 };
@@ -361,7 +361,7 @@ impl HnswIndex {
         params: &SearchParams,
         mut search_count: usize,
         candidate_limit: usize,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> Result<SearchWindow> {
         // Only negative decisions are memoized: never reuse an earlier ACL
         // approval after metadata changes. This set is local to one query,
         // including when SearchParams is reused by a batch or another caller.
@@ -418,7 +418,13 @@ impl HnswIndex {
             let results: Vec<SearchResult> = hits.into_iter().map(|(_, result)| result).collect();
 
             if results.len() >= params.top_k || search_count >= candidate_limit {
-                return Ok(results);
+                let candidate_limited = params.filter.is_some()
+                    && results.len() < params.top_k
+                    && search_count >= params.filter_candidate_limit;
+                return Ok(SearchWindow {
+                    results,
+                    candidate_limited,
+                });
             }
             search_count = next_candidate_count(search_count, candidate_limit);
         }
@@ -510,6 +516,10 @@ impl VectorIndex for HnswIndex {
     }
 
     fn search(&self, query: &[f32], params: &SearchParams) -> Result<Vec<SearchResult>> {
+        Ok(self.search_window(query, params)?.results)
+    }
+
+    fn search_window(&self, query: &[f32], params: &SearchParams) -> Result<SearchWindow> {
         if query.len() != self.dimensions {
             return Err(AkiDbError::DimensionMismatch {
                 expected: self.dimensions,
@@ -531,7 +541,10 @@ impl VectorIndex for HnswIndex {
             params.filter.is_some(),
         );
         if search_count == 0 {
-            return Ok(Vec::new());
+            return Ok(SearchWindow {
+                results: Vec::new(),
+                candidate_limited: false,
+            });
         }
         if self.precision == VectorPrecision::I8 {
             let floor = I8_RERANK_CANDIDATES
@@ -907,6 +920,33 @@ mod tests {
         );
         let bounded = SearchParams::new(5).with_filter_candidate_limit(10);
         assert!(index.search(&[0.0, 0.0], &bounded).unwrap().is_empty());
+    }
+
+    #[test]
+    fn filter_candidate_cap_is_reported_when_top_k_is_not_filled() {
+        let mut config = HnswConfig::new(2).with_capacity(32).with_ef_search(16);
+        config.metric = DistanceMetric::L2;
+        let index = HnswIndex::new(config).unwrap();
+        for row in 0..20 {
+            index
+                .insert(&VectorId::new(row.to_string()), &[row as f32, 0.0])
+                .unwrap();
+        }
+        let limited = SearchParams::new(5)
+            .with_filter(std::sync::Arc::new(|id: &VectorId| {
+                id.as_str() == "missing"
+            }))
+            .with_filter_candidate_limit(4);
+        let window = index.search_window(&[0.0, 0.0], &limited).unwrap();
+        assert!(window.results.is_empty());
+        assert!(window.candidate_limited);
+
+        let filled = SearchParams::new(1)
+            .with_filter(std::sync::Arc::new(|_: &VectorId| true))
+            .with_filter_candidate_limit(4);
+        let window = index.search_window(&[0.0, 0.0], &filled).unwrap();
+        assert_eq!(window.results.len(), 1);
+        assert!(!window.candidate_limited);
     }
 
     #[test]

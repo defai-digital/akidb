@@ -33,9 +33,35 @@ export function metadataJson(hit: SearchHit): unknown | undefined {
   }
 }
 
+export interface ContextPackV1 {
+  schema_version?: string;
+  items?: Array<{
+    chunk_id?: string;
+    text?: string;
+    score?: number;
+    reason?: string;
+    citation?: {
+      chunk_id?: string;
+      document_id?: string;
+      source_uri?: string;
+      source_version?: string;
+      content_hash?: string;
+      citation_status?: string;
+      generation_id?: string;
+    };
+  }>;
+  token_budget?: number;
+  used_tokens?: number;
+  truncated?: boolean;
+  text?: string;
+  token_counter?: string;
+  candidate_limited?: boolean;
+}
+
 export interface TextSearchResult {
   hits: SearchHit[];
   contextPack: string;
+  contextPackV1?: ContextPackV1;
 }
 
 export interface GetResult {
@@ -331,11 +357,16 @@ export class AkiDBClient {
     if (opts.filter !== undefined) request.filter = opts.filter;
     if (opts.tagFilter !== undefined) request.tag_filter = opts.tagFilter;
     if (opts.retrievalMode !== undefined) request.retrieval_mode = opts.retrievalMode;
-    const resp = await this.call<{ results?: SearchHit[]; context_pack?: string }>(
-      this.raw.TextSearch,
-      request,
-    );
-    return { hits: resp.results ?? [], contextPack: resp.context_pack ?? '' };
+    const resp = await this.call<{
+      results?: SearchHit[];
+      context_pack?: string;
+      context_pack_v1?: ContextPackV1;
+    }>(this.raw.TextSearch, request);
+    return {
+      hits: resp.results ?? [],
+      contextPack: resp.context_pack ?? '',
+      contextPackV1: resp.context_pack_v1,
+    };
   }
 
   health(): Promise<HealthStatus> {

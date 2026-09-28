@@ -34,6 +34,7 @@ from .client import (
     SearchHit,
     TextSearchResult,
     UpdateResult,
+    context_pack_from_proto,
     VectorInput,
     _combine,
     _eq_condition,
@@ -205,7 +206,14 @@ class AsyncAkiDBClient:
         if retrieval_mode is not None:
             req.retrieval_mode = retrieval_mode
         resp = await self._invoke(self._stub.TextSearch, req)
-        return TextSearchResult(hits=_hits(resp.results), context_pack=resp.context_pack)
+        pack_v1 = None
+        if resp.HasField("context_pack_v1") and resp.context_pack_v1.schema_version:
+            pack_v1 = context_pack_from_proto(resp.context_pack_v1)
+        return TextSearchResult(
+            hits=_hits(resp.results),
+            context_pack=resp.context_pack,
+            context_pack_v1=pack_v1,
+        )
 
     async def health(self) -> HealthStatus:
         r = await self._invoke(self._stub.Health, pb.HealthRequest())

@@ -18,7 +18,10 @@
 //! - G3: Building → Swapping: Shadow index valid and non-empty
 //! - G4: Swapping → Idle: No data loss (vector count maintained)
 
-use crate::{InternalId, Result, SearchParams, SearchResult, TombstoneBitset, VectorId, VectorIndex};
+use crate::{
+    InternalId, Result, SearchParams, SearchResult, SearchWindow, TombstoneBitset, VectorId,
+    VectorIndex,
+};
 use akidb_common::metrics::{record_rebuild_phase_duration, set_rebuild_state};
 use akidb_common::AkiDbError;
 use akidb_invariants::{critical_invariant, debug_invariant};
@@ -620,6 +623,10 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
     fn search(&self, query: &[f32], params: &SearchParams) -> Result<Vec<SearchResult>> {
         // Always search primary (reads are not affected by rebuild)
         self.primary().search(query, params)
+    }
+
+    fn search_window(&self, query: &[f32], params: &SearchParams) -> Result<SearchWindow> {
+        self.primary().search_window(query, params)
     }
 
     fn search_batch(

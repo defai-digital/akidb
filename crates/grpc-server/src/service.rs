@@ -25,7 +25,7 @@ use akidb_graph::{
 use akidb_retrieval::{
     expand_to_parents, mmr, pack, plan_query, Bm25Index, Citation, HybridFuser,
     LexicalOverlapReranker, MatchedChunk, MmrItem, PackerConfig, PlannerInput, RerankItem,
-    Reranker, RetrievalMode, ScoredId,
+    Reranker, RetrievalMode, ScoredId, TOKEN_COUNTER_CONSERVATIVE_V1,
 };
 use akidb_sql::{MetadataQuery, MetadataSqlIndex, SqlMetadataRecord};
 use akidb_storage::{IdMapping, StorageBackend};
@@ -886,10 +886,12 @@ where
         if source_version.is_empty() {
             source_version = content_hash.clone();
         }
-        let mut source_uri = string_value(&["source_uri", "document_key", "file"]);
-        if source_uri.is_empty() {
-            source_uri = id.to_string();
-        }
+        let source_uri = string_value(&["source_uri", "document_key", "file"]);
+        let citation_status = if source_uri.is_empty() {
+            "missing_source"
+        } else {
+            "complete"
+        };
         RetrievalCitationV1 {
             chunk_id: id.to_string(),
             document_id: string_value(&["document_id", "doc_id"]),
@@ -900,6 +902,7 @@ where
             start_offset: offset(&["start_offset", "offset"]),
             end_offset: offset(&["end_offset"]),
             generation_id: string_value(&["generation_id"]),
+            citation_status: citation_status.to_string(),
         }
     }
 
@@ -1080,6 +1083,7 @@ where
         response_results: &[SearchResult],
         graph_expanded_ids: Option<&HashSet<VectorId>>,
         budget: usize,
+        candidate_limited: bool,
     ) -> BuiltContextPack {
         let docs = self.documents.read();
         let direct_ids: HashSet<VectorId> = response_results
@@ -1136,6 +1140,8 @@ where
                 used_tokens,
                 truncated: !packed.dropped.is_empty(),
                 text: packed.text,
+                token_counter: TOKEN_COUNTER_CONSERVATIVE_V1.to_string(),
+                candidate_limited,
             },
         }
     }
@@ -1201,6 +1207,7 @@ where
                 &results,
                 None,
                 req.pack_token_budget.unwrap_or(1024) as usize,
+                candidate_cap_reached,
             ))
         } else {
             None
@@ -2930,6 +2937,7 @@ where
         // diversity) needs room to reorder; otherwise fetch exactly top_k.
         let use_dense = planner_trace.vector_weight > 0.0;
         let use_lexical = planner_trace.lexical_weight > 0.0;
+        let mut dense_candidate_limited = false;
         let needs_pool = (use_dense && use_lexical) || req.rerank || req.diversity;
         let mut search_k = if needs_pool {
             top_k.saturating_mul(4).clamp(top_k, top_k.max(200))
@@ -2962,10 +2970,12 @@ where
             // Drop only truly non-finite scores (NaN, inf, -inf) from the
             // raw index output. Zero-score hits are kept here so dense-only
             // and lexical-fusion paths can still surface them.
-            let mut dense_hits = self
+            let dense_window = self
                 .index
-                .search(&query_vector, &params)
+                .search_window(&query_vector, &params)
                 .map_err(Self::to_status)?;
+            let mut dense_hits = dense_window.results;
+            dense_candidate_limited = dense_window.candidate_limited;
             dense_hits.retain(|r| r.score.is_finite());
             dense_hits
         } else {
@@ -3260,6 +3270,7 @@ where
                 &pack_candidates,
                 Some(&graph_expanded_ids),
                 req.pack_token_budget.unwrap_or(1024) as usize,
+                dense_candidate_limited,
             ))
         } else {
             None
@@ -3434,6 +3445,53 @@ mod tests {
             }))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pack_citation_status_and_counter_follow_the_contract() {
+        let (service, _dir) = test_service();
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".to_string(),
+                id: "cited".to_string(),
+                vector: vec![1.0, 0.0],
+                metadata: br#"{"source_uri":"file://policy.pdf"}"#.to_vec(),
+                text: "policy text".to_string(),
+            }))
+            .await
+            .unwrap();
+        insert_text(&service, "bare", vec![0.0, 1.0], "no source").await;
+
+        let complete = service.retrieval_citation_for_vector(&VectorId::new("cited"));
+        assert_eq!(complete.source_uri, "file://policy.pdf");
+        assert_eq!(complete.citation_status, "complete");
+
+        let missing = service.retrieval_citation_for_vector(&VectorId::new("bare"));
+        assert!(missing.source_uri.is_empty());
+        assert_eq!(missing.citation_status, "missing_source");
+
+        let pack = service.build_context_pack(
+            &[SearchResult {
+                id: "bare".to_string(),
+                score: 1.0,
+                metadata: String::new(),
+            }],
+            None,
+            32,
+            true,
+        );
+        assert_eq!(pack.wire.token_counter, TOKEN_COUNTER_CONSERVATIVE_V1);
+        assert!(pack.wire.candidate_limited);
+        assert_eq!(pack.wire.items.len(), 1);
+        assert_eq!(pack.wire.items[0].reason, "direct_match");
+        assert_eq!(
+            pack.wire.items[0]
+                .citation
+                .as_ref()
+                .unwrap()
+                .citation_status,
+            "missing_source"
+        );
     }
 
     #[tokio::test]

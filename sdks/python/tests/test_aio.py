@@ -47,11 +47,28 @@ def test_async_text_search_pack():
     client, stub = make_client()
     stub.TextSearch = AsyncMock(
         return_value=pb.SearchResponse(
-            results=[pb.SearchResult(id="x", score=1.0)], context_pack="[x] ctx"
+            results=[pb.SearchResult(id="x", score=1.0)],
+            context_pack="[x] ctx",
+            context_pack_v1=pb.ContextPackV1(
+                schema_version="akidb.context-pack.v1",
+                token_counter="conservative_v1",
+                token_budget=128,
+                items=[
+                    pb.ContextPackItemV1(
+                        chunk_id="x",
+                        text="ctx",
+                        score=1.0,
+                        reason="direct_match",
+                    )
+                ],
+            ),
         )
     )
     result = run(client.text_search("q", hybrid=True, pack=True, token_budget=128))
     assert result.context_pack == "[x] ctx"
+    assert result.context_pack_v1 is not None
+    assert result.context_pack_v1.token_counter == "conservative_v1"
+    assert result.context_pack_v1.items[0].reason == "direct_match"
     assert stub.TextSearch.call_args[0][0].pack_token_budget == 128
 
 

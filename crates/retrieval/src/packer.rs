@@ -7,16 +7,20 @@
 //! [`PackStrategy`], and guarantees every included span carries a [`Citation`]
 //! back to its source (PACK-001/002/004).
 //!
-//! Token counting here is a deterministic whitespace-word heuristic, not a
-//! model-specific tokenizer; it is intentionally simple and conservative. A
-//! pluggable model tokenizer can replace [`estimate_tokens`] later without
-//! changing the packing logic.
+//! Token counting is the named `conservative_v1` upper bound in
+//! [`estimate_tokens`]: ASCII words cost `ceil(chars / 4)` (at least one), and
+//! each non-ASCII scalar costs two. It is not a model tokenizer. A later
+//! counter can replace it without changing which passages are selected, as
+//! long as callers keep using [`estimate_tokens`].
 
 use akidb_common::VectorId;
 use serde::{Deserialize, Serialize};
 
 /// Versioned citation contract id (GAP-018 / PAK-102).
 pub const CITATION_SCHEMA_VERSION: &str = "akidb.citation.v1";
+
+/// Wire name for [`estimate_tokens`].
+pub const TOKEN_COUNTER_CONSERVATIVE_V1: &str = "conservative_v1";
 
 /// A traceable pointer from a packed span back to its origin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,12 +239,33 @@ impl ContextPack {
     }
 }
 
-/// Deterministic token estimate: count of whitespace-separated words.
+/// `conservative_v1` token upper bound.
 ///
-/// This is a heuristic stand-in for a model tokenizer — adequate for budgeting
-/// and fully reproducible in tests.
+/// Each ASCII word costs `max(1, ceil(char_count / 4))`. Each non-ASCII scalar
+/// costs 2 and ends the current ASCII word. Empty and whitespace-only text
+/// costs 0. This overestimates common BPE counts for English and CJK rather
+/// than counting whitespace-separated words.
 pub fn estimate_tokens(text: &str) -> usize {
-    text.split_whitespace().count()
+    let mut tokens = 0usize;
+    let mut ascii_run = 0usize;
+    let flush_ascii = |tokens: &mut usize, ascii_run: &mut usize| {
+        if *ascii_run > 0 {
+            *tokens += (*ascii_run).div_ceil(4).max(1);
+            *ascii_run = 0;
+        }
+    };
+    for ch in text.chars() {
+        if ch.is_ascii() && !ch.is_ascii_whitespace() {
+            ascii_run += 1;
+        } else if ch.is_ascii_whitespace() {
+            flush_ascii(&mut tokens, &mut ascii_run);
+        } else {
+            flush_ascii(&mut tokens, &mut ascii_run);
+            tokens += 2;
+        }
+    }
+    flush_ascii(&mut tokens, &mut ascii_run);
+    tokens
 }
 
 /// Render a single passage according to the strategy.
@@ -388,18 +413,19 @@ mod tests {
 
     #[test]
     fn test_budget_drops_overflowing_passages_preserving_order() {
-        // Compact strategy, budget 4 words, separator "\n\n" (0 word-tokens).
+        // Compact strategy, budget 4 conservative_v1 tokens. "three" is 5 ASCII
+        // chars (2 tokens) and "seven" is 5 ASCII chars (2 tokens).
         let passages = [
             passage("a", "one two"),             // 2 tokens
-            passage("b", "three four five six"), // 4 tokens -> would exceed (2+4=6>4)
-            passage("c", "seven two"),           // 2 tokens -> fits (2+2=4)
+            passage("b", "three four five six"), // 5 tokens -> exceeds
+            passage("c", "ok go"),               // 2 tokens -> fits (2+2=4)
         ];
         let cfg = PackerConfig::new(4).with_strategy(PackStrategy::Compact);
         let out = pack(&passages, &cfg);
         assert_eq!(out.included, vec![VectorId::new("a"), VectorId::new("c")]);
         assert_eq!(out.dropped, vec![VectorId::new("b")]);
         assert_eq!(out.used_tokens, 4);
-        assert_eq!(out.text, "one two\n\nseven two");
+        assert_eq!(out.text, "one two\n\nok go");
     }
 
     #[test]
@@ -525,10 +551,12 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_tokens_counts_words() {
+    fn test_estimate_tokens_conservative_v1() {
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("   "), 0);
         assert_eq!(estimate_tokens("one"), 1);
-        assert_eq!(estimate_tokens("one two   three"), 3);
+        assert_eq!(estimate_tokens("one two   three"), 4);
+        assert_eq!(estimate_tokens("hello"), 2);
+        assert_eq!(estimate_tokens("你好"), 4);
     }
 }

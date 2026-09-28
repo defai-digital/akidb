@@ -777,8 +777,10 @@ message SearchResponse {
   uint64 latency_us = 5;
   bool within_slo = 6;
   bool degraded_mode = 7;
-  string context_pack = 8;  // Optional assembled context pack (TextSearch pack=true)
+  // Legacy pack string. Filled by TextSearch when pack=true. Vector Search leaves it empty.
+  string context_pack = 8;
   ServingGenerationEvidence serving_generation = 9;
+  // Typed pack for TextSearch when pack=true. Vector Search leaves it unset.
   ContextPackV1 context_pack_v1 = 10;
   RetrievalDiagnostics diagnostics = 11;
 }
@@ -800,6 +802,9 @@ message RetrievalCitationV1 {
   optional uint64 start_offset = 7;
   optional uint64 end_offset = 8;
   string generation_id = 9;
+  // "complete" when source_uri came from metadata; "missing_source" otherwise.
+  // source_uri is never the chunk id.
+  string citation_status = 10;
 }
 
 message ContextPackItemV1 {
@@ -818,6 +823,10 @@ message ContextPackV1 {
   uint32 used_tokens = 4;
   bool truncated = 5;
   string text = 6;
+  // Name of the counter used for used_tokens. Current value: "conservative_v1".
+  string token_counter = 7;
+  // True when a filter candidate cap stopped the scan before top_k was filled.
+  bool candidate_limited = 8;
 }
 
 message GraphEdgeEvidence {

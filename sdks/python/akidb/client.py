@@ -58,11 +58,94 @@ class SearchHit:
 
 
 @dataclass
+class ContextPackCitation:
+    """Source pointer for one packed passage."""
+
+    chunk_id: str = ""
+    document_id: str = ""
+    document_version: str = ""
+    source_uri: str = ""
+    source_version: str = ""
+    content_hash: str = ""
+    start_offset: Optional[int] = None
+    end_offset: Optional[int] = None
+    generation_id: str = ""
+    citation_status: str = ""
+
+
+@dataclass
+class ContextPackItem:
+    """One passage in a typed context pack."""
+
+    chunk_id: str
+    text: str
+    score: float
+    reason: str
+    citation: Optional[ContextPackCitation] = None
+
+
+@dataclass
+class ContextPack:
+    """Typed TextSearch pack. `context_pack` on the result remains the legacy string."""
+
+    schema_version: str = ""
+    items: list[ContextPackItem] = field(default_factory=list)
+    token_budget: int = 0
+    used_tokens: int = 0
+    truncated: bool = False
+    text: str = ""
+    token_counter: str = ""
+    candidate_limited: bool = False
+
+
+def context_pack_from_proto(message: pb.ContextPackV1) -> ContextPack:
+    """Copy a protobuf pack into the SDK dataclass."""
+
+    def citation(item: pb.ContextPackItemV1) -> Optional[ContextPackCitation]:
+        if not item.HasField("citation"):
+            return None
+        src = item.citation
+        return ContextPackCitation(
+            chunk_id=src.chunk_id,
+            document_id=src.document_id,
+            document_version=src.document_version,
+            source_uri=src.source_uri,
+            source_version=src.source_version,
+            content_hash=src.content_hash,
+            start_offset=src.start_offset if src.HasField("start_offset") else None,
+            end_offset=src.end_offset if src.HasField("end_offset") else None,
+            generation_id=src.generation_id,
+            citation_status=src.citation_status,
+        )
+
+    return ContextPack(
+        schema_version=message.schema_version,
+        items=[
+            ContextPackItem(
+                chunk_id=item.chunk_id,
+                text=item.text,
+                score=item.score,
+                reason=item.reason,
+                citation=citation(item),
+            )
+            for item in message.items
+        ],
+        token_budget=message.token_budget,
+        used_tokens=message.used_tokens,
+        truncated=message.truncated,
+        text=message.text,
+        token_counter=message.token_counter,
+        candidate_limited=message.candidate_limited,
+    )
+
+
+@dataclass
 class TextSearchResult:
     """Result of a text/hybrid search: ranked hits plus an optional context pack."""
 
     hits: list[SearchHit] = field(default_factory=list)
     context_pack: str = ""
+    context_pack_v1: Optional[ContextPack] = None
 
     def __iter__(self):
         return iter(self.hits)
@@ -368,7 +451,14 @@ class AkiDBClient:
         if retrieval_mode is not None:
             req.retrieval_mode = retrieval_mode
         resp = self._invoke(self._stub.TextSearch, req)
-        return TextSearchResult(hits=_hits(resp.results), context_pack=resp.context_pack)
+        pack_v1 = None
+        if resp.HasField("context_pack_v1") and resp.context_pack_v1.schema_version:
+            pack_v1 = context_pack_from_proto(resp.context_pack_v1)
+        return TextSearchResult(
+            hits=_hits(resp.results),
+            context_pack=resp.context_pack,
+            context_pack_v1=pack_v1,
+        )
 
     def health(self) -> HealthStatus:
         r = self._invoke(self._stub.Health, pb.HealthRequest())

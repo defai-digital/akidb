@@ -35,7 +35,7 @@ pub use lexical::Bm25Index;
 pub use memory::{MemoryEntry, MemoryKind};
 pub use packer::{
     pack, Citation, CitationDocumentV1, CitationItemV1, CitationSpanV1, ContextPack, PackStrategy,
-    PackerConfig, Passage, CITATION_SCHEMA_VERSION,
+    PackerConfig, Passage, CITATION_SCHEMA_VERSION, TOKEN_COUNTER_CONSERVATIVE_V1,
 };
 pub use planner::{plan_query, PlannerInput, PlannerTrace, RetrievalMode};
 pub use rerank::{
