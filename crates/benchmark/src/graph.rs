@@ -19,7 +19,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Parser, Debug)]
@@ -112,6 +112,7 @@ struct QueryReport {
     known_answer_accuracy: f64,
     operations: std::collections::BTreeMap<&'static str, usize>,
     latency: LatencyReport,
+    operation_latency: std::collections::BTreeMap<&'static str, LatencyReport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,11 +154,60 @@ struct Verdict {
 
 #[derive(Default)]
 struct Measurements {
-    latencies: Vec<Duration>,
     succeeded: usize,
     incorrect: usize,
     errors: usize,
     operations: std::collections::BTreeMap<&'static str, usize>,
+    operation_latencies: std::collections::BTreeMap<&'static str, Vec<Duration>>,
+}
+
+impl Measurements {
+    fn with_query_capacity(expected_queries: usize) -> Self {
+        let per_operation = expected_queries.div_ceil(5);
+        let operation_latencies = [
+            "one_hop_neighbors",
+            "two_hop_paths",
+            "bounded_path_exists",
+            "related_chunks",
+            "negative_path",
+        ]
+        .into_iter()
+        .map(|name| (name, Vec::with_capacity(per_operation)))
+        .collect();
+        Self {
+            operation_latencies,
+            ..Self::default()
+        }
+    }
+
+    fn record(&mut self, operation: usize, result: Result<bool, ()>, elapsed: Duration) {
+        let name = operation_name(operation);
+        *self.operations.entry(name).or_default() += 1;
+        self.operation_latencies
+            .entry(name)
+            .or_default()
+            .push(elapsed);
+        match result {
+            Ok(true) => self.succeeded += 1,
+            Ok(false) => self.incorrect += 1,
+            Err(()) => self.errors += 1,
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.succeeded += other.succeeded;
+        self.incorrect += other.incorrect;
+        self.errors += other.errors;
+        for (operation, count) in other.operations {
+            *self.operations.entry(operation).or_default() += count;
+        }
+        for (operation, mut latencies) in other.operation_latencies {
+            self.operation_latencies
+                .entry(operation)
+                .or_default()
+                .append(&mut latencies);
+        }
+    }
 }
 
 fn validate_args(args: &Args) -> Result<(), String> {
@@ -355,10 +405,13 @@ fn integrity_checks(
         ))
         .is_err();
 
+    let scratch_directory = tempfile::tempdir()?;
+    let scratch_backend = Arc::new(RocksDbBackend::open(scratch_directory.path())?);
+    let scratch_graph = NativeGraphIndex::new(scratch_backend);
     let scratch_a = GraphNodeId::scoped(&args.workspace, "entity:delete-a");
     let scratch_b = GraphNodeId::scoped(&args.workspace, "entity:delete-b");
     let scratch_edge = GraphEdgeId::new("delete-integrity-edge");
-    graph.upsert_batch(
+    scratch_graph.upsert_batch(
         GraphMutationBatch::new()
             .with_node(GraphNode::new(scratch_a.clone(), NodeKind::Entity))
             .with_node(GraphNode::new(scratch_b.clone(), NodeKind::Entity))
@@ -369,10 +422,11 @@ fn integrity_checks(
                 EdgeKind::RelatedTo,
             )),
     )?;
-    let deleted = graph.delete_node(&scratch_a)?;
-    let incident_edges_deleted =
-        deleted.deleted && deleted.edges_deleted == 1 && graph.get_edge(&scratch_edge)?.is_none();
-    graph.delete_node(&scratch_b)?;
+    let deleted = scratch_graph.delete_node(&scratch_a)?;
+    let incident_edges_deleted = deleted.deleted
+        && deleted.edges_deleted == 1
+        && scratch_graph.get_edge(&scratch_edge)?.is_none();
+    scratch_graph.delete_node(&scratch_b)?;
 
     Ok(IntegrityReport {
         persistent_reopen_ms: reopen_ms,
@@ -385,41 +439,52 @@ fn integrity_checks(
 
 fn measure_queries(graph: Arc<NativeGraphIndex<RocksDbBackend>>, args: &Args) -> QueryReport {
     let next = Arc::new(AtomicUsize::new(0));
-    let measurements = Arc::new(Mutex::new(Measurements::default()));
-    let started = Instant::now();
-    std::thread::scope(|scope| {
+    let expected_worker_queries = args.queries.div_ceil(args.concurrency);
+    let (measured, duration) = std::thread::scope(|scope| {
+        let started = Instant::now();
+        let start_barrier = Arc::new(Barrier::new(args.concurrency + 1));
+        let mut workers = Vec::with_capacity(args.concurrency);
         for _ in 0..args.concurrency {
             let graph = Arc::clone(&graph);
             let next = Arc::clone(&next);
-            let measurements = Arc::clone(&measurements);
-            scope.spawn(move || loop {
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                if index >= args.queries {
-                    break;
+            let start_barrier = Arc::clone(&start_barrier);
+            workers.push(scope.spawn(move || {
+                let mut measured = Measurements::with_query_capacity(expected_worker_queries);
+                start_barrier.wait();
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= args.queries {
+                        break;
+                    }
+                    let operation = index % 5;
+                    let query_started = Instant::now();
+                    let result = execute_known_answer(&graph, args, index, operation);
+                    measured.record(operation, result, query_started.elapsed());
                 }
-                let operation = index % 5;
-                let query_started = Instant::now();
-                let result = execute_known_answer(&graph, args, index, operation);
-                let elapsed = query_started.elapsed();
-                let mut measured = measurements
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                measured.latencies.push(elapsed);
-                let operation_name = operation_name(operation);
-                *measured.operations.entry(operation_name).or_default() += 1;
-                match result {
-                    Ok(true) => measured.succeeded += 1,
-                    Ok(false) => measured.incorrect += 1,
-                    Err(()) => measured.errors += 1,
-                }
-            });
+                (measured, started.elapsed())
+            }));
         }
+        start_barrier.wait();
+        let mut measured = Measurements::default();
+        let mut duration = Duration::ZERO;
+        for worker in workers {
+            let (worker_measurements, completed_after_start) =
+                worker.join().expect("graph benchmark worker panicked");
+            duration = duration.max(completed_after_start);
+            measured.merge(worker_measurements);
+        }
+        (measured, duration)
     });
-    let duration = started.elapsed();
-    let measured = measurements
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let answered = measured.succeeded + measured.incorrect;
+    let mut all_latencies = Vec::with_capacity(args.queries);
+    let operation_latency = measured
+        .operation_latencies
+        .iter()
+        .map(|(operation, latencies)| {
+            all_latencies.extend(latencies.iter().copied());
+            (*operation, latency_report(latencies))
+        })
+        .collect();
     QueryReport {
         requested: args.queries,
         succeeded: measured.succeeded,
@@ -433,8 +498,9 @@ fn measure_queries(graph: Arc<NativeGraphIndex<RocksDbBackend>>, args: &Args) ->
         } else {
             measured.succeeded as f64 / answered as f64
         },
-        operations: measured.operations.clone(),
-        latency: latency_report(&measured.latencies),
+        operations: measured.operations,
+        latency: latency_report(&all_latencies),
+        operation_latency,
     }
 }
 
@@ -763,5 +829,43 @@ mod tests {
         assert!(validate_args(&args)
             .unwrap_err()
             .contains("must not exist or must be empty"));
+    }
+
+    #[test]
+    fn query_measurements_aggregate_workers_and_operation_latencies() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut args = test_args();
+        args.data_dir = directory.path().join("rocksdb");
+        args.queries = 53;
+        std::fs::create_dir_all(&args.data_dir).unwrap();
+
+        let backend = Arc::new(RocksDbBackend::open(&args.data_dir).unwrap());
+        let graph = Arc::new(NativeGraphIndex::new(backend));
+        build_graph(&graph, &args).unwrap();
+        let stats_before_checks = graph.stats().unwrap();
+        let integrity = integrity_checks(&graph, &args, 0).unwrap();
+        assert!(integrity.stats_match);
+        assert!(integrity.cross_workspace_rejected_atomically);
+        assert!(integrity.excessive_depth_rejected);
+        assert!(integrity.incident_edges_deleted);
+        assert_eq!(graph.stats().unwrap(), stats_before_checks);
+
+        for concurrency in [1, 2, 4] {
+            args.concurrency = concurrency;
+            let report = measure_queries(Arc::clone(&graph), &args);
+
+            assert_eq!(report.succeeded, args.queries);
+            assert_eq!(report.incorrect, 0);
+            assert_eq!(report.errors, 0);
+            assert_eq!(report.latency.count, args.queries);
+            assert_eq!(report.operations.values().sum::<usize>(), args.queries);
+            assert_eq!(report.operation_latency.len(), 5);
+            let serialized = serde_json::to_value(&report).unwrap();
+            assert_eq!(serialized["latency"]["count"], args.queries);
+            for (operation, count) in &report.operations {
+                assert_eq!(report.operation_latency[operation].count, *count);
+                assert_eq!(serialized["operation_latency"][operation]["count"], *count);
+            }
+        }
     }
 }
