@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1048" viewBox="0 0 960 1048" role="img">
+  <title>AkiDB system block diagram</title>
+  <desc>Callers reach one akidb server. The server authenticates, plans retrieval across CPU HNSW, BM25, optional SQL, and bounded graph expansion, then returns ContextPackV1. RocksDB and an HNSW snapshot hold local state.</desc>
+  <rect width="960" height="1048" fill="#f4f7fb"/>
+  <text x="24" y="40" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="26" font-weight="700">AkiDB</text>
+  <text x="24" y="66" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15">One process returns cited, token-budgeted context.</text>
+
+  <rect x="24" y="88" width="296" height="92" rx="14" fill="#ffffff" stroke="#d5deea"/>
+  <text x="44" y="124" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700">gRPC SDKs</text>
+  <text x="44" y="148" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Python and TypeScript</text>
+
+  <rect x="332" y="88" width="296" height="92" rx="14" fill="#ffffff" stroke="#d5deea"/>
+  <text x="352" y="124" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700">MCP</text>
+  <text x="352" y="148" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">pack tool over stdio</text>
+
+  <rect x="640" y="88" width="296" height="92" rx="14" fill="#ffffff" stroke="#d5deea"/>
+  <text x="660" y="124" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700">CLI, TUI, ops</text>
+  <text x="660" y="148" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Operator surfaces on the same binary</text>
+
+  <path d="M172 180 H788" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <path d="M480 180 V206" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <path d="M474 200 L480 210 L486 200" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <rect x="24" y="214" width="912" height="676" rx="18" fill="#ffffff" stroke="#d5deea"/>
+  <text x="44" y="250" fill="#0f766e" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700">AKIDB SERVER</text>
+
+  <rect x="44" y="268" width="872" height="50" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="64" y="290" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Auth and workspace ACL</text>
+  <text x="64" y="308" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Loopback bind by default. Bearer token when the server is reachable.</text>
+  <path d="M480 318 V330" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <rect x="44" y="332" width="872" height="50" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="64" y="354" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Data API</text>
+  <text x="64" y="372" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Insert, Update, Delete, Get, Search, TextSearch</text>
+  <path d="M480 382 V394" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <rect x="44" y="396" width="872" height="58" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="64" y="420" fill="#1d4ed8" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Retrieval planner</text>
+  <text x="64" y="440" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">vector, bm25, hybrid, graph, graph-hybrid, or sql</text>
+  <path d="M480 454 V468" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <rect x="44" y="472" width="209" height="118" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="60" y="504" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700">Embedding</text>
+  <text x="60" y="526" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">OpenAI-compatible</text>
+  <text x="60" y="546" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">HTTP for text queries</text>
+
+  <rect x="265" y="472" width="209" height="118" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="281" y="504" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700">CPU HNSW</text>
+  <text x="281" y="526" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">usearch</text>
+  <text x="281" y="546" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">cosine, IP, or L2</text>
+
+  <rect x="486" y="472" width="209" height="118" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="502" y="504" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700">BM25</text>
+  <text x="502" y="526" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">In-process index</text>
+  <text x="502" y="546" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">Exact query words</text>
+
+  <rect x="707" y="472" width="209" height="118" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="723" y="504" fill="#9a3412" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" font-weight="700">SQL metadata</text>
+  <text x="723" y="526" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">Optional adapter</text>
+  <text x="723" y="546" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">SQLite or PostgreSQL</text>
+
+  <path d="M480 590 V604" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <rect x="44" y="606" width="872" height="48" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="64" y="628" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">RRF fusion</text>
+  <text x="180" y="628" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">When dense and lexical lists both have hits</text>
+  <path d="M480 654 V666" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <rect x="44" y="668" width="872" height="48" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="64" y="690" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Bounded GraphRAG</text>
+  <text x="230" y="690" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Hop limit, fanout cap, and score decay</text>
+  <path d="M480 716 V728" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <rect x="44" y="730" width="872" height="52" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="64" y="752" fill="#9a3412" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Optional reorder</text>
+  <text x="210" y="752" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Lexical rerank, MMR, score threshold, group_by</text>
+  <path d="M480 782 V796" fill="none" stroke="#0f766e" stroke-width="1.5"/>
+
+  <rect x="44" y="800" width="872" height="68" rx="12" fill="#f0fdf8" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="64" y="826" fill="#0f766e" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700">ContextPackV1</text>
+  <text x="64" y="848" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Score, reason, citation, and a conservative_v1 token budget. Vector Search stops at top-k.</text>
+
+  <path d="M480 890 V914" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <path d="M474 908 L480 918 L486 908" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <rect x="24" y="922" width="444" height="102" rx="14" fill="#ffffff" stroke="#d5deea"/>
+  <text x="44" y="954" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">RocksDB</text>
+  <text x="44" y="978" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Vectors, external ID map, metadata, and the graph</text>
+
+  <rect x="492" y="922" width="444" height="102" rx="14" fill="#ffffff" stroke="#d5deea"/>
+  <text x="512" y="954" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">HNSW snapshot</text>
+  <text x="512" y="978" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Loaded on startup when it matches stored vectors</text>
+</svg>

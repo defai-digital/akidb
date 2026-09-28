@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="980" viewBox="0 0 960 980" role="img">
+  <title>AkiDB published generation workflow</title>
+  <desc>AX Fabric publishes a checksum-addressed bundle. Each AkiDB replica verifies it, builds a shadow projection, and switches its local serving pointer after activation. Rollback moves that pointer.</desc>
+  <rect width="960" height="980" fill="#f4f7fb"/>
+  <text x="24" y="40" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="26" font-weight="700">Published generation workflow</text>
+  <text x="24" y="66" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15">Optional, and off by default. AkiDB serves a rebuildable local projection.</text>
+
+  <circle cx="46" cy="116" r="16" fill="#0f172a"/>
+  <text x="46" y="121" fill="#ffffff" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">1</text>
+  <rect x="76" y="88" width="860" height="56" rx="12" fill="#ffffff" stroke="#d5deea"/>
+  <text x="96" y="112" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">AX Fabric publishes one generation</text>
+  <text x="96" y="132" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Inputs such as AX Wiki and DocProc become an immutable logical bundle.</text>
+
+  <circle cx="46" cy="190" r="16" fill="#0f172a"/>
+  <text x="46" y="195" fill="#ffffff" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">2</text>
+  <rect x="76" y="162" width="860" height="56" rx="12" fill="#ffffff" stroke="#d5deea"/>
+  <text x="96" y="186" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Record the bundle and the control row</text>
+  <text x="96" y="206" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">SeaweedFS stores the checksum object. PostgreSQL stores order and the pointer.</text>
+
+  <circle cx="46" cy="264" r="16" fill="#0f172a"/>
+  <text x="46" y="269" fill="#ffffff" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">3</text>
+  <rect x="76" y="236" width="860" height="56" rx="12" fill="#ffffff" stroke="#d5deea"/>
+  <text x="96" y="260" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Each replica builds a shadow projection</text>
+  <text x="96" y="280" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Download, verify size and SHA-256, then build RocksDB, HNSW, BM25, and the graph.</text>
+
+  <circle cx="46" cy="338" r="16" fill="#0f172a"/>
+  <text x="46" y="343" fill="#ffffff" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">4</text>
+  <rect x="76" y="310" width="860" height="56" rx="12" fill="#ffffff" stroke="#d5deea"/>
+  <text x="96" y="334" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Activate with compare-and-swap</text>
+  <text x="96" y="354" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Schema, counts, and the checkpoint must pass before the active pointer moves.</text>
+
+  <circle cx="46" cy="412" r="16" fill="#0f766e"/>
+  <text x="46" y="417" fill="#ffffff" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">5</text>
+  <rect x="76" y="384" width="860" height="56" rx="12" fill="#f0fdf8" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="96" y="408" fill="#0f766e" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Serve from the local pointer</text>
+  <text x="96" y="428" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">The replica switches its local pointer and answers reads from that projection.</text>
+
+  <circle cx="46" cy="486" r="16" fill="#9a3412"/>
+  <text x="46" y="491" fill="#ffffff" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">6</text>
+  <rect x="76" y="458" width="860" height="56" rx="12" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="96" y="482" fill="#9a3412" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Rollback moves the pointer</text>
+  <text x="96" y="502" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">The previous verified generation stays intact. The failed one is not edited.</text>
+
+  <rect x="24" y="544" width="912" height="408" rx="16" fill="#ffffff" stroke="#d5deea"/>
+  <text x="44" y="580" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">What stays where</text>
+  <text x="44" y="612" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">SeaweedFS holds the canonical object. PostgreSQL holds publication order,</text>
+  <text x="44" y="636" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">the active pointer, and replica checkpoints. AX Fabric is the publisher.</text>
+  <text x="44" y="672" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Each replica keeps a full local copy for its workspace and collection.</text>
+  <text x="44" y="696" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Replicas do not copy each other's live RocksDB or HNSW files.</text>
+  <text x="44" y="732" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">An already active generation serves from local indexes. That read does not</text>
+  <text x="44" y="756" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">call PostgreSQL, SeaweedFS, or NATS. NATS can only wake a replica.</text>
+  <text x="44" y="792" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">--standalone does not enable this profile. The qualified envelope is the</text>
+  <text x="44" y="816" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Ubuntu AMD64 three-replica cell at 100k vectors by 768 dimensions.</text>
+  <text x="44" y="852" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">The multi-shard coordinator is a separate capacity path. It fans queries</text>
+  <text x="44" y="876" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">out and merges them. It does not replicate shard data or switch generations.</text>
+  <text x="44" y="912" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Authoritative Memory stays a separate experimental path and is off by default.</text>
+</svg>

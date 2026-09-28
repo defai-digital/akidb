@@ -109,34 +109,12 @@ a product support claim. See [Platform Support](docs/platform/SUPPORT.md).
 
 ## How one request becomes a pack
 
-### Retrieval core
+### One process
 
-```text
-Applications and agents
-  ├── gRPC
-  ├── Python / TypeScript SDKs
-  ├── MCP over stdio
-  └── CLI / TUI / operations API
-                 │
-                 ▼
-┌───────────────────────────────────────────────────────────┐
-│                         AkiDB                             │
-│  auth + workspaces + collections + management surface    │
-│                           │                               │
-│               deterministic query planner                │
-│        ┌──────────┬──────────┬──────────┬──────────┐      │
-│        │ HNSW     │ BM25     │ metadata │ graph    │      │
-│        │ vectors  │ lexical  │ / SQL    │ expand   │      │
-│        └──────────┴──────────┴──────────┴──────────┘      │
-│                           │                               │
-│             RRF → rerank → MMR → context pack            │
-│                           │                               │
-│     RocksDB + snapshot inventory + native graph state    │
-└───────────────────────────────────────────────────────────┘
-                 │ optional
-                 ▼
-       OpenAI-compatible embedding endpoint
-```
+Callers reach a single `akidb server` process. That process authenticates the
+request, plans retrieval, and returns either top-k hits or a cited pack.
+
+![AkiDB block diagram. gRPC SDKs, MCP, and operator tools enter one server. The server plans retrieval across an embedding client, CPU HNSW, BM25, and optional SQL, fuses with RRF, expands a bounded graph, and returns ContextPackV1. RocksDB and an HNSW snapshot hold local state.](docs/images/system-block.svg)
 
 Both lifecycles use this core. In the writable profile, vectors and metadata
 stay in RocksDB. Startup loads a persisted HNSW snapshot when it matches the
@@ -150,52 +128,39 @@ expansion uses the same retrieval boundary.
 Text-to-vector conversion stays behind an OpenAI-compatible embedding
 interface and can be disabled when clients provide vectors directly.
 
-### Retrieval path
+### Query workflow
 
-```text
-query
-  │
-  ▼
-planner ──► dense HNSW
-  │       ├► BM25 lexical
-  │       ├► metadata / SQL filters
-  │       └► bounded graph expansion
-  ▼
-rank fusion ──► optional rerank and diversity ──► context pack + citations
-```
+`TextSearch` is the agent call. With `pack` set, the same pipeline returns
+`ContextPackV1`. Vector `Search` stays top-k and does not enter this path.
 
-The planner selects dense, lexical, hybrid, graph, or graph-hybrid retrieval
-from explicit request controls and query signals. Metadata filters are applied
-through the same path, and packed context remains tied to the returned source
-chunks.
+![TextSearch workflow. The server authenticates the caller, plans a mode, recalls with CPU HNSW and BM25, fuses and filters, optionally expands the graph and reranks, then returns top-k or ContextPackV1.](docs/images/query-workflow.svg)
+
+The planner selects vector, BM25, hybrid, graph, graph-hybrid, or SQL
+retrieval from explicit request controls and query signals. Dense or hybrid
+text search calls the embedding endpoint. `retrieval_mode=bm25` stays lexical.
+SQL mode reads candidate IDs from the optional metadata index and can still
+build a pack. Metadata and tag filters apply on this path, and packed context
+stays tied to the returned source chunks.
+
+### Write workflow
+
+Writable standalone is the default. Clients write vectors and records into
+the process. The document pipeline is a separate, optional way in.
+
+![Write workflow. Direct vector writes and the optional document pipeline both map an external string ID to an internal integer, persist to RocksDB, update in-memory indexes, and reload from a matching HNSW snapshot on startup.](docs/images/write-workflow.svg)
+
+A delete leaves a tombstone until rebuild. Durability on this path is the
+synced RocksDB write. The server write path does not use the WAL primitives
+in the storage crate. A later pack can cite `source_uri`, `document_key`, or
+`file` only when the writer stored one of those fields.
 
 ### Optional generation cell
 
 This is the published-generation profile, not the default server. Canonical
 data, publication, the local retrieval projection, and request routing stay
-separate:
+separate.
 
-```text
-AX Wiki / DocProc inputs + source objects
-            │
-            ▼
-  AX Fabric ingestion/distillation
-            │
-            ├── immutable logical bundles ──► SeaweedFS
-            └── generation + outbox ────────► HA PostgreSQL
-                                                │
-                              ┌─────────────────┼─────────────────┐
-                              ▼                 ▼                 ▼
-                         AkiDB replica 1    AkiDB replica 2    [replica 3]
-                         local RocksDB,     local RocksDB,      recommended
-                         HNSW/BM25/graph    HNSW/BM25/graph
-                              └─────────────────┬─────────────────┘
-                                                ▼
-                                  AX retrieval gateway
-                                                │
-                                                ▼
-                                         Agents / GenAI
-```
+![Published generation workflow. AX Fabric publishes a checksum-addressed bundle to SeaweedFS and a control row to PostgreSQL. Each AkiDB replica verifies the bundle, builds a shadow projection, and serves it after the active pointer moves. Rollback moves that pointer.](docs/images/generation-workflow.svg)
 
 SeaweedFS remains the canonical object store. PostgreSQL is the publication
 and ordered checkpoint authority. Each AkiDB node keeps an independent,

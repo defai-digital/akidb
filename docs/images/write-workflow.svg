@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1040" viewBox="0 0 960 1040" role="img">
+  <title>AkiDB write workflow</title>
+  <desc>Direct vector writes and the optional document pipeline both map external IDs, persist to RocksDB, update in-memory indexes, and reload from a matching HNSW snapshot on startup.</desc>
+  <rect width="960" height="1040" fill="#f4f7fb"/>
+  <text x="24" y="40" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="26" font-weight="700">Write workflow</text>
+  <text x="24" y="66" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15">Writable standalone. Clients write vectors and records into one process.</text>
+
+  <rect x="24" y="92" width="444" height="250" rx="16" fill="#ffffff" stroke="#d5deea"/>
+  <text x="44" y="124" fill="#1d4ed8" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700">DIRECT WRITES</text>
+  <text x="44" y="158" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700">Insert, Update, Delete</text>
+  <text x="44" y="186" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">The client supplies the vector.</text>
+  <text x="44" y="214" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">No embedding call is required.</text>
+  <text x="44" y="250" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">A delete writes a tombstone.</text>
+  <text x="44" y="274" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Rebuild drops it from the HNSW graph.</text>
+  <text x="44" y="310" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">This is the primary supported path.</text>
+
+  <rect x="492" y="92" width="444" height="250" rx="16" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="512" y="124" fill="#9a3412" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700">OPTIONAL DOCUMENT PIPELINE</text>
+  <text x="512" y="158" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">1. Upload the object to SeaweedFS</text>
+  <text x="512" y="186" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">2. Upload gateway emits an event</text>
+  <text x="512" y="214" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">3. Orchestrator parses and chunks</text>
+  <text x="512" y="242" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">4. Embed, then gRPC Insert</text>
+  <text x="512" y="274" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Rust parsers plus the Python sidecar.</text>
+  <text x="512" y="298" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">NATS coordinates processing only.</text>
+
+  <path d="M246 342 V378" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <path d="M714 342 V378" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <path d="M246 378 H714" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <path d="M480 378 V402" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <path d="M474 396 L480 406 L486 396" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <rect x="24" y="410" width="912" height="600" rx="18" fill="#ffffff" stroke="#d5deea"/>
+  <text x="44" y="446" fill="#0f766e" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700">SHARED PERSIST PATH</text>
+
+  <circle cx="58" cy="492" r="16" fill="#0f172a"/>
+  <text x="58" y="497" fill="#ffffff" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">1</text>
+  <rect x="88" y="464" width="824" height="56" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="108" y="488" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Map the external string ID</text>
+  <text x="108" y="508" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Storage assigns the internal i64. Callers keep the string ID.</text>
+
+  <circle cx="58" cy="572" r="16" fill="#0f172a"/>
+  <text x="58" y="577" fill="#ffffff" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">2</text>
+  <rect x="88" y="544" width="824" height="56" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="108" y="568" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Persist to RocksDB</text>
+  <text x="108" y="588" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Synced vector and metadata writes are the durability path.</text>
+
+  <circle cx="58" cy="652" r="16" fill="#0f172a"/>
+  <text x="58" y="657" fill="#ffffff" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">3</text>
+  <rect x="88" y="624" width="824" height="56" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="108" y="648" fill="#0f172a" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Update the in-memory indexes</text>
+  <text x="108" y="668" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">HNSW, BM25, and the bounded graph see the new record.</text>
+
+  <circle cx="58" cy="732" r="16" fill="#0f766e"/>
+  <text x="58" y="737" fill="#ffffff" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">4</text>
+  <rect x="88" y="704" width="824" height="72" rx="12" fill="#f0fdf8" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="108" y="732" fill="#0f766e" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Next startup</text>
+  <text x="108" y="754" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Load the HNSW snapshot when dimension, parameters, and vectors match.</text>
+
+  <text x="44" y="812" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Otherwise rebuild HNSW from the RocksDB vectors. Rebuild BM25 in memory</text>
+  <text x="44" y="836" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">from the persisted records. A later vector insert or delete changes the</text>
+  <text x="44" y="860" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">snapshot fingerprint, so the next open rebuilds the graph.</text>
+  <text x="44" y="896" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">The server write path does not use the WAL primitives in the storage crate.</text>
+  <text x="44" y="932" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">Put source_uri, document_key, or file on the record when a later pack</text>
+  <text x="44" y="956" fill="#526077" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">should cite a source. A chunk ID is not a source URI.</text>
+</svg>
