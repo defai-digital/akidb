@@ -3,6 +3,9 @@
 from .client import (
     AkiDBClient,
     BatchInsertResult,
+    ContextPack,
+    ContextPackCitation,
+    ContextPackItem,
     DeleteResult,
     GetResult,
     HealthStatus,
@@ -39,6 +42,9 @@ from .unified import (
 __all__ = [
     "AkiDBClient",
     "BatchInsertResult",
+    "ContextPack",
+    "ContextPackCitation",
+    "ContextPackItem",
     "DeleteResult",
     "GetResult",
     "HealthStatus",

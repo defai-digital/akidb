@@ -604,6 +604,14 @@ impl VectorIndex for HnswIndex {
         self.tombstones.is_deleted(internal_id)
     }
 
+    fn internal_id_of(&self, id: &VectorId) -> Option<InternalId> {
+        self.id_mapping
+            .read()
+            .get(id.as_str())
+            .copied()
+            .map(InternalId)
+    }
+
     fn get_vector(&self, internal_id: InternalId) -> Result<Option<Vec<f32>>> {
         if self.tombstones.is_deleted(internal_id) {
             return Ok(None);
@@ -668,6 +676,12 @@ impl VectorIndex for HnswIndex {
     /// maintenance path rather than the mutate hot path (compaction is by
     /// rebuild, never by deleting from the graph per delete).
     fn trigger_rebuild(&self) -> Result<()> {
+        // insert and delete hold rebuild_lock for their whole duration and
+        // acquire id_mapping before reverse_mapping, while this method takes
+        // them in the opposite order. Taking the same lock here closes both
+        // the ABBA deadlock and the race where the forward-map prune below
+        // could drop an id whose reverse entry is not written yet.
+        let _rebuild_guard = self.rebuild_lock.lock();
         self.is_rebuilding.store(true, Ordering::SeqCst);
 
         // Physically remove tombstoned vectors from the usearch index. Only

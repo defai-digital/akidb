@@ -138,7 +138,7 @@ pub struct RebuildConfig {
 impl Default for RebuildConfig {
     fn default() -> Self {
         Self {
-            compaction_threshold: 0.10, // 10% tombstones
+            compaction_threshold: 0.10,                // 10% tombstones
             max_shadow_memory: 8 * 1024 * 1024 * 1024, // 8GB
             rebuild_batch_size: 10_000,
             rebuild_timeout: Duration::from_secs(600), // 10 minutes
@@ -249,10 +249,7 @@ impl<I: VectorIndex + 'static> RebuildManager<I> {
             phase_started_at: Some(Instant::now()),
         };
 
-        info!(
-            wal_lsn = current_wal_lsn,
-            "Started rebuild operation"
-        );
+        info!(wal_lsn = current_wal_lsn, "Started rebuild operation");
 
         Ok(current_wal_lsn)
     }
@@ -443,8 +440,7 @@ impl<I: VectorIndex + 'static> RebuildManager<I> {
 
         info!(
             elapsed_secs = elapsed.map(|d| d.as_secs_f64()),
-            vectors_processed,
-            "Rebuild completed successfully"
+            vectors_processed, "Rebuild completed successfully"
         );
 
         Ok(())
@@ -492,6 +488,14 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
         // make a later rollback target a different index instance than the
         // one that actually received this insert.
         let primary = self.primary();
+        // An upsert overwrites a live vector in place, so it must not be
+        // rolled back with delete(): that would tombstone data that was valid
+        // before this call. Only brand-new inserts may be rolled back by
+        // deletion. A tombstoned id does not count as pre-existing — deleting
+        // it again just restores the prior state.
+        let preexisting_visible = primary
+            .internal_id_of(id)
+            .is_some_and(|internal| matches!(primary.get_vector(internal), Ok(Some(_))));
         let result = primary.insert(id, vector)?;
 
         // If rebuilding, also insert into shadow
@@ -506,9 +510,8 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
             let shadow_guard = self.shadow.read();
             if let Some(shadow) = shadow_guard.as_ref() {
                 // FIX BUG-HUNT-201: Wrap shadow insert in catch_unwind to catch panics
-                let shadow_result = panic::catch_unwind(AssertUnwindSafe(|| {
-                    shadow.insert(id, vector)
-                }));
+                let shadow_result =
+                    panic::catch_unwind(AssertUnwindSafe(|| shadow.insert(id, vector)));
 
                 let shadow_err = match shadow_result {
                     Ok(Ok(_)) => None, // Shadow insert succeeded
@@ -527,6 +530,16 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
                 };
 
                 if let Some(e) = shadow_err {
+                    if preexisting_visible {
+                        // Rolling back an upsert would tombstone the vector
+                        // that was live before this call. Keep the upsert on
+                        // the primary and fail the operation so the caller can
+                        // restart the rebuild instead of losing data.
+                        return Err(crate::AkiDbError::IndexError(format!(
+                            "Shadow insert failed during rebuild: {}. The upsert remains on the primary index but is missing from the shadow; restart the rebuild to avoid losing this update after swap.",
+                            e
+                        )));
+                    }
                     // FIX BUG-H031: Handle rollback failure explicitly instead of ignoring with `let _ =`
                     // If rollback fails, we're in an inconsistent state and must report it
                     warn!(error = %e, "Shadow insert failed, attempting rollback of primary insert");
@@ -558,6 +571,17 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
         // make a later rollback target a different index instance than the
         // one that actually received this insert.
         let primary = self.primary();
+        // Same upsert rule as insert(): only brand-new inserts may be rolled
+        // back by deletion, since delete() would otherwise tombstone vectors
+        // that were live before this batch.
+        let preexisting_visible: Vec<bool> = vectors
+            .iter()
+            .map(|(id, _)| {
+                primary
+                    .internal_id_of(id)
+                    .is_some_and(|internal| matches!(primary.get_vector(internal), Ok(Some(_))))
+            })
+            .collect();
         let results = primary.insert_batch(vectors)?;
 
         // If rebuilding, also insert into shadow
@@ -568,9 +592,8 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
             let shadow_guard = self.shadow.read();
             if let Some(shadow) = shadow_guard.as_ref() {
                 // FIX BUG-HUNT-201: Wrap shadow insert in catch_unwind to catch panics
-                let shadow_result = panic::catch_unwind(AssertUnwindSafe(|| {
-                    shadow.insert_batch(vectors)
-                }));
+                let shadow_result =
+                    panic::catch_unwind(AssertUnwindSafe(|| shadow.insert_batch(vectors)));
 
                 let shadow_err = match shadow_result {
                     Ok(Ok(_)) => None, // Shadow insert succeeded
@@ -589,15 +612,29 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
 
                 if let Some(e) = shadow_err {
                     // FIX BUG-H031: Handle rollback failures explicitly
-                    warn!(error = %e, "Shadow batch insert failed, rolling back {} primary inserts", results.len());
+                    let mut kept_upserts = 0usize;
                     let mut rollback_failures = Vec::new();
-                    for internal_id in &results {
+                    for (position, internal_id) in results.iter().enumerate() {
+                        if preexisting_visible.get(position).copied().unwrap_or(false) {
+                            kept_upserts += 1;
+                            continue;
+                        }
                         if let Err(rollback_err) = primary.delete(*internal_id) {
                             rollback_failures.push((*internal_id, rollback_err));
                         }
                     }
+                    if kept_upserts > 0 {
+                        warn!(
+                            error = %e,
+                            kept_upserts,
+                            "Shadow batch insert failed; upserts kept on primary (restart the rebuild to avoid losing them after swap)"
+                        );
+                    } else {
+                        warn!(error = %e, "Shadow batch insert failed, rolling back {} primary inserts", results.len());
+                    }
                     if !rollback_failures.is_empty() {
-                        let failed_ids: Vec<_> = rollback_failures.iter().map(|(id, _)| id.0).collect();
+                        let failed_ids: Vec<_> =
+                            rollback_failures.iter().map(|(id, _)| id.0).collect();
                         error!(
                             shadow_error = %e,
                             failed_rollback_count = rollback_failures.len(),
@@ -610,8 +647,10 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
                         )));
                     }
                     return Err(crate::AkiDbError::IndexError(format!(
-                        "Shadow batch insert failed during rebuild: {}. Primary inserts rolled back to prevent data loss after swap.",
-                        e
+                        "Shadow batch insert failed during rebuild: {}. {} new inserts rolled back; {} upserts kept on primary (restart the rebuild to avoid losing them after swap).",
+                        e,
+                        results.len() - kept_upserts,
+                        kept_upserts
                     )));
                 }
             }
@@ -714,11 +753,11 @@ impl<I: VectorIndex + 'static> VectorIndex for RebuildManager<I> {
     }
 
     fn tombstoned_count(&self) -> u64 {
-        0
+        self.primary().tombstoned_count()
     }
 
     fn total_count(&self) -> u64 {
-        0
+        self.primary().total_count()
     }
 
     fn compact_tombstones(&self) -> Result<u64> {
@@ -868,5 +907,155 @@ mod tests {
 
         // Should need compaction now (> 10% threshold)
         assert!(manager.needs_compaction(&tombstones));
+    }
+
+    /// MockIndex wrapper whose insert path can be switched to always fail.
+    struct GateInsertIndex {
+        inner: MockIndex,
+        fail: AtomicBool,
+    }
+
+    impl GateInsertIndex {
+        fn new(dimensions: usize) -> Self {
+            Self {
+                inner: MockIndex::new(dimensions, 1000),
+                fail: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl VectorIndex for GateInsertIndex {
+        fn insert(&self, id: &VectorId, vector: &[f32]) -> Result<InternalId> {
+            if self.fail.load(Ordering::Relaxed) {
+                return Err(AkiDbError::IndexError("insert disabled".to_string()));
+            }
+            self.inner.insert(id, vector)
+        }
+
+        fn insert_batch(&self, vectors: &[(VectorId, Vec<f32>)]) -> Result<Vec<InternalId>> {
+            if self.fail.load(Ordering::Relaxed) {
+                return Err(AkiDbError::IndexError("insert disabled".to_string()));
+            }
+            self.inner.insert_batch(vectors)
+        }
+
+        fn search(&self, query: &[f32], params: &SearchParams) -> Result<Vec<SearchResult>> {
+            self.inner.search(query, params)
+        }
+
+        fn search_batch(
+            &self,
+            queries: &[Vec<f32>],
+            params: &SearchParams,
+        ) -> Result<Vec<Vec<SearchResult>>> {
+            self.inner.search_batch(queries, params)
+        }
+
+        fn delete(&self, internal_id: InternalId) -> Result<()> {
+            self.inner.delete(internal_id)
+        }
+
+        fn is_deleted(&self, internal_id: InternalId) -> bool {
+            self.inner.is_deleted(internal_id)
+        }
+
+        fn internal_id_of(&self, id: &VectorId) -> Option<InternalId> {
+            self.inner.internal_id_of(id)
+        }
+
+        fn get_vector(&self, internal_id: InternalId) -> Result<Option<Vec<f32>>> {
+            self.inner.get_vector(internal_id)
+        }
+
+        fn stats(&self) -> crate::IndexStats {
+            self.inner.stats()
+        }
+
+        fn dimensions(&self) -> usize {
+            self.inner.dimensions()
+        }
+
+        fn is_ready(&self) -> bool {
+            self.inner.is_ready()
+        }
+
+        fn train(&self, training_data: &[f32]) -> Result<()> {
+            self.inner.train(training_data)
+        }
+
+        fn trigger_rebuild(&self) -> Result<()> {
+            self.inner.trigger_rebuild()
+        }
+
+        fn tombstoned_count(&self) -> u64 {
+            self.inner.tombstoned_count()
+        }
+
+        fn total_count(&self) -> u64 {
+            self.inner.total_count()
+        }
+
+        fn compact_tombstones(&self) -> Result<u64> {
+            self.inner.compact_tombstones()
+        }
+
+        fn is_rebuilding(&self) -> bool {
+            self.inner.is_rebuilding()
+        }
+    }
+
+    #[test]
+    fn upsert_shadow_failure_keeps_the_preexisting_vector() {
+        let primary = Arc::new(GateInsertIndex::new(2));
+        let manager = RebuildManager::new(primary, RebuildConfig::default());
+        let id = VectorId::new("vec-upsert");
+        let internal = manager.insert(&id, &[1.0, 0.0]).unwrap();
+
+        manager.start_rebuild(1).unwrap();
+        let shadow = Arc::new(GateInsertIndex::new(2));
+        shadow.fail.store(true, Ordering::Relaxed);
+        manager.set_shadow(shadow);
+
+        let err = manager.insert(&id, &[0.0, 1.0]).unwrap_err();
+        assert!(matches!(err, AkiDbError::IndexError(_)));
+        // The upsert must stay live on the primary: deleting it here would
+        // tombstone data that was valid before this call.
+        assert!(!manager.is_deleted(internal));
+        assert_eq!(
+            manager.get_vector(internal).unwrap().unwrap(),
+            vec![0.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn new_insert_shadow_failure_still_rolls_back() {
+        let primary = Arc::new(GateInsertIndex::new(2));
+        let manager = RebuildManager::new(primary, RebuildConfig::default());
+
+        manager.start_rebuild(1).unwrap();
+        let shadow = Arc::new(GateInsertIndex::new(2));
+        shadow.fail.store(true, Ordering::Relaxed);
+        manager.set_shadow(shadow);
+
+        let id = VectorId::new("vec-new");
+        let err = manager.insert(&id, &[1.0, 0.0]).unwrap_err();
+        assert!(matches!(err, AkiDbError::IndexError(_)));
+        let internal = manager
+            .primary()
+            .internal_id_of(&id)
+            .expect("rolled-back insert keeps its id mapping");
+        assert!(manager.is_deleted(internal));
+    }
+
+    #[test]
+    fn counts_forward_to_the_primary_index() {
+        let manager = create_test_manager();
+        let internal = manager
+            .insert(&VectorId::new("vec-1"), &vec![1.0; 128])
+            .unwrap();
+        assert_eq!(manager.total_count(), 1);
+        assert_eq!(manager.tombstoned_count(), 0);
+        manager.delete(internal).unwrap();
+        assert_eq!(manager.tombstoned_count(), 1);
     }
 }

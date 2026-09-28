@@ -8,6 +8,7 @@ export type {
   AkiDBClientOptions,
   BatchInsertResponse,
   ClusterState,
+  ContextPackV1,
   DeleteResponse,
   GetResult,
   HealthStatus,

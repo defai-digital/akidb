@@ -587,8 +587,7 @@ where
         }
         None => MemoryKind::Note,
     };
-    let workspace =
-        arg_str(args, "workspace")?.or_else(|| arg_str(args, "workspace_id").ok().flatten());
+    let workspace = arg_workspace(args)?;
 
     let mut entry = MemoryEntry::new(id.clone(), kind, text.clone());
     if let Some(v) = arg_str(args, "conversation_id")? {
@@ -639,8 +638,7 @@ where
     let query = required_str(args, "query")?;
     let top_k = arg_u32(args, "top_k", 10)?;
     let vector = service.embed_text(&query)?;
-    let workspace =
-        arg_str(args, "workspace")?.or_else(|| arg_str(args, "workspace_id").ok().flatten());
+    let workspace = arg_workspace(args)?;
 
     // Scope to a conversation when provided, via a typed tag filter.
     let tag_filter = arg_str(args, "conversation_id")?.map(|cid| TagFilter {

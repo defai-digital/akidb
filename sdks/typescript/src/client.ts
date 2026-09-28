@@ -43,11 +43,14 @@ export interface ContextPackV1 {
     citation?: {
       chunk_id?: string;
       document_id?: string;
+      document_version?: string;
       source_uri?: string;
       source_version?: string;
       content_hash?: string;
-      citation_status?: string;
+      start_offset?: string;
+      end_offset?: string;
       generation_id?: string;
+      citation_status?: string;
     };
   }>;
   token_budget?: number;
@@ -163,6 +166,7 @@ export interface RawClient {
   TextSearch: UnaryCall;
   Health: UnaryCall;
   GetClusterState: UnaryCall;
+  close?: () => void;
 }
 
 export interface AkiDBClientOptions {
@@ -232,6 +236,11 @@ export class AkiDBClient {
         : grpc.credentials.createInsecure();
       this.raw = loadRawClient(opts.target ?? 'localhost:50051', creds);
     }
+  }
+
+  /** Close the underlying gRPC channel, releasing its connections. */
+  close(): void {
+    this.raw.close?.();
   }
 
   private buildMetadata(): grpc.Metadata {

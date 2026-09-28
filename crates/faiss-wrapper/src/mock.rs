@@ -228,6 +228,14 @@ impl VectorIndex for MockIndex {
         self.tombstones.is_deleted(internal_id)
     }
 
+    fn internal_id_of(&self, id: &VectorId) -> Option<InternalId> {
+        self.id_mapping
+            .read()
+            .get(id.as_str())
+            .copied()
+            .map(InternalId)
+    }
+
     fn get_vector(&self, internal_id: InternalId) -> Result<Option<Vec<f32>>> {
         if self.tombstones.is_deleted(internal_id) {
             return Ok(None);
@@ -269,11 +277,11 @@ impl VectorIndex for MockIndex {
     }
 
     fn tombstoned_count(&self) -> u64 {
-        0
+        self.tombstones.deleted_count()
     }
 
     fn total_count(&self) -> u64 {
-        0
+        self.vectors.read().len() as u64
     }
 
     fn compact_tombstones(&self) -> Result<u64> {

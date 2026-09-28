@@ -188,6 +188,15 @@ pub trait VectorIndex: Send + Sync {
     /// Check if a vector is tombstoned
     fn is_deleted(&self, internal_id: InternalId) -> bool;
 
+    /// Map an external id to its internal id when the id is currently mapped.
+    ///
+    /// The default returns `None`; indexes with an external-id map override
+    /// this. Tombstoned entries may still be reported as mapped.
+    fn internal_id_of(&self, id: &VectorId) -> Option<InternalId> {
+        let _ = id;
+        None
+    }
+
     /// Get the vector by internal ID (for validation)
     fn get_vector(&self, internal_id: InternalId) -> Result<Option<Vec<f32>>>;
 
