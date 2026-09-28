@@ -1,68 +1,83 @@
 # AkiDB
 
-**A portable retrieval engine for private AI systems.**
+**Local-first retrieval for private AI.**
 
-AkiDB combines durable vector storage, hybrid search, graph-aware retrieval,
-and context assembly in one Rust service. It is designed for local and
-on-premises RAG, agent memory, code intelligence, and other workloads where
-source data should stay under the operator's control.
+Cited, token-budgeted context for agents, from one Rust service you run
+yourself.
 
-AkiDB has two deliberately different data-lifecycle profiles:
+## The problem
 
-- **Mutable standalone:** clients write vectors and records directly to one
-  AkiDB service. This is the primary supported profile.
-- **Immutable generation serving:** AX Fabric publishes a complete,
-  checksum-addressed knowledge generation and AkiDB materializes a disposable
-  local retrieval projection. PostgreSQL-led full-replica convergence and the
-  generation-aware AX read gateway are implemented; the Linux AMD64 cell is
-  qualified separately from the primary Mac profile.
+An agent working on private data needs one pack of context for the call it is
+about to make. That pack has to name its sources, and it has to fit a token
+budget. The source data stays on machines the operator controls. The retrieval
+that builds the pack stays in the same service.
 
-AkiDB v1.0.0 supports macOS 26 on Apple Silicon and Ubuntu 24.04 or newer on
-AMD64. Both supported targets use the CPU-portable HNSW backend. The product
-centers on two best-fit use cases:
+Building that pack usually means several lookups at once: nearby passages from
+vectors, exact wording from keywords, related passages from a bounded graph,
+and a metadata scope such as a workspace. The result still has to be ranked,
+diversified, and cut to a token limit, with a score, a reason, and a citation
+on each passage. Splitting that work across a vector index, a keyword engine,
+a graph database, and a separate packer leaves the operator to join the
+boundary, the credentials, and the failure domain.
 
-- **Single user:** one Mac Studio or one AMD64 PC running a standalone server.
-- **Enterprise:** a Mac Studio cluster on-prem, or an AMD64 cluster in cloud.
+## What AkiDB returns
 
-Mac Mini and MacBook standalone hosts are also supported for lighter personal
-and development loads because they use the same supported macOS Apple Silicon
-runtime. Linux ARM64, NVIDIA Thor, CUDA/NVIDIA GPU paths, macOS Intel, older
-Ubuntu releases, and other Linux distributions are not supported release
-targets. See [Platform Support](docs/platform/SUPPORT.md).
+AkiDB is the service that does this in one process. A request can combine:
 
-> **Project status:** the standalone database is the primary supported
-> deployment. Immutable generation serving adds independently rebuilt full
-> replicas, quorum activation, and generation-aware read failover. The Ubuntu
-> AMD64 three-replica knowledge cell is qualified for a bounded 100k × 768
-> envelope. Broader market ANN, graph, and competitor-parity claims remain an
-> active release gate, not a completed verdict. AkiDB is not a consensus
-> database: canonical data remains in AX Fabric object storage and PostgreSQL. The
-> multi-shard coordinator remains a separate capacity path.
+- durable vector storage and CPU HNSW (cosine, inner product, or L2; `f32` or
+  `f16`)
+- in-process BM25
+- reciprocal rank fusion, optional reranking, and MMR
+- typed metadata and tag filters, plus an optional SQLite metadata index
+  (PostgreSQL is feature-gated)
+- bounded graph expansion over a native GraphRAG index, without a second
+  graph database
 
-## Why AkiDB
+The response is a token-budgeted list of cited passages. Clients use gRPC, the
+Python and TypeScript SDKs, or MCP. A terminal UI and JSON operations commands
+are included for the operator.
 
-Most RAG systems assemble a vector index, keyword engine, metadata store, graph
-database, reranker, and context builder as separate services. AkiDB puts the
-core retrieval path behind one API and one operational boundary:
+Loopback is the default bind. Bearer tokens and workspace controls apply when
+the server is reachable beyond the local machine.
 
-- **Dense retrieval:** HNSW search with cosine, inner-product, or L2 distance
-  and `f32` or `f16` vector storage.
-- **Hybrid retrieval:** in-process BM25, dense search, Reciprocal Rank Fusion,
-  optional reranking, MMR diversity, and token-budgeted context packing.
-- **Native GraphRAG:** persisted graph nodes and edges, bounded traversal, and
-  graph-expanded chunk retrieval without an external graph service.
-- **Structured filtering:** typed metadata and tag filters, plus an optional
-  SQLite metadata index; PostgreSQL support is feature-gated.
-- **Two durability models:** RocksDB-backed mutable standalone state, or
-  immutable knowledge generations rebuilt from canonical SeaweedFS artifacts
-  and control records.
-- **Agent-ready interfaces:** gRPC, Python and TypeScript SDKs, an MCP stdio
-  server, a terminal UI, and JSON-oriented operations commands.
-- **Local-first security:** loopback-first defaults, bearer-token and workspace
-  controls, redacted management output, and an optional, separately secured
-  PostgreSQL control plane for the replica profile.
+## Two ways the data lives
 
-## Target use cases and platforms
+**Writable standalone is the default.** Clients write vectors and records into
+one AkiDB process. This is the primary supported profile. Vectors and metadata
+stay in local RocksDB. On startup, a matching HNSW snapshot is loaded. If the
+snapshot is missing or does not match the stored vectors and index settings,
+the graph is rebuilt from those vectors. The lexical index is rebuilt in memory from the persisted
+records.
+
+**Published generations are optional and off by default.** AX Fabric publishes
+an immutable, checksum-addressed knowledge generation. AkiDB builds a local
+projection in a shadow directory, verifies it, and then switches the serving
+pointer. The projection can be discarded and rebuilt. In this profile AkiDB is
+not the system of record and not a consensus database. Canonical data stays in
+AX Fabric object storage and PostgreSQL. `--standalone` does not enable this
+profile.
+
+> **Direction:** smaller, better-cited context for each agent step. Memory and
+> temporal behavior stay experimental and are not part of the supported
+> product. AkiDB does not plan, call tools, or run the agent.
+
+## Why this matters
+
+- **The data stays on the operator's machines.** The best-fit hosts are one
+  Mac Studio or one AMD64 PC, and an on-prem Mac Studio cluster or an AMD64
+  cloud cluster. Mac Mini and MacBook run the same Apple Silicon build for
+  lighter loads.
+- **One call returns what the agent can read.** The pack is cited passages
+  inside a token budget, assembled by this service.
+- **Publication and retrieval stay apart when a generation is served.** Fabric
+  remains the publisher. AkiDB serves a verified local projection and can
+  rebuild it. The writable profile is a different lifecycle: there, AkiDB is
+  the process that holds the vectors and records the client wrote.
+
+## Where it runs
+
+AkiDB v1.0.0 uses the CPU-portable HNSW backend. Supported release targets are
+macOS 26 on Apple Silicon and Ubuntu 24.04 or newer on AMD64.
 
 | Audience | Best-fit target | Also supported |
 | --- | --- | --- |
@@ -77,9 +92,18 @@ core retrieval path behind one API and one operational boundary:
 Linux ARM64 (including NVIDIA Thor), macOS Intel, Ubuntu older than 24.04,
 other Linux distributions, and CUDA/GPU-accelerated index paths are outside
 the support matrix. A successful source build on an unsupported target is not
-a product support claim.
+a product support claim. See [Platform Support](docs/platform/SUPPORT.md).
 
-## Architecture
+> **Project status:** writable standalone is the primary supported deployment.
+> Immutable generation serving adds independently rebuilt full replicas, quorum
+> activation, and generation-aware read failover. The Ubuntu AMD64
+> three-replica knowledge cell is qualified for a bounded 100k × 768 envelope.
+> Broader market ANN, graph, and competitor-parity claims remain an active
+> release gate, not a completed verdict. The multi-shard coordinator is a
+> separate capacity path. It fans out queries; it does not replicate shard
+> data.
+
+## How one request becomes a pack
 
 ### Retrieval core
 
@@ -110,14 +134,14 @@ Applications and agents
        OpenAI-compatible embedding endpoint
 ```
 
-The same retrieval core is used by both lifecycle profiles. In mutable
-standalone mode, vectors and metadata are persisted in RocksDB and the HNSW
-and lexical indexes are rebuilt from durable local state at startup. In
-generation mode, a manifest binds vector, lexical, payload, and graph data to
-one immutable generation; AkiDB builds that generation in a shadow directory
-and atomically changes the local serving pointer only after verification. The
-native graph index shares the retrieval boundary, so graph expansion does not
-require a second database.
+Both lifecycles use this core. In the writable profile, vectors and metadata
+stay in RocksDB. Startup loads a persisted HNSW snapshot when it matches the
+stored vectors and index settings; otherwise it rebuilds the graph from those
+vectors. The lexical index is rebuilt in memory from the persisted records. In
+the generation profile, a manifest binds vector, lexical, payload, and graph
+data to one immutable generation. AkiDB builds that generation in a shadow
+directory and changes the local serving pointer only after verification. Graph
+expansion uses the same retrieval boundary.
 
 Text-to-vector conversion stays behind an OpenAI-compatible embedding
 interface and can be disabled when clients provide vectors directly.
@@ -141,10 +165,11 @@ from explicit request controls and query signals. Metadata filters are applied
 through the same path, and packed context remains tied to the returned source
 chunks.
 
-### Agentic knowledge-serving design
+### Optional generation cell
 
-The target knowledge-serving cell separates canonical data, publication
-authority, local retrieval state, and request routing:
+This is the published-generation profile, not the default server. Canonical
+data, publication, the local retrieval projection, and request routing stay
+separate:
 
 ```text
 AX Wiki / DocProc inputs + source objects
@@ -168,18 +193,19 @@ AX Wiki / DocProc inputs + source objects
                                          Agents / GenAI
 ```
 
-SeaweedFS remains the canonical object store. PostgreSQL is the publication and ordered
-checkpoint authority. Each AkiDB node owns an independent, rebuildable full
-copy on local storage; live RocksDB or index files are never shared between
-replicas. NATS may later accelerate notifications, but it is not the
-correctness authority. Immediate agent/session memory stays on a strongly
-consistent path rather than relying on asynchronous index convergence.
+SeaweedFS remains the canonical object store. PostgreSQL is the publication
+and ordered checkpoint authority. Each AkiDB node keeps an independent,
+rebuildable full copy on local storage. Replicas do not share live RocksDB or
+index files. NATS may later accelerate notifications; it is not the
+correctness authority. The experimental Memory preview is a separate
+single-process path, and it is off by default.
 
-The checked-in implementation covers the full diagram: authoritative
-publication, independent materialization/checkpoints, quorum activation,
-bounded GraphRAG evidence, and read-only gateway failover. See the
+The checked-in implementation covers publication, independent
+materialization and checkpoints, quorum activation, bounded GraphRAG
+evidence, and read-only gateway failover. The qualified envelope is the
+Ubuntu AMD64 100k × 768 cell above. See the
 [knowledge-serving architecture](docs/architecture/knowledge-serving.md) for
-the ownership, consistency, and release boundaries.
+ownership, consistency, and release boundaries.
 
 ### Deployment shapes
 
@@ -198,6 +224,10 @@ runs only on an isolated WireGuard service network and must not expose AkiDB
 ports publicly.
 
 ## Quick start
+
+The commands below build and run the writable standalone server. That is the
+default profile. Generation serving, the experimental Memory preview, and MCP
+are separate opt-in entry points later in this section.
 
 ### Prerequisites
 
