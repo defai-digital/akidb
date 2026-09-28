@@ -80,7 +80,7 @@ profile.
 
 ## Where it runs
 
-AkiDB v1.0.0 uses the CPU-portable HNSW backend. Supported release targets are
+AkiDB v2.0.0 uses the CPU-portable HNSW backend. Supported release targets are
 macOS 26 on Apple Silicon and Ubuntu 24.04 or newer on AMD64.
 
 | Audience | Best-fit target | Also supported |
