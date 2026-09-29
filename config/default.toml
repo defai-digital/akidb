@@ -8,6 +8,16 @@ grpc_port = 50051
 tls_enabled = false
 # tls_cert_path = "/etc/akidb/certs/server.crt"
 # tls_key_path = "/etc/akidb/certs/server.key"
+# Max gRPC data-plane message size (decode + encode). The tonic default of
+# 4 MiB caps InsertBatch at roughly 1,300 768-dim f32 vectors; the default
+# below fits a 10k-vector batch with headroom.
+# grpc_max_message_bytes = 67108864
+# Standard grpc.health.v1 protocol alongside the custom Akidb/Health RPC
+# (Kubernetes gRPC probes, grpcurl).
+# grpc_health_enabled = true
+# gRPC server reflection (discloses the service schema). Keep off on
+# non-loopback binds unless operators need grpcurl-style debugging.
+# grpc_reflection_enabled = false
 
 [auth]
 # loopback_optional | required | disabled

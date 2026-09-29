@@ -36,6 +36,29 @@ pub struct ServerConfig {
     pub tls_enabled: bool,
     pub tls_cert_path: Option<String>,
     pub tls_key_path: Option<String>,
+    /// Max gRPC message size (decode and encode) on the data plane.
+    ///
+    /// tonic's default 4 MiB decode cap silently rejects InsertBatch payloads
+    /// above roughly 1,300 768-dim f32 vectors with an opaque transport error.
+    /// The default here fits a 10k-vector 768-dim batch with headroom.
+    #[serde(default = "default_grpc_max_message_bytes")]
+    pub grpc_max_message_bytes: usize,
+    /// Serve the standard `grpc.health.v1` protocol alongside the custom
+    /// `Akidb/Health` RPC (Kubernetes gRPC probes, grpcurl).
+    #[serde(default = "default_grpc_health_enabled")]
+    pub grpc_health_enabled: bool,
+    /// Serve gRPC server reflection (discloses the service schema). Keep off
+    /// on non-loopback binds unless operators need grpcurl-style debugging.
+    #[serde(default)]
+    pub grpc_reflection_enabled: bool,
+}
+
+fn default_grpc_max_message_bytes() -> usize {
+    64 * 1024 * 1024
+}
+
+fn default_grpc_health_enabled() -> bool {
+    true
 }
 
 impl Default for ServerConfig {
@@ -48,6 +71,9 @@ impl Default for ServerConfig {
             tls_enabled: false,
             tls_cert_path: None,
             tls_key_path: None,
+            grpc_max_message_bytes: default_grpc_max_message_bytes(),
+            grpc_health_enabled: default_grpc_health_enabled(),
+            grpc_reflection_enabled: false,
         }
     }
 }

@@ -29,6 +29,8 @@ akidb-proto = { path = "../proto" }
 chrono.workspace = true
 tokio.workspace = true
 tonic.workspace = true
+tonic-health.workspace = true
+tonic-reflection.workspace = true
 rustls.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

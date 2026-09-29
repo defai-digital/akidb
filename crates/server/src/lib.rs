@@ -57,6 +57,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+use tonic::service::interceptor::InterceptedService;
+use tonic::transport::server::Router;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -328,14 +330,26 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting gRPC server on {}", addr);
 
+    let readiness_index = service.index_handle();
+    let readiness: Arc<dyn Fn() -> bool + Send + Sync> =
+        Arc::new(move || readiness_index.is_ready());
+    let max_message_bytes = config.server.grpc_max_message_bytes;
+
     // Start server with auth interceptor (GAP-001)
-    server_builder(&config)?
-        .add_service(AkidbServer::with_interceptor(service, data_interceptor))
+    let router = server_builder(&config)?
+        .add_service(InterceptedService::new(
+            AkidbServer::new(service)
+                .max_decoding_message_size(max_message_bytes)
+                .max_encoding_message_size(max_message_bytes),
+            data_interceptor,
+        ))
         .add_service(ManagementServiceServer::with_interceptor(
             management,
             management_interceptor,
         ))
-        .add_optional_service(memory_service)
+        .add_optional_service(memory_service);
+    add_operational_services(router, &config, Some(readiness))
+        .await?
         .serve(addr)
         .await?;
 
@@ -495,15 +509,20 @@ async fn run_generation_server(
                 failure_domain = %generation.replica_control.failure_domain,
                 "Starting PostgreSQL-authoritative immutable generation replica"
             );
-            let result = server_builder(config)?
-                .add_service(AkidbServer::with_interceptor(
-                    data_plane,
+            let max_message_bytes = config.server.grpc_max_message_bytes;
+            let router = server_builder(config)?
+                .add_service(InterceptedService::new(
+                    AkidbServer::new(data_plane)
+                        .max_decoding_message_size(max_message_bytes)
+                        .max_encoding_message_size(max_message_bytes),
                     AuthInterceptor::new(auth_runtime.clone()),
                 ))
                 .add_service(ManagementServiceServer::with_interceptor(
                     management,
                     AuthInterceptor::new(auth_runtime),
-                ))
+                ));
+            let result = add_operational_services(router, config, None)
+                .await?
                 .serve(addr)
                 .await;
             worker_task.abort();
@@ -533,9 +552,12 @@ async fn run_generation_server(
             replica_id = %generation.replica_id,
             "Starting immutable single-node generation serving preview"
         );
-        server_builder(config)?
-            .add_service(AkidbServer::with_interceptor(
-                data_plane,
+        let max_message_bytes = config.server.grpc_max_message_bytes;
+        let router = server_builder(config)?
+            .add_service(InterceptedService::new(
+                AkidbServer::new(data_plane)
+                    .max_decoding_message_size(max_message_bytes)
+                    .max_encoding_message_size(max_message_bytes),
                 AuthInterceptor::new(auth_runtime.clone()),
             ))
             .add_service(GenerationManagementServer::with_interceptor(
@@ -545,7 +567,9 @@ async fn run_generation_server(
             .add_service(ManagementServiceServer::with_interceptor(
                 management,
                 AuthInterceptor::new(auth_runtime),
-            ))
+            ));
+        add_operational_services(router, config, None)
+            .await?
             .serve(addr)
             .await?;
     }
@@ -553,7 +577,10 @@ async fn run_generation_server(
 }
 
 fn server_builder(config: &AkiDbConfig) -> Result<Server, Box<dyn std::error::Error>> {
-    let mut builder = Server::builder();
+    let mut builder = Server::builder()
+        .tcp_nodelay(true)
+        .http2_keepalive_interval(Some(Duration::from_secs(60)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(20)));
     if config.server.tls_enabled {
         let cert_path = config
             .server
@@ -572,6 +599,67 @@ fn server_builder(config: &AkiDbConfig) -> Result<Server, Box<dyn std::error::Er
         )?;
     }
     Ok(builder)
+}
+
+/// Attach the optional operational services (standard `grpc.health.v1`
+/// protocol and server reflection) to a composed router.
+///
+/// `readiness` drives the health service's overall ("") status; pass `None`
+/// when the server has no live readiness signal (generation serving restores
+/// its scope synchronously before serving) to report SERVING from startup.
+async fn add_operational_services(
+    mut router: Router,
+    config: &AkiDbConfig,
+    readiness: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+) -> Result<Router, Box<dyn std::error::Error>> {
+    info!(
+        grpc_health = config.server.grpc_health_enabled,
+        grpc_reflection = config.server.grpc_reflection_enabled,
+        "Operational gRPC services"
+    );
+    if config.server.grpc_health_enabled {
+        let (mut reporter, health_service) = tonic_health::server::health_reporter();
+        match readiness {
+            Some(readiness) => {
+                tokio::spawn(health_watch_task(reporter, readiness));
+            }
+            None => {
+                reporter
+                    .set_service_status("", tonic_health::ServingStatus::Serving)
+                    .await;
+            }
+        }
+        router = router.add_service(health_service);
+    }
+    if config.server.grpc_reflection_enabled {
+        // Register the health descriptor set as well so reflection-based
+        // tooling (grpcurl) can resolve grpc.health.v1 alongside akidb.v1.
+        let mut builder = tonic_reflection::server::Builder::configure()
+            .register_encoded_file_descriptor_set(akidb_proto::FILE_DESCRIPTOR_SET);
+        if config.server.grpc_health_enabled {
+            builder =
+                builder.register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET);
+        }
+        router = router.add_service(builder.build_v1()?);
+    }
+    Ok(router)
+}
+
+/// Keep the standard health protocol's overall ("") status in sync with the
+/// shard's index readiness, mirroring the custom `Akidb/Health` RPC.
+async fn health_watch_task(
+    mut reporter: tonic_health::server::HealthReporter,
+    readiness: Arc<dyn Fn() -> bool + Send + Sync>,
+) {
+    loop {
+        let status = if readiness() {
+            tonic_health::ServingStatus::Serving
+        } else {
+            tonic_health::ServingStatus::NotServing
+        };
+        reporter.set_service_status("", status).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
 }
 
 /// How often the shard checks whether tombstone compaction is due.

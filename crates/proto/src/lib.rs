@@ -9,3 +9,9 @@
 #![allow(clippy::result_large_err)]
 
 tonic::include_proto!("akidb.v1");
+
+/// Encoded `FileDescriptorSet` for the `akidb.v1` package.
+///
+/// Used by the optional gRPC server-reflection service (`akidb-server`).
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/akidb_v1_descriptor.bin"));
