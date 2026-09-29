@@ -284,6 +284,23 @@ yet been refreshed against current code.
 
 ### 6. Logging & Audit
 
+#### Implemented: access-record emission
+
+`[observability.access_log]` (off by default) makes every data-plane RPC
+(`Search`, `TextSearch`, `Get`, `Insert`, `InsertBatch`, `Delete`, `Update`)
+emit one content-free access record: principal/credential id (null when the
+request presented no principal credential), workspace, collection, a keyed
+HMAC-SHA256 query digest (`AKIDB_ACCESS_LOG_HASH_KEY`, or a random
+per-process key), hit count, latency, and outcome. Records go through a
+non-blocking queue to an append-only local JSONL spool (`0600`, size-bounded
+rotation, hard file-count cap).
+
+This is deliberately **not** an audit store: the spool is a delivery buffer
+for a governance platform, it is never exposed over any API, and emission is
+fail-open (drops are counted, the data plane never blocks). Adjudication,
+retention, and immutable storage belong to the consuming governance
+platform.
+
 #### Current Logging
 
 | Component | Log Level | Sensitive Data |
@@ -304,17 +321,10 @@ yet been refreshed against current code.
        image: grafana/promtail:latest
    ```
 
-2. **Audit Trail**
-   ```rust
-   // Log all data access
-   tracing::info!(
-       action = "search",
-       user = ?request.user_id,
-       query_vectors = query.len(),
-       results = results.len(),
-       "Search query executed"
-   );
-   ```
+2. **Ship access records to a governance platform**
+   Enable `[observability.access_log]` and forward the spool to the
+   deployment's audit/ledger system; that system — not AkiDB — owns
+   retention and immutability.
 
 ### 7. Container Security
 
@@ -413,7 +423,8 @@ knowledge cell.
 - [ ] All services authenticated
 - [ ] TLS enabled for all connections
 - [ ] Secrets in secure vault
-- [ ] Audit logging enabled
+- [x] Access-record emission implemented (opt-in; see §6 — governance
+      platform still owns the audit store)
 - [ ] Network segmentation implemented
 - [ ] Container hardening complete
 - [ ] Vulnerability scanning automated
