@@ -59,7 +59,7 @@ reqwest.workspace = true
 
 # Cryptography for webhook signatures
 sha2.workspace = true
-hmac = "0.12"
+hmac.workspace = true
 hex = "0.4"
 
 [dev-dependencies]

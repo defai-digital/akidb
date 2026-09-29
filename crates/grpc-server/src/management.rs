@@ -898,6 +898,8 @@ mod tests {
             workspace_id: "default".to_string(),
             agent_id: Some("test-agent".to_string()),
             authenticated: true,
+            principal_id: None,
+            credential_id: None,
         });
         request
     }

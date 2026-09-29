@@ -56,6 +56,13 @@ pub struct AuthContext {
     pub workspace_id: String,
     pub agent_id: Option<String>,
     pub authenticated: bool,
+    /// Principal id when the request presented a principal credential;
+    /// `None` for the legacy global token, disabled auth, or
+    /// unauthenticated loopback. Feeds ADR-0009 access records.
+    pub principal_id: Option<String>,
+    /// Credential id of the presented principal credential; `None` whenever
+    /// `principal_id` is `None`.
+    pub credential_id: Option<String>,
 }
 
 /// Maximum Memory authority derived from a credential and versioned grants.
@@ -602,61 +609,73 @@ impl AuthRuntime {
         let workspace_selector = metadata_selector(metadata, WORKSPACE_HEADER);
         let agent_selector = metadata_selector(metadata, AGENT_HEADER);
 
-        let (workspace_id, agent_id, authenticated) = match authentication {
-            Authentication::Principal(binding) => {
-                let workspace_id = workspace_selector
-                    .or_else(|| {
-                        if binding
-                            .workspaces
-                            .iter()
-                            .any(|workspace| workspace == &self.config.acl.default_workspace)
-                        {
-                            Some(self.config.acl.default_workspace.clone())
-                        } else {
-                            binding.workspaces.first().cloned()
-                        }
-                    })
-                    .ok_or_else(|| {
-                        Status::permission_denied("principal has no granted workspace")
-                    })?;
-                if !binding
-                    .workspaces
-                    .iter()
-                    .any(|workspace| workspace == &workspace_id)
-                {
-                    return Err(Status::permission_denied(
-                        "workspace selector is outside the principal grant",
-                    ));
-                }
-                if let Some(agent_id) = &agent_selector {
+        let (workspace_id, agent_id, authenticated, principal_id, credential_id) =
+            match authentication {
+                Authentication::Principal(binding) => {
+                    let workspace_id =
+                        workspace_selector
+                            .or_else(|| {
+                                if binding.workspaces.iter().any(|workspace| {
+                                    workspace == &self.config.acl.default_workspace
+                                }) {
+                                    Some(self.config.acl.default_workspace.clone())
+                                } else {
+                                    binding.workspaces.first().cloned()
+                                }
+                            })
+                            .ok_or_else(|| {
+                                Status::permission_denied("principal has no granted workspace")
+                            })?;
                     if !binding
-                        .agent_ids
+                        .workspaces
                         .iter()
-                        .any(|granted| granted == "**" || granted == agent_id)
+                        .any(|workspace| workspace == &workspace_id)
                     {
                         return Err(Status::permission_denied(
-                            "agent selector is outside the principal delegation grant",
+                            "workspace selector is outside the principal grant",
                         ));
                     }
+                    if let Some(agent_id) = &agent_selector {
+                        if !binding
+                            .agent_ids
+                            .iter()
+                            .any(|granted| granted == "**" || granted == agent_id)
+                        {
+                            return Err(Status::permission_denied(
+                                "agent selector is outside the principal delegation grant",
+                            ));
+                        }
+                    }
+                    (
+                        workspace_id,
+                        agent_selector,
+                        true,
+                        Some(binding.principal_id.clone()),
+                        Some(binding.credential_id.clone()),
+                    )
                 }
-                (workspace_id, agent_selector, true)
-            }
-            Authentication::Legacy => (
-                workspace_selector.unwrap_or_else(|| self.config.acl.default_workspace.clone()),
-                agent_selector,
-                true,
-            ),
-            Authentication::Unauthenticated => (
-                workspace_selector.unwrap_or_else(|| self.config.acl.default_workspace.clone()),
-                agent_selector,
-                false,
-            ),
-            Authentication::Disabled => (
-                workspace_selector.unwrap_or_else(|| self.config.acl.default_workspace.clone()),
-                agent_selector,
-                true,
-            ),
-        };
+                Authentication::Legacy => (
+                    workspace_selector.unwrap_or_else(|| self.config.acl.default_workspace.clone()),
+                    agent_selector,
+                    true,
+                    None,
+                    None,
+                ),
+                Authentication::Unauthenticated => (
+                    workspace_selector.unwrap_or_else(|| self.config.acl.default_workspace.clone()),
+                    agent_selector,
+                    false,
+                    None,
+                    None,
+                ),
+                Authentication::Disabled => (
+                    workspace_selector.unwrap_or_else(|| self.config.acl.default_workspace.clone()),
+                    agent_selector,
+                    true,
+                    None,
+                    None,
+                ),
+            };
 
         let memory = match authentication {
             Authentication::Principal(binding) => {
@@ -716,6 +735,8 @@ impl AuthRuntime {
                 workspace_id,
                 agent_id,
                 authenticated,
+                principal_id,
+                credential_id,
             },
             memory,
         ))
@@ -794,6 +815,8 @@ pub fn auth_context<T>(request: &Request<T>) -> AuthContext {
             workspace_id: "default".to_string(),
             agent_id: None,
             authenticated: false,
+            principal_id: None,
+            credential_id: None,
         })
 }
 

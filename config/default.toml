@@ -217,6 +217,23 @@ metrics_port = 9090
 log_level = "info"
 log_format = "json"
 
+# Emit-only data-plane access records (ADR-0009). Each Search / TextSearch /
+# Get / Insert / InsertBatch / Delete / Update emits one content-free record
+# (keyed query digest, never raw text or vectors) to a bounded local JSONL
+# spool. The spool is a delivery buffer for a governance platform, NOT an
+# audit store: it is size-bounded, rotated, excluded from snapshots and
+# backups, and never exposed over any API. Emission is fail-open — a full
+# queue drops and counts records rather than slowing the data plane.
+# Query digests are HMAC-SHA256 keyed by AKIDB_ACCESS_LOG_HASH_KEY; without
+# that variable a random per-process key is used (digests are not
+# correlatable across restarts, but still resist offline dictionary reads).
+[observability.access_log]
+enabled = false
+directory = "./data/access-log"
+max_file_bytes = 67108864
+max_files = 8
+queue_capacity = 4096
+
 [slo]
 [slo.reference]
 dimensions = 768

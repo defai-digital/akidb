@@ -565,6 +565,8 @@ fn request_with_workspace<T>(inner: T, workspace: Option<&str>) -> Request<T> {
                 workspace_id: ws.to_string(),
                 agent_id: None,
                 authenticated: true,
+                principal_id: None,
+                credential_id: None,
             });
         }
     }

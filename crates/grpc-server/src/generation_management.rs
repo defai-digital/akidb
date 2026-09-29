@@ -435,6 +435,8 @@ mod tests {
             workspace_id: workspace_id.to_string(),
             agent_id: Some("publisher".to_string()),
             authenticated: true,
+            principal_id: None,
+            credential_id: None,
         });
         request
     }

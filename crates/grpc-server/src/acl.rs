@@ -97,6 +97,8 @@ mod tests {
             workspace_id: ws.to_string(),
             agent_id: Some("agent-1".to_string()),
             authenticated: true,
+            principal_id: None,
+            credential_id: None,
         }
     }
 

@@ -1,5 +1,6 @@
 //! AkiDB gRPC service implementation
 
+use crate::access_log::{AccessLog, AccessRecord};
 use crate::acl::{self, stamp_write_metadata};
 use crate::auth::{self, AuthContext};
 use crate::collections::{CollectionMeta, CollectionRegistry, SharedCollectionRegistry};
@@ -115,6 +116,16 @@ pub struct ReconcileReport {
 }
 
 /// AkiDB gRPC service
+/// Little-endian byte view of a query/insert vector, the digest input for
+/// ADR-0009 access records (the keyed hash leaves the process, never the
+/// floats).
+fn f32_le_bytes(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
 pub struct AkiDbService<I, S>
 where
     I: VectorIndex,
@@ -157,6 +168,8 @@ where
     collections: SharedCollectionRegistry,
     /// Embedding model id bound to this shard for schema/metadata stamping.
     embedding_model_id: Option<String>,
+    /// Emit-only data-plane access records (ADR-0009); disabled by default.
+    access_log: AccessLog,
 }
 
 impl<I, S> AkiDbService<I, S>
@@ -209,7 +222,14 @@ where
             filter_settings: FilterSettings::default(),
             collections,
             embedding_model_id: None,
+            access_log: AccessLog::disabled(),
         }
+    }
+
+    /// Attach the ADR-0009 access-record emitter (default: disabled no-op).
+    pub fn with_access_log(mut self, access_log: AccessLog) -> Self {
+        self.access_log = access_log;
+        self
     }
 
     /// Configure workspace ACL enforcement.
@@ -628,8 +648,1050 @@ where
         Ok(())
     }
 
+    async fn insert_inner(
+        &self,
+        request: Request<InsertRequest>,
+    ) -> Result<Response<InsertResponse>, Status> {
+        let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
+        let req = request.into_inner();
+
+        debug!("Insert request for ID: {}", req.id);
+        self.validate_request_collection(&req.collection)?;
+
+        // Validate input
+        if let Err(message) = Self::validate_vector_payload(&req.id, &req.vector) {
+            return Err(Status::invalid_argument(message));
+        }
+        if let Err(message) = Self::validate_metadata_json(&req.metadata) {
+            return Err(Status::invalid_argument(message));
+        }
+
+        let stamped_metadata = stamp_write_metadata(
+            &req.metadata,
+            &ctx,
+            &self.acl,
+            self.embedding_model_id.as_deref(),
+        )
+        .map_err(Status::invalid_argument)?;
+
+        let vector_id = VectorId::new(&req.id);
+        let vector: Vec<f32> = req.vector;
+        let _mutation_guard = MutationLockGuard::try_acquire(&self.mutation_locks, req.id.clone())
+            .ok_or_else(|| {
+                Status::aborted(format!(
+                    "Concurrent mutation in progress for ID: {}",
+                    req.id
+                ))
+            })?;
+
+        let old_metadata = self.ensure_insert_does_not_cross_workspace(&vector_id, &ctx)?;
+        // Soft-deleted IDs are not reusable. Check storage *before* touching the
+        // HNSW index so a failed re-insert cannot clear tombstones and briefly
+        // resurrect a deleted vector in search results.
+        if self
+            .id_mapping
+            .is_deleted(&vector_id)
+            .map_err(Self::to_status)?
+        {
+            return Err(Status::failed_precondition(format!(
+                "ID reuse is forbidden for soft-deleted vector: {}",
+                req.id
+            )));
+        }
+        let old_internal_id = self
+            .id_mapping
+            .get_internal_id(&vector_id)
+            .map_err(Self::to_status)?;
+
+        // Insert into index
+        let internal_id = self
+            .index
+            .insert(&vector_id, &vector)
+            .map_err(Self::to_status)?;
+        crash_point("insert.after_index_insert");
+
+        // Persist ID mapping, vector payload, and source text atomically in
+        // one synced batch. If this fails, rollback the index insert.
+        let mapping_result = self.id_mapping.upsert_with_vector_and_text(
+            &vector_id,
+            internal_id,
+            &vector,
+            &stamped_metadata,
+            Some(&req.text),
+        );
+
+        if let Err(e) = mapping_result {
+            // FIX BUG-HUNT-601: Log rollback failures instead of silently ignoring
+            if let Err(rollback_err) = self.index.delete(internal_id) {
+                tracing::error!(
+                    vector_id = %vector_id,
+                    internal_id = internal_id.0,
+                    original_error = %e,
+                    rollback_error = %rollback_err,
+                    "Failed to rollback index insert after mapping failure - orphan vector may exist"
+                );
+            }
+            return Err(Self::to_status(e));
+        }
+        crash_point("insert.after_durable_write");
+        if let Some(old_id) = old_internal_id.filter(|old_id| *old_id != internal_id) {
+            if let Err(e) = self.index.delete(old_id) {
+                warn!(
+                    vector_id = %vector_id,
+                    old_internal_id = old_id.0,
+                    error = %e,
+                    "failed to remove replaced vector during insert upsert"
+                );
+            }
+        }
+
+        // Keep BM25, context packing, and persisted source text aligned with
+        // upsert semantics. Empty text clears any previous source text.
+        self.sync_source_text(&vector_id, &req.text);
+        self.index_graph_chunk(&vector_id, &stamped_metadata, old_metadata.as_deref())
+            .map_err(|e| Status::internal(format!("graph projection failed: {e}")))?;
+        self.index_sql_metadata(&vector_id, internal_id.0, &stamped_metadata);
+
+        let elapsed = start.elapsed();
+        info!("Inserted vector {} in {:?}", req.id, elapsed);
+
+        Ok(Response::new(InsertResponse {
+            success: true,
+            id: req.id,
+            internal_id: internal_id.0,
+            visibility: Some(VisibilityInfo {
+                insert_visibility: "within_100ms".to_string(),
+                delete_visibility: String::new(),
+            }),
+        }))
+    }
+
+    async fn search_inner(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
+        let req = request.into_inner();
+
+        debug!("Search request, top_k: {}", req.top_k);
+
+        self.validate_request_collection(&req.collection)?;
+        Self::validate_search_controls(req.top_k, req.nprobe)?;
+        Self::validate_query_vector(&req.query)?;
+
+        let metadata_filter = self
+            .compile_search_filter(&req.filter, req.tag_filter.clone(), &ctx)?
+            .map(Arc::new);
+        let top_k = req.top_k as usize;
+        let search_k = self.filtered_search_k(top_k, metadata_filter.is_some());
+        // Over-fetch when grouping so each group still has candidates after cut.
+        let fetch_k = if req.group_by.trim().is_empty() {
+            search_k
+        } else {
+            search_k.saturating_mul(4).max(search_k)
+        };
+        let params = SearchParams::new(fetch_k).with_optional_nprobe(req.nprobe);
+        let params = self.attach_metadata_predicate(params, metadata_filter);
+
+        let results = self
+            .index
+            .search(&req.query, &params)
+            .map_err(Self::to_status)?;
+
+        let elapsed = start.elapsed();
+        let latency_us = elapsed.as_micros() as u64;
+
+        let mapped: Vec<SearchResult> = results
+            .into_iter()
+            .map(|r| SearchResult {
+                id: r.id.to_string(),
+                score: r.score,
+                metadata: self.load_metadata_string(&r.id),
+            })
+            .collect();
+        let response_results = self.apply_score_and_group(
+            mapped,
+            top_k,
+            req.score_threshold,
+            &req.group_by,
+            req.group_size,
+        );
+
+        info!(
+            "Search returned {} results in {:?}",
+            response_results.len(),
+            elapsed
+        );
+
+        Ok(Response::new(SearchResponse {
+            results: response_results,
+            partial: false,
+            missing_shards: vec![],
+            coverage: 1.0,
+            latency_us,
+            // FIX BUG-HUNT-202: Use configurable SLO threshold instead of hardcoded 50ms
+            within_slo: latency_us < self.slo_threshold_us,
+            degraded_mode: false,
+            context_pack: String::new(),
+            serving_generation: None,
+            context_pack_v1: None,
+            diagnostics: None,
+        }))
+    }
+
+    async fn delete_inner(
+        &self,
+        request: Request<DeleteRequest>,
+    ) -> Result<Response<DeleteResponse>, Status> {
+        let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
+        let req = request.into_inner();
+
+        debug!("Delete request for ID: {}", req.id);
+        self.validate_request_collection(&req.collection)?;
+        if let Err(message) = Self::validate_vector_id(&req.id) {
+            return Err(Status::invalid_argument(message));
+        }
+
+        let vector_id = VectorId::new(&req.id);
+        let _mutation_guard = MutationLockGuard::try_acquire(&self.mutation_locks, req.id.clone())
+            .ok_or_else(|| {
+                Status::aborted(format!(
+                    "Concurrent mutation in progress for ID: {}",
+                    req.id
+                ))
+            })?;
+        let existing_metadata = self.ensure_existing_vector_access(&vector_id, &ctx)?;
+        if existing_metadata.is_some() {
+            self.delete_graph_chunk(&vector_id, existing_metadata.as_deref())
+                .map_err(|e| Status::internal(format!("graph deletion failed: {e}")))?;
+        }
+
+        // Get internal ID and mark deleted
+        let status = match self
+            .id_mapping
+            .mark_deleted(&vector_id)
+            .map_err(Self::to_status)?
+        {
+            Some(internal_id) => {
+                crash_point("delete.after_durable_write");
+                // Mark in tombstone
+                self.index.delete(internal_id).map_err(Self::to_status)?;
+                // Keep the lexical index and document store in sync. The
+                // persisted source text was already removed inside the synced
+                // mark_deleted batch.
+                self.lexical.write().remove(&vector_id);
+                self.documents.write().remove(&vector_id);
+                self.delete_sql_metadata(&vector_id);
+                DeleteStatus::Deleted
+            }
+            None => {
+                // Check if already deleted
+                if self
+                    .id_mapping
+                    .exists(&vector_id)
+                    .map_err(Self::to_status)?
+                {
+                    DeleteStatus::AlreadyDeleted
+                } else {
+                    DeleteStatus::NotFound
+                }
+            }
+        };
+
+        let elapsed = start.elapsed();
+        info!(
+            "Delete {} completed in {:?} with status {:?}",
+            req.id, elapsed, status
+        );
+
+        Ok(Response::new(DeleteResponse {
+            success: true,
+            id: req.id,
+            status: status as i32,
+            visibility: "immediate".to_string(),
+        }))
+    }
+
+    async fn update_inner(
+        &self,
+        request: Request<UpdateRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let ctx = self.request_auth_context(&request);
+        let mut req = request.into_inner();
+
+        debug!("Update request for ID: {}", req.id);
+        self.validate_request_collection(&req.collection)?;
+
+        // Validate input
+        if req.id.is_empty() {
+            return Err(Status::invalid_argument("Vector ID cannot be empty"));
+        }
+        if req.id.len() > 1024 {
+            return Err(Status::invalid_argument(
+                "Vector ID exceeds maximum length of 1024",
+            ));
+        }
+        if req.vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(Status::invalid_argument(
+                "Vector contains NaN or Infinity values",
+            ));
+        }
+        if req.vector.is_empty() {
+            return Err(Status::invalid_argument("Vector cannot be empty"));
+        }
+        if let Err(message) = Self::validate_metadata_json(&req.metadata) {
+            return Err(Status::invalid_argument(message));
+        }
+
+        // Stamp workspace / embedding model after JSON validation (same as insert).
+        req.metadata = stamp_write_metadata(
+            &req.metadata,
+            &ctx,
+            &self.acl,
+            self.embedding_model_id.as_deref(),
+        )
+        .map_err(Status::invalid_argument)?;
+
+        let vector_id = VectorId::new(&req.id);
+        let _mutation_guard = MutationLockGuard::try_acquire(&self.mutation_locks, req.id.clone())
+            .ok_or_else(|| {
+                Status::aborted(format!(
+                    "Concurrent mutation in progress for ID: {}",
+                    req.id
+                ))
+            })?;
+        self.ensure_existing_vector_access(&vector_id, &ctx)?;
+
+        // Perform the update operation - lock is held by guard
+        // Guard will release lock automatically when this function returns (or panics)
+        self.do_update_locked(&req.id, &vector_id, &req.vector, &req.metadata)
+    }
+
+    async fn get_inner(
+        &self,
+        request: Request<GetRequest>,
+    ) -> Result<Response<GetResponse>, Status> {
+        let ctx = self.request_auth_context(&request);
+        let req = request.into_inner();
+        self.validate_request_collection(&req.collection)?;
+        if let Err(message) = Self::validate_vector_id(&req.id) {
+            return Err(Status::invalid_argument(message));
+        }
+
+        let vector_id = VectorId::new(&req.id);
+        self.ensure_existing_vector_access(&vector_id, &ctx)?;
+
+        // Get internal ID
+        let internal_id = self
+            .id_mapping
+            .get_internal_id(&vector_id)
+            .map_err(Self::to_status)?
+            .ok_or_else(|| Status::not_found(format!("Vector not found: {}", req.id)))?;
+
+        let stored_vector = self
+            .id_mapping
+            .get_vector(&vector_id)
+            .map_err(Self::to_status)?;
+
+        // Get vector from the hot index first, then durable storage. The
+        // fallback matters after process restart while the index is rebuilding.
+        let vector = match self
+            .index
+            .get_vector(internal_id)
+            .map_err(Self::to_status)?
+        {
+            Some(vector) => vector,
+            None => stored_vector
+                .as_ref()
+                .map(|entry| entry.vector.clone())
+                .ok_or_else(|| Status::not_found(format!("Vector not found: {}", req.id)))?,
+        };
+        let metadata = stored_vector
+            .as_ref()
+            .map(|entry| String::from_utf8_lossy(&entry.metadata).into_owned())
+            .unwrap_or_default();
+
+        Ok(Response::new(GetResponse {
+            id: req.id,
+            vector,
+            metadata,
+            found: true,
+            serving_generation: None,
+        }))
+    }
+
+    async fn insert_batch_inner(
+        &self,
+        request: Request<InsertBatchRequest>,
+    ) -> Result<Response<InsertBatchResponse>, Status> {
+        let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
+        let req = request.into_inner();
+
+        debug!("Insert batch request for {} vectors", req.vectors.len());
+        self.validate_request_collection(&req.collection)?;
+        Self::validate_unique_batch_ids(&req.vectors)?;
+
+        let mut inserted_count = 0u32;
+        let mut failed_ids = Vec::new();
+
+        for mut vector in req.vectors {
+            if let Err(message) = Self::validate_vector_payload(&vector.id, &vector.embedding) {
+                warn!(
+                    "Batch insert: ID {} failed validation: {}",
+                    vector.id, message
+                );
+                failed_ids.push(vector.id);
+                continue;
+            }
+            if let Err(message) = Self::validate_metadata_json(&vector.metadata) {
+                warn!(
+                    "Batch insert: ID {} failed metadata validation: {}",
+                    vector.id, message
+                );
+                failed_ids.push(vector.id);
+                continue;
+            }
+
+            vector.metadata = match stamp_write_metadata(
+                &vector.metadata,
+                &ctx,
+                &self.acl,
+                self.embedding_model_id.as_deref(),
+            ) {
+                Ok(metadata) => metadata,
+                Err(message) => {
+                    warn!(
+                        "Batch insert: ID {} failed workspace metadata validation: {}",
+                        vector.id, message
+                    );
+                    failed_ids.push(vector.id);
+                    continue;
+                }
+            };
+
+            let vector_id = VectorId::new(&vector.id);
+            let Some(_mutation_guard) =
+                MutationLockGuard::try_acquire(&self.mutation_locks, vector.id.clone())
+            else {
+                warn!(
+                    "Batch insert: ID {} has a concurrent mutation in progress",
+                    vector.id
+                );
+                failed_ids.push(vector.id);
+                continue;
+            };
+            let old_metadata = match self.ensure_insert_does_not_cross_workspace(&vector_id, &ctx) {
+                Ok(metadata) => metadata,
+                Err(e) => {
+                    warn!(
+                        "Batch insert: ID {} failed workspace ownership check: {}",
+                        vector.id, e
+                    );
+                    failed_ids.push(vector.id);
+                    continue;
+                }
+            };
+            match self.id_mapping.is_deleted(&vector_id) {
+                Ok(true) => {
+                    warn!(
+                        "Batch insert: ID {} is soft-deleted; reuse is forbidden",
+                        vector.id
+                    );
+                    failed_ids.push(vector.id);
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    warn!(
+                        "Batch insert: ID {} failed deleted-state lookup: {}",
+                        vector.id, e
+                    );
+                    failed_ids.push(vector.id);
+                    continue;
+                }
+            }
+            let old_internal_id = match self.id_mapping.get_internal_id(&vector_id) {
+                Ok(internal_id) => internal_id,
+                Err(e) => {
+                    warn!(
+                        "Batch insert: ID {} failed internal id lookup: {}",
+                        vector.id, e
+                    );
+                    failed_ids.push(vector.id);
+                    continue;
+                }
+            };
+
+            match self.index.insert(&vector_id, &vector.embedding) {
+                Ok(internal_id) => {
+                    match self.id_mapping.upsert_with_vector_and_text(
+                        &vector_id,
+                        internal_id,
+                        &vector.embedding,
+                        &vector.metadata,
+                        Some(&vector.text),
+                    ) {
+                        Ok(_) => {
+                            crash_point("insert_batch.after_durable_write");
+                            if let Some(old_id) =
+                                old_internal_id.filter(|old_id| *old_id != internal_id)
+                            {
+                                if let Err(e) = self.index.delete(old_id) {
+                                    warn!(
+                                        vector_id = %vector.id,
+                                        old_internal_id = old_id.0,
+                                        error = %e,
+                                        "Batch insert: failed to remove replaced vector"
+                                    );
+                                }
+                            }
+                            self.sync_source_text(&vector_id, &vector.text);
+                            if let Err(e) = self.index_graph_chunk(
+                                &vector_id,
+                                &vector.metadata,
+                                old_metadata.as_deref(),
+                            ) {
+                                warn!(
+                                    vector_id = %vector.id,
+                                    error = %e,
+                                    "Batch insert: graph projection failed"
+                                );
+                                failed_ids.push(vector.id);
+                                continue;
+                            }
+                            self.index_sql_metadata(&vector_id, internal_id.0, &vector.metadata);
+                            inserted_count += 1;
+                        }
+                        Err(e) => {
+                            // FIX BUG-046, BUG-HUNT-601: Rollback and log failures
+                            if let Err(rollback_err) = self.index.delete(internal_id) {
+                                tracing::error!(
+                                    vector_id = %vector.id,
+                                    internal_id = internal_id.0,
+                                    original_error = %e,
+                                    rollback_error = %rollback_err,
+                                    "Batch insert: rollback failed after mapping create failure - orphan vector may exist"
+                                );
+                            }
+                            warn!(
+                                "Batch insert: ID {} failed during id_mapping.create: {}",
+                                vector.id, e
+                            );
+                            failed_ids.push(vector.id);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // FIX BUG-074: Log error details for failed inserts
+                    warn!(
+                        "Batch insert: ID {} failed during index.insert: {}",
+                        vector.id, e
+                    );
+                    failed_ids.push(vector.id);
+                }
+            }
+        }
+
+        let elapsed = start.elapsed();
+        info!(
+            "Batch insert: {} succeeded, {} failed in {:?}",
+            inserted_count,
+            failed_ids.len(),
+            elapsed
+        );
+
+        Ok(Response::new(InsertBatchResponse {
+            success: failed_ids.is_empty(),
+            inserted_count,
+            failed_ids,
+        }))
+    }
+
+    async fn text_search_inner(
+        &self,
+        request: Request<TextSearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
+        let req = request.into_inner();
+
+        if req.text.trim().is_empty() {
+            return Err(Status::invalid_argument("Text cannot be empty"));
+        }
+        self.validate_request_collection(&req.collection)?;
+        Self::validate_search_controls(req.top_k, req.nprobe)?;
+        Self::validate_text_search_options(&req)?;
+
+        let metadata_filter = self
+            .compile_search_filter(&req.filter, req.tag_filter.clone(), &ctx)?
+            .map(Arc::new);
+
+        let requested_mode = Self::requested_text_retrieval_mode(&req)?;
+        let mut planner_input = PlannerInput::new(req.text.clone())
+            .with_pack(req.pack)
+            .with_metadata_filter(metadata_filter.is_some());
+        if let Some(mode) = requested_mode {
+            planner_input = planner_input.with_requested_mode(mode);
+        }
+        let planner_trace = plan_query(&planner_input);
+        if matches!(planner_trace.mode, RetrievalMode::StructuredSql) {
+            return self.sql_metadata_text_search(&req, start, metadata_filter.as_deref(), &ctx);
+        }
+        debug!(
+            mode = ?planner_trace.mode,
+            graph_enabled = planner_trace.graph_enabled,
+            reasons = ?planner_trace.reasons,
+            "TextSearch planner trace"
+        );
+
+        let top_k = req.top_k as usize;
+        // Over-fetch a candidate pool when a later stage (fusion, rerank,
+        // diversity) needs room to reorder; otherwise fetch exactly top_k.
+        let use_dense = planner_trace.vector_weight > 0.0;
+        let use_lexical = planner_trace.lexical_weight > 0.0;
+        let mut dense_candidate_limited = false;
+        let needs_pool = (use_dense && use_lexical) || req.rerank || req.diversity;
+        let mut search_k = if needs_pool {
+            top_k.saturating_mul(4).clamp(top_k, top_k.max(200))
+        } else {
+            top_k
+        };
+        search_k = self.filtered_search_k(search_k, metadata_filter.is_some());
+
+        // Dense stage.
+        let dense = if use_dense {
+            let provider = self.embedding_provider.as_ref().ok_or_else(|| {
+                Status::unavailable(
+                    "TextSearch vector retrieval requires an embedding provider to be configured",
+                )
+            })?;
+            let query_vector = provider
+                .embed_text(&req.text)
+                .map_err(|e| Status::internal(format!("Embedding generation failed: {}", e)))?;
+            Self::validate_embedding_vector(&query_vector)?;
+
+            debug!(
+                text_len = req.text.len(),
+                embedding_dim = query_vector.len(),
+                "TextSearch embedding generated"
+            );
+
+            let params = SearchParams::new(search_k).with_optional_nprobe(req.nprobe);
+            let params = self.attach_metadata_predicate(params, metadata_filter.clone());
+
+            // Drop only truly non-finite scores (NaN, inf, -inf) from the
+            // raw index output. Zero-score hits are kept here so dense-only
+            // and lexical-fusion paths can still surface them.
+            let dense_window = self
+                .index
+                .search_window(&query_vector, &params)
+                .map_err(Self::to_status)?;
+            let mut dense_hits = dense_window.results;
+            dense_candidate_limited = dense_window.candidate_limited;
+            dense_hits.retain(|r| r.score.is_finite());
+            dense_hits
+        } else {
+            Vec::new()
+        };
+
+        let lexical = if use_lexical {
+            let lexical = self.lexical.read();
+            let lexical_k = if metadata_filter.is_some() {
+                lexical.len().max(search_k)
+            } else {
+                search_k
+            };
+            lexical.search(&req.text, lexical_k)
+        } else {
+            Vec::new()
+        };
+        let dense_candidate_count = dense.len();
+        let lexical_candidate_count = lexical.len();
+
+        // Base ranked list: hybrid fusion (dense + lexical via RRF) or dense-only.
+        // An empty lexical index degrades hybrid cleanly to dense ranking.
+        let mut ranked: Vec<ScoredId> = if use_dense && use_lexical && !lexical.is_empty() {
+            // Only allow zero/non-positive dense scores into RRF when the same id
+            // also appears in the lexical results (proving a real non-dense signal).
+            // This prevents orthogonal dense hits with no lexical overlap from
+            // gaming fusion by index position alone.
+            let lexical_ids: HashSet<_> = lexical.iter().map(|s| s.id.clone()).collect();
+            let dense_scored: Vec<ScoredId> = dense
+                .iter()
+                .filter(|r| r.score > 0.0 || lexical_ids.contains(&r.id))
+                .map(|r| ScoredId::new(r.id.clone(), r.score))
+                .collect();
+            let fuser = HybridFuser::new().with_weights(
+                req.dense_weight.unwrap_or(planner_trace.vector_weight),
+                req.lexical_weight.unwrap_or(planner_trace.lexical_weight),
+            );
+            fuser.fuse(&dense_scored, &lexical, search_k)
+        } else if use_lexical && !lexical.is_empty() {
+            lexical
+        } else {
+            dense
+                .iter()
+                .map(|r| ScoredId::new(r.id.clone(), r.score))
+                .collect()
+        };
+
+        let candidates_before_filter = ranked.len();
+        if let Some(metadata_filter) = &metadata_filter {
+            ranked.retain(|s| self.metadata_matches_filter(&s.id, metadata_filter));
+        }
+        let filtered_candidates = candidates_before_filter.saturating_sub(ranked.len());
+
+        let graph_depth = req
+            .graph_max_depth
+            .unwrap_or_else(|| u32::from(planner_trace.graph_depth.max(DEFAULT_GRAPH_DEPTH as u8)))
+            as u8;
+        let graph_per_seed_fanout = req
+            .graph_per_seed_fanout
+            .unwrap_or(DEFAULT_GRAPH_PER_SEED_FANOUT) as usize;
+        let graph_max_expanded_nodes =
+            req.graph_max_expanded_nodes
+                .unwrap_or(DEFAULT_GRAPH_EXPANDED_NODES) as usize;
+        let mut graph_expansions = Vec::new();
+        let mut graph_expanded_ids = HashSet::<VectorId>::new();
+        let mut graph_truncated = false;
+
+        if planner_trace.graph_enabled {
+            if let Some(graph) = &self.graph_index {
+                let mut seen: HashSet<VectorId> = ranked.iter().map(|s| s.id.clone()).collect();
+                let base_result_seeds: Vec<ScoredId> =
+                    ranked.iter().take(MAX_GRAPH_SEEDS).cloned().collect();
+                let graph_seed_score = ranked
+                    .iter()
+                    .map(|item| item.score)
+                    .filter(|score| score.is_finite())
+                    .fold(None, |best: Option<f32>, score| {
+                        Some(best.map_or(score, |current| current.max(score)))
+                    })
+                    // An exact file/symbol query seed is authoritative enough
+                    // to beat the best semantic seed at hop one; subsequent
+                    // hops still decay by GRAPH_HOP_DECAY.
+                    .map(|score| score / GRAPH_HOP_DECAY + 0.0001)
+                    .unwrap_or(1.0);
+
+                for seed_node in Self::graph_seed_nodes_from_query(&req.text, &ctx.workspace_id)
+                    .into_iter()
+                    .take(MAX_GRAPH_SEEDS)
+                {
+                    let remaining =
+                        graph_max_expanded_nodes.saturating_sub(graph_expanded_ids.len());
+                    if remaining == 0 {
+                        graph_truncated = true;
+                        break;
+                    }
+                    let graph_request = RelatedChunksRequest::new(seed_node.clone())
+                        .with_max_depth(graph_depth)
+                        .with_per_hop_limit(graph_per_seed_fanout)
+                        .with_limit(remaining);
+                    match graph.related_chunks_with_trace(graph_request) {
+                        Ok(chunks) => {
+                            for chunk in chunks {
+                                let id = chunk.vector_id;
+                                if !graph_expanded_ids.insert(id.clone()) {
+                                    continue;
+                                }
+                                let score =
+                                    graph_seed_score * GRAPH_HOP_DECAY.powi(i32::from(chunk.hop));
+                                if let Some(metadata_filter) = &metadata_filter {
+                                    if !self.metadata_matches_filter(&id, metadata_filter) {
+                                        continue;
+                                    }
+                                }
+                                if req.include_diagnostics {
+                                    graph_expansions.push(GraphExpansionEvidence {
+                                        result_id: id.to_string(),
+                                        seed_id: seed_node.to_string(),
+                                        hop: u32::from(chunk.hop),
+                                        score_contribution: score,
+                                        path: chunk
+                                            .path_edges
+                                            .iter()
+                                            .map(Self::graph_edge_evidence)
+                                            .collect(),
+                                    });
+                                }
+                                if !seen.insert(id.clone()) {
+                                    if let Some(existing) = ranked.iter_mut().find(|s| s.id == id) {
+                                        existing.score = existing.score.max(score);
+                                    }
+                                    continue;
+                                }
+                                ranked.push(ScoredId::new(id, score));
+                            }
+                        }
+                        Err(e) => {
+                            warn!(seed = %seed_node, error = %e, "graph query seed expansion failed");
+                        }
+                    }
+                }
+
+                for seed in base_result_seeds {
+                    let remaining =
+                        graph_max_expanded_nodes.saturating_sub(graph_expanded_ids.len());
+                    if remaining == 0 {
+                        graph_truncated = true;
+                        break;
+                    }
+                    let seed_node = Self::chunk_node_id(&ctx.workspace_id, &seed.id);
+                    let graph_request = RelatedChunksRequest::new(seed_node.clone())
+                        .with_max_depth(graph_depth)
+                        .with_per_hop_limit(graph_per_seed_fanout)
+                        .with_limit(remaining);
+                    match graph.related_chunks_with_trace(graph_request) {
+                        Ok(chunks) => {
+                            for chunk in chunks {
+                                let id = chunk.vector_id;
+                                if !graph_expanded_ids.insert(id.clone()) {
+                                    continue;
+                                }
+                                let score = seed.score * GRAPH_HOP_DECAY.powi(i32::from(chunk.hop));
+                                if let Some(metadata_filter) = &metadata_filter {
+                                    if !self.metadata_matches_filter(&id, metadata_filter) {
+                                        continue;
+                                    }
+                                }
+                                if req.include_diagnostics {
+                                    graph_expansions.push(GraphExpansionEvidence {
+                                        result_id: id.to_string(),
+                                        seed_id: seed.id.to_string(),
+                                        hop: u32::from(chunk.hop),
+                                        score_contribution: score,
+                                        path: chunk
+                                            .path_edges
+                                            .iter()
+                                            .map(Self::graph_edge_evidence)
+                                            .collect(),
+                                    });
+                                }
+                                if seen.insert(id.clone()) {
+                                    ranked.push(ScoredId::new(id, score));
+                                } else if let Some(existing) =
+                                    ranked.iter_mut().find(|item| item.id == id)
+                                {
+                                    existing.score = existing.score.max(score);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(seed = %seed_node, error = %e, "graph result expansion failed");
+                        }
+                    }
+                }
+                ranked.sort_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+                });
+                if graph_expanded_ids.len() >= graph_max_expanded_nodes {
+                    graph_truncated = true;
+                }
+            }
+        }
+
+        // Optional reranking (RET-005): re-score candidates by query-text
+        // relevance over their stored source text.
+        if req.rerank {
+            let docs = self.documents.read();
+            let items: Vec<RerankItem> = ranked
+                .iter()
+                .map(|s| {
+                    let text = docs.get(&s.id).cloned().unwrap_or_default();
+                    RerankItem::new(s.id.clone(), text, s.score)
+                })
+                .collect();
+            drop(docs);
+            ranked = LexicalOverlapReranker.rerank(&req.text, items);
+        }
+
+        // Optional diversity (RET-006): MMR reselection over candidate embeddings
+        // to suppress near-duplicate results.
+        if req.diversity {
+            let lambda = req.mmr_lambda.unwrap_or(0.5);
+            let items: Vec<MmrItem> = ranked
+                .iter()
+                .filter_map(|s| {
+                    self.id_mapping
+                        .get_vector(&s.id)
+                        .ok()
+                        .flatten()
+                        .map(|e| MmrItem::new(s.id.clone(), s.score, e.vector))
+                })
+                .collect();
+            if !items.is_empty() {
+                ranked = mmr(&items, lambda, ranked.len());
+            }
+        }
+
+        // Keep a larger pool before score/group cuts so threshold/group_by can select.
+        let graph_pool_cap = if planner_trace.graph_enabled {
+            top_k.saturating_add(graph_max_expanded_nodes)
+        } else {
+            top_k
+        };
+        let pool_cap = top_k.saturating_mul(8).max(top_k).max(graph_pool_cap);
+        ranked.truncate(pool_cap);
+        let mapped: Vec<SearchResult> = ranked
+            .iter()
+            .map(|s| SearchResult {
+                metadata: self.load_metadata_string(&s.id),
+                id: s.id.to_string(),
+                score: s.score,
+            })
+            .collect();
+        let response_results = self.apply_score_and_group(
+            mapped.clone(),
+            top_k,
+            req.score_threshold,
+            &req.group_by,
+            req.group_size,
+        );
+        let response_ids: HashSet<&str> = response_results
+            .iter()
+            .map(|result| result.id.as_str())
+            .collect();
+        let pack_candidates = if req.pack {
+            let candidates: Vec<SearchResult> = mapped
+                .into_iter()
+                .filter(|result| {
+                    response_ids.contains(result.id.as_str())
+                        || graph_expanded_ids.contains(&VectorId::new(&result.id))
+                })
+                .collect();
+            self.apply_score_and_group(
+                candidates,
+                pool_cap,
+                req.score_threshold,
+                &req.group_by,
+                req.group_size,
+            )
+        } else {
+            Vec::new()
+        };
+
+        // Optionally assemble a source-grounded, citation-bearing context pack
+        // (PACK-*). Matched child chunks are expanded to their parent context
+        // (CHUNK-003) via the `parent_id` metadata convention, deduped by parent,
+        // then assembled within the token budget.
+        let built_context_pack = if req.pack {
+            Some(self.build_context_pack(
+                &pack_candidates,
+                Some(&graph_expanded_ids),
+                req.pack_token_budget.unwrap_or(1024) as usize,
+                dense_candidate_limited,
+            ))
+        } else {
+            None
+        };
+        let context_pack = built_context_pack
+            .as_ref()
+            .map(|pack| pack.legacy_text.clone())
+            .unwrap_or_default();
+        let context_pack_v1 = built_context_pack.map(|pack| pack.wire);
+        let diagnostic_ids: HashSet<&str> = response_results
+            .iter()
+            .chain(pack_candidates.iter())
+            .map(|result| result.id.as_str())
+            .collect();
+        graph_expansions.retain(|expansion| diagnostic_ids.contains(expansion.result_id.as_str()));
+        let diagnostics = req.include_diagnostics.then(|| RetrievalDiagnostics {
+            requested_mode: requested_mode
+                .map(Self::retrieval_mode_name)
+                .unwrap_or("auto")
+                .to_string(),
+            resolved_mode: Self::retrieval_mode_name(planner_trace.mode).to_string(),
+            planner_reasons: planner_trace.reasons.clone(),
+            dense_candidates: u32::try_from(dense_candidate_count).unwrap_or(u32::MAX),
+            lexical_candidates: u32::try_from(lexical_candidate_count).unwrap_or(u32::MAX),
+            filtered_candidates: u32::try_from(filtered_candidates).unwrap_or(u32::MAX),
+            filter_applied: metadata_filter.is_some(),
+            rerank_applied: req.rerank,
+            diversity_applied: req.diversity,
+            graph_depth: if planner_trace.graph_enabled {
+                u32::from(graph_depth)
+            } else {
+                0
+            },
+            graph_per_seed_fanout: if planner_trace.graph_enabled {
+                u32::try_from(graph_per_seed_fanout).unwrap_or(u32::MAX)
+            } else {
+                0
+            },
+            graph_max_expanded_nodes: if planner_trace.graph_enabled {
+                u32::try_from(graph_max_expanded_nodes).unwrap_or(u32::MAX)
+            } else {
+                0
+            },
+            graph_expanded_nodes: u32::try_from(graph_expanded_ids.len()).unwrap_or(u32::MAX),
+            graph_truncated,
+            graph_hop_decay: if planner_trace.graph_enabled {
+                GRAPH_HOP_DECAY
+            } else {
+                0.0
+            },
+            graph_expansions,
+        });
+
+        let elapsed = start.elapsed();
+        let latency_us = elapsed.as_micros() as u64;
+
+        info!(
+            "TextSearch for '{}' returned {} results in {:?}",
+            Self::preview_text(&req.text, 50),
+            response_results.len(),
+            elapsed
+        );
+
+        Ok(Response::new(SearchResponse {
+            results: response_results,
+            partial: false,
+            missing_shards: vec![],
+            coverage: 1.0,
+            latency_us,
+            within_slo: latency_us < self.slo_threshold_us,
+            degraded_mode: false,
+            context_pack,
+            serving_generation: None,
+            context_pack_v1,
+            diagnostics,
+        }))
+    }
     fn request_auth_context<T>(&self, request: &Request<T>) -> AuthContext {
         auth::auth_context(request)
+    }
+
+    /// Emit one ADR-0009 access record for a completed RPC. Never blocks:
+    /// the emitter drops and counts when its queue is full, and the disabled
+    /// emitter short-circuits before any record is built.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_access_record<T>(
+        &self,
+        operation: &str,
+        ctx: &AuthContext,
+        collection: &str,
+        query_hash: String,
+        result: &Result<Response<T>, Status>,
+        start: Instant,
+        hits: impl FnOnce(&T) -> Option<u32>,
+    ) {
+        if !self.access_log.is_enabled() {
+            return;
+        }
+        let latency_us = start.elapsed().as_micros() as u64;
+        let record = AccessRecord::new(operation, ctx, collection).with_query_hash(query_hash);
+        let record = match result {
+            Ok(response) => record.finish_ok(hits(response.get_ref()), latency_us),
+            Err(status) => record.finish_error(&status.code(), latency_us),
+        };
+        self.access_log.emit(record);
     }
 
     fn metadata_in_auth_workspace(&self, metadata: &[u8], ctx: &AuthContext) -> bool {
@@ -2209,119 +3271,28 @@ where
         &self,
         request: Request<InsertRequest>,
     ) -> Result<Response<InsertResponse>, Status> {
-        let start = Instant::now();
-        let ctx = self.request_auth_context(&request);
-        let req = request.into_inner();
-
-        debug!("Insert request for ID: {}", req.id);
-        self.validate_request_collection(&req.collection)?;
-
-        // Validate input
-        if let Err(message) = Self::validate_vector_payload(&req.id, &req.vector) {
-            return Err(Status::invalid_argument(message));
-        }
-        if let Err(message) = Self::validate_metadata_json(&req.metadata) {
-            return Err(Status::invalid_argument(message));
-        }
-
-        let stamped_metadata = stamp_write_metadata(
-            &req.metadata,
-            &ctx,
-            &self.acl,
-            self.embedding_model_id.as_deref(),
-        )
-        .map_err(Status::invalid_argument)?;
-
-        let vector_id = VectorId::new(&req.id);
-        let vector: Vec<f32> = req.vector;
-        let _mutation_guard = MutationLockGuard::try_acquire(&self.mutation_locks, req.id.clone())
-            .ok_or_else(|| {
-                Status::aborted(format!(
-                    "Concurrent mutation in progress for ID: {}",
-                    req.id
-                ))
-            })?;
-
-        let old_metadata = self.ensure_insert_does_not_cross_workspace(&vector_id, &ctx)?;
-        // Soft-deleted IDs are not reusable. Check storage *before* touching the
-        // HNSW index so a failed re-insert cannot clear tombstones and briefly
-        // resurrect a deleted vector in search results.
-        if self
-            .id_mapping
-            .is_deleted(&vector_id)
-            .map_err(Self::to_status)?
-        {
-            return Err(Status::failed_precondition(format!(
-                "ID reuse is forbidden for soft-deleted vector: {}",
-                req.id
-            )));
-        }
-        let old_internal_id = self
-            .id_mapping
-            .get_internal_id(&vector_id)
-            .map_err(Self::to_status)?;
-
-        // Insert into index
-        let internal_id = self
-            .index
-            .insert(&vector_id, &vector)
-            .map_err(Self::to_status)?;
-        crash_point("insert.after_index_insert");
-
-        // Persist ID mapping, vector payload, and source text atomically in
-        // one synced batch. If this fails, rollback the index insert.
-        let mapping_result = self.id_mapping.upsert_with_vector_and_text(
-            &vector_id,
-            internal_id,
-            &vector,
-            &stamped_metadata,
-            Some(&req.text),
+        let audit_start = Instant::now();
+        let audit_ctx = self.request_auth_context(&request);
+        let audit_collection = request.get_ref().collection.clone();
+        let audit_parts = [
+            request.get_ref().id.clone().into_bytes(),
+            f32_le_bytes(&request.get_ref().vector),
+            request.get_ref().text.clone().into_bytes(),
+        ];
+        let audit_hash = self
+            .access_log
+            .query_digest(&audit_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        let audit_result = self.insert_inner(request).await;
+        self.emit_access_record(
+            "Insert",
+            &audit_ctx,
+            &audit_collection,
+            audit_hash,
+            &audit_result,
+            audit_start,
+            |response: &InsertResponse| if response.success { Some(1) } else { Some(0) },
         );
-
-        if let Err(e) = mapping_result {
-            // FIX BUG-HUNT-601: Log rollback failures instead of silently ignoring
-            if let Err(rollback_err) = self.index.delete(internal_id) {
-                tracing::error!(
-                    vector_id = %vector_id,
-                    internal_id = internal_id.0,
-                    original_error = %e,
-                    rollback_error = %rollback_err,
-                    "Failed to rollback index insert after mapping failure - orphan vector may exist"
-                );
-            }
-            return Err(Self::to_status(e));
-        }
-        crash_point("insert.after_durable_write");
-        if let Some(old_id) = old_internal_id.filter(|old_id| *old_id != internal_id) {
-            if let Err(e) = self.index.delete(old_id) {
-                warn!(
-                    vector_id = %vector_id,
-                    old_internal_id = old_id.0,
-                    error = %e,
-                    "failed to remove replaced vector during insert upsert"
-                );
-            }
-        }
-
-        // Keep BM25, context packing, and persisted source text aligned with
-        // upsert semantics. Empty text clears any previous source text.
-        self.sync_source_text(&vector_id, &req.text);
-        self.index_graph_chunk(&vector_id, &stamped_metadata, old_metadata.as_deref())
-            .map_err(|e| Status::internal(format!("graph projection failed: {e}")))?;
-        self.index_sql_metadata(&vector_id, internal_id.0, &stamped_metadata);
-
-        let elapsed = start.elapsed();
-        info!("Inserted vector {} in {:?}", req.id, elapsed);
-
-        Ok(Response::new(InsertResponse {
-            success: true,
-            id: req.id,
-            internal_id: internal_id.0,
-            visibility: Some(VisibilityInfo {
-                insert_visibility: "within_100ms".to_string(),
-                delete_visibility: String::new(),
-            }),
-        }))
+        audit_result
     }
 
     #[instrument(skip(self, request))]
@@ -2329,74 +3300,27 @@ where
         &self,
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
-        let start = Instant::now();
-        let ctx = self.request_auth_context(&request);
-        let req = request.into_inner();
-
-        debug!("Search request, top_k: {}", req.top_k);
-
-        self.validate_request_collection(&req.collection)?;
-        Self::validate_search_controls(req.top_k, req.nprobe)?;
-        Self::validate_query_vector(&req.query)?;
-
-        let metadata_filter = self
-            .compile_search_filter(&req.filter, req.tag_filter.clone(), &ctx)?
-            .map(Arc::new);
-        let top_k = req.top_k as usize;
-        let search_k = self.filtered_search_k(top_k, metadata_filter.is_some());
-        // Over-fetch when grouping so each group still has candidates after cut.
-        let fetch_k = if req.group_by.trim().is_empty() {
-            search_k
-        } else {
-            search_k.saturating_mul(4).max(search_k)
-        };
-        let params = SearchParams::new(fetch_k).with_optional_nprobe(req.nprobe);
-        let params = self.attach_metadata_predicate(params, metadata_filter);
-
-        let results = self
-            .index
-            .search(&req.query, &params)
-            .map_err(Self::to_status)?;
-
-        let elapsed = start.elapsed();
-        let latency_us = elapsed.as_micros() as u64;
-
-        let mapped: Vec<SearchResult> = results
-            .into_iter()
-            .map(|r| SearchResult {
-                id: r.id.to_string(),
-                score: r.score,
-                metadata: self.load_metadata_string(&r.id),
-            })
-            .collect();
-        let response_results = self.apply_score_and_group(
-            mapped,
-            top_k,
-            req.score_threshold,
-            &req.group_by,
-            req.group_size,
+        let audit_start = Instant::now();
+        let audit_ctx = self.request_auth_context(&request);
+        let audit_collection = request.get_ref().collection.clone();
+        let audit_parts = [
+            f32_le_bytes(&request.get_ref().query),
+            format!("{:?}", request.get_ref().filter).into_bytes(),
+        ];
+        let audit_hash = self
+            .access_log
+            .query_digest(&audit_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        let audit_result = self.search_inner(request).await;
+        self.emit_access_record(
+            "Search",
+            &audit_ctx,
+            &audit_collection,
+            audit_hash,
+            &audit_result,
+            audit_start,
+            |response: &SearchResponse| Some(response.results.len() as u32),
         );
-
-        info!(
-            "Search returned {} results in {:?}",
-            response_results.len(),
-            elapsed
-        );
-
-        Ok(Response::new(SearchResponse {
-            results: response_results,
-            partial: false,
-            missing_shards: vec![],
-            coverage: 1.0,
-            latency_us,
-            // FIX BUG-HUNT-202: Use configurable SLO threshold instead of hardcoded 50ms
-            within_slo: latency_us < self.slo_threshold_us,
-            degraded_mode: false,
-            context_pack: String::new(),
-            serving_generation: None,
-            context_pack_v1: None,
-            diagnostics: None,
-        }))
+        audit_result
     }
 
     #[instrument(skip(self, request))]
@@ -2404,74 +3328,23 @@ where
         &self,
         request: Request<DeleteRequest>,
     ) -> Result<Response<DeleteResponse>, Status> {
-        let start = Instant::now();
-        let ctx = self.request_auth_context(&request);
-        let req = request.into_inner();
-
-        debug!("Delete request for ID: {}", req.id);
-        self.validate_request_collection(&req.collection)?;
-        if let Err(message) = Self::validate_vector_id(&req.id) {
-            return Err(Status::invalid_argument(message));
-        }
-
-        let vector_id = VectorId::new(&req.id);
-        let _mutation_guard = MutationLockGuard::try_acquire(&self.mutation_locks, req.id.clone())
-            .ok_or_else(|| {
-                Status::aborted(format!(
-                    "Concurrent mutation in progress for ID: {}",
-                    req.id
-                ))
-            })?;
-        let existing_metadata = self.ensure_existing_vector_access(&vector_id, &ctx)?;
-        if existing_metadata.is_some() {
-            self.delete_graph_chunk(&vector_id, existing_metadata.as_deref())
-                .map_err(|e| Status::internal(format!("graph deletion failed: {e}")))?;
-        }
-
-        // Get internal ID and mark deleted
-        let status = match self
-            .id_mapping
-            .mark_deleted(&vector_id)
-            .map_err(Self::to_status)?
-        {
-            Some(internal_id) => {
-                crash_point("delete.after_durable_write");
-                // Mark in tombstone
-                self.index.delete(internal_id).map_err(Self::to_status)?;
-                // Keep the lexical index and document store in sync. The
-                // persisted source text was already removed inside the synced
-                // mark_deleted batch.
-                self.lexical.write().remove(&vector_id);
-                self.documents.write().remove(&vector_id);
-                self.delete_sql_metadata(&vector_id);
-                DeleteStatus::Deleted
-            }
-            None => {
-                // Check if already deleted
-                if self
-                    .id_mapping
-                    .exists(&vector_id)
-                    .map_err(Self::to_status)?
-                {
-                    DeleteStatus::AlreadyDeleted
-                } else {
-                    DeleteStatus::NotFound
-                }
-            }
-        };
-
-        let elapsed = start.elapsed();
-        info!(
-            "Delete {} completed in {:?} with status {:?}",
-            req.id, elapsed, status
+        let audit_start = Instant::now();
+        let audit_ctx = self.request_auth_context(&request);
+        let audit_collection = request.get_ref().collection.clone();
+        let audit_hash = self
+            .access_log
+            .query_digest(&[request.get_ref().id.as_bytes()]);
+        let audit_result = self.delete_inner(request).await;
+        self.emit_access_record(
+            "Delete",
+            &audit_ctx,
+            &audit_collection,
+            audit_hash,
+            &audit_result,
+            audit_start,
+            |_response: &DeleteResponse| None,
         );
-
-        Ok(Response::new(DeleteResponse {
-            success: true,
-            id: req.id,
-            status: status as i32,
-            visibility: "immediate".to_string(),
-        }))
+        audit_result
     }
 
     #[instrument(skip(self, request))]
@@ -2479,106 +3352,48 @@ where
         &self,
         request: Request<UpdateRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
-        let ctx = self.request_auth_context(&request);
-        let mut req = request.into_inner();
-
-        debug!("Update request for ID: {}", req.id);
-        self.validate_request_collection(&req.collection)?;
-
-        // Validate input
-        if req.id.is_empty() {
-            return Err(Status::invalid_argument("Vector ID cannot be empty"));
-        }
-        if req.id.len() > 1024 {
-            return Err(Status::invalid_argument(
-                "Vector ID exceeds maximum length of 1024",
-            ));
-        }
-        if req.vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
-            return Err(Status::invalid_argument(
-                "Vector contains NaN or Infinity values",
-            ));
-        }
-        if req.vector.is_empty() {
-            return Err(Status::invalid_argument("Vector cannot be empty"));
-        }
-        if let Err(message) = Self::validate_metadata_json(&req.metadata) {
-            return Err(Status::invalid_argument(message));
-        }
-
-        // Stamp workspace / embedding model after JSON validation (same as insert).
-        req.metadata = stamp_write_metadata(
-            &req.metadata,
-            &ctx,
-            &self.acl,
-            self.embedding_model_id.as_deref(),
-        )
-        .map_err(Status::invalid_argument)?;
-
-        let vector_id = VectorId::new(&req.id);
-        let _mutation_guard = MutationLockGuard::try_acquire(&self.mutation_locks, req.id.clone())
-            .ok_or_else(|| {
-                Status::aborted(format!(
-                    "Concurrent mutation in progress for ID: {}",
-                    req.id
-                ))
-            })?;
-        self.ensure_existing_vector_access(&vector_id, &ctx)?;
-
-        // Perform the update operation - lock is held by guard
-        // Guard will release lock automatically when this function returns (or panics)
-        self.do_update_locked(&req.id, &vector_id, &req.vector, &req.metadata)
+        let audit_start = Instant::now();
+        let audit_ctx = self.request_auth_context(&request);
+        let audit_collection = request.get_ref().collection.clone();
+        let audit_parts = [
+            request.get_ref().id.clone().into_bytes(),
+            f32_le_bytes(&request.get_ref().vector),
+        ];
+        let audit_hash = self
+            .access_log
+            .query_digest(&audit_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        let audit_result = self.update_inner(request).await;
+        self.emit_access_record(
+            "Update",
+            &audit_ctx,
+            &audit_collection,
+            audit_hash,
+            &audit_result,
+            audit_start,
+            |_response: &UpdateResponse| None,
+        );
+        audit_result
     }
 
     #[instrument(skip(self, request))]
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
-        let ctx = self.request_auth_context(&request);
-        let req = request.into_inner();
-        self.validate_request_collection(&req.collection)?;
-        if let Err(message) = Self::validate_vector_id(&req.id) {
-            return Err(Status::invalid_argument(message));
-        }
-
-        let vector_id = VectorId::new(&req.id);
-        self.ensure_existing_vector_access(&vector_id, &ctx)?;
-
-        // Get internal ID
-        let internal_id = self
-            .id_mapping
-            .get_internal_id(&vector_id)
-            .map_err(Self::to_status)?
-            .ok_or_else(|| Status::not_found(format!("Vector not found: {}", req.id)))?;
-
-        let stored_vector = self
-            .id_mapping
-            .get_vector(&vector_id)
-            .map_err(Self::to_status)?;
-
-        // Get vector from the hot index first, then durable storage. The
-        // fallback matters after process restart while the index is rebuilding.
-        let vector = match self
-            .index
-            .get_vector(internal_id)
-            .map_err(Self::to_status)?
-        {
-            Some(vector) => vector,
-            None => stored_vector
-                .as_ref()
-                .map(|entry| entry.vector.clone())
-                .ok_or_else(|| Status::not_found(format!("Vector not found: {}", req.id)))?,
-        };
-        let metadata = stored_vector
-            .as_ref()
-            .map(|entry| String::from_utf8_lossy(&entry.metadata).into_owned())
-            .unwrap_or_default();
-
-        Ok(Response::new(GetResponse {
-            id: req.id,
-            vector,
-            metadata,
-            found: true,
-            serving_generation: None,
-        }))
+        let audit_start = Instant::now();
+        let audit_ctx = self.request_auth_context(&request);
+        let audit_collection = request.get_ref().collection.clone();
+        let audit_hash = self
+            .access_log
+            .query_digest(&[request.get_ref().id.as_bytes()]);
+        let audit_result = self.get_inner(request).await;
+        self.emit_access_record(
+            "Get",
+            &audit_ctx,
+            &audit_collection,
+            audit_hash,
+            &audit_result,
+            audit_start,
+            |response: &GetResponse| Some(response.found as u32),
+        );
+        audit_result
     }
 
     #[instrument(skip(self, _request))]
@@ -2610,188 +3425,34 @@ where
         &self,
         request: Request<InsertBatchRequest>,
     ) -> Result<Response<InsertBatchResponse>, Status> {
-        let start = Instant::now();
-        let ctx = self.request_auth_context(&request);
-        let req = request.into_inner();
-
-        debug!("Insert batch request for {} vectors", req.vectors.len());
-        self.validate_request_collection(&req.collection)?;
-        Self::validate_unique_batch_ids(&req.vectors)?;
-
-        let mut inserted_count = 0u32;
-        let mut failed_ids = Vec::new();
-
-        for mut vector in req.vectors {
-            if let Err(message) = Self::validate_vector_payload(&vector.id, &vector.embedding) {
-                warn!(
-                    "Batch insert: ID {} failed validation: {}",
-                    vector.id, message
-                );
-                failed_ids.push(vector.id);
-                continue;
-            }
-            if let Err(message) = Self::validate_metadata_json(&vector.metadata) {
-                warn!(
-                    "Batch insert: ID {} failed metadata validation: {}",
-                    vector.id, message
-                );
-                failed_ids.push(vector.id);
-                continue;
-            }
-
-            vector.metadata = match stamp_write_metadata(
-                &vector.metadata,
-                &ctx,
-                &self.acl,
-                self.embedding_model_id.as_deref(),
-            ) {
-                Ok(metadata) => metadata,
-                Err(message) => {
-                    warn!(
-                        "Batch insert: ID {} failed workspace metadata validation: {}",
-                        vector.id, message
-                    );
-                    failed_ids.push(vector.id);
-                    continue;
-                }
-            };
-
-            let vector_id = VectorId::new(&vector.id);
-            let Some(_mutation_guard) =
-                MutationLockGuard::try_acquire(&self.mutation_locks, vector.id.clone())
-            else {
-                warn!(
-                    "Batch insert: ID {} has a concurrent mutation in progress",
-                    vector.id
-                );
-                failed_ids.push(vector.id);
-                continue;
-            };
-            let old_metadata = match self.ensure_insert_does_not_cross_workspace(&vector_id, &ctx) {
-                Ok(metadata) => metadata,
-                Err(e) => {
-                    warn!(
-                        "Batch insert: ID {} failed workspace ownership check: {}",
-                        vector.id, e
-                    );
-                    failed_ids.push(vector.id);
-                    continue;
-                }
-            };
-            match self.id_mapping.is_deleted(&vector_id) {
-                Ok(true) => {
-                    warn!(
-                        "Batch insert: ID {} is soft-deleted; reuse is forbidden",
-                        vector.id
-                    );
-                    failed_ids.push(vector.id);
-                    continue;
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    warn!(
-                        "Batch insert: ID {} failed deleted-state lookup: {}",
-                        vector.id, e
-                    );
-                    failed_ids.push(vector.id);
-                    continue;
-                }
-            }
-            let old_internal_id = match self.id_mapping.get_internal_id(&vector_id) {
-                Ok(internal_id) => internal_id,
-                Err(e) => {
-                    warn!(
-                        "Batch insert: ID {} failed internal id lookup: {}",
-                        vector.id, e
-                    );
-                    failed_ids.push(vector.id);
-                    continue;
-                }
-            };
-
-            match self.index.insert(&vector_id, &vector.embedding) {
-                Ok(internal_id) => {
-                    match self.id_mapping.upsert_with_vector_and_text(
-                        &vector_id,
-                        internal_id,
-                        &vector.embedding,
-                        &vector.metadata,
-                        Some(&vector.text),
-                    ) {
-                        Ok(_) => {
-                            crash_point("insert_batch.after_durable_write");
-                            if let Some(old_id) =
-                                old_internal_id.filter(|old_id| *old_id != internal_id)
-                            {
-                                if let Err(e) = self.index.delete(old_id) {
-                                    warn!(
-                                        vector_id = %vector.id,
-                                        old_internal_id = old_id.0,
-                                        error = %e,
-                                        "Batch insert: failed to remove replaced vector"
-                                    );
-                                }
-                            }
-                            self.sync_source_text(&vector_id, &vector.text);
-                            if let Err(e) = self.index_graph_chunk(
-                                &vector_id,
-                                &vector.metadata,
-                                old_metadata.as_deref(),
-                            ) {
-                                warn!(
-                                    vector_id = %vector.id,
-                                    error = %e,
-                                    "Batch insert: graph projection failed"
-                                );
-                                failed_ids.push(vector.id);
-                                continue;
-                            }
-                            self.index_sql_metadata(&vector_id, internal_id.0, &vector.metadata);
-                            inserted_count += 1;
-                        }
-                        Err(e) => {
-                            // FIX BUG-046, BUG-HUNT-601: Rollback and log failures
-                            if let Err(rollback_err) = self.index.delete(internal_id) {
-                                tracing::error!(
-                                    vector_id = %vector.id,
-                                    internal_id = internal_id.0,
-                                    original_error = %e,
-                                    rollback_error = %rollback_err,
-                                    "Batch insert: rollback failed after mapping create failure - orphan vector may exist"
-                                );
-                            }
-                            warn!(
-                                "Batch insert: ID {} failed during id_mapping.create: {}",
-                                vector.id, e
-                            );
-                            failed_ids.push(vector.id);
-                        }
-                    }
-                }
-                Err(e) => {
-                    // FIX BUG-074: Log error details for failed inserts
-                    warn!(
-                        "Batch insert: ID {} failed during index.insert: {}",
-                        vector.id, e
-                    );
-                    failed_ids.push(vector.id);
-                }
-            }
-        }
-
-        let elapsed = start.elapsed();
-        info!(
-            "Batch insert: {} succeeded, {} failed in {:?}",
-            inserted_count,
-            failed_ids.len(),
-            elapsed
+        let audit_start = Instant::now();
+        let audit_ctx = self.request_auth_context(&request);
+        let audit_collection = request.get_ref().collection.clone();
+        let audit_parts: Vec<Vec<u8>> = request
+            .get_ref()
+            .vectors
+            .iter()
+            .flat_map(|vector| {
+                [
+                    vector.id.clone().into_bytes(),
+                    f32_le_bytes(&vector.embedding),
+                ]
+            })
+            .collect();
+        let audit_hash = self
+            .access_log
+            .query_digest(&audit_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        let audit_result = self.insert_batch_inner(request).await;
+        self.emit_access_record(
+            "InsertBatch",
+            &audit_ctx,
+            &audit_collection,
+            audit_hash,
+            &audit_result,
+            audit_start,
+            |response: &InsertBatchResponse| Some(response.inserted_count),
         );
-
-        Ok(Response::new(InsertBatchResponse {
-            success: failed_ids.is_empty(),
-            inserted_count,
-            failed_ids,
-        }))
+        audit_result
     }
 
     #[instrument(skip(self, request))]
@@ -2991,454 +3652,28 @@ where
         &self,
         request: Request<TextSearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
-        let start = Instant::now();
-        let ctx = self.request_auth_context(&request);
-        let req = request.into_inner();
-
-        if req.text.trim().is_empty() {
-            return Err(Status::invalid_argument("Text cannot be empty"));
-        }
-        self.validate_request_collection(&req.collection)?;
-        Self::validate_search_controls(req.top_k, req.nprobe)?;
-        Self::validate_text_search_options(&req)?;
-
-        let metadata_filter = self
-            .compile_search_filter(&req.filter, req.tag_filter.clone(), &ctx)?
-            .map(Arc::new);
-
-        let requested_mode = Self::requested_text_retrieval_mode(&req)?;
-        let mut planner_input = PlannerInput::new(req.text.clone())
-            .with_pack(req.pack)
-            .with_metadata_filter(metadata_filter.is_some());
-        if let Some(mode) = requested_mode {
-            planner_input = planner_input.with_requested_mode(mode);
-        }
-        let planner_trace = plan_query(&planner_input);
-        if matches!(planner_trace.mode, RetrievalMode::StructuredSql) {
-            return self.sql_metadata_text_search(&req, start, metadata_filter.as_deref(), &ctx);
-        }
-        debug!(
-            mode = ?planner_trace.mode,
-            graph_enabled = planner_trace.graph_enabled,
-            reasons = ?planner_trace.reasons,
-            "TextSearch planner trace"
+        let audit_start = Instant::now();
+        let audit_ctx = self.request_auth_context(&request);
+        let audit_collection = request.get_ref().collection.clone();
+        let audit_parts = [
+            request.get_ref().text.clone().into_bytes(),
+            format!("{:?}", request.get_ref().filter).into_bytes(),
+            request.get_ref().retrieval_mode.clone().into_bytes(),
+        ];
+        let audit_hash = self
+            .access_log
+            .query_digest(&audit_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        let audit_result = self.text_search_inner(request).await;
+        self.emit_access_record(
+            "TextSearch",
+            &audit_ctx,
+            &audit_collection,
+            audit_hash,
+            &audit_result,
+            audit_start,
+            |response: &SearchResponse| Some(response.results.len() as u32),
         );
-
-        let top_k = req.top_k as usize;
-        // Over-fetch a candidate pool when a later stage (fusion, rerank,
-        // diversity) needs room to reorder; otherwise fetch exactly top_k.
-        let use_dense = planner_trace.vector_weight > 0.0;
-        let use_lexical = planner_trace.lexical_weight > 0.0;
-        let mut dense_candidate_limited = false;
-        let needs_pool = (use_dense && use_lexical) || req.rerank || req.diversity;
-        let mut search_k = if needs_pool {
-            top_k.saturating_mul(4).clamp(top_k, top_k.max(200))
-        } else {
-            top_k
-        };
-        search_k = self.filtered_search_k(search_k, metadata_filter.is_some());
-
-        // Dense stage.
-        let dense = if use_dense {
-            let provider = self.embedding_provider.as_ref().ok_or_else(|| {
-                Status::unavailable(
-                    "TextSearch vector retrieval requires an embedding provider to be configured",
-                )
-            })?;
-            let query_vector = provider
-                .embed_text(&req.text)
-                .map_err(|e| Status::internal(format!("Embedding generation failed: {}", e)))?;
-            Self::validate_embedding_vector(&query_vector)?;
-
-            debug!(
-                text_len = req.text.len(),
-                embedding_dim = query_vector.len(),
-                "TextSearch embedding generated"
-            );
-
-            let params = SearchParams::new(search_k).with_optional_nprobe(req.nprobe);
-            let params = self.attach_metadata_predicate(params, metadata_filter.clone());
-
-            // Drop only truly non-finite scores (NaN, inf, -inf) from the
-            // raw index output. Zero-score hits are kept here so dense-only
-            // and lexical-fusion paths can still surface them.
-            let dense_window = self
-                .index
-                .search_window(&query_vector, &params)
-                .map_err(Self::to_status)?;
-            let mut dense_hits = dense_window.results;
-            dense_candidate_limited = dense_window.candidate_limited;
-            dense_hits.retain(|r| r.score.is_finite());
-            dense_hits
-        } else {
-            Vec::new()
-        };
-
-        let lexical = if use_lexical {
-            let lexical = self.lexical.read();
-            let lexical_k = if metadata_filter.is_some() {
-                lexical.len().max(search_k)
-            } else {
-                search_k
-            };
-            lexical.search(&req.text, lexical_k)
-        } else {
-            Vec::new()
-        };
-        let dense_candidate_count = dense.len();
-        let lexical_candidate_count = lexical.len();
-
-        // Base ranked list: hybrid fusion (dense + lexical via RRF) or dense-only.
-        // An empty lexical index degrades hybrid cleanly to dense ranking.
-        let mut ranked: Vec<ScoredId> = if use_dense && use_lexical && !lexical.is_empty() {
-            // Only allow zero/non-positive dense scores into RRF when the same id
-            // also appears in the lexical results (proving a real non-dense signal).
-            // This prevents orthogonal dense hits with no lexical overlap from
-            // gaming fusion by index position alone.
-            let lexical_ids: HashSet<_> = lexical.iter().map(|s| s.id.clone()).collect();
-            let dense_scored: Vec<ScoredId> = dense
-                .iter()
-                .filter(|r| r.score > 0.0 || lexical_ids.contains(&r.id))
-                .map(|r| ScoredId::new(r.id.clone(), r.score))
-                .collect();
-            let fuser = HybridFuser::new().with_weights(
-                req.dense_weight.unwrap_or(planner_trace.vector_weight),
-                req.lexical_weight.unwrap_or(planner_trace.lexical_weight),
-            );
-            fuser.fuse(&dense_scored, &lexical, search_k)
-        } else if use_lexical && !lexical.is_empty() {
-            lexical
-        } else {
-            dense
-                .iter()
-                .map(|r| ScoredId::new(r.id.clone(), r.score))
-                .collect()
-        };
-
-        let candidates_before_filter = ranked.len();
-        if let Some(metadata_filter) = &metadata_filter {
-            ranked.retain(|s| self.metadata_matches_filter(&s.id, metadata_filter));
-        }
-        let filtered_candidates = candidates_before_filter.saturating_sub(ranked.len());
-
-        let graph_depth = req
-            .graph_max_depth
-            .unwrap_or_else(|| u32::from(planner_trace.graph_depth.max(DEFAULT_GRAPH_DEPTH as u8)))
-            as u8;
-        let graph_per_seed_fanout = req
-            .graph_per_seed_fanout
-            .unwrap_or(DEFAULT_GRAPH_PER_SEED_FANOUT) as usize;
-        let graph_max_expanded_nodes =
-            req.graph_max_expanded_nodes
-                .unwrap_or(DEFAULT_GRAPH_EXPANDED_NODES) as usize;
-        let mut graph_expansions = Vec::new();
-        let mut graph_expanded_ids = HashSet::<VectorId>::new();
-        let mut graph_truncated = false;
-
-        if planner_trace.graph_enabled {
-            if let Some(graph) = &self.graph_index {
-                let mut seen: HashSet<VectorId> = ranked.iter().map(|s| s.id.clone()).collect();
-                let base_result_seeds: Vec<ScoredId> =
-                    ranked.iter().take(MAX_GRAPH_SEEDS).cloned().collect();
-                let graph_seed_score = ranked
-                    .iter()
-                    .map(|item| item.score)
-                    .filter(|score| score.is_finite())
-                    .fold(None, |best: Option<f32>, score| {
-                        Some(best.map_or(score, |current| current.max(score)))
-                    })
-                    // An exact file/symbol query seed is authoritative enough
-                    // to beat the best semantic seed at hop one; subsequent
-                    // hops still decay by GRAPH_HOP_DECAY.
-                    .map(|score| score / GRAPH_HOP_DECAY + 0.0001)
-                    .unwrap_or(1.0);
-
-                for seed_node in Self::graph_seed_nodes_from_query(&req.text, &ctx.workspace_id)
-                    .into_iter()
-                    .take(MAX_GRAPH_SEEDS)
-                {
-                    let remaining =
-                        graph_max_expanded_nodes.saturating_sub(graph_expanded_ids.len());
-                    if remaining == 0 {
-                        graph_truncated = true;
-                        break;
-                    }
-                    let graph_request = RelatedChunksRequest::new(seed_node.clone())
-                        .with_max_depth(graph_depth)
-                        .with_per_hop_limit(graph_per_seed_fanout)
-                        .with_limit(remaining);
-                    match graph.related_chunks_with_trace(graph_request) {
-                        Ok(chunks) => {
-                            for chunk in chunks {
-                                let id = chunk.vector_id;
-                                if !graph_expanded_ids.insert(id.clone()) {
-                                    continue;
-                                }
-                                let score =
-                                    graph_seed_score * GRAPH_HOP_DECAY.powi(i32::from(chunk.hop));
-                                if let Some(metadata_filter) = &metadata_filter {
-                                    if !self.metadata_matches_filter(&id, metadata_filter) {
-                                        continue;
-                                    }
-                                }
-                                if req.include_diagnostics {
-                                    graph_expansions.push(GraphExpansionEvidence {
-                                        result_id: id.to_string(),
-                                        seed_id: seed_node.to_string(),
-                                        hop: u32::from(chunk.hop),
-                                        score_contribution: score,
-                                        path: chunk
-                                            .path_edges
-                                            .iter()
-                                            .map(Self::graph_edge_evidence)
-                                            .collect(),
-                                    });
-                                }
-                                if !seen.insert(id.clone()) {
-                                    if let Some(existing) = ranked.iter_mut().find(|s| s.id == id) {
-                                        existing.score = existing.score.max(score);
-                                    }
-                                    continue;
-                                }
-                                ranked.push(ScoredId::new(id, score));
-                            }
-                        }
-                        Err(e) => {
-                            warn!(seed = %seed_node, error = %e, "graph query seed expansion failed");
-                        }
-                    }
-                }
-
-                for seed in base_result_seeds {
-                    let remaining =
-                        graph_max_expanded_nodes.saturating_sub(graph_expanded_ids.len());
-                    if remaining == 0 {
-                        graph_truncated = true;
-                        break;
-                    }
-                    let seed_node = Self::chunk_node_id(&ctx.workspace_id, &seed.id);
-                    let graph_request = RelatedChunksRequest::new(seed_node.clone())
-                        .with_max_depth(graph_depth)
-                        .with_per_hop_limit(graph_per_seed_fanout)
-                        .with_limit(remaining);
-                    match graph.related_chunks_with_trace(graph_request) {
-                        Ok(chunks) => {
-                            for chunk in chunks {
-                                let id = chunk.vector_id;
-                                if !graph_expanded_ids.insert(id.clone()) {
-                                    continue;
-                                }
-                                let score = seed.score * GRAPH_HOP_DECAY.powi(i32::from(chunk.hop));
-                                if let Some(metadata_filter) = &metadata_filter {
-                                    if !self.metadata_matches_filter(&id, metadata_filter) {
-                                        continue;
-                                    }
-                                }
-                                if req.include_diagnostics {
-                                    graph_expansions.push(GraphExpansionEvidence {
-                                        result_id: id.to_string(),
-                                        seed_id: seed.id.to_string(),
-                                        hop: u32::from(chunk.hop),
-                                        score_contribution: score,
-                                        path: chunk
-                                            .path_edges
-                                            .iter()
-                                            .map(Self::graph_edge_evidence)
-                                            .collect(),
-                                    });
-                                }
-                                if seen.insert(id.clone()) {
-                                    ranked.push(ScoredId::new(id, score));
-                                } else if let Some(existing) =
-                                    ranked.iter_mut().find(|item| item.id == id)
-                                {
-                                    existing.score = existing.score.max(score);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!(seed = %seed_node, error = %e, "graph result expansion failed");
-                        }
-                    }
-                }
-                ranked.sort_by(|a, b| {
-                    b.score
-                        .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| a.id.as_str().cmp(b.id.as_str()))
-                });
-                if graph_expanded_ids.len() >= graph_max_expanded_nodes {
-                    graph_truncated = true;
-                }
-            }
-        }
-
-        // Optional reranking (RET-005): re-score candidates by query-text
-        // relevance over their stored source text.
-        if req.rerank {
-            let docs = self.documents.read();
-            let items: Vec<RerankItem> = ranked
-                .iter()
-                .map(|s| {
-                    let text = docs.get(&s.id).cloned().unwrap_or_default();
-                    RerankItem::new(s.id.clone(), text, s.score)
-                })
-                .collect();
-            drop(docs);
-            ranked = LexicalOverlapReranker.rerank(&req.text, items);
-        }
-
-        // Optional diversity (RET-006): MMR reselection over candidate embeddings
-        // to suppress near-duplicate results.
-        if req.diversity {
-            let lambda = req.mmr_lambda.unwrap_or(0.5);
-            let items: Vec<MmrItem> = ranked
-                .iter()
-                .filter_map(|s| {
-                    self.id_mapping
-                        .get_vector(&s.id)
-                        .ok()
-                        .flatten()
-                        .map(|e| MmrItem::new(s.id.clone(), s.score, e.vector))
-                })
-                .collect();
-            if !items.is_empty() {
-                ranked = mmr(&items, lambda, ranked.len());
-            }
-        }
-
-        // Keep a larger pool before score/group cuts so threshold/group_by can select.
-        let graph_pool_cap = if planner_trace.graph_enabled {
-            top_k.saturating_add(graph_max_expanded_nodes)
-        } else {
-            top_k
-        };
-        let pool_cap = top_k.saturating_mul(8).max(top_k).max(graph_pool_cap);
-        ranked.truncate(pool_cap);
-        let mapped: Vec<SearchResult> = ranked
-            .iter()
-            .map(|s| SearchResult {
-                metadata: self.load_metadata_string(&s.id),
-                id: s.id.to_string(),
-                score: s.score,
-            })
-            .collect();
-        let response_results = self.apply_score_and_group(
-            mapped.clone(),
-            top_k,
-            req.score_threshold,
-            &req.group_by,
-            req.group_size,
-        );
-        let response_ids: HashSet<&str> = response_results
-            .iter()
-            .map(|result| result.id.as_str())
-            .collect();
-        let pack_candidates = if req.pack {
-            let candidates: Vec<SearchResult> = mapped
-                .into_iter()
-                .filter(|result| {
-                    response_ids.contains(result.id.as_str())
-                        || graph_expanded_ids.contains(&VectorId::new(&result.id))
-                })
-                .collect();
-            self.apply_score_and_group(
-                candidates,
-                pool_cap,
-                req.score_threshold,
-                &req.group_by,
-                req.group_size,
-            )
-        } else {
-            Vec::new()
-        };
-
-        // Optionally assemble a source-grounded, citation-bearing context pack
-        // (PACK-*). Matched child chunks are expanded to their parent context
-        // (CHUNK-003) via the `parent_id` metadata convention, deduped by parent,
-        // then assembled within the token budget.
-        let built_context_pack = if req.pack {
-            Some(self.build_context_pack(
-                &pack_candidates,
-                Some(&graph_expanded_ids),
-                req.pack_token_budget.unwrap_or(1024) as usize,
-                dense_candidate_limited,
-            ))
-        } else {
-            None
-        };
-        let context_pack = built_context_pack
-            .as_ref()
-            .map(|pack| pack.legacy_text.clone())
-            .unwrap_or_default();
-        let context_pack_v1 = built_context_pack.map(|pack| pack.wire);
-        let diagnostic_ids: HashSet<&str> = response_results
-            .iter()
-            .chain(pack_candidates.iter())
-            .map(|result| result.id.as_str())
-            .collect();
-        graph_expansions.retain(|expansion| diagnostic_ids.contains(expansion.result_id.as_str()));
-        let diagnostics = req.include_diagnostics.then(|| RetrievalDiagnostics {
-            requested_mode: requested_mode
-                .map(Self::retrieval_mode_name)
-                .unwrap_or("auto")
-                .to_string(),
-            resolved_mode: Self::retrieval_mode_name(planner_trace.mode).to_string(),
-            planner_reasons: planner_trace.reasons.clone(),
-            dense_candidates: u32::try_from(dense_candidate_count).unwrap_or(u32::MAX),
-            lexical_candidates: u32::try_from(lexical_candidate_count).unwrap_or(u32::MAX),
-            filtered_candidates: u32::try_from(filtered_candidates).unwrap_or(u32::MAX),
-            filter_applied: metadata_filter.is_some(),
-            rerank_applied: req.rerank,
-            diversity_applied: req.diversity,
-            graph_depth: if planner_trace.graph_enabled {
-                u32::from(graph_depth)
-            } else {
-                0
-            },
-            graph_per_seed_fanout: if planner_trace.graph_enabled {
-                u32::try_from(graph_per_seed_fanout).unwrap_or(u32::MAX)
-            } else {
-                0
-            },
-            graph_max_expanded_nodes: if planner_trace.graph_enabled {
-                u32::try_from(graph_max_expanded_nodes).unwrap_or(u32::MAX)
-            } else {
-                0
-            },
-            graph_expanded_nodes: u32::try_from(graph_expanded_ids.len()).unwrap_or(u32::MAX),
-            graph_truncated,
-            graph_hop_decay: if planner_trace.graph_enabled {
-                GRAPH_HOP_DECAY
-            } else {
-                0.0
-            },
-            graph_expansions,
-        });
-
-        let elapsed = start.elapsed();
-        let latency_us = elapsed.as_micros() as u64;
-
-        info!(
-            "TextSearch for '{}' returned {} results in {:?}",
-            Self::preview_text(&req.text, 50),
-            response_results.len(),
-            elapsed
-        );
-
-        Ok(Response::new(SearchResponse {
-            results: response_results,
-            partial: false,
-            missing_shards: vec![],
-            coverage: 1.0,
-            latency_us,
-            within_slo: latency_us < self.slo_threshold_us,
-            degraded_mode: false,
-            context_pack,
-            serving_generation: None,
-            context_pack_v1,
-            diagnostics,
-        }))
+        audit_result
     }
 }
 
@@ -4236,6 +4471,8 @@ mod tests {
             workspace_id: workspace.to_string(),
             agent_id: Some("agent-test".to_string()),
             authenticated: true,
+            principal_id: None,
+            credential_id: None,
         }
     }
 

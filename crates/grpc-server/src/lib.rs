@@ -4,6 +4,7 @@
 
 #![allow(clippy::result_large_err)]
 
+mod access_log;
 mod acl;
 mod admin;
 pub mod auth;
@@ -25,6 +26,7 @@ mod service;
 mod tags;
 mod webhook;
 
+pub use access_log::{AccessLog, AccessRecord};
 pub use admin::{AdminServiceImpl, AdminState, RegisteredTask};
 pub use auth::{
     memory_auth_context, AuthContext, AuthInterceptor, AuthRuntime, AuthorizedMemoryContext,

@@ -948,6 +948,9 @@ pub struct ObservabilityConfig {
     pub metrics_port: u16,
     pub log_level: String,
     pub log_format: LogFormat,
+    /// Emit-only data-plane access records (ADR-0009). Disabled by default.
+    #[serde(default)]
+    pub access_log: AccessLogConfig,
 }
 
 impl Default for ObservabilityConfig {
@@ -959,6 +962,37 @@ impl Default for ObservabilityConfig {
             metrics_port: 9090,
             log_level: "info".to_string(),
             log_format: LogFormat::Json,
+            access_log: AccessLogConfig::default(),
+        }
+    }
+}
+
+/// Emit-only access-record spool (ADR-0009). The spool is a bounded delivery
+/// buffer, not an audit store: records are candidate events for a governance
+/// platform, never evidence in themselves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessLogConfig {
+    /// Master switch. When false the emitter is a no-op branch.
+    pub enabled: bool,
+    /// Directory for the JSONL spool files.
+    pub directory: String,
+    /// Rotate the active spool file once it exceeds this many bytes.
+    pub max_file_bytes: u64,
+    /// Retain at most this many rotated files; older ones are deleted.
+    pub max_files: u32,
+    /// Bound on buffered records waiting for the writer; excess is dropped
+    /// and counted, never allowed to slow the data plane.
+    pub queue_capacity: usize,
+}
+
+impl Default for AccessLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            directory: "./data/access-log".to_string(),
+            max_file_bytes: 64 * 1024 * 1024,
+            max_files: 8,
+            queue_capacity: 4096,
         }
     }
 }
@@ -1338,6 +1372,27 @@ mod tests {
         assert!(!rendered.contains("real-access"), "{rendered}");
         assert!(!rendered.contains("real-secret"), "{rendered}");
         assert!(rendered.contains("<redacted>"), "{rendered}");
+    }
+
+    #[test]
+    fn test_embedding_egress_policy_rejects_malformed_and_non_http_urls() {
+        for url in [
+            "not a url",
+            "ftp://127.0.0.1:8081/v1/embeddings",
+            "unix:///var/run/embedding.sock",
+            "https://",
+        ] {
+            let config = EmbeddingClientConfig {
+                enabled: true,
+                url: url.to_string(),
+                require_local_embeddings: true,
+                ..Default::default()
+            };
+            assert!(
+                config.validate_egress_policy().is_err(),
+                "{url} should be rejected"
+            );
+        }
     }
 
     #[test]

@@ -16,9 +16,9 @@ use akidb_faiss::{
 };
 use akidb_graph::NativeGraphIndex;
 use akidb_grpc::{
-    export_metrics, mcp::AuthoritativeMemoryMcp, AdminState, AkiDbService, AuthInterceptor,
-    AuthRuntime, EmbeddingProvider, ManagementServiceImpl, ManagementState, MemoryServiceImpl,
-    StagingRegistry,
+    export_metrics, mcp::AuthoritativeMemoryMcp, AccessLog, AdminState, AkiDbService,
+    AuthInterceptor, AuthRuntime, EmbeddingProvider, ManagementServiceImpl, ManagementState,
+    MemoryServiceImpl, StagingRegistry,
 };
 #[cfg(feature = "generation-s3")]
 use akidb_grpc::{
@@ -1393,6 +1393,18 @@ fn build_service(
         service.reconcile_projections(true);
     }
 
+    // ADR-0009 emit-only access records. Off by default; when enabled the
+    // spool writer runs on the shared runtime and the data plane only does a
+    // non-blocking enqueue.
+    let access_log = AccessLog::spawn(&config.observability.access_log)?;
+    if access_log.is_enabled() {
+        info!(
+            directory = %config.observability.access_log.directory,
+            "Access-record emission enabled (spool sink)"
+        );
+        service = service.with_access_log(access_log);
+    }
+
     Ok(service)
 }
 
@@ -1667,6 +1679,24 @@ mod tests {
         assert!(error
             .to_string()
             .contains("server.tls_cert_path is required"));
+    }
+
+    #[test]
+    fn cli_flag_enables_embedding_egress_policy() {
+        use clap::Parser;
+
+        #[derive(clap::Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            args: Args,
+        }
+
+        let parsed = TestCli::try_parse_from(["akidb-server", "--require-local-embeddings"])
+            .expect("flag should parse");
+        assert!(parsed.args.require_local_embeddings);
+
+        let default = TestCli::try_parse_from(["akidb-server"]).expect("defaults should parse");
+        assert!(!default.args.require_local_embeddings);
     }
 
     #[test]
