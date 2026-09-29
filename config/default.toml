@@ -238,3 +238,9 @@ model = "Qwen/Qwen3-Embedding-4B"
 dimensions = 2560
 timeout_ms = 10000
 max_batch_size = 32
+# Zero external egress: when true, startup fails closed unless the embedding
+# endpoint above resolves to localhost / a loopback IP. Use this whenever the
+# deployment must never send text to a third-party embedding API. Also
+# available as `akidb server --require-local-embeddings` or
+# AKIDB_REQUIRE_LOCAL_EMBEDDINGS=true.
+require_local_embeddings = false

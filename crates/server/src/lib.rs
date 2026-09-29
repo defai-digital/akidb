@@ -141,6 +141,11 @@ pub struct Args {
     /// Run in standalone mode (skip SeaweedFS, no external deps)
     #[arg(long, default_value_t = false)]
     pub standalone: bool,
+
+    /// Fail startup unless the embedding endpoint is loopback-only
+    /// (zero external egress for text embeddings)
+    #[arg(long, default_value_t = false, env = "AKIDB_REQUIRE_LOCAL_EMBEDDINGS")]
+    pub require_local_embeddings: bool,
 }
 
 fn apply_runtime_overrides(
@@ -216,6 +221,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         args.dimensions,
         args.auth_mode.as_deref(),
     )?;
+    if args.require_local_embeddings {
+        config.embedding.require_local_embeddings = true;
+    }
     if config.memory.enabled {
         validate_memory_paths(&config)?;
     }
@@ -363,6 +371,7 @@ async fn run_generation_server(
     auth_runtime: AuthRuntime,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_generation_paths(config)?;
+    config.embedding.validate_egress_policy()?;
     let generation = &config.generation_serving;
     let generation_store = Arc::new(GenerationStore::open(&generation.generation_root)?);
     let materializer = Arc::new(GenerationMaterializer::new(
@@ -936,11 +945,14 @@ pub async fn run_mcp(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .with_target(true)
         .init();
 
-    let config = if args.config.exists() {
+    let mut config = if args.config.exists() {
         toml::from_str::<AkiDbConfig>(&std::fs::read_to_string(&args.config)?)?
     } else {
         AkiDbConfig::default()
     };
+    if args.require_local_embeddings {
+        config.embedding.require_local_embeddings = true;
+    }
     if config.generation_serving.enabled {
         return Err(
             "generation serving is currently available only on the authenticated gRPC data plane; MCP startup is refused to prevent a mutable-path bypass"
@@ -1147,6 +1159,10 @@ fn hnsw_snapshot_dir(rocksdb_path: &Path) -> PathBuf {
 fn build_service(
     config: &AkiDbConfig,
 ) -> Result<AkiDbService<HnswIndex, RocksDbBackend>, Box<dyn std::error::Error>> {
+    // Zero-external-egress policy: refuse to start when the operator pinned
+    // loopback-only embeddings but the endpoint points elsewhere.
+    config.embedding.validate_egress_policy()?;
+
     // Initialize storage
     let rocksdb_path = config.storage.rocksdb_path.clone();
     info!("Initializing RocksDB at {}", rocksdb_path);
@@ -1651,5 +1667,37 @@ mod tests {
         assert!(error
             .to_string()
             .contains("server.tls_cert_path is required"));
+    }
+
+    #[test]
+    fn build_service_fails_closed_on_external_embedding_egress() {
+        let rocksdb_path = unique_temp_path("egress-external");
+        let mut config = AkiDbConfig::default();
+        config.storage.rocksdb_path = rocksdb_path.display().to_string();
+        config.embedding.enabled = true;
+        config.embedding.url = "https://api.openai.com/v1/embeddings".to_string();
+        config.embedding.require_local_embeddings = true;
+
+        let error = build_service(&config).map(|_| ()).unwrap_err();
+
+        assert!(error.to_string().contains("require_local_embeddings"));
+
+        let _ = std::fs::remove_dir_all(rocksdb_path);
+    }
+
+    #[test]
+    fn build_service_allows_loopback_embedding_under_egress_policy() {
+        let rocksdb_path = unique_temp_path("egress-loopback");
+        let mut config = AkiDbConfig::default();
+        config.storage.rocksdb_path = rocksdb_path.display().to_string();
+        config.embedding.enabled = true;
+        config.embedding.url = "http://127.0.0.1:8081/v1/embeddings".to_string();
+        config.embedding.require_local_embeddings = true;
+
+        let service = build_service(&config);
+
+        assert!(service.is_ok(), "{}", service.map(|_| ()).unwrap_err());
+
+        let _ = std::fs::remove_dir_all(rocksdb_path);
     }
 }

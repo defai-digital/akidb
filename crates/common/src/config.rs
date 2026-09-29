@@ -1037,6 +1037,11 @@ pub struct EmbeddingClientConfig {
     pub timeout_ms: u64,
     /// Maximum batch size per request
     pub max_batch_size: usize,
+    /// Fail closed unless the embedding endpoint is loopback-only. Operators
+    /// handling governed data set this so a config mistake can never ship text
+    /// to a third-party embedding API.
+    #[serde(default)]
+    pub require_local_embeddings: bool,
 }
 
 impl Default for EmbeddingClientConfig {
@@ -1048,7 +1053,43 @@ impl Default for EmbeddingClientConfig {
             dimensions: 2560,
             timeout_ms: 10_000,
             max_batch_size: 32,
+            require_local_embeddings: false,
         }
+    }
+}
+
+impl EmbeddingClientConfig {
+    /// Enforce the zero-external-egress policy: when
+    /// `require_local_embeddings` is set and the client is enabled, the
+    /// endpoint URL must be an `http`/`https` URL whose host is `localhost`
+    /// or a loopback IP address. Anything else is a startup error.
+    pub fn validate_egress_policy(&self) -> Result<(), String> {
+        if !self.require_local_embeddings || !self.enabled {
+            return Ok(());
+        }
+        let parsed = Url::parse(self.url.trim())
+            .map_err(|_| format!("embedding.url {:?} is not a valid URL", self.url))?;
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return Err(format!(
+                "embedding.url {:?} must use http or https under require_local_embeddings",
+                self.url
+            ));
+        }
+        let loopback = match parsed.host() {
+            Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => {
+                return Err(format!("embedding.url {:?} has no host", self.url));
+            }
+        };
+        if !loopback {
+            return Err(format!(
+                "embedding.url {:?} is not a loopback endpoint; require_local_embeddings forbids external egress",
+                self.url
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1297,5 +1338,68 @@ mod tests {
         assert!(!rendered.contains("real-access"), "{rendered}");
         assert!(!rendered.contains("real-secret"), "{rendered}");
         assert!(rendered.contains("<redacted>"), "{rendered}");
+    }
+
+    #[test]
+    fn test_embedding_egress_policy_is_inert_until_requested() {
+        let external = EmbeddingClientConfig {
+            enabled: true,
+            url: "https://api.openai.com/v1/embeddings".to_string(),
+            ..Default::default()
+        };
+        assert!(external.validate_egress_policy().is_ok());
+    }
+
+    #[test]
+    fn test_embedding_egress_policy_rejects_external_endpoints() {
+        for url in [
+            "https://api.openai.com/v1/embeddings",
+            "http://embedding.internal.example:8081/v1/embeddings",
+            "http://10.0.0.5:8081/v1/embeddings",
+            "http://[fd00::1]:8081/v1/embeddings",
+        ] {
+            let config = EmbeddingClientConfig {
+                enabled: true,
+                url: url.to_string(),
+                require_local_embeddings: true,
+                ..Default::default()
+            };
+            assert!(
+                config.validate_egress_policy().is_err(),
+                "{url} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_embedding_egress_policy_accepts_loopback_endpoints() {
+        for url in [
+            "http://127.0.0.1:8081/v1/embeddings",
+            "http://localhost:8081/v1/embeddings",
+            "http://127.0.0.10:8081/v1/embeddings",
+            "http://[::1]:8081/v1/embeddings",
+        ] {
+            let config = EmbeddingClientConfig {
+                enabled: true,
+                url: url.to_string(),
+                require_local_embeddings: true,
+                ..Default::default()
+            };
+            assert!(
+                config.validate_egress_policy().is_ok(),
+                "{url} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn test_embedding_egress_policy_ignores_disabled_client() {
+        let config = EmbeddingClientConfig {
+            enabled: false,
+            url: "https://api.openai.com/v1/embeddings".to_string(),
+            require_local_embeddings: true,
+            ..Default::default()
+        };
+        assert!(config.validate_egress_policy().is_ok());
     }
 }
