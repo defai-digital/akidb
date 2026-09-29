@@ -411,6 +411,7 @@ async fn run_generation_server(
             acl: config.auth.acl.clone(),
             filter_settings: config.index.filter.clone(),
             embedding_provider,
+            access_log: AccessLog::spawn(&config.observability.access_log)?,
         },
     )?;
     let default_scope = KnowledgeScope::new(

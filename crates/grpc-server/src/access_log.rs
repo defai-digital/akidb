@@ -37,8 +37,9 @@ pub const HASH_KEY_ENV: &str = "AKIDB_ACCESS_LOG_HASH_KEY";
 #[derive(Debug, Clone, Serialize)]
 pub struct AccessRecord {
     pub record_id: String,
-    /// Correlation id shared by every record produced for one client
-    /// request (fan-out shards record the same id).
+    /// Correlation id for this client request. In v1 each emitting component
+    /// mints its own id; cross-component sharing (coordinator fan-out)
+    /// requires a request-id header and is an ADR-0009 follow-up.
     pub request_id: String,
     pub occurred_at_ms: u64,
     /// Principal id when a principal credential was presented; `null` for the
@@ -120,7 +121,7 @@ impl AccessRecord {
             tonic::Code::Unauthenticated | tonic::Code::PermissionDenied => "denied".to_string(),
             _ => "error".to_string(),
         };
-        self.status_code = format!("{status:?}").to_uppercase();
+        self.status_code = canonical_status_code(status).to_string();
         self.latency_us = latency_us;
         self
     }
@@ -133,6 +134,9 @@ pub struct AccessLog {
     sender: Option<mpsc::Sender<AccessRecord>>,
     dropped: Arc<AtomicU64>,
     digest_key: Arc<Vec<u8>>,
+    /// Serving-generation identity stamped onto records that leave the fields
+    /// unset (immutable generation data plane; ADR-0009 decision 2).
+    generation: Option<Arc<(String, String)>>,
 }
 
 impl AccessLog {
@@ -141,6 +145,7 @@ impl AccessLog {
             sender: None,
             dropped: Arc::new(AtomicU64::new(0)),
             digest_key: Arc::new(Vec::new()),
+            generation: None,
         }
     }
 
@@ -152,20 +157,52 @@ impl AccessLog {
             return Ok(Self::disabled());
         }
         fs::create_dir_all(&config.directory)?;
+        #[cfg(unix)]
+        {
+            // The spool is sensitive access metadata: the directory itself is
+            // owner-only, not just the files inside it.
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&config.directory, fs::Permissions::from_mode(0o700))?;
+        }
+        let digest_key = digest_key_from_env(std::env::var(HASH_KEY_ENV).ok().as_deref())
+            .map_err(std::io::Error::other)?;
         let (sender, receiver) = mpsc::channel::<AccessRecord>(config.queue_capacity.max(1));
-        let writer = SpoolWriter::new(config, receiver)?;
+        let dropped = Arc::new(AtomicU64::new(0));
+        let writer = SpoolWriter::new(config, receiver, dropped.clone())?;
         tokio::spawn(writer.run());
         Ok(Self {
             sender: Some(sender),
-            dropped: Arc::new(AtomicU64::new(0)),
-            digest_key: Arc::new(load_digest_key()),
+            dropped,
+            digest_key: Arc::new(digest_key),
+            generation: None,
         })
+    }
+
+    /// Clone that stamps records (when their fields are still unset) with the
+    /// serving-generation identity of an immutable generation runtime, so
+    /// generation-served reads name the exact manifest they were answered
+    /// from.
+    pub fn scoped_for_generation(&self, generation_id: String, manifest_sha256: String) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            dropped: self.dropped.clone(),
+            digest_key: self.digest_key.clone(),
+            generation: Some(Arc::new((generation_id, manifest_sha256))),
+        }
     }
 
     /// Non-blocking emit. A full queue or a shut-down writer drops the record
     /// and counts the drop; the data plane is never slowed or failed by the
     /// access log.
-    pub fn emit(&self, record: AccessRecord) {
+    pub fn emit(&self, mut record: AccessRecord) {
+        if let Some(generation) = &self.generation {
+            if record.generation_id.is_none() {
+                record.generation_id = Some(generation.0.clone());
+            }
+            if record.manifest_sha256.is_none() {
+                record.manifest_sha256 = Some(generation.1.clone());
+            }
+        }
         if let Some(sender) = &self.sender {
             if sender.try_send(record).is_err() {
                 let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
@@ -207,23 +244,59 @@ impl Default for AccessLog {
     }
 }
 
-fn load_digest_key() -> Vec<u8> {
-    if let Ok(key) = std::env::var(HASH_KEY_ENV) {
-        let key = key.into_bytes();
-        if !key.is_empty() {
-            return key;
+/// Minimum accepted length for the deployment HMAC key. A shorter key would
+/// silently weaken the dictionary-attack protection that justifies keyed
+/// digests in the first place, so it is a startup error, never a fallback.
+const MIN_DIGEST_KEY_BYTES: usize = 16;
+
+fn digest_key_from_env(value: Option<&str>) -> Result<Vec<u8>, String> {
+    match value {
+        Some(key) if !key.is_empty() => {
+            if key.len() < MIN_DIGEST_KEY_BYTES {
+                return Err(format!(
+                    "{HASH_KEY_ENV} must be at least {MIN_DIGEST_KEY_BYTES} bytes"
+                ));
+            }
+            Ok(key.as_bytes().to_vec())
+        }
+        _ => {
+            // No deployment key configured: fall back to a random per-process
+            // key so the spool still resists offline dictionary attacks, at
+            // the cost of cross-restart correlation.
+            let mut key = Vec::with_capacity(32);
+            key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+            key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+            Ok(key)
         }
     }
-    // No deployment key configured: fall back to a random per-process key so
-    // the spool still resists offline dictionary attacks, at the cost of
-    // cross-restart correlation.
-    let mut key = Vec::with_capacity(32);
-    key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
-    key.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
-    key
+}
+
+/// Canonical gRPC status-code names (`INVALID_ARGUMENT`, not
+/// `INVALIDARGUMENT`) so consumers can match on stable strings.
+fn canonical_status_code(code: &tonic::Code) -> &'static str {
+    match code {
+        tonic::Code::Ok => "OK",
+        tonic::Code::Cancelled => "CANCELLED",
+        tonic::Code::Unknown => "UNKNOWN",
+        tonic::Code::InvalidArgument => "INVALID_ARGUMENT",
+        tonic::Code::DeadlineExceeded => "DEADLINE_EXCEEDED",
+        tonic::Code::NotFound => "NOT_FOUND",
+        tonic::Code::AlreadyExists => "ALREADY_EXISTS",
+        tonic::Code::PermissionDenied => "PERMISSION_DENIED",
+        tonic::Code::ResourceExhausted => "RESOURCE_EXHAUSTED",
+        tonic::Code::FailedPrecondition => "FAILED_PRECONDITION",
+        tonic::Code::Aborted => "ABORTED",
+        tonic::Code::OutOfRange => "OUT_OF_RANGE",
+        tonic::Code::Unimplemented => "UNIMPLEMENTED",
+        tonic::Code::Internal => "INTERNAL",
+        tonic::Code::Unavailable => "UNAVAILABLE",
+        tonic::Code::DataLoss => "DATA_LOSS",
+        tonic::Code::Unauthenticated => "UNAUTHENTICATED",
+    }
 }
 
 struct SpoolWriter {
+    dropped: Arc<AtomicU64>,
     directory: PathBuf,
     max_file_bytes: u64,
     max_files: u32,
@@ -238,6 +311,7 @@ impl SpoolWriter {
     fn new(
         config: &AccessLogConfig,
         receiver: mpsc::Receiver<AccessRecord>,
+        dropped: Arc<AtomicU64>,
     ) -> std::io::Result<Self> {
         let directory = PathBuf::from(&config.directory);
         // Resume after the highest existing spool index so a restart never
@@ -256,6 +330,7 @@ impl SpoolWriter {
             }
         }
         let mut writer = Self {
+            dropped,
             directory,
             max_file_bytes: config.max_file_bytes.max(1024),
             max_files: config.max_files.max(1),
@@ -272,7 +347,8 @@ impl SpoolWriter {
     async fn run(mut self) {
         while let Some(record) = self.receiver.recv().await {
             if let Err(error) = self.append(&record) {
-                error!(%error, "access-record spool write failed; record dropped");
+                let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                error!(%error, dropped = total, "access-record spool write failed; record dropped");
             }
         }
         if let Some(file) = self.current.as_mut() {
@@ -480,28 +556,59 @@ mod tests {
         assert_eq!(first.len(), 64);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn query_digest_differs_across_keys() {
-        let dir_a = tempfile::tempdir().unwrap();
-        let dir_b = tempfile::tempdir().unwrap();
-        let make = |dir: &Path| {
-            AccessLog::spawn(&AccessLogConfig {
-                enabled: true,
-                directory: dir.display().to_string(),
-                ..Default::default()
-            })
-            .unwrap()
-        };
-        // Without AKIDB_ACCESS_LOG_HASH_KEY each process instance draws a
-        // random key, so two independent logs must not produce the same
-        // digest for identical input.
-        std::env::remove_var(HASH_KEY_ENV);
-        let first = make(dir_a.path());
-        let second = make(dir_b.path());
-        assert_ne!(
-            first.query_digest(&[b"same".as_slice()]),
-            second.query_digest(&[b"same".as_slice()])
+    #[test]
+    fn query_digest_differs_across_keys() {
+        // Two independent random keys (no deployment key configured) must not
+        // produce the same digest for identical input, and a configured key
+        // must be stable across instances.
+        let first = digest_key_from_env(None).unwrap();
+        let second = digest_key_from_env(None).unwrap();
+        assert_ne!(first, second);
+        let configured = digest_key_from_env(Some("0123456789abcdef")).unwrap();
+        assert_eq!(
+            configured,
+            digest_key_from_env(Some("0123456789abcdef")).unwrap()
         );
+    }
+
+    #[test]
+    fn short_digest_key_is_rejected() {
+        let error = digest_key_from_env(Some("too-short")).unwrap_err();
+        assert!(error.contains("at least 16 bytes"), "{error}");
+        assert!(digest_key_from_env(Some("")).is_ok());
+        assert!(digest_key_from_env(None).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scoped_log_stamps_generation_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let log = AccessLog::spawn(&AccessLogConfig {
+            enabled: true,
+            directory: temporary.path().display().to_string(),
+            ..Default::default()
+        })
+        .unwrap()
+        .scoped_for_generation("gen-42".to_string(), "deadbeef".to_string());
+
+        let record = AccessRecord::new("Search", &test_context(), "docs").finish_ok(Some(1), 10);
+        let record_id = record.record_id.clone();
+        log.emit(record);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let line = read_spool_lines(temporary.path())
+                .into_iter()
+                .find(|line| line.contains(&record_id));
+            if line.is_some() || std::time::Instant::now() > deadline {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&line.expect("stamped record never reached the spool"))
+                        .unwrap();
+                assert_eq!(parsed["generation_id"], "gen-42");
+                assert_eq!(parsed["manifest_sha256"], "deadbeef");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 
     #[test]
@@ -509,9 +616,13 @@ mod tests {
         let record = AccessRecord::new("Get", &test_context(), "docs")
             .finish_error(&tonic::Code::PermissionDenied, 7);
         assert_eq!(record.outcome, "denied");
-        assert_eq!(record.status_code, "PERMISSIONDENIED");
+        assert_eq!(record.status_code, "PERMISSION_DENIED");
         let record = AccessRecord::new("Get", &test_context(), "docs")
             .finish_error(&tonic::Code::Internal, 7);
         assert_eq!(record.outcome, "error");
+        assert_eq!(record.status_code, "INTERNAL");
+        let record = AccessRecord::new("Get", &test_context(), "docs")
+            .finish_error(&tonic::Code::InvalidArgument, 7);
+        assert_eq!(record.status_code, "INVALID_ARGUMENT");
     }
 }

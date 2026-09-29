@@ -1664,6 +1664,68 @@ where
             diagnostics,
         }))
     }
+    #[instrument(skip(self, request))]
+    async fn search_batch_inner(
+        &self,
+        request: Request<SearchBatchRequest>,
+    ) -> Result<Response<SearchBatchResponse>, Status> {
+        let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
+        let req = request.into_inner();
+
+        debug!("Search batch request for {} queries", req.queries.len());
+
+        self.validate_request_collection(&req.collection)?;
+        Self::validate_search_controls(req.top_k, req.nprobe)?;
+
+        let metadata_filter = self.compile_search_filter(&[], None, &ctx)?.map(Arc::new);
+        let params = SearchParams::new(req.top_k as usize).with_optional_nprobe(req.nprobe);
+        let params = self.attach_metadata_predicate(params, metadata_filter);
+
+        let mut results = Vec::with_capacity(req.queries.len());
+
+        for query in req.queries {
+            Self::validate_query_vector(&query.vector)?;
+            let search_start = Instant::now();
+
+            let search_results = self
+                .index
+                .search(&query.vector, &params)
+                .map_err(Self::to_status)?;
+
+            let latency_us = search_start.elapsed().as_micros() as u64;
+
+            let response_results: Vec<SearchResult> = search_results
+                .into_iter()
+                .map(|r| SearchResult {
+                    id: r.id.to_string(),
+                    score: r.score,
+                    metadata: self.load_metadata_string(&r.id),
+                })
+                .collect();
+
+            results.push(SearchResponse {
+                results: response_results,
+                partial: false,
+                missing_shards: vec![],
+                coverage: 1.0,
+                latency_us,
+                // FIX BUG-HUNT-202: Use configurable SLO threshold instead of hardcoded 50ms
+                within_slo: latency_us < self.slo_threshold_us,
+                degraded_mode: false,
+                context_pack: String::new(),
+                serving_generation: None,
+                context_pack_v1: None,
+                diagnostics: None,
+            });
+        }
+
+        let elapsed = start.elapsed();
+        info!("Batch search: {} queries in {:?}", results.len(), elapsed);
+
+        Ok(Response::new(SearchBatchResponse { results }))
+    }
+
     fn request_auth_context<T>(&self, request: &Request<T>) -> AuthContext {
         auth::auth_context(request)
     }
@@ -3271,28 +3333,33 @@ where
         &self,
         request: Request<InsertRequest>,
     ) -> Result<Response<InsertResponse>, Status> {
-        let audit_start = Instant::now();
-        let audit_ctx = self.request_auth_context(&request);
-        let audit_collection = request.get_ref().collection.clone();
-        let audit_parts = [
-            request.get_ref().id.clone().into_bytes(),
-            f32_le_bytes(&request.get_ref().vector),
-            request.get_ref().text.clone().into_bytes(),
-        ];
-        let audit_hash = self
-            .access_log
-            .query_digest(&audit_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
-        let audit_result = self.insert_inner(request).await;
+        let access_start = Instant::now();
+        let access_ctx = self.request_auth_context(&request);
+        let access_collection = request.get_ref().collection.clone();
+        let access_hash = if self.access_log.is_enabled() {
+            let access_parts = [
+                request.get_ref().id.clone().into_bytes(),
+                f32_le_bytes(&request.get_ref().vector),
+                request.get_ref().text.clone().into_bytes(),
+            ];
+            let access_hash = self
+                .access_log
+                .query_digest(&access_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+            access_hash
+        } else {
+            String::new()
+        };
+        let access_result = self.insert_inner(request).await;
         self.emit_access_record(
             "Insert",
-            &audit_ctx,
-            &audit_collection,
-            audit_hash,
-            &audit_result,
-            audit_start,
+            &access_ctx,
+            &access_collection,
+            access_hash,
+            &access_result,
+            access_start,
             |response: &InsertResponse| if response.success { Some(1) } else { Some(0) },
         );
-        audit_result
+        access_result
     }
 
     #[instrument(skip(self, request))]
@@ -3300,27 +3367,32 @@ where
         &self,
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
-        let audit_start = Instant::now();
-        let audit_ctx = self.request_auth_context(&request);
-        let audit_collection = request.get_ref().collection.clone();
-        let audit_parts = [
-            f32_le_bytes(&request.get_ref().query),
-            format!("{:?}", request.get_ref().filter).into_bytes(),
-        ];
-        let audit_hash = self
-            .access_log
-            .query_digest(&audit_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
-        let audit_result = self.search_inner(request).await;
+        let access_start = Instant::now();
+        let access_ctx = self.request_auth_context(&request);
+        let access_collection = request.get_ref().collection.clone();
+        let access_hash = if self.access_log.is_enabled() {
+            let access_parts = [
+                f32_le_bytes(&request.get_ref().query),
+                format!("{:?}", request.get_ref().filter).into_bytes(),
+            ];
+            let access_hash = self
+                .access_log
+                .query_digest(&access_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+            access_hash
+        } else {
+            String::new()
+        };
+        let access_result = self.search_inner(request).await;
         self.emit_access_record(
             "Search",
-            &audit_ctx,
-            &audit_collection,
-            audit_hash,
-            &audit_result,
-            audit_start,
+            &access_ctx,
+            &access_collection,
+            access_hash,
+            &access_result,
+            access_start,
             |response: &SearchResponse| Some(response.results.len() as u32),
         );
-        audit_result
+        access_result
     }
 
     #[instrument(skip(self, request))]
@@ -3328,23 +3400,28 @@ where
         &self,
         request: Request<DeleteRequest>,
     ) -> Result<Response<DeleteResponse>, Status> {
-        let audit_start = Instant::now();
-        let audit_ctx = self.request_auth_context(&request);
-        let audit_collection = request.get_ref().collection.clone();
-        let audit_hash = self
-            .access_log
-            .query_digest(&[request.get_ref().id.as_bytes()]);
-        let audit_result = self.delete_inner(request).await;
+        let access_start = Instant::now();
+        let access_ctx = self.request_auth_context(&request);
+        let access_collection = request.get_ref().collection.clone();
+        let access_hash = if self.access_log.is_enabled() {
+            let access_hash = self
+                .access_log
+                .query_digest(&[request.get_ref().id.as_bytes()]);
+            access_hash
+        } else {
+            String::new()
+        };
+        let access_result = self.delete_inner(request).await;
         self.emit_access_record(
             "Delete",
-            &audit_ctx,
-            &audit_collection,
-            audit_hash,
-            &audit_result,
-            audit_start,
+            &access_ctx,
+            &access_collection,
+            access_hash,
+            &access_result,
+            access_start,
             |_response: &DeleteResponse| None,
         );
-        audit_result
+        access_result
     }
 
     #[instrument(skip(self, request))]
@@ -3352,48 +3429,58 @@ where
         &self,
         request: Request<UpdateRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
-        let audit_start = Instant::now();
-        let audit_ctx = self.request_auth_context(&request);
-        let audit_collection = request.get_ref().collection.clone();
-        let audit_parts = [
-            request.get_ref().id.clone().into_bytes(),
-            f32_le_bytes(&request.get_ref().vector),
-        ];
-        let audit_hash = self
-            .access_log
-            .query_digest(&audit_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
-        let audit_result = self.update_inner(request).await;
+        let access_start = Instant::now();
+        let access_ctx = self.request_auth_context(&request);
+        let access_collection = request.get_ref().collection.clone();
+        let access_hash = if self.access_log.is_enabled() {
+            let access_parts = [
+                request.get_ref().id.clone().into_bytes(),
+                f32_le_bytes(&request.get_ref().vector),
+            ];
+            let access_hash = self
+                .access_log
+                .query_digest(&access_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+            access_hash
+        } else {
+            String::new()
+        };
+        let access_result = self.update_inner(request).await;
         self.emit_access_record(
             "Update",
-            &audit_ctx,
-            &audit_collection,
-            audit_hash,
-            &audit_result,
-            audit_start,
+            &access_ctx,
+            &access_collection,
+            access_hash,
+            &access_result,
+            access_start,
             |_response: &UpdateResponse| None,
         );
-        audit_result
+        access_result
     }
 
     #[instrument(skip(self, request))]
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
-        let audit_start = Instant::now();
-        let audit_ctx = self.request_auth_context(&request);
-        let audit_collection = request.get_ref().collection.clone();
-        let audit_hash = self
-            .access_log
-            .query_digest(&[request.get_ref().id.as_bytes()]);
-        let audit_result = self.get_inner(request).await;
+        let access_start = Instant::now();
+        let access_ctx = self.request_auth_context(&request);
+        let access_collection = request.get_ref().collection.clone();
+        let access_hash = if self.access_log.is_enabled() {
+            let access_hash = self
+                .access_log
+                .query_digest(&[request.get_ref().id.as_bytes()]);
+            access_hash
+        } else {
+            String::new()
+        };
+        let access_result = self.get_inner(request).await;
         self.emit_access_record(
             "Get",
-            &audit_ctx,
-            &audit_collection,
-            audit_hash,
-            &audit_result,
-            audit_start,
+            &access_ctx,
+            &access_collection,
+            access_hash,
+            &access_result,
+            access_start,
             |response: &GetResponse| Some(response.found as u32),
         );
-        audit_result
+        access_result
     }
 
     #[instrument(skip(self, _request))]
@@ -3425,96 +3512,81 @@ where
         &self,
         request: Request<InsertBatchRequest>,
     ) -> Result<Response<InsertBatchResponse>, Status> {
-        let audit_start = Instant::now();
-        let audit_ctx = self.request_auth_context(&request);
-        let audit_collection = request.get_ref().collection.clone();
-        let audit_parts: Vec<Vec<u8>> = request
-            .get_ref()
-            .vectors
-            .iter()
-            .flat_map(|vector| {
-                [
-                    vector.id.clone().into_bytes(),
-                    f32_le_bytes(&vector.embedding),
-                ]
-            })
-            .collect();
-        let audit_hash = self
-            .access_log
-            .query_digest(&audit_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
-        let audit_result = self.insert_batch_inner(request).await;
+        let access_start = Instant::now();
+        let access_ctx = self.request_auth_context(&request);
+        let access_collection = request.get_ref().collection.clone();
+        let access_hash = if self.access_log.is_enabled() {
+            let access_parts: Vec<Vec<u8>> = request
+                .get_ref()
+                .vectors
+                .iter()
+                .flat_map(|vector| {
+                    [
+                        vector.id.clone().into_bytes(),
+                        f32_le_bytes(&vector.embedding),
+                    ]
+                })
+                .collect();
+            let access_hash = self
+                .access_log
+                .query_digest(&access_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+            access_hash
+        } else {
+            String::new()
+        };
+        let access_result = self.insert_batch_inner(request).await;
         self.emit_access_record(
             "InsertBatch",
-            &audit_ctx,
-            &audit_collection,
-            audit_hash,
-            &audit_result,
-            audit_start,
+            &access_ctx,
+            &access_collection,
+            access_hash,
+            &access_result,
+            access_start,
             |response: &InsertBatchResponse| Some(response.inserted_count),
         );
-        audit_result
+        access_result
     }
 
-    #[instrument(skip(self, request))]
     async fn search_batch(
         &self,
         request: Request<SearchBatchRequest>,
     ) -> Result<Response<SearchBatchResponse>, Status> {
-        let start = Instant::now();
-        let ctx = self.request_auth_context(&request);
-        let req = request.into_inner();
-
-        debug!("Search batch request for {} queries", req.queries.len());
-
-        self.validate_request_collection(&req.collection)?;
-        Self::validate_search_controls(req.top_k, req.nprobe)?;
-
-        let metadata_filter = self.compile_search_filter(&[], None, &ctx)?.map(Arc::new);
-        let params = SearchParams::new(req.top_k as usize).with_optional_nprobe(req.nprobe);
-        let params = self.attach_metadata_predicate(params, metadata_filter);
-
-        let mut results = Vec::with_capacity(req.queries.len());
-
-        for query in req.queries {
-            Self::validate_query_vector(&query.vector)?;
-            let search_start = Instant::now();
-
-            let search_results = self
-                .index
-                .search(&query.vector, &params)
-                .map_err(Self::to_status)?;
-
-            let latency_us = search_start.elapsed().as_micros() as u64;
-
-            let response_results: Vec<SearchResult> = search_results
-                .into_iter()
-                .map(|r| SearchResult {
-                    id: r.id.to_string(),
-                    score: r.score,
-                    metadata: self.load_metadata_string(&r.id),
-                })
+        let access_start = Instant::now();
+        let access_ctx = self.request_auth_context(&request);
+        let access_collection = request.get_ref().collection.clone();
+        let access_hash = if self.access_log.is_enabled() {
+            let access_parts: Vec<Vec<u8>> = request
+                .get_ref()
+                .queries
+                .iter()
+                .map(|query| f32_le_bytes(&query.vector))
                 .collect();
-
-            results.push(SearchResponse {
-                results: response_results,
-                partial: false,
-                missing_shards: vec![],
-                coverage: 1.0,
-                latency_us,
-                // FIX BUG-HUNT-202: Use configurable SLO threshold instead of hardcoded 50ms
-                within_slo: latency_us < self.slo_threshold_us,
-                degraded_mode: false,
-                context_pack: String::new(),
-                serving_generation: None,
-                context_pack_v1: None,
-                diagnostics: None,
-            });
-        }
-
-        let elapsed = start.elapsed();
-        info!("Batch search: {} queries in {:?}", results.len(), elapsed);
-
-        Ok(Response::new(SearchBatchResponse { results }))
+            let access_hash = self
+                .access_log
+                .query_digest(&access_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+            access_hash
+        } else {
+            String::new()
+        };
+        let access_result = self.search_batch_inner(request).await;
+        self.emit_access_record(
+            "SearchBatch",
+            &access_ctx,
+            &access_collection,
+            access_hash,
+            &access_result,
+            access_start,
+            |response: &SearchBatchResponse| {
+                Some(
+                    response
+                        .results
+                        .iter()
+                        .map(|r| r.results.len() as u32)
+                        .sum(),
+                )
+            },
+        );
+        access_result
     }
 
     async fn get_cluster_state(
@@ -3652,28 +3724,33 @@ where
         &self,
         request: Request<TextSearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
-        let audit_start = Instant::now();
-        let audit_ctx = self.request_auth_context(&request);
-        let audit_collection = request.get_ref().collection.clone();
-        let audit_parts = [
-            request.get_ref().text.clone().into_bytes(),
-            format!("{:?}", request.get_ref().filter).into_bytes(),
-            request.get_ref().retrieval_mode.clone().into_bytes(),
-        ];
-        let audit_hash = self
-            .access_log
-            .query_digest(&audit_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
-        let audit_result = self.text_search_inner(request).await;
+        let access_start = Instant::now();
+        let access_ctx = self.request_auth_context(&request);
+        let access_collection = request.get_ref().collection.clone();
+        let access_hash = if self.access_log.is_enabled() {
+            let access_parts = [
+                request.get_ref().text.clone().into_bytes(),
+                format!("{:?}", request.get_ref().filter).into_bytes(),
+                request.get_ref().retrieval_mode.clone().into_bytes(),
+            ];
+            let access_hash = self
+                .access_log
+                .query_digest(&access_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
+            access_hash
+        } else {
+            String::new()
+        };
+        let access_result = self.text_search_inner(request).await;
         self.emit_access_record(
             "TextSearch",
-            &audit_ctx,
-            &audit_collection,
-            audit_hash,
-            &audit_result,
-            audit_start,
+            &access_ctx,
+            &access_collection,
+            access_hash,
+            &access_result,
+            access_start,
             |response: &SearchResponse| Some(response.results.len() as u32),
         );
-        audit_result
+        access_result
     }
 }
 

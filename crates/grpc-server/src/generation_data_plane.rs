@@ -40,6 +40,9 @@ pub struct GenerationDataPlaneConfig {
     pub acl: AclConfig,
     pub filter_settings: FilterSettings,
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    /// ADR-0009 emitter; records stamped with each runtime's generation
+    /// identity before they are emitted. Disabled by default.
+    pub access_log: crate::access_log::AccessLog,
 }
 
 impl Default for GenerationDataPlaneConfig {
@@ -50,6 +53,7 @@ impl Default for GenerationDataPlaneConfig {
             acl: AclConfig::default(),
             filter_settings: FilterSettings::default(),
             embedding_provider: None,
+            access_log: crate::access_log::AccessLog::disabled(),
         }
     }
 }
@@ -228,7 +232,11 @@ impl GenerationDataPlane {
         // information after activation.
         .with_collections(Arc::new(CollectionRegistry::new()))
         .with_embedding_model_id(manifest.embedding_model_id.clone())
-        .with_graph_index(runtime.graph.clone());
+        .with_graph_index(runtime.graph.clone())
+        .with_access_log(self.config.access_log.scoped_for_generation(
+            manifest.generation_id.clone(),
+            runtime.ready.marker.manifest_sha256.clone(),
+        ));
         if let Some(provider) = &self.config.embedding_provider {
             service = service.with_embedding_provider(provider.clone());
         }
