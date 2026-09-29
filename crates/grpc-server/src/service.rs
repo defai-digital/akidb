@@ -16,6 +16,7 @@ use crate::proto::{
     VisibilityInfo,
 };
 use akidb_common::config::{AclConfig, FilterMode, FilterSettings};
+use akidb_common::crash_point::crash_point;
 use akidb_common::{AkiDbError, VectorId};
 use akidb_faiss::{SearchParams, VectorIndex};
 use akidb_graph::{
@@ -97,6 +98,22 @@ impl Drop for MutationLockGuard<'_> {
     }
 }
 
+/// Startup reconciliation report comparing durable vector storage against the
+/// derived projections (HNSW, lexical, graph).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReconcileReport {
+    /// Durable active vector payloads in RocksDB (source of truth).
+    pub durable_vectors: u64,
+    /// Active vectors in the HNSW index after snapshot validation/rebuild.
+    pub hnsw_active: u64,
+    /// Documents in the rebuilt lexical index / document store.
+    pub lexical_documents: u64,
+    /// Chunk projection nodes in the native graph index.
+    pub graph_chunk_nodes: u64,
+    /// Whether a graph projection drift was repaired during reconciliation.
+    pub graph_repaired: bool,
+}
+
 /// AkiDB gRPC service
 pub struct AkiDbService<I, S>
 where
@@ -116,7 +133,8 @@ where
     /// In-memory BM25 lexical index, the lexical half of hybrid retrieval.
     ///
     /// Populated from the optional `text` carried on insert; kept in sync on
-    /// delete. Source text is also persisted via `IdMapping::store_text` and
+    /// delete. Source text is persisted in the same synced batch as the vector
+    /// payload (`IdMapping::upsert_with_vector_and_text` / `mark_deleted`) and
     /// rebuilt into this index at process startup (`rebuild_lexical_index`).
     /// Inserts that omit `text` still produce no lexical entry.
     lexical: Arc<RwLock<Bm25Index>>,
@@ -300,13 +318,16 @@ where
         count
     }
 
+    /// Update the in-memory lexical index and document store for an upsert.
+    ///
+    /// Persistence of the source text itself is folded into the synced
+    /// `upsert_with_vector_and_text` batch on the write path (and into
+    /// `mark_deleted` on the delete path), so this method only keeps the
+    /// in-memory projections aligned. Empty text clears any previous entry.
     fn sync_source_text(&self, vector_id: &VectorId, text: &str) {
         if text.is_empty() {
             self.lexical.write().remove(vector_id);
             self.documents.write().remove(vector_id);
-            if let Err(e) = self.id_mapping.delete_text(vector_id) {
-                warn!(vector_id = %vector_id, error = %e, "failed to delete persisted source text");
-            }
             return;
         }
 
@@ -314,9 +335,6 @@ where
         self.documents
             .write()
             .insert(vector_id.clone(), text.to_string());
-        if let Err(e) = self.id_mapping.store_text(vector_id, text) {
-            warn!(vector_id = %vector_id, error = %e, "failed to persist source text");
-        }
     }
 
     /// Rebuild the optional SQL metadata mirror from durable vector payloads.
@@ -391,6 +409,72 @@ where
             );
         }
         Ok(stored_vectors.len())
+    }
+
+    /// Reconcile durable vector storage against the derived projections
+    /// (HNSW, lexical, graph) at startup, repairing drift when asked.
+    ///
+    /// RocksDB is the source of truth; every projection is rebuildable
+    /// derived data. A mismatch means a previous run died between the synced
+    /// vector write and a projection update. HNSW drift is already handled by
+    /// snapshot validation earlier in startup; the graph check here covers the
+    /// case where a non-empty but stale graph survived (the empty-graph
+    /// bootstrap only fires when the graph has no nodes at all).
+    pub fn reconcile_projections(&self, repair_graph: bool) -> ReconcileReport {
+        // Active (non-tombstoned) vectors only: deletes keep a tombstoned
+        // payload entry, so a raw prefix count would false-positive as drift.
+        let durable_vectors = self
+            .id_mapping
+            .load_active_vectors()
+            .map(|vectors| vectors.len() as u64)
+            .unwrap_or(0);
+        let hnsw_active = self.index.stats().active_vectors;
+        let lexical_documents = self.documents.read().len() as u64;
+        let graph_chunk_nodes = self
+            .graph_index
+            .as_ref()
+            .map(|graph| {
+                graph
+                    .count_nodes_of_kind(akidb_graph::NodeKind::Chunk)
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+
+        if hnsw_active != durable_vectors {
+            warn!(
+                durable_vectors,
+                hnsw_active, "HNSW/durable count mismatch survived startup validation"
+            );
+        }
+
+        let mut graph_repaired = false;
+        if self.graph_index.is_some() && graph_chunk_nodes != durable_vectors {
+            warn!(
+                durable_vectors,
+                graph_chunk_nodes, "graph projection drift detected at startup"
+            );
+            if repair_graph {
+                match self.rebuild_graph_index() {
+                    Ok(chunks) => {
+                        info!(chunks, "repaired graph projection drift");
+                        graph_repaired = true;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to repair graph projection drift");
+                    }
+                }
+            }
+        }
+
+        let report = ReconcileReport {
+            durable_vectors,
+            hnsw_active,
+            lexical_documents,
+            graph_chunk_nodes,
+            graph_repaired,
+        };
+        info!(?report, "startup projection reconciliation");
+        report
     }
 
     /// Create a new service instance from SloConfig
@@ -2182,12 +2266,17 @@ where
             .index
             .insert(&vector_id, &vector)
             .map_err(Self::to_status)?;
+        crash_point("insert.after_index_insert");
 
-        // Persist ID mapping and vector payload atomically. If this fails,
-        // rollback the index insert.
-        let mapping_result =
-            self.id_mapping
-                .upsert_with_vector(&vector_id, internal_id, &vector, &stamped_metadata);
+        // Persist ID mapping, vector payload, and source text atomically in
+        // one synced batch. If this fails, rollback the index insert.
+        let mapping_result = self.id_mapping.upsert_with_vector_and_text(
+            &vector_id,
+            internal_id,
+            &vector,
+            &stamped_metadata,
+            Some(&req.text),
+        );
 
         if let Err(e) = mapping_result {
             // FIX BUG-HUNT-601: Log rollback failures instead of silently ignoring
@@ -2202,6 +2291,7 @@ where
             }
             return Err(Self::to_status(e));
         }
+        crash_point("insert.after_durable_write");
         if let Some(old_id) = old_internal_id.filter(|old_id| *old_id != internal_id) {
             if let Err(e) = self.index.delete(old_id) {
                 warn!(
@@ -2345,14 +2435,14 @@ where
             .map_err(Self::to_status)?
         {
             Some(internal_id) => {
+                crash_point("delete.after_durable_write");
                 // Mark in tombstone
                 self.index.delete(internal_id).map_err(Self::to_status)?;
-                // Keep the lexical index and document store in sync.
+                // Keep the lexical index and document store in sync. The
+                // persisted source text was already removed inside the synced
+                // mark_deleted batch.
                 self.lexical.write().remove(&vector_id);
                 self.documents.write().remove(&vector_id);
-                if let Err(e) = self.id_mapping.delete_text(&vector_id) {
-                    warn!(vector_id = %vector_id, error = %e, "failed to delete persisted text");
-                }
                 self.delete_sql_metadata(&vector_id);
                 DeleteStatus::Deleted
             }
@@ -2621,13 +2711,15 @@ where
 
             match self.index.insert(&vector_id, &vector.embedding) {
                 Ok(internal_id) => {
-                    match self.id_mapping.upsert_with_vector(
+                    match self.id_mapping.upsert_with_vector_and_text(
                         &vector_id,
                         internal_id,
                         &vector.embedding,
                         &vector.metadata,
+                        Some(&vector.text),
                     ) {
                         Ok(_) => {
+                            crash_point("insert_batch.after_durable_write");
                             if let Some(old_id) =
                                 old_internal_id.filter(|old_id| *old_id != internal_id)
                             {

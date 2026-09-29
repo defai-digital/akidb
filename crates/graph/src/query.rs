@@ -3,7 +3,8 @@
 use crate::error::GraphResult;
 use crate::model::{
     DeleteNodeResult, Direction, EdgeKind, GraphEdge, GraphEdgeId, GraphMutationBatch,
-    GraphNeighbor, GraphNode, GraphNodeId, GraphPath, GraphStats, RelatedChunk, RelatedChunkTrace,
+    GraphNeighbor, GraphNode, GraphNodeId, GraphPath, GraphStats, NodeKind, RelatedChunk,
+    RelatedChunkTrace,
 };
 use std::collections::{HashSet, VecDeque};
 
@@ -28,6 +29,9 @@ pub trait GraphIndex: Send + Sync {
         Ok(())
     }
     fn get_node(&self, node_id: &GraphNodeId) -> GraphResult<Option<GraphNode>>;
+    /// Count stored nodes of one kind using the kind index (exact, prefix
+    /// count). Used by startup reconciliation to detect projection drift.
+    fn count_nodes_of_kind(&self, kind: NodeKind) -> GraphResult<u64>;
     fn get_edge(&self, edge_id: &GraphEdgeId) -> GraphResult<Option<GraphEdge>>;
     fn delete_node(&self, node_id: &GraphNodeId) -> GraphResult<DeleteNodeResult>;
     fn delete_edge(&self, edge_id: &GraphEdgeId) -> GraphResult<bool>;

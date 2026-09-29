@@ -51,7 +51,7 @@ pub use memory::MemoryServiceImpl;
 pub use metrics::{export_metrics, metrics, registry as metrics_registry, AkiDbMetrics};
 #[cfg(feature = "generation-postgres")]
 pub use replica_worker::{PostgresReplicaWorker, ReplicaWorkerConfig, ReplicaWorkerError};
-pub use service::{AkiDbService, EmbeddingProvider};
+pub use service::{AkiDbService, EmbeddingProvider, ReconcileReport};
 pub use tags::{
     proto_to_rust_tag_value, proto_to_rust_tags, rust_to_proto_tag_value, rust_to_proto_tags,
 };

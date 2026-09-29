@@ -432,6 +432,11 @@ impl<S: StorageBackend> IdMapping<S> {
                 value: Self::serialize_vector(&vector_entry)?,
             });
         }
+        // Source text is projection input; drop it in the same synced batch so
+        // a deleted vector cannot resurrect its text after a crash.
+        operations.push(BatchOperation::Delete {
+            key: self.make_text_key(external_id),
+        });
 
         // Durable vector mutations use a synced batch so deletes survive power loss
         // at the same durability level as the memory ledger path.
@@ -461,6 +466,25 @@ impl<S: StorageBackend> IdMapping<S> {
         vector: &[f32],
         metadata: &[u8],
     ) -> Result<IdMappingEntry> {
+        self.upsert_with_vector_and_text(external_id, internal_id, vector, metadata, None)
+    }
+
+    /// Create or update an ID mapping, durable vector payload, and source text
+    /// in one synced batch.
+    ///
+    /// `text` semantics: `None` leaves any persisted source text untouched
+    /// (startup replay / generation materialization); `Some("")` deletes the
+    /// persisted text; `Some(t)` stores it. Folding the text write into the
+    /// same fsynced batch closes the crash window where the vector was durable
+    /// but its source text (the input for the lexical/BM25 rebuild) was lost.
+    pub fn upsert_with_vector_and_text(
+        &self,
+        external_id: &VectorId,
+        internal_id: InternalId,
+        vector: &[f32],
+        metadata: &[u8],
+        text: Option<&str>,
+    ) -> Result<IdMappingEntry> {
         let stripe_idx = self.stripe_index(external_id);
         let _lock = self.lock_stripes[stripe_idx].lock();
 
@@ -487,9 +511,10 @@ impl<S: StorageBackend> IdMapping<S> {
             ..StoredVectorEntry::new(external_id, internal_id, vector, metadata)
         };
 
-        // Vector payload + mapping must be fsynced together so API "durable"
-        // visibility matches RocksDB acknowledgment (same as memory ledger).
-        self.storage.write_batch_sync(vec![
+        // Vector payload + mapping (+ source text when supplied) must be
+        // fsynced together so API "durable" visibility matches RocksDB
+        // acknowledgment (same as memory ledger).
+        let mut operations = vec![
             BatchOperation::Put {
                 key: mapping_key,
                 value: Self::serialize_mapping(&entry)?,
@@ -498,7 +523,18 @@ impl<S: StorageBackend> IdMapping<S> {
                 key: vector_key,
                 value: Self::serialize_vector(&stored_vector)?,
             },
-        ])?;
+        ];
+        match text {
+            Some("") => operations.push(BatchOperation::Delete {
+                key: self.make_text_key(external_id),
+            }),
+            Some(text) => operations.push(BatchOperation::Put {
+                key: self.make_text_key(external_id),
+                value: text.as_bytes().to_vec(),
+            }),
+            None => {}
+        }
+        self.storage.write_batch_sync(operations)?;
 
         Ok(entry)
     }
@@ -626,6 +662,59 @@ mod tests {
         let after = mapping.load_all_texts().unwrap();
         assert_eq!(after, vec![(VectorId::new("b"), "lazy dog".to_string())]);
         assert_eq!(mapping.stored_text_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_upsert_with_vector_and_text_persists_text_atomically() {
+        let storage = create_test_storage();
+        let mapping = IdMapping::new(storage, "test_collection");
+        let ext_id = VectorId::new("vec-text");
+
+        mapping
+            .upsert_with_vector_and_text(
+                &ext_id,
+                InternalId(7),
+                &[0.1, 0.2],
+                br#"{"k":"v"}"#,
+                Some("source text"),
+            )
+            .unwrap();
+        assert_eq!(
+            mapping.load_all_texts().unwrap(),
+            vec![(ext_id.clone(), "source text".to_string())]
+        );
+
+        // Empty text clears the persisted entry in the same synced batch.
+        mapping
+            .upsert_with_vector_and_text(&ext_id, InternalId(8), &[0.3], &[], Some(""))
+            .unwrap();
+        assert!(mapping.load_all_texts().unwrap().is_empty());
+
+        // None leaves any persisted text untouched (replay/generation path).
+        mapping.store_text(&ext_id, "keep me").unwrap();
+        mapping
+            .upsert_with_vector_and_text(&ext_id, InternalId(9), &[0.4], &[], None)
+            .unwrap();
+        assert_eq!(
+            mapping.load_all_texts().unwrap(),
+            vec![(ext_id.clone(), "keep me".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_mark_deleted_removes_persisted_text() {
+        let storage = create_test_storage();
+        let mapping = IdMapping::new(storage, "test_collection");
+        let ext_id = VectorId::new("vec-del");
+
+        mapping
+            .upsert_with_vector_and_text(&ext_id, InternalId(3), &[0.1], &[], Some("doomed"))
+            .unwrap();
+        assert_eq!(mapping.stored_text_count().unwrap(), 1);
+
+        mapping.mark_deleted(&ext_id).unwrap();
+        assert!(mapping.load_all_texts().unwrap().is_empty());
+        assert_eq!(mapping.stored_text_count().unwrap(), 0);
     }
 
     #[test]

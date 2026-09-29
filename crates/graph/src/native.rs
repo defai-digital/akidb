@@ -9,7 +9,8 @@ use crate::error::{GraphError, GraphResult};
 use crate::keys;
 use crate::model::{
     DeleteNodeResult, Direction, DirectionOnEdge, EdgeKind, GraphEdge, GraphEdgeId,
-    GraphMutationBatch, GraphNeighbor, GraphNode, GraphNodeId, GraphPath, GraphStats, RelatedChunk,
+    GraphMutationBatch, GraphNeighbor, GraphNode, GraphNodeId, GraphPath, GraphStats, NodeKind,
+    RelatedChunk,
 };
 use crate::query::{GraphIndex, NeighborRequest, PathExistsRequest, TwoHopRequest};
 
@@ -340,6 +341,10 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
             .get(&keys::node_key(node_id))?
             .map(|bytes| Self::deserialize(&bytes))
             .transpose()
+    }
+
+    fn count_nodes_of_kind(&self, kind: NodeKind) -> GraphResult<u64> {
+        Ok(self.storage.count_prefix(&keys::kind_prefix(kind))?)
     }
 
     fn get_edge(&self, edge_id: &GraphEdgeId) -> GraphResult<Option<GraphEdge>> {

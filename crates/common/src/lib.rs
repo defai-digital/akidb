@@ -3,6 +3,7 @@
 //! This crate provides common functionality used across all AkiDB components.
 
 pub mod config;
+pub mod crash_point;
 pub mod error;
 pub mod metrics;
 pub mod scheduler;

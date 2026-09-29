@@ -178,6 +178,9 @@ tombstone_ratio_trigger = 0.10
 # RESERVED: rebuilds are not cancellable yet, so this bound cannot be honored.
 max_duration_seconds = 300
 preferred_hours = [2, 3, 4]
+# At startup, compare durable vector storage against the derived projections
+# (HNSW, lexical, graph) and repair drift. RocksDB is the source of truth.
+# reconcile_at_startup = true
 
 [index.tombstone]
 max_count = 100000

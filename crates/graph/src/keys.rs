@@ -84,6 +84,11 @@ pub fn chunk_all_prefix() -> &'static [u8] {
     CHUNK_PREFIX.as_bytes()
 }
 
+/// Prefix of the kind index for one node kind (`g:kind:<kind>:`).
+pub fn kind_prefix(kind: NodeKind) -> Vec<u8> {
+    format!("{KIND_PREFIX}{}:", kind.as_key()).into_bytes()
+}
+
 pub fn kind_key(kind: NodeKind, node_id: &GraphNodeId) -> Vec<u8> {
     format!("{KIND_PREFIX}{}:{}", kind.as_key(), node_id.as_str()).into_bytes()
 }

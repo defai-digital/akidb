@@ -757,6 +757,15 @@ pub struct RebuildSettings {
     pub max_duration_seconds: u64,
     /// Hours (0-23) during which the shard may compact. Empty means any hour.
     pub preferred_hours: Vec<u8>,
+    /// At startup, compare durable vector storage against the derived
+    /// projections (HNSW, lexical, graph) and repair any drift. RocksDB is the
+    /// source of truth; projections are rebuildable derived data.
+    #[serde(default = "default_reconcile_at_startup")]
+    pub reconcile_at_startup: bool,
+}
+
+fn default_reconcile_at_startup() -> bool {
+    true
 }
 
 impl Default for RebuildSettings {
@@ -765,6 +774,7 @@ impl Default for RebuildSettings {
             tombstone_ratio_trigger: 0.10,
             max_duration_seconds: 300,
             preferred_hours: vec![2, 3, 4], // 2-5 AM
+            reconcile_at_startup: default_reconcile_at_startup(),
         }
     }
 }
