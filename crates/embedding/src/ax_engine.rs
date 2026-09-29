@@ -56,8 +56,18 @@ pub struct AxEngineEmbedding {
 impl AxEngineEmbedding {
     /// Create a new embedding HTTP client
     pub fn new(config: EmbeddingClientConfig) -> EmbeddingResult<Self> {
+        // Under the zero-external-egress policy a redirect would silently
+        // carry text from the pinned loopback endpoint to an external host
+        // after startup validation has already passed, so redirects are
+        // refused entirely.
+        let redirect = if config.require_local_embeddings {
+            reqwest::redirect::Policy::none()
+        } else {
+            reqwest::redirect::Policy::default()
+        };
         let client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
+            .redirect(redirect)
             .build()
             .map_err(|e| {
                 EmbeddingError::BackendError(format!("Failed to build HTTP client: {}", e))
@@ -285,7 +295,21 @@ mod tests {
             dimensions: 4,
             timeout_ms: 5000,
             max_batch_size: 8,
+            require_local_embeddings: false,
         }
+    }
+
+    #[test]
+    fn test_egress_policy_client_creation_and_validation() {
+        let mut config = test_config();
+        config.require_local_embeddings = true;
+        assert!(config.validate_egress_policy().is_ok());
+        assert!(AxEngineEmbedding::new(config).is_ok());
+
+        let mut external = test_config();
+        external.url = "https://api.openai.com/v1/embeddings".to_string();
+        external.require_local_embeddings = true;
+        assert!(external.validate_egress_policy().is_err());
     }
 
     #[test]

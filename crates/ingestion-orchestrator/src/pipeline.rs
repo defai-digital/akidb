@@ -12,7 +12,7 @@ use crate::backpressure::BackpressureController;
 use crate::chunker::{Chunk, SemanticChunker};
 use crate::circuit_breaker::{CircuitBreaker, CircuitState};
 use crate::config::IngestionConfig;
-use crate::embedding::EmbeddingClient;
+use crate::embedding::{EmbeddingClient, DEFAULT_MAX_RETRIES};
 use crate::idempotency::IdempotencyChecker;
 use crate::memory::MemoryCoordinator;
 use crate::metrics::IngestionMetrics;
@@ -96,7 +96,12 @@ impl IngestionPipeline {
         let chunker = SemanticChunker::new(config.chunker.clone());
 
         // Initialize embedding client
-        let embedding_client = EmbeddingClient::new(&config.embedding_url, &config.embedding_model);
+        let embedding_client = EmbeddingClient::with_policy(
+            &config.embedding_url,
+            &config.embedding_model,
+            DEFAULT_MAX_RETRIES,
+            config.require_local_embeddings,
+        );
 
         // Initialize resilience patterns
         let circuit_breaker = Arc::new(CircuitBreaker::new(config.circuit_breaker.clone()));

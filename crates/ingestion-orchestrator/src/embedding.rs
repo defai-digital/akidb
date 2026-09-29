@@ -10,7 +10,7 @@ use tracing::{debug, warn};
 use crate::Result;
 
 /// Default maximum retry attempts
-const DEFAULT_MAX_RETRIES: u32 = 3;
+pub(crate) const DEFAULT_MAX_RETRIES: u32 = 3;
 
 /// Base delay for exponential backoff (milliseconds)
 const BASE_RETRY_DELAY_MS: u64 = 100;
@@ -65,17 +65,36 @@ pub struct EmbeddingClient {
 impl EmbeddingClient {
     /// Create a new embedding client
     pub fn new(base_url: &str, model: &str) -> Self {
-        Self::with_retries(base_url, model, DEFAULT_MAX_RETRIES)
+        Self::with_policy(base_url, model, DEFAULT_MAX_RETRIES, false)
     }
 
     /// Create a new embedding client with custom retry count
     pub fn with_retries(base_url: &str, model: &str, max_retries: u32) -> Self {
+        Self::with_policy(base_url, model, max_retries, false)
+    }
+
+    /// Create a client honoring the zero-external-egress policy: when
+    /// `require_local_embeddings` is set, redirects are refused so a
+    /// compromised or misconfigured loopback endpoint cannot forward text to
+    /// an external host after startup validation.
+    pub fn with_policy(
+        base_url: &str,
+        model: &str,
+        max_retries: u32,
+        require_local_embeddings: bool,
+    ) -> Self {
         // FIX BUG-H055: Add connect_timeout to prevent multi-minute hangs
         // when embedding server is unreachable. Without this, connections hang
         // for the default TCP timeout (~2 minutes) on each retry attempt.
+        let redirect = if require_local_embeddings {
+            reqwest::redirect::Policy::none()
+        } else {
+            reqwest::redirect::Policy::default()
+        };
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
             .connect_timeout(Duration::from_secs(10))
+            .redirect(redirect)
             .build()
             .expect("Failed to create HTTP client");
 

@@ -31,6 +31,11 @@ pub struct IngestionConfig {
     /// Model identifier sent to the OpenAI-compatible embedding endpoint
     pub embedding_model: String,
 
+    /// Fail closed unless the embedding endpoint is loopback-only (mirrors
+    /// the shard server's `require_local_embeddings` policy; env
+    /// `AKIDB_REQUIRE_LOCAL_EMBEDDINGS`)
+    pub require_local_embeddings: bool,
+
     /// Python parser service URL
     pub doc_parser_url: String,
 
@@ -329,6 +334,25 @@ impl IngestionConfig {
             ));
         }
 
+        let require_local_embeddings = std::env::var("AKIDB_REQUIRE_LOCAL_EMBEDDINGS")
+            .map(|value| matches!(value.as_str(), "true" | "1" | "yes"))
+            .unwrap_or(false);
+        let embedding_url =
+            std::env::var("EMBEDDING_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
+        if require_local_embeddings {
+            // Same loopback-only policy the shard server enforces; reuses the
+            // shared config validator so both paths classify URLs identically.
+            let probe = akidb_common::config::EmbeddingClientConfig {
+                enabled: true,
+                url: embedding_url.clone(),
+                require_local_embeddings: true,
+                ..Default::default()
+            };
+            probe
+                .validate_egress_policy()
+                .map_err(IngestionError::Config)?;
+        }
+
         Ok(Self {
             nats: NatsConfig {
                 url: std::env::var("NATS_URL")
@@ -386,10 +410,10 @@ impl IngestionConfig {
             },
             akidb_coordinator: std::env::var("AKIDB_COORDINATOR")
                 .unwrap_or_else(|_| "http://localhost:50050".to_string()),
-            embedding_url: std::env::var("EMBEDDING_URL")
-                .unwrap_or_else(|_| "http://localhost:8000".to_string()),
+            embedding_url,
             embedding_model: std::env::var("EMBEDDING_MODEL")
                 .unwrap_or_else(|_| "Qwen/Qwen3-Embedding-4B".to_string()),
+            require_local_embeddings,
             doc_parser_url: std::env::var("DOC_PARSER_URL")
                 .unwrap_or_else(|_| "http://localhost:8080".to_string()),
             metrics_addr: std::env::var("INGESTION_METRICS_ADDR")
