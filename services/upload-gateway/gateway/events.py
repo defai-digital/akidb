@@ -13,6 +13,21 @@ from gateway.models import UploadEvent
 logger = structlog.get_logger()
 
 
+def _connect_credentials() -> dict:
+    """Build nats.connect() credential kwargs from settings.
+
+    Precedence matches the ingestion orchestrator: credentials file > token >
+    user+password > anonymous (no kwargs).
+    """
+    if settings.nats_credentials_file:
+        return {"creds": settings.nats_credentials_file}
+    if settings.nats_token:
+        return {"token": settings.nats_token}
+    if settings.nats_user and settings.nats_password:
+        return {"user": settings.nats_user, "password": settings.nats_password}
+    return {}
+
+
 class EventPublisher:
     """Publisher for upload events to NATS JetStream."""
 
@@ -71,7 +86,7 @@ class EventPublisher:
         """Connect to NATS and ensure stream exists."""
         await self.disconnect()
         try:
-            self.nc = await nats.connect(settings.nats_url)
+            self.nc = await nats.connect(settings.nats_url, **_connect_credentials())
             self.js = self.nc.jetstream()
 
             await self._ensure_stream()

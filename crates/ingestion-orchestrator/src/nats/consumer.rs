@@ -16,8 +16,14 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
 use crate::config::NatsConfig;
-use crate::nats::ensure_stream;
+use crate::nats::{connect, ensure_stream};
 use crate::{IngestionError, Result};
+
+/// Maximum JetStream delivery attempts before a message is sent to the DLQ.
+///
+/// Shared between the consumer configuration and the pipeline's retry policy so
+/// the two cannot drift apart.
+pub const MAX_DELIVER: i64 = 3;
 
 /// Document upload event from SeaweedFS
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,12 +80,12 @@ struct S3EventObject {
 
 fn validate_upload_event(event: UploadEvent) -> Result<UploadEvent> {
     if event.bucket.trim().is_empty() {
-        return Err(IngestionError::Nats(
+        return Err(IngestionError::Parse(
             "upload event bucket must not be empty".to_string(),
         ));
     }
     if event.key.trim().is_empty() {
-        return Err(IngestionError::Nats(
+        return Err(IngestionError::Parse(
             "upload event key must not be empty".to_string(),
         ));
     }
@@ -90,7 +96,7 @@ fn decode_object_key(key: &str) -> Result<String> {
     percent_decode_str(&key.replace('+', " "))
         .decode_utf8()
         .map(|value| value.into_owned())
-        .map_err(|error| IngestionError::Nats(format!("invalid object key encoding: {error}")))
+        .map_err(|error| IngestionError::Parse(format!("invalid object key encoding: {error}")))
 }
 
 fn parse_upload_events(data: &[u8]) -> Result<Vec<UploadEvent>> {
@@ -114,7 +120,7 @@ fn parse_upload_events(data: &[u8]) -> Result<Vec<UploadEvent>> {
         })
         .collect::<Result<Vec<_>>>()?;
     if events.is_empty() {
-        return Err(IngestionError::Nats(
+        return Err(IngestionError::Parse(
             "notification contains no object-created records".to_string(),
         ));
     }
@@ -132,7 +138,7 @@ impl NatsConsumer {
     pub async fn new(config: &NatsConfig) -> Result<Self> {
         info!(url = %config.url, stream = %config.stream, "Connecting to NATS");
 
-        let client = async_nats::connect(&config.url).await?;
+        let client = connect(config).await?;
         let jetstream = jetstream::new(client);
 
         // Get or create the stream
@@ -162,7 +168,7 @@ impl NatsConsumer {
                 jetstream::consumer::pull::Config {
                     durable_name: Some(config.consumer.clone()),
                     ack_policy: jetstream::consumer::AckPolicy::Explicit,
-                    max_deliver: 3,
+                    max_deliver: MAX_DELIVER,
                     ack_wait: std::time::Duration::from_secs(60),
                     ..Default::default()
                 },
@@ -229,6 +235,17 @@ impl NatsMessage {
     /// Get raw payload bytes
     pub fn raw_payload(&self) -> &[u8] {
         &self.inner.payload
+    }
+
+    /// Number of times JetStream has delivered this message (1 = first delivery).
+    ///
+    /// Falls back to 1 when the JetStream metadata cannot be parsed, which keeps
+    /// the retry policy conservative (the message is treated as a first attempt).
+    pub fn delivery_attempt(&self) -> u64 {
+        self.inner
+            .info()
+            .map(|info| info.delivered.max(0) as u64)
+            .unwrap_or(1)
     }
 
     /// Acknowledge the message

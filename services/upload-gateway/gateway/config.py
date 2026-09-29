@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     )
     nats_replicas: int = Field(default=1, ge=1, le=5)
 
+    # NATS authentication (optional; when all are unset the client connects
+    # anonymously, preserving historical loopback/compose behavior).
+    # Precedence on connect: credentials file > token > user+password.
+    nats_token: str | None = None
+    nats_user: str | None = None
+    nats_password: str | None = None
+    nats_credentials_file: str | None = None
+
     # Upload settings
     max_file_size_mb: int = Field(default=100, ge=1)
     allowed_extensions: str = (
@@ -90,6 +98,18 @@ class Settings(BaseSettings):
             secret = _read_secret_file(secret_key_file)
             if secret:
                 object.__setattr__(self, "seaweedfs_secret_key", secret)
+
+        nats_token_file = os.environ.get(f"{prefix}NATS_TOKEN_FILE")
+        if nats_token_file:
+            secret = _read_secret_file(nats_token_file)
+            if secret:
+                object.__setattr__(self, "nats_token", secret)
+
+        nats_password_file = os.environ.get(f"{prefix}NATS_PASSWORD_FILE")
+        if nats_password_file:
+            secret = _read_secret_file(nats_password_file)
+            if secret:
+                object.__setattr__(self, "nats_password", secret)
 
         if not self.seaweedfs_access_key.strip():
             raise ValueError("seaweedfs_access_key must not be blank")

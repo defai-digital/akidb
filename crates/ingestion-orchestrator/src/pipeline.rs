@@ -17,12 +17,40 @@ use crate::idempotency::IdempotencyChecker;
 use crate::memory::MemoryCoordinator;
 use crate::metrics::IngestionMetrics;
 use crate::nats::publisher::DlqEntry;
-use crate::nats::{DlqPublisher, NatsConsumer, UploadEvent};
+use crate::nats::{DlqPublisher, NatsConsumer, UploadEvent, MAX_DELIVER};
 use crate::parsers::{route_parser_with_data, DocumentFormat, DocumentMetadata, ParsedDocument};
 use crate::python_client::PythonParserClient;
 use crate::state::{DocumentState, StateTracker};
 use crate::storage::StorageClient;
 use crate::{IngestionError, Result};
+
+/// What the pipeline should do with a message whose processing failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureOutcome {
+    /// Negative-acknowledge so JetStream redelivers (up to `MAX_DELIVER` attempts).
+    Redeliver,
+    /// Publish to the DLQ and terminate the message so it is not redelivered.
+    DeadLetter,
+}
+
+/// Errors that retrying cannot fix: the payload itself is malformed or fails
+/// validation. Everything else (storage, embedding, AkiDB insert, broker
+/// transport) is treated as transient and redelivered.
+fn is_permanent(error: &IngestionError) -> bool {
+    matches!(error, IngestionError::Parse(_) | IngestionError::Json(_))
+}
+
+/// Decide whether a failed message should be redelivered or dead-lettered.
+///
+/// Permanent failures go straight to the DLQ on the first attempt; transient
+/// failures are redelivered until `MAX_DELIVER` attempts are exhausted.
+fn decide_failure_outcome(error: &IngestionError, delivery_attempt: u64) -> FailureOutcome {
+    if is_permanent(error) || delivery_attempt >= MAX_DELIVER as u64 {
+        FailureOutcome::DeadLetter
+    } else {
+        FailureOutcome::Redeliver
+    }
+}
 
 /// Main ingestion pipeline
 pub struct IngestionPipeline {
@@ -196,28 +224,46 @@ impl IngestionPipeline {
             // Process each message
             for msg in messages {
                 if let Err(e) = self.process_message(&msg).await {
-                    error!(?e, "Failed to process message");
+                    let delivery_attempt = msg.delivery_attempt();
+                    match decide_failure_outcome(&e, delivery_attempt) {
+                        FailureOutcome::Redeliver => {
+                            warn!(
+                                error = %e,
+                                delivery_attempt,
+                                max_deliver = MAX_DELIVER,
+                                "Transient failure; negative-acknowledging for JetStream redelivery"
+                            );
+                            msg.nack().await?;
+                        }
+                        FailureOutcome::DeadLetter => {
+                            error!(
+                                error = %e,
+                                delivery_attempt,
+                                "Permanent failure or delivery attempts exhausted; sending to DLQ"
+                            );
 
-                    // Preserve even malformed source payloads in the DLQ.
-                    let original_event =
-                        serde_json::from_slice(msg.raw_payload()).unwrap_or_else(|_| {
-                            serde_json::Value::String(
-                                String::from_utf8_lossy(msg.raw_payload()).into_owned(),
-                            )
-                        });
-                    let dlq_entry = DlqEntry {
-                        original_event,
-                        error: e.to_string(),
-                        retry_count: 0,
-                        failed_at: chrono::Utc::now().to_rfc3339(),
-                        stage: "processing".to_string(),
-                    };
-                    if let Err(dlq_err) = self.dlq.publish(dlq_entry).await {
-                        error!(?dlq_err, "Failed to publish to DLQ");
+                            // Preserve even malformed source payloads in the DLQ.
+                            let original_event = serde_json::from_slice(msg.raw_payload())
+                                .unwrap_or_else(|_| {
+                                    serde_json::Value::String(
+                                        String::from_utf8_lossy(msg.raw_payload()).into_owned(),
+                                    )
+                                });
+                            let dlq_entry = DlqEntry {
+                                original_event,
+                                error: e.to_string(),
+                                retry_count: delivery_attempt.saturating_sub(1) as u32,
+                                failed_at: chrono::Utc::now().to_rfc3339(),
+                                stage: "processing".to_string(),
+                            };
+                            if let Err(dlq_err) = self.dlq.publish(dlq_entry).await {
+                                error!(?dlq_err, "Failed to publish to DLQ");
+                            }
+
+                            // Terminate message (don't redeliver since it's in DLQ)
+                            msg.terminate().await?;
+                        }
                     }
-
-                    // Terminate message (don't redeliver since it's in DLQ)
-                    msg.terminate().await?;
                 } else {
                     msg.ack().await?;
                 }
@@ -619,6 +665,48 @@ fn ensure_embedding_alignment(chunk_count: usize, embedding_count: usize) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permanent_parse_failure_goes_straight_to_dlq_on_first_attempt() {
+        let error = IngestionError::Parse("malformed payload".to_string());
+
+        assert_eq!(
+            decide_failure_outcome(&error, 1),
+            FailureOutcome::DeadLetter
+        );
+    }
+
+    #[test]
+    fn malformed_json_goes_straight_to_dlq_on_first_attempt() {
+        let error = serde_json::from_slice::<serde_json::Value>(b"not json").unwrap_err();
+
+        assert_eq!(
+            decide_failure_outcome(&IngestionError::Json(error), 1),
+            FailureOutcome::DeadLetter
+        );
+    }
+
+    #[test]
+    fn transient_failure_is_redelivered_before_max_deliver() {
+        let error = IngestionError::Storage("seaweedfs timeout".to_string());
+
+        assert_eq!(decide_failure_outcome(&error, 1), FailureOutcome::Redeliver);
+        assert_eq!(decide_failure_outcome(&error, 2), FailureOutcome::Redeliver);
+    }
+
+    #[test]
+    fn transient_failure_is_dead_lettered_once_max_deliver_is_reached() {
+        let error = IngestionError::Embedding("embedding sidecar unavailable".to_string());
+
+        assert_eq!(
+            decide_failure_outcome(&error, MAX_DELIVER as u64),
+            FailureOutcome::DeadLetter
+        );
+        assert_eq!(
+            decide_failure_outcome(&error, MAX_DELIVER as u64 + 1),
+            FailureOutcome::DeadLetter
+        );
+    }
 
     #[test]
     fn test_ensure_embedding_alignment_rejects_partial_embedding_response() {

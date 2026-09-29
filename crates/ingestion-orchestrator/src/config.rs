@@ -69,6 +69,22 @@ pub struct NatsConfig {
 
     /// Number of JetStream replicas
     pub replicas: usize,
+
+    /// Optional static token authentication.
+    #[serde(default)]
+    pub token: Option<String>,
+
+    /// Optional username (requires `password`).
+    #[serde(default)]
+    pub user: Option<String>,
+
+    /// Optional password (requires `user`).
+    #[serde(default)]
+    pub password: Option<String>,
+
+    /// Optional path to a NATS `.creds` file (NKey/JWT authentication).
+    #[serde(default)]
+    pub credentials_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -324,6 +340,10 @@ impl IngestionConfig {
                 dlq_stream: std::env::var("NATS_DLQ_STREAM")
                     .unwrap_or_else(|_| "akidb-dlq".to_string()),
                 replicas: nats_replicas,
+                token: env_or_file("NATS_TOKEN", "NATS_TOKEN_FILE")?,
+                user: std::env::var("NATS_USER").ok(),
+                password: env_or_file("NATS_PASSWORD", "NATS_PASSWORD_FILE")?,
+                credentials_file: std::env::var("NATS_CREDENTIALS_FILE").ok(),
             },
             seaweedfs: SeaweedFsConfig {
                 endpoint: std::env::var("SEAWEEDFS_ENDPOINT")

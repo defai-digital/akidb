@@ -324,6 +324,10 @@ async fn test_config_defaults() {
         consumer: "test-consumer".to_string(),
         dlq_stream: "test-dlq".to_string(),
         replicas: 1,
+        token: None,
+        user: None,
+        password: None,
+        credentials_file: None,
     };
 
     assert_eq!(nats.url, "nats://localhost:4222");

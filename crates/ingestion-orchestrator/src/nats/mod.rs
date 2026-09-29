@@ -9,8 +9,34 @@ use crate::Result;
 pub mod consumer;
 pub mod publisher;
 
-pub use consumer::{NatsConsumer, UploadEvent};
+pub use consumer::{NatsConsumer, UploadEvent, MAX_DELIVER};
 pub use publisher::DlqPublisher;
+
+/// Connect to NATS using the optional credentials in `NatsConfig`.
+///
+/// Precedence: `credentials_file` (NKey/JWT) > `token` > `user`+`password` >
+/// anonymous. An absent credential section keeps the historical anonymous
+/// behavior so existing loopback/compose deployments keep working.
+pub(crate) async fn connect(config: &crate::config::NatsConfig) -> Result<async_nats::Client> {
+    let options = async_nats::ConnectOptions::new();
+    let options = if let Some(path) = &config.credentials_file {
+        options
+            .credentials_file(path)
+            .await
+            .map_err(|e| crate::IngestionError::Nats(format!("invalid credentials file: {e}")))?
+    } else if let Some(token) = &config.token {
+        options.token(token.clone())
+    } else if let (Some(user), Some(password)) = (&config.user, &config.password) {
+        options.user_and_password(user.clone(), password.clone())
+    } else {
+        options
+    };
+
+    options
+        .connect(&config.url)
+        .await
+        .map_err(crate::IngestionError::from)
+}
 
 fn reconciled_stream_config(
     current: &jetstream::stream::Config,

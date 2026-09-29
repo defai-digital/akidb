@@ -52,6 +52,28 @@ Uploads reach the orchestrator through the upload gateway's NATS publish
 notifications, so an object written directly into the bucket is picked up only
 by the orchestrator's next scheduled bucket/manifest sync.
 
+## NATS Authentication
+
+The default Compose stack (`deploy/compose/nats/nats.conf`) runs the broker
+without authentication; any process that can reach port 4222 can publish or
+consume. For any non-loopback deployment, enable broker authentication:
+
+1. Use `deploy/compose/nats/nats-auth.conf.example` as the mounted NATS
+   config and replace both placeholder passwords with real secrets.
+2. Configure the upload gateway with `UPLOAD_GATEWAY_NATS_USER` /
+   `UPLOAD_GATEWAY_NATS_PASSWORD` (or `UPLOAD_GATEWAY_NATS_PASSWORD_FILE`).
+3. Configure the orchestrator with `NATS_USER` / `NATS_PASSWORD`
+   (or `NATS_PASSWORD_FILE`). Token auth (`NATS_TOKEN` / `NATS_TOKEN_FILE`,
+   `UPLOAD_GATEWAY_NATS_TOKEN` / `_FILE`) and NKey/JWT credentials files
+   (`NATS_CREDENTIALS_FILE`, `UPLOAD_GATEWAY_NATS_CREDENTIALS_FILE`) are also
+   supported on both clients; precedence is credentials file > token >
+   user+password.
+
+Transient processing failures are redelivered by JetStream up to
+`max_deliver` (3) attempts before a message is dead-lettered; malformed
+payloads go straight to the DLQ. `retry_count` in DLQ entries records the
+number of redeliveries that were attempted.
+
 ## Backpressure Active
 
 Symptoms: ingestion pauses, queue depth grows, or insert latency rises.

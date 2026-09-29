@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::config::NatsConfig;
-use crate::nats::ensure_stream;
+use crate::nats::{connect, ensure_stream};
 use crate::Result;
 
 /// Dead letter queue entry
@@ -39,7 +39,7 @@ pub struct DlqPublisher {
 impl DlqPublisher {
     /// Create a new DLQ publisher
     pub async fn new(config: &NatsConfig) -> Result<Self> {
-        let client = async_nats::connect(&config.url).await?;
+        let client = connect(config).await?;
         let jetstream = jetstream::new(client);
 
         // Ensure DLQ stream exists
