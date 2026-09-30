@@ -567,6 +567,7 @@ fn request_with_workspace<T>(inner: T, workspace: Option<&str>) -> Request<T> {
                 authenticated: true,
                 principal_id: None,
                 credential_id: None,
+                correlation_hint: None,
             });
         }
     }

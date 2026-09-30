@@ -48,6 +48,9 @@ const MEMORY_CAPABILITIES: &[&str] = &[
 ];
 const MAX_AUTH_VALUE_BYTES: usize = 1_024;
 const MIN_PRINCIPAL_TOKEN_BYTES: usize = 16;
+const CORRELATION_HINT_HEADER: &str = "x-request-id";
+const MIN_CORRELATION_HINT_BYTES: usize = 8;
+const MAX_CORRELATION_HINT_BYTES: usize = 128;
 
 /// Legacy request-scoped identity used by the existing vector/management data
 /// plane. Memory handlers must use [`memory_auth_context`] instead.
@@ -63,6 +66,9 @@ pub struct AuthContext {
     /// Credential id of the presented principal credential; `None` whenever
     /// `principal_id` is `None`.
     pub credential_id: Option<String>,
+    /// Bounded, unverified caller hint for cross-service troubleshooting.
+    /// This never selects authority or replaces the server-minted request id.
+    pub correlation_hint: Option<String>,
 }
 
 /// Maximum Memory authority derived from a credential and versioned grants.
@@ -737,6 +743,7 @@ impl AuthRuntime {
                 authenticated,
                 principal_id,
                 credential_id,
+                correlation_hint: correlation_hint(metadata),
             },
             memory,
         ))
@@ -817,6 +824,7 @@ pub fn auth_context<T>(request: &Request<T>) -> AuthContext {
             authenticated: false,
             principal_id: None,
             credential_id: None,
+            correlation_hint: None,
         })
 }
 
@@ -979,6 +987,20 @@ fn metadata_selector(metadata: &MetadataMap, name: &'static str) -> Option<Strin
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn correlation_hint(metadata: &MetadataMap) -> Option<String> {
+    let mut values = metadata.get_all(CORRELATION_HINT_HEADER).iter();
+    let value = values.next()?.to_str().ok()?.trim();
+    if values.next().is_some()
+        || !(MIN_CORRELATION_HINT_BYTES..=MAX_CORRELATION_HINT_BYTES).contains(&value.len())
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 fn validate_request_selector(field: &str, value: &str) -> Result<(), Status> {
@@ -1817,6 +1839,37 @@ mod tests {
         assert!(is_loopback_host("::1"));
         assert!(!is_loopback_host("0.0.0.0"));
         assert!(!is_loopback_host("192.168.1.10"));
+    }
+
+    #[test]
+    fn caller_correlation_hint_is_bounded_and_never_authorizes() {
+        let runtime = runtime(AuthMode::Required, Some("valid-secret"), true);
+        let mut metadata = bearer("Bearer valid-secret");
+        metadata.insert(CORRELATION_HINT_HEADER, "shared.trace_123".parse().unwrap());
+        let first = runtime.authorize(&metadata).unwrap();
+        let second = runtime.authorize(&metadata).unwrap();
+        assert_eq!(first.correlation_hint.as_deref(), Some("shared.trace_123"));
+        assert_eq!(second.correlation_hint, first.correlation_hint);
+
+        metadata.insert(CORRELATION_HINT_HEADER, "short".parse().unwrap());
+        assert!(runtime.authorize(&metadata).unwrap().correlation_hint.is_none());
+        metadata.insert(CORRELATION_HINT_HEADER, "invalid:separator".parse().unwrap());
+        assert!(runtime.authorize(&metadata).unwrap().correlation_hint.is_none());
+        metadata.insert(
+            CORRELATION_HINT_HEADER,
+            "a".repeat(MAX_CORRELATION_HINT_BYTES + 1).parse().unwrap(),
+        );
+        assert!(runtime.authorize(&metadata).unwrap().correlation_hint.is_none());
+        metadata.remove(CORRELATION_HINT_HEADER);
+        metadata.append(CORRELATION_HINT_HEADER, "shared.trace_123".parse().unwrap());
+        metadata.append(CORRELATION_HINT_HEADER, "other.trace_456".parse().unwrap());
+        assert!(runtime.authorize(&metadata).unwrap().correlation_hint.is_none());
+
+        metadata.insert(AUTH_HEADER, "Bearer wrong-secret".parse().unwrap());
+        assert_eq!(
+            runtime.authorize(&metadata).unwrap_err().code(),
+            tonic::Code::Unauthenticated
+        );
     }
 
     #[test]

@@ -37,10 +37,12 @@ pub const HASH_KEY_ENV: &str = "AKIDB_ACCESS_LOG_HASH_KEY";
 #[derive(Debug, Clone, Serialize)]
 pub struct AccessRecord {
     pub record_id: String,
-    /// Correlation id for this client request. In v1 each emitting component
-    /// mints its own id; cross-component sharing (coordinator fan-out)
-    /// requires a request-id header and is an ADR-0009 follow-up.
+    /// Server-minted id for this client request. Each emitting component
+    /// mints its own id; cross-component authoritative sharing is a follow-up.
     pub request_id: String,
+    /// Caller-supplied cross-service hint. Validated for size and characters,
+    /// but never trusted as identity or as the server request id.
+    pub correlation_hint: Option<String>,
     pub occurred_at_ms: u64,
     /// Principal id when a principal credential was presented; `null` for the
     /// legacy token, disabled auth, or unauthenticated loopback.
@@ -80,6 +82,7 @@ impl AccessRecord {
         Self {
             record_id: format!("ar_{}", uuid::Uuid::now_v7().simple()),
             request_id: format!("rq_{}", uuid::Uuid::now_v7().simple()),
+            correlation_hint: ctx.correlation_hint.clone(),
             occurred_at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_millis() as u64)
@@ -436,6 +439,7 @@ mod tests {
             authenticated: true,
             principal_id: Some("principal-1".to_string()),
             credential_id: Some("cred-1".to_string()),
+            correlation_hint: Some("shared.trace_123".to_string()),
         }
     }
 
@@ -489,6 +493,8 @@ mod tests {
         assert_eq!(parsed["hit_count"], 5);
         assert_eq!(parsed["latency_us"], 1234);
         assert!(parsed["request_id"].as_str().unwrap().starts_with("rq_"));
+        assert_eq!(parsed["correlation_hint"], "shared.trace_123");
+        assert_ne!(parsed["request_id"], parsed["correlation_hint"]);
         assert_eq!(log.dropped_count(), 0);
 
         #[cfg(unix)]

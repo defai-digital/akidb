@@ -577,6 +577,7 @@ mod tests {
             authenticated: true,
             principal_id: None,
             credential_id: None,
+            correlation_hint: None,
         });
         request
     }
