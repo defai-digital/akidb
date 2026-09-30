@@ -1098,6 +1098,14 @@ impl PostgresReplicaWorker {
         report: &CheckpointReport,
     ) -> Result<(), ReplicaWorkerError> {
         let transaction = client.transaction().await?;
+        // Activation locks the stream before the generation. Match that order
+        // so a checkpoint report cannot deadlock with the publication CAS.
+        transaction
+            .query_one(
+                "select 1 from knowledge_streams where workspace_id = $1 and collection = $2 for update",
+                &[&self.config.workspace_id, &self.config.collection],
+            )
+            .await?;
         let generation = transaction
             .query_one(
                 r#"
@@ -1134,41 +1142,54 @@ impl PostgresReplicaWorker {
                     report.applied_sequence, required_sequence
                 )));
             }
-            let updated = transaction
-                .execute(
-                    r#"
+            let vector_count = u64_to_i64(report.vector_count, "vector_count")?;
+            let edge_count = u64_to_i64(report.edge_count, "edge_count")?;
+            let existing_digest: Option<String> = generation.get("materialization_digest");
+            let existing_vectors: Option<i64> = generation.get("materialized_vector_count");
+            let existing_edges: Option<i64> = generation.get("materialized_edge_count");
+            if let Some(digest) = existing_digest {
+                if digest != report.generation_digest
+                    || existing_vectors != Some(vector_count)
+                    || existing_edges != Some(edge_count)
+                {
+                    return Err(ReplicaWorkerError::Divergence(format!(
+                        "generation {} digest/counts differ from a ready peer",
+                        report.generation_id
+                    )));
+                }
+            } else {
+                if existing_vectors.is_some() || existing_edges.is_some() {
+                    return Err(ReplicaWorkerError::Divergence(format!(
+                        "generation {} has partial materialization evidence",
+                        report.generation_id
+                    )));
+                }
+                let updated = transaction
+                    .execute(
+                        r#"
                     update knowledge_generations
-                    set materialization_digest =
-                          coalesce(materialization_digest, $2),
-                        materialized_vector_count =
-                          coalesce(materialized_vector_count, $3),
-                        materialized_edge_count =
-                          coalesce(materialized_edge_count, $4)
+                    set materialization_digest = $2,
+                        materialized_vector_count = $3,
+                        materialized_edge_count = $4
                     where generation_id = $1
                       and required_sequence = $5
-                      and (
-                        materialization_digest is null
-                        or (
-                          materialization_digest = $2
-                          and materialized_vector_count = $3
-                          and materialized_edge_count = $4
-                        )
-                      )
+                      and materialization_digest is null
                     "#,
-                    &[
-                        &report.generation_id,
-                        &report.generation_digest,
-                        &u64_to_i64(report.vector_count, "vector_count")?,
-                        &u64_to_i64(report.edge_count, "edge_count")?,
-                        &u64_to_i64(report.applied_sequence, "applied_sequence")?,
-                    ],
-                )
-                .await?;
-            if updated != 1 {
-                return Err(ReplicaWorkerError::Divergence(format!(
-                    "generation {} digest/counts differ from a ready peer",
-                    report.generation_id
-                )));
+                        &[
+                            &report.generation_id,
+                            &report.generation_digest,
+                            &vector_count,
+                            &edge_count,
+                            &u64_to_i64(report.applied_sequence, "applied_sequence")?,
+                        ],
+                    )
+                    .await?;
+                if updated != 1 {
+                    return Err(ReplicaWorkerError::Divergence(format!(
+                        "generation {} materialization evidence changed",
+                        report.generation_id
+                    )));
+                }
             }
         }
 
