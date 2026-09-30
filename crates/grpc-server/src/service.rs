@@ -827,15 +827,17 @@ where
         let params = SearchParams::new(fetch_k).with_optional_nprobe(req.nprobe);
         let params = self.attach_metadata_predicate(params, metadata_filter);
 
-        let results = self
+        let window = self
             .index
-            .search(&req.query, &params)
+            .search_window(&req.query, &params)
             .map_err(Self::to_status)?;
 
         let elapsed = start.elapsed();
         let latency_us = elapsed.as_micros() as u64;
 
-        let mapped: Vec<SearchResult> = results
+        let scan_limited = window.candidate_limited;
+        let mapped: Vec<SearchResult> = window
+            .results
             .into_iter()
             .map(|r| SearchResult {
                 id: r.id.to_string(),
@@ -850,6 +852,7 @@ where
             &req.group_by,
             req.group_size,
         );
+        let candidate_limited = scan_limited && response_results.len() < top_k;
 
         info!(
             "Search returned {} results in {:?}",
@@ -870,6 +873,7 @@ where
             serving_generation: None,
             context_pack_v1: None,
             diagnostics: None,
+            candidate_limited,
         }))
     }
 
@@ -1583,6 +1587,11 @@ where
             &req.group_by,
             req.group_size,
         );
+        // Narrow once after the score/group cut: the flag reports an
+        // underfilled page caused by a capped scan, and every consumer
+        // (context pack and response field) shares this one value.
+        let candidate_limited =
+            dense_candidate_limited && response_results.len() < req.top_k as usize;
         let response_ids: HashSet<&str> = response_results
             .iter()
             .map(|result| result.id.as_str())
@@ -1615,7 +1624,7 @@ where
                 &pack_candidates,
                 Some(&graph_expanded_ids),
                 req.pack_token_budget.unwrap_or(1024) as usize,
-                dense_candidate_limited,
+                candidate_limited,
             ))
         } else {
             None
@@ -1691,6 +1700,7 @@ where
             serving_generation: None,
             context_pack_v1,
             diagnostics,
+            candidate_limited,
         }))
     }
     #[instrument(skip(self, request))]
@@ -1717,14 +1727,17 @@ where
             Self::validate_query_vector(&query.vector)?;
             let search_start = Instant::now();
 
-            let search_results = self
+            let search_window = self
                 .index
-                .search(&query.vector, &params)
+                .search_window(&query.vector, &params)
                 .map_err(Self::to_status)?;
 
             let latency_us = search_start.elapsed().as_micros() as u64;
 
-            let response_results: Vec<SearchResult> = search_results
+            let candidate_limited =
+                search_window.candidate_limited && search_window.results.len() < req.top_k as usize;
+            let response_results: Vec<SearchResult> = search_window
+                .results
                 .into_iter()
                 .map(|r| SearchResult {
                     id: r.id.to_string(),
@@ -1746,6 +1759,7 @@ where
                 serving_generation: None,
                 context_pack_v1: None,
                 diagnostics: None,
+                candidate_limited,
             });
         }
 
@@ -2439,12 +2453,13 @@ where
             })
             .take(req.top_k as usize)
             .collect();
+        let candidate_limited = candidate_cap_reached && results.len() < req.top_k as usize;
         let built_context_pack = if req.pack {
             Some(self.build_context_pack(
                 &results,
                 None,
                 req.pack_token_budget.unwrap_or(1024) as usize,
-                candidate_cap_reached,
+                candidate_limited,
             ))
         } else {
             None
@@ -2485,6 +2500,7 @@ where
                 graph_hop_decay: 0.0,
                 graph_expansions: Vec::new(),
             }),
+            candidate_limited,
         }))
     }
 

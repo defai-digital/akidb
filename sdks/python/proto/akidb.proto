@@ -783,6 +783,9 @@ message SearchResponse {
   // Typed pack for TextSearch when pack=true. Vector Search leaves it unset.
   ContextPackV1 context_pack_v1 = 10;
   RetrievalDiagnostics diagnostics = 11;
+  // A bounded filtered scan reached its cap while the returned page is underfilled.
+  // More eligible hits may exist. Independent of pack/diagnostics; returned hits remain valid.
+  bool candidate_limited = 12;
 }
 
 message SearchResult {

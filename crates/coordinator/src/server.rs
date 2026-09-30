@@ -585,6 +585,11 @@ impl CoordinatorService {
             &req.group_by,
             req.group_size,
         );
+        // Re-narrow after the merge cut: a capped short shard plus a full-page
+        // shard still fills the client page, so the OR-aggregated fan-out flag
+        // must be conditioned on the merged page to keep the "underfilled"
+        // contract of the response field.
+        let candidate_limited = result.candidate_limited && results.len() < req.top_k as usize;
 
         Ok(Response::new(SearchResponse {
             results,
@@ -598,6 +603,7 @@ impl CoordinatorService {
             serving_generation: None,
             context_pack_v1: None,
             diagnostics: None,
+            candidate_limited,
         }))
     }
 }

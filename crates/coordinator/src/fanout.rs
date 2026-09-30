@@ -469,13 +469,14 @@ impl FanoutExecutor {
                     Ok(Ok(response)) => {
                         // Mark pool as healthy on successful response
                         pool.mark_used();
+                        let response = response.into_inner();
+                        let candidate_limited = response.candidate_limited;
                         let results: Vec<SearchResult> = response
-                            .into_inner()
                             .results
                             .into_iter()
                             .map(shard_search_result)
                             .collect();
-                        Ok((shard_id, results))
+                        Ok((shard_id, results, candidate_limited))
                     }
                     Ok(Err(e)) => Err((shard_id, ShardSearchFailure::from_status(&e))),
                     Err(_) => Err((
@@ -491,13 +492,15 @@ impl FanoutExecutor {
         // `top_k` here would leave grouped queries short.
         let mut merger = ResultMerger::new(fetch_k);
         let mut responding_shards = Vec::new();
+        let mut candidate_limited = false;
 
         // FIX BUG-071: Iterate with index to identify shard even on task panic
         for (idx, handle) in handles.into_iter().enumerate() {
             match handle.await {
-                Ok(Ok((shard_id, results))) => {
+                Ok(Ok((shard_id, results, shard_candidate_limited))) => {
                     debug!("Shard {} returned {} results", shard_id, results.len());
                     responding_shards.push(shard_id);
+                    candidate_limited |= shard_candidate_limited;
                     merger.add_results(results);
                 }
                 Ok(Err((shard_id, failure))) => {
@@ -554,6 +557,7 @@ impl FanoutExecutor {
             responding_shards,
             missing_shards,
             total_shards,
+            candidate_limited,
         })
     }
 
@@ -914,6 +918,8 @@ pub struct FanoutResult {
     /// Total number of configured shards, so `coverage` reports the share of
     /// the cluster that actually answered
     pub total_shards: usize,
+    /// Any responding shard exhausted its bounded filtered search window.
+    pub candidate_limited: bool,
 }
 
 impl FanoutResult {
@@ -1165,6 +1171,7 @@ mod tests {
             responding_shards: vec!["shard-a".to_string()],
             missing_shards: vec![],
             total_shards: 2,
+            candidate_limited: false,
         };
 
         assert_eq!(result.coverage(), 0.5);

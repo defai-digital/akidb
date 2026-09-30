@@ -37,9 +37,11 @@ The agent call is `TextSearch` with `pack` set. That request returns
 `ContextPackV1`: each passage has text, a score, a reason, and a citation,
 plus the token budget, the counter name (`conservative_v1`), and whether the
 budget or a filter candidate window cut the result. Vector `Search` stays a
-top-k call and does not build that pack. Clients use gRPC, the Python and
-TypeScript SDKs, or the MCP `pack` tool. A terminal UI and JSON operations
-commands are included for the operator.
+top-k call and does not build that pack. `SearchResponse.candidate_limited`
+reports an underfilled, bounded filtered scan for vector and text calls even
+when `pack` is false; returned hits still satisfy the filter. Clients use
+gRPC, the Python and TypeScript SDKs, or the MCP `pack` tool. A terminal UI
+and JSON operations commands are included for the operator.
 
 Loopback is the default bind. Bearer tokens and workspace controls apply when
 the server is reachable beyond the local machine.

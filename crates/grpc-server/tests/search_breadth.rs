@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use akidb_common::config::{FilterMode, FilterSettings};
 use akidb_faiss::{
-    HnswConfig, HnswIndex, IndexStats, InternalId, Result, SearchParams, SearchResult, VectorId,
-    VectorIndex,
+    HnswConfig, HnswIndex, IndexStats, InternalId, Result, SearchParams, SearchResult,
+    SearchWindow, VectorId, VectorIndex,
 };
 use akidb_grpc::proto::akidb_server::Akidb;
 use akidb_grpc::proto::{
@@ -41,6 +42,20 @@ impl VectorIndex for ObservedIndex {
             }));
         }
         self.inner.search(query, &observed)
+    }
+    fn search_window(&self, query: &[f32], params: &SearchParams) -> Result<SearchWindow> {
+        self.breadths.lock().unwrap().push(params.nprobe);
+        let mut observed = params.clone();
+        if let Some(filter) = &params.filter {
+            assert!(params.cache_filter_rejections);
+            let filter = filter.clone();
+            let calls = self.predicate_calls.clone();
+            observed.filter = Some(Arc::new(move |id| {
+                *calls.lock().unwrap().entry(id.to_string()).or_default() += 1;
+                filter(id)
+            }));
+        }
+        self.inner.search_window(query, &observed)
     }
     fn search_batch(
         &self,
@@ -285,4 +300,73 @@ async fn selective_rpc_does_not_reread_rejected_metadata_during_expansion() {
     let calls = index.predicate_calls.lock().unwrap();
     assert_eq!(calls.len(), 100);
     assert!(calls.values().all(|count| *count == 1));
+}
+
+#[tokio::test]
+async fn filtered_candidate_exhaustion_is_visible_without_a_context_pack() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(RocksDbBackend::open(dir.path()).unwrap());
+    let index = Arc::new(HnswIndex::new(HnswConfig::new(2).with_capacity(32)).unwrap());
+    let service = AkiDbService::new(index, Arc::new(IdMapping::new(storage, "test")), "test")
+        .with_embedding_provider(Arc::new(Embedder))
+        .with_filter_settings(FilterSettings {
+            mode: FilterMode::Pre,
+            postfilter_overfetch_factor: 1,
+            max_postfilter_candidates: 4,
+            ..FilterSettings::default()
+        });
+    for row in 0..20 {
+        service
+            .insert(Request::new(InsertRequest {
+                collection: "test".into(),
+                id: format!("denied-{row}"),
+                vector: vec![1.0, row as f32 * 0.001],
+                metadata: br#"{"bucket":"denied"}"#.to_vec(),
+                text: "denied".into(),
+            }))
+            .await
+            .unwrap();
+    }
+    service
+        .insert(Request::new(InsertRequest {
+            collection: "test".into(),
+            id: "allowed".into(),
+            vector: vec![-1.0, 0.0],
+            metadata: br#"{"bucket":"allowed"}"#.to_vec(),
+            text: "allowed".into(),
+        }))
+        .await
+        .unwrap();
+
+    let filter = br#"{"bucket":"allowed"}"#.to_vec();
+    let vector = service
+        .search(Request::new(SearchRequest {
+            collection: "test".into(),
+            query: vec![1.0, 0.0],
+            top_k: 1,
+            filter: filter.clone(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(vector.results.is_empty());
+    assert!(vector.candidate_limited);
+
+    let text = service
+        .text_search(Request::new(TextSearchRequest {
+            collection: "test".into(),
+            text: "query".into(),
+            top_k: 1,
+            filter,
+            retrieval_mode: "dense".into(),
+            pack: false,
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(text.results.is_empty());
+    assert!(text.context_pack_v1.is_none());
+    assert!(text.candidate_limited);
 }
