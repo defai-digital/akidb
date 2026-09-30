@@ -492,7 +492,7 @@ impl FanoutExecutor {
         // `top_k` here would leave grouped queries short.
         let mut merger = ResultMerger::new(fetch_k);
         let mut responding_shards = Vec::new();
-        let mut candidate_limited = false;
+        let mut candidate_limited = Some(false);
 
         // FIX BUG-071: Iterate with index to identify shard even on task panic
         for (idx, handle) in handles.into_iter().enumerate() {
@@ -500,7 +500,11 @@ impl FanoutExecutor {
                 Ok(Ok((shard_id, results, shard_candidate_limited))) => {
                     debug!("Shard {} returned {} results", shard_id, results.len());
                     responding_shards.push(shard_id);
-                    candidate_limited |= shard_candidate_limited;
+                    candidate_limited = match (candidate_limited, shard_candidate_limited) {
+                        (Some(true), _) | (_, Some(true)) => Some(true),
+                        (Some(false), Some(false)) => Some(false),
+                        _ => None,
+                    };
                     merger.add_results(results);
                 }
                 Ok(Err((shard_id, failure))) => {
@@ -919,7 +923,8 @@ pub struct FanoutResult {
     /// the cluster that actually answered
     pub total_shards: usize,
     /// Any responding shard exhausted its bounded filtered search window.
-    pub candidate_limited: bool,
+    /// `None` means at least one responding shard did not report the status.
+    pub candidate_limited: Option<bool>,
 }
 
 impl FanoutResult {
@@ -1171,7 +1176,7 @@ mod tests {
             responding_shards: vec!["shard-a".to_string()],
             missing_shards: vec![],
             total_shards: 2,
-            candidate_limited: false,
+            candidate_limited: Some(false),
         };
 
         assert_eq!(result.coverage(), 0.5);

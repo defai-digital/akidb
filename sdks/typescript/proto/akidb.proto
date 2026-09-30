@@ -785,7 +785,8 @@ message SearchResponse {
   RetrievalDiagnostics diagnostics = 11;
   // A bounded filtered scan reached its cap while the returned page is underfilled.
   // More eligible hits may exist. Independent of pack/diagnostics; returned hits remain valid.
-  bool candidate_limited = 12;
+  // Absence means the serving peer did not report this status, not false.
+  optional bool candidate_limited = 12;
 }
 
 message SearchResult {

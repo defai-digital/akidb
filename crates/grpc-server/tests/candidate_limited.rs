@@ -164,10 +164,7 @@ async fn capped_underfilled_scan_reports_candidate_limited() {
         .unwrap()
         .into_inner();
     assert_eq!(response.results.len(), 1);
-    assert!(
-        response.candidate_limited,
-        "a capped scan that underfills the page must be reported"
-    );
+    assert_eq!(response.candidate_limited, Some(true));
 }
 
 #[tokio::test]
@@ -187,10 +184,7 @@ async fn capped_full_page_does_not_report_candidate_limited() {
         .unwrap()
         .into_inner();
     assert_eq!(response.results.len(), 3);
-    assert!(
-        !response.candidate_limited,
-        "a full page stays valid even when the underlying scan was capped"
-    );
+    assert_eq!(response.candidate_limited, Some(false));
 
     // The page reports incompleteness only while it is actually short.
     index.set(Scenario {
@@ -202,7 +196,7 @@ async fn capped_full_page_does_not_report_candidate_limited() {
         .await
         .unwrap()
         .into_inner();
-    assert!(response.candidate_limited);
+    assert_eq!(response.candidate_limited, Some(true));
 }
 
 #[tokio::test]
@@ -221,10 +215,7 @@ async fn uncapped_underfilled_scan_is_not_candidate_limited() {
         .await
         .unwrap()
         .into_inner();
-    assert!(
-        !response.candidate_limited,
-        "an honest short result set is not a capped scan"
-    );
+    assert_eq!(response.candidate_limited, Some(false));
 }
 
 #[tokio::test]
@@ -258,9 +249,6 @@ async fn search_batch_reports_candidate_limited_per_query() {
     assert_eq!(response.results.len(), 2);
     for nested in &response.results {
         assert_eq!(nested.results.len(), 1);
-        assert!(
-            nested.candidate_limited,
-            "every underfilled response in the batch must carry the flag"
-        );
+        assert_eq!(nested.candidate_limited, Some(true));
     }
 }

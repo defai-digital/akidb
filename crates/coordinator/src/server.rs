@@ -589,7 +589,11 @@ impl CoordinatorService {
         // shard still fills the client page, so the OR-aggregated fan-out flag
         // must be conditioned on the merged page to keep the "underfilled"
         // contract of the response field.
-        let candidate_limited = result.candidate_limited && results.len() < req.top_k as usize;
+        let candidate_limited = if results.len() >= req.top_k as usize {
+            Some(false)
+        } else {
+            result.candidate_limited
+        };
 
         Ok(Response::new(SearchResponse {
             results,

@@ -873,7 +873,7 @@ where
             serving_generation: None,
             context_pack_v1: None,
             diagnostics: None,
-            candidate_limited,
+            candidate_limited: Some(candidate_limited),
         }))
     }
 
@@ -1700,7 +1700,7 @@ where
             serving_generation: None,
             context_pack_v1,
             diagnostics,
-            candidate_limited,
+            candidate_limited: Some(candidate_limited),
         }))
     }
     #[instrument(skip(self, request))]
@@ -1759,7 +1759,7 @@ where
                 serving_generation: None,
                 context_pack_v1: None,
                 diagnostics: None,
-                candidate_limited,
+                candidate_limited: Some(candidate_limited),
             });
         }
 
@@ -2500,7 +2500,7 @@ where
                 graph_hop_decay: 0.0,
                 graph_expansions: Vec::new(),
             }),
-            candidate_limited,
+            candidate_limited: Some(candidate_limited),
         }))
     }
 

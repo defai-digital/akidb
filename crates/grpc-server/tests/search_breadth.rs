@@ -351,7 +351,7 @@ async fn filtered_candidate_exhaustion_is_visible_without_a_context_pack() {
         .unwrap()
         .into_inner();
     assert!(vector.results.is_empty());
-    assert!(vector.candidate_limited);
+    assert_eq!(vector.candidate_limited, Some(true));
 
     let text = service
         .text_search(Request::new(TextSearchRequest {
@@ -368,5 +368,5 @@ async fn filtered_candidate_exhaustion_is_visible_without_a_context_pack() {
         .into_inner();
     assert!(text.results.is_empty());
     assert!(text.context_pack_v1.is_none());
-    assert!(text.candidate_limited);
+    assert_eq!(text.candidate_limited, Some(true));
 }
