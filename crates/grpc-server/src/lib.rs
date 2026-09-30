@@ -47,7 +47,10 @@ pub use generation_fetch::{
     FetchedGenerationBundle, GenerationBundleFetcher, GenerationFetchError,
 };
 #[cfg(feature = "generation-s3")]
-pub use generation_fetch::{S3GenerationBundleFetcher, S3GenerationBundleFetcherConfig};
+pub use generation_fetch::{
+    LocalMirrorGenerationBundleFetcher, LocalMirrorGenerationBundleFetcherConfig,
+    S3GenerationBundleFetcher, S3GenerationBundleFetcherConfig,
+};
 pub use generation_management::GenerationManagementServiceImpl;
 pub use ingestion::IngestionServiceImpl;
 pub use management::{ManagementServiceImpl, ManagementState, StagedObject, StagingRegistry};

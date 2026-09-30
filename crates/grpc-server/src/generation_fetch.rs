@@ -13,9 +13,11 @@ use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 #[cfg(feature = "generation-s3")]
 use aws_sdk_s3::config::{Builder as S3ClientConfigBuilder, Credentials, Region};
+#[cfg(feature = "generation-s3")]
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 #[cfg(feature = "generation-s3")]
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "generation-s3")]
 use url::Url;
 
@@ -100,6 +102,162 @@ pub struct S3GenerationBundleFetcherConfig {
     pub require_version_or_digest_key: bool,
 }
 
+/// A private digest-addressed mirror for edge nodes with no object-store route.
+#[cfg(feature = "generation-s3")]
+#[derive(Debug, Clone)]
+pub struct LocalMirrorGenerationBundleFetcherConfig {
+    pub mirror_directory: PathBuf,
+    pub download_directory: PathBuf,
+    pub allowed_buckets: HashSet<String>,
+    pub max_bundle_size_bytes: u64,
+    pub require_version_or_digest_key: bool,
+}
+
+#[cfg(feature = "generation-s3")]
+pub struct LocalMirrorGenerationBundleFetcher {
+    config: LocalMirrorGenerationBundleFetcherConfig,
+    bundle_directory: PathBuf,
+}
+
+#[cfg(feature = "generation-s3")]
+impl LocalMirrorGenerationBundleFetcher {
+    pub fn new(
+        mut config: LocalMirrorGenerationBundleFetcherConfig,
+    ) -> Result<Self, GenerationFetchError> {
+        validate_object_policy(&config.allowed_buckets, config.max_bundle_size_bytes)?;
+        create_private_download_directory(&config.mirror_directory)?;
+        let digest_directory = config.mirror_directory.join("sha256");
+        create_private_download_directory(&digest_directory)?;
+        create_private_download_directory(&config.download_directory)?;
+        let bundle_directory = fs::canonicalize(digest_directory)?;
+        config.mirror_directory = fs::canonicalize(&config.mirror_directory)?;
+        config.download_directory = fs::canonicalize(&config.download_directory)?;
+        if config
+            .download_directory
+            .starts_with(&config.mirror_directory)
+            || config
+                .mirror_directory
+                .starts_with(&config.download_directory)
+        {
+            return Err(GenerationFetchError::Rejected(
+                "download directory must not overlap the immutable bundle mirror".to_string(),
+            ));
+        }
+        Ok(Self {
+            config,
+            bundle_directory,
+        })
+    }
+}
+
+#[cfg(feature = "generation-s3")]
+#[async_trait]
+impl GenerationBundleFetcher for LocalMirrorGenerationBundleFetcher {
+    async fn fetch(
+        &self,
+        reference: &ImmutableObjectReference,
+    ) -> Result<FetchedGenerationBundle, GenerationFetchError> {
+        reference
+            .validate()
+            .map_err(|error| GenerationFetchError::Rejected(error.to_string()))?;
+        if reference.size_bytes > self.config.max_bundle_size_bytes {
+            return Err(GenerationFetchError::Rejected(format!(
+                "bundle size {} exceeds configured maximum {}",
+                reference.size_bytes, self.config.max_bundle_size_bytes
+            )));
+        }
+        parse_s3_address(
+            reference,
+            &self.config.allowed_buckets,
+            self.config.require_version_or_digest_key,
+        )?;
+
+        let path = self.bundle_directory.join(&reference.sha256);
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                GenerationFetchError::Unavailable(
+                    "bundle digest is absent from local mirror".to_string(),
+                )
+            } else {
+                GenerationFetchError::Io(error)
+            }
+        })?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(GenerationFetchError::Rejected(
+                "local mirror bundle must be a regular file without symlinks".to_string(),
+            ));
+        }
+        if metadata.len() != reference.size_bytes {
+            return Err(GenerationFetchError::Rejected(format!(
+                "local mirror bundle size changed: manifest {}, file {}",
+                reference.size_bytes,
+                metadata.len()
+            )));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let source = options.open(&path)?;
+        if !source.metadata()?.is_file() {
+            return Err(GenerationFetchError::Rejected(
+                "local mirror bundle changed during open".to_string(),
+            ));
+        }
+        let mut source = tokio::fs::File::from_std(source);
+        let download_path = self
+            .config
+            .download_directory
+            .join(format!(".generation-{}.partial", uuid::Uuid::new_v4()));
+        let destination = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&download_path)?;
+        let mut destination = tokio::fs::File::from_std(destination);
+        let copied: Result<(), GenerationFetchError> = async {
+            let mut digest = Sha256::new();
+            let mut observed = 0u64;
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let count = source.read(&mut buffer).await?;
+                if count == 0 {
+                    break;
+                }
+                observed = observed.checked_add(count as u64).ok_or_else(|| {
+                    GenerationFetchError::Rejected("local mirror bundle size overflow".to_string())
+                })?;
+                if observed > reference.size_bytes || observed > self.config.max_bundle_size_bytes {
+                    return Err(GenerationFetchError::Rejected(
+                        "local mirror bundle exceeded the authorized byte count".to_string(),
+                    ));
+                }
+                digest.update(&buffer[..count]);
+                destination.write_all(&buffer[..count]).await?;
+            }
+            if observed != reference.size_bytes
+                || format!("{:x}", digest.finalize()) != reference.sha256
+            {
+                return Err(GenerationFetchError::Rejected(
+                    "local mirror bundle size or SHA-256 does not match publication".to_string(),
+                ));
+            }
+            destination.flush().await?;
+            destination.sync_all().await?;
+            Ok(())
+        }
+        .await;
+        drop(destination);
+        if let Err(error) = copied {
+            let _ = tokio::fs::remove_file(&download_path).await;
+            return Err(error);
+        }
+        FetchedGenerationBundle::temporary(download_path)
+    }
+}
+
 /// Bounded, streaming S3/SeaweedFS fetcher using an already-configured SDK client.
 ///
 /// The SDK client fixes the endpoint and credentials. This layer additionally
@@ -117,21 +275,7 @@ impl S3GenerationBundleFetcher {
         client: aws_sdk_s3::Client,
         mut config: S3GenerationBundleFetcherConfig,
     ) -> Result<Self, GenerationFetchError> {
-        if config.allowed_buckets.is_empty()
-            || config
-                .allowed_buckets
-                .iter()
-                .any(|bucket| bucket.trim().is_empty() || bucket.trim() != bucket)
-        {
-            return Err(GenerationFetchError::Rejected(
-                "at least one valid allowed S3 bucket is required".to_string(),
-            ));
-        }
-        if config.max_bundle_size_bytes == 0 {
-            return Err(GenerationFetchError::Rejected(
-                "max_bundle_size_bytes must be greater than zero".to_string(),
-            ));
-        }
+        validate_object_policy(&config.allowed_buckets, config.max_bundle_size_bytes)?;
         create_private_download_directory(&config.download_directory)?;
         config.download_directory = fs::canonicalize(&config.download_directory)?;
         Ok(Self { client, config })
@@ -166,7 +310,11 @@ impl S3GenerationBundleFetcher {
         reference
             .validate()
             .map_err(|error| GenerationFetchError::Rejected(error.to_string()))?;
-        parse_s3_address(reference, &self.config)
+        parse_s3_address(
+            reference,
+            &self.config.allowed_buckets,
+            self.config.require_version_or_digest_key,
+        )
     }
 }
 
@@ -285,7 +433,8 @@ impl GenerationBundleFetcher for S3GenerationBundleFetcher {
 #[cfg(feature = "generation-s3")]
 fn parse_s3_address(
     reference: &ImmutableObjectReference,
-    config: &S3GenerationBundleFetcherConfig,
+    allowed_buckets: &HashSet<String>,
+    require_version_or_digest_key: bool,
 ) -> Result<S3ObjectAddress, GenerationFetchError> {
     let uri = Url::parse(&reference.uri)
         .map_err(|_| GenerationFetchError::Rejected("invalid S3 URI".to_string()))?;
@@ -298,7 +447,7 @@ fn parse_s3_address(
         .host_str()
         .ok_or_else(|| GenerationFetchError::Rejected("S3 bucket is missing".to_string()))?
         .to_string();
-    if !config.allowed_buckets.contains(&bucket) {
+    if !allowed_buckets.contains(&bucket) {
         return Err(GenerationFetchError::Unauthorized(format!(
             "S3 bucket {bucket} is not allowed"
         )));
@@ -323,10 +472,7 @@ fn parse_s3_address(
         }
         version_id = Some(value.into_owned());
     }
-    if config.require_version_or_digest_key
-        && version_id.is_none()
-        && !key.contains(&reference.sha256)
-    {
+    if require_version_or_digest_key && version_id.is_none() && !key.contains(&reference.sha256) {
         return Err(GenerationFetchError::Unauthorized(
             "unversioned S3 key must contain the authorized SHA-256 digest".to_string(),
         ));
@@ -336,6 +482,28 @@ fn parse_s3_address(
         key,
         version_id,
     })
+}
+
+#[cfg(feature = "generation-s3")]
+fn validate_object_policy(
+    allowed_buckets: &HashSet<String>,
+    max_bundle_size_bytes: u64,
+) -> Result<(), GenerationFetchError> {
+    if allowed_buckets.is_empty()
+        || allowed_buckets
+            .iter()
+            .any(|bucket| bucket.trim().is_empty() || bucket.trim() != bucket)
+    {
+        return Err(GenerationFetchError::Rejected(
+            "at least one valid allowed S3 bucket is required".to_string(),
+        ));
+    }
+    if max_bundle_size_bytes == 0 {
+        return Err(GenerationFetchError::Rejected(
+            "max_bundle_size_bytes must be greater than zero".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "generation-s3")]
@@ -441,13 +609,25 @@ mod tests {
     }
 
     #[cfg(feature = "generation-s3")]
+    fn parse_with_config(
+        reference: &ImmutableObjectReference,
+        config: &S3GenerationBundleFetcherConfig,
+    ) -> Result<S3ObjectAddress, GenerationFetchError> {
+        parse_s3_address(
+            reference,
+            &config.allowed_buckets,
+            config.require_version_or_digest_key,
+        )
+    }
+
+    #[cfg(feature = "generation-s3")]
     #[test]
     fn s3_uri_requires_allowed_bucket_and_immutable_identity() {
         let directory = tempfile::tempdir().unwrap();
         let config = s3_config(directory.path());
         let versioned = reference("s3://knowledge/generations/bundle?versionId=v1".to_string());
         assert_eq!(
-            parse_s3_address(&versioned, &config).unwrap(),
+            parse_with_config(&versioned, &config).unwrap(),
             S3ObjectAddress {
                 bucket: "knowledge".to_string(),
                 key: "generations/bundle".to_string(),
@@ -459,15 +639,15 @@ mod tests {
             "s3://knowledge/generations/{}/bundle",
             "a".repeat(64)
         ));
-        assert!(parse_s3_address(&digest_key, &config).is_ok());
-        assert!(parse_s3_address(
+        assert!(parse_with_config(&digest_key, &config).is_ok());
+        assert!(parse_with_config(
             &reference("s3://other/generations/bundle?versionId=v1".to_string()),
             &config
         )
         .unwrap_err()
         .to_string()
         .contains("not allowed"));
-        assert!(parse_s3_address(
+        assert!(parse_with_config(
             &reference("s3://knowledge/generations/mutable".to_string()),
             &config
         )
@@ -486,7 +666,95 @@ mod tests {
             "s3://knowledge/key?versionId=v1&versionId=v2",
             "s3://knowledge/key?versionId=",
         ] {
-            assert!(parse_s3_address(&reference(uri.to_string()), &config).is_err());
+            assert!(parse_with_config(&reference(uri.to_string()), &config).is_err());
+        }
+    }
+
+    #[cfg(feature = "generation-s3")]
+    fn mirror_config(directory: &Path) -> LocalMirrorGenerationBundleFetcherConfig {
+        LocalMirrorGenerationBundleFetcherConfig {
+            mirror_directory: directory.join("mirror"),
+            download_directory: directory.join("downloads"),
+            allowed_buckets: HashSet::from(["knowledge".to_string()]),
+            max_bundle_size_bytes: 1024,
+            require_version_or_digest_key: true,
+        }
+    }
+
+    #[cfg(feature = "generation-s3")]
+    #[test]
+    fn local_mirror_rejects_overlapping_download_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = mirror_config(directory.path());
+        config.download_directory = config.mirror_directory.join("downloads");
+        assert!(LocalMirrorGenerationBundleFetcher::new(config).is_err());
+    }
+
+    #[cfg(feature = "generation-s3")]
+    #[tokio::test]
+    async fn local_mirror_fetches_only_the_authorized_digest() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = mirror_config(directory.path());
+        let fetcher = LocalMirrorGenerationBundleFetcher::new(config.clone()).unwrap();
+        let bytes = b"immutable logical bundle";
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        let mirror_path = config.mirror_directory.join("sha256").join(&sha256);
+        std::fs::write(&mirror_path, bytes).unwrap();
+        let reference = ImmutableObjectReference {
+            uri: format!("s3://knowledge/generations/{sha256}/bundle"),
+            sha256: sha256.clone(),
+            size_bytes: bytes.len() as u64,
+        };
+
+        let fetched = fetcher.fetch(&reference).await.unwrap();
+        assert_eq!(std::fs::read(fetched.path()).unwrap(), bytes);
+        assert_ne!(fetched.path(), mirror_path);
+        std::fs::write(&mirror_path, b"changed after fetch").unwrap();
+        assert_eq!(std::fs::read(fetched.path()).unwrap(), bytes);
+        assert!(fetcher.fetch(&reference).await.is_err());
+    }
+
+    #[cfg(feature = "generation-s3")]
+    #[tokio::test]
+    async fn local_mirror_rejects_missing_tampered_and_unauthorized_bundles() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = mirror_config(directory.path());
+        let fetcher = LocalMirrorGenerationBundleFetcher::new(config.clone()).unwrap();
+        let bytes = b"immutable logical bundle";
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        let mirror_path = config.mirror_directory.join("sha256").join(&sha256);
+        let reference = ImmutableObjectReference {
+            uri: format!("s3://knowledge/generations/{sha256}/bundle"),
+            sha256: sha256.clone(),
+            size_bytes: bytes.len() as u64,
+        };
+
+        assert!(matches!(
+            fetcher.fetch(&reference).await,
+            Err(GenerationFetchError::Unavailable(_))
+        ));
+        std::fs::write(&mirror_path, b"different logical bundle").unwrap();
+        assert!(matches!(
+            fetcher.fetch(&reference).await,
+            Err(GenerationFetchError::Rejected(_))
+        ));
+        std::fs::write(&mirror_path, bytes).unwrap();
+        let wrong_bucket = ImmutableObjectReference {
+            uri: format!("s3://other/generations/{sha256}/bundle"),
+            ..reference.clone()
+        };
+        assert!(matches!(
+            fetcher.fetch(&wrong_bucket).await,
+            Err(GenerationFetchError::Unauthorized(_))
+        ));
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&mirror_path).unwrap();
+            std::os::unix::fs::symlink(directory.path().join("target"), &mirror_path).unwrap();
+            assert!(matches!(
+                fetcher.fetch(&reference).await,
+                Err(GenerationFetchError::Rejected(_))
+            ));
         }
     }
 

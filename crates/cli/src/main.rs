@@ -24,6 +24,8 @@ use tonic::metadata::{Ascii, MetadataValue};
 use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tonic::Request;
 
+mod bundle;
+
 /// AkiDB command line interface.
 #[derive(Parser, Debug)]
 #[command(name = "akidb")]
@@ -55,6 +57,9 @@ enum Command {
 
     /// Inspect the local native graph index stored in RocksDB.
     Graph(GraphArgs),
+
+    /// Import an immutable logical generation bundle into a local mirror.
+    Bundle(bundle::BundleArgs),
 
     /// Use the separately authenticated authoritative Memory API.
     Memory(Box<MemoryArgs>),
@@ -326,6 +331,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Ops(args) => run_ops(args).await,
         Command::Health(args) => run_health(args).await,
         Command::Graph(args) => run_graph(args),
+        Command::Bundle(args) => bundle::run(args),
         Command::Memory(args) => run_memory(*args).await,
     }
 }

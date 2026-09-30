@@ -421,6 +421,12 @@ pub struct GenerationServingConfig {
     /// Empty means only `storage.seaweedfs.bucket`.
     #[serde(default)]
     pub allowed_buckets: Vec<String>,
+    /// Explicit bundle transport. A local mirror never falls back to S3.
+    #[serde(default)]
+    pub bundle_source: GenerationBundleSource,
+    /// Required only for local_mirror; bundles are addressed by their SHA-256.
+    #[serde(default)]
+    pub bundle_mirror_path: Option<String>,
     #[serde(default = "default_s3_region")]
     pub s3_region: String,
     #[serde(default = "default_true")]
@@ -455,6 +461,8 @@ impl Default for GenerationServingConfig {
             control_token_file: default_generation_control_token_file(),
             control_token: None,
             allowed_buckets: Vec::new(),
+            bundle_source: GenerationBundleSource::default(),
+            bundle_mirror_path: None,
             s3_region: default_s3_region(),
             require_version_or_digest_key: true,
             max_bundle_size_bytes: default_max_bundle_size(),
@@ -466,6 +474,14 @@ impl Default for GenerationServingConfig {
             replica_control: GenerationReplicaControlConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationBundleSource {
+    #[default]
+    S3,
+    LocalMirror,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -26,6 +26,52 @@ The canonical recovery set is PostgreSQL plus SeaweedFS. Local
 RocksDB/HNSW/BM25/graph directories are disposable projections and must never
 be copied from a live peer.
 
+## Disconnected local bundle mirror
+
+AkiDB can fetch a new logical bundle from a local digest-addressed mirror when
+an edge machine has no SeaweedFS route. This is a functional source profile,
+not a qualified Mac or Linux ARM64 knowledge cell. AX Fabric still owns the
+manifest and publication decision; a local file never chooses the active
+generation. A previously activated generation can serve and restart while the
+object store or PostgreSQL is unreachable.
+
+Build the single binary with `cargo build -p akidb-cli --features
+generation-postgres` for a PostgreSQL-led replica, or `--features generation-s3`
+for authenticated local Stage/Activate. Select the source explicitly:
+
+```toml
+[generation_serving]
+enabled = true
+bundle_source = "local_mirror"
+bundle_mirror_path = "/var/lib/akidb/bundle-mirror"
+allowed_buckets = ["knowledge"]
+```
+
+Keep the ordinary replica identity, data paths, authorization, and generation
+limits in the same config. The mirror path must not overlap the generation,
+control, or download paths. Import a bundle using the digest and byte count
+from its authorized publication manifest:
+
+```bash
+akidb bundle import --file /path/to/bundle.ndjson \
+  --mirror /var/lib/akidb/bundle-mirror \
+  --sha256 "$BUNDLE_SHA256" --size-bytes "$BUNDLE_SIZE_BYTES"
+```
+
+The import verifies bytes and atomically installs
+`<mirror>/sha256/<published SHA-256>`. The materializer verifies the bundle
+again before sealing a generation. A missing, altered, or unauthorized mirror
+entry fails the new build while the active generation remains available. Local
+mirror mode never falls back to S3. Authenticated Stage/Activate or the
+PostgreSQL control worker is still required to advance a generation.
+
+The AX Fabric gateway permits reads against its last verified control snapshot
+for at most 15 minutes by default during a PostgreSQL outage. Configure
+`--max-control-stale-ms` (or Ansible
+`akidb_knowledge_gateway_max_control_stale_ms`) to set a different finite
+limit. The gateway then refuses to claim the cached generation is current;
+direct local AkiDB reads still identify the generation they actually served.
+
 ## Deployment
 
 Build the two immutable AMD64 artifacts once, record their SHA-256 digests,

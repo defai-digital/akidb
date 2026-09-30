@@ -42,7 +42,9 @@ def compact_json(value: Any) -> bytes:
     )
 
 
-def set_toml_value(text: str, section: str, key: str, value: str) -> str:
+def set_toml_value(
+    text: str, section: str, key: str, value: str, *, insert_if_missing: bool = False
+) -> str:
     lines = text.splitlines()
     current = ""
     replaced = False
@@ -55,6 +57,19 @@ def set_toml_value(text: str, section: str, key: str, value: str) -> str:
             lines[index] = f"{key} = {value}"
             replaced = True
             break
+    if not replaced and insert_if_missing:
+        section_header = f"[{section}]"
+        section_index = lines.index(section_header)
+        insert_at = next(
+            (
+                index
+                for index in range(section_index + 1, len(lines))
+                if lines[index].startswith("[")
+            ),
+            len(lines),
+        )
+        lines.insert(insert_at, f"{key} = {value}")
+        replaced = True
     if not replaced:
         raise RuntimeError(f"missing [{section}] {key} in default configuration")
     return "\n".join(lines) + "\n"
@@ -134,6 +149,10 @@ def prepare_generation(
 
 
 def command_prepare(args: argparse.Namespace) -> None:
+    if args.bundle_source == "s3" and not all(
+        (args.seaweedfs_endpoint, args.seaweedfs_access_key, args.seaweedfs_secret_key)
+    ):
+        raise RuntimeError("S3 preparation requires SeaweedFS endpoint and credentials")
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     fixture_dir = ROOT / "contracts" / "fixtures" / "knowledge" / "v1" / "valid"
@@ -180,16 +199,30 @@ def command_prepare(args: argparse.Namespace) -> None:
             json.dumps(str(output / "generation-control.token")),
         ),
         ("generation_serving", "allowed_buckets", json.dumps(["knowledge"])),
+        ("generation_serving", "bundle_source", json.dumps(args.bundle_source)),
         ("storage", "rocksdb_path", json.dumps(str(output / "legacy-rocksdb"))),
         ("storage", "wal_path", json.dumps(str(output / "legacy-wal"))),
-        ("storage.seaweedfs", "endpoint", json.dumps(args.seaweedfs_endpoint)),
         ("storage.seaweedfs", "bucket", json.dumps("knowledge")),
-        ("storage.seaweedfs", "access_key", json.dumps(args.seaweedfs_access_key)),
-        ("storage.seaweedfs", "secret_key", json.dumps(args.seaweedfs_secret_key)),
-        ("storage.seaweedfs", "use_ssl", "false"),
     ]
+    if args.bundle_source == "s3":
+        updates.extend(
+            [
+                ("storage.seaweedfs", "endpoint", json.dumps(args.seaweedfs_endpoint)),
+                ("storage.seaweedfs", "access_key", json.dumps(args.seaweedfs_access_key)),
+                ("storage.seaweedfs", "secret_key", json.dumps(args.seaweedfs_secret_key)),
+                ("storage.seaweedfs", "use_ssl", "false"),
+            ]
+        )
     for section, key, value in updates:
         config = set_toml_value(config, section, key, value)
+    if args.bundle_source == "local_mirror":
+        config = set_toml_value(
+            config,
+            "generation_serving",
+            "bundle_mirror_path",
+            json.dumps(str(output / "mirror")),
+            insert_if_missing=True,
+        )
     (output / "akidb.toml").write_text(config)
 
 
@@ -454,9 +487,10 @@ def parser() -> argparse.ArgumentParser:
 
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--output", required=True)
-    prepare.add_argument("--seaweedfs-endpoint", required=True)
-    prepare.add_argument("--seaweedfs-access-key", required=True)
-    prepare.add_argument("--seaweedfs-secret-key", required=True)
+    prepare.add_argument("--bundle-source", choices=("s3", "local_mirror"), default="s3")
+    prepare.add_argument("--seaweedfs-endpoint")
+    prepare.add_argument("--seaweedfs-access-key")
+    prepare.add_argument("--seaweedfs-secret-key")
     prepare.set_defaults(handler=command_prepare)
 
     exercise = commands.add_parser("exercise")

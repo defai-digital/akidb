@@ -506,6 +506,61 @@ mod tests {
         assert_eq!(status.active.unwrap().generation_id, manifest.generation_id);
     }
 
+    #[cfg(feature = "generation-s3")]
+    #[tokio::test]
+    async fn local_mirror_bundle_can_stage_and_activate_without_s3() {
+        use std::collections::HashSet;
+
+        let (temporary, mut service, mut manifest) = service_with_bundle(BUNDLE.to_vec());
+        let bundle_digest = digest(BUNDLE);
+        manifest.bundle.uri = format!("s3://knowledge/generations/{bundle_digest}/bundle.ndjson");
+        let mirror = temporary.path().join("mirror");
+        let fetcher = crate::LocalMirrorGenerationBundleFetcher::new(
+            crate::LocalMirrorGenerationBundleFetcherConfig {
+                mirror_directory: mirror.clone(),
+                download_directory: temporary.path().join("downloads"),
+                allowed_buckets: HashSet::from(["knowledge".to_string()]),
+                max_bundle_size_bytes: BUNDLE.len() as u64,
+                require_version_or_digest_key: true,
+            },
+        )
+        .unwrap();
+        std::fs::write(mirror.join("sha256").join(&bundle_digest), BUNDLE).unwrap();
+        service.fetcher = Arc::new(fetcher);
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+
+        let staged = service
+            .stage_generation(authenticated(
+                StageGenerationRequest {
+                    manifest_json: manifest_bytes.clone(),
+                    manifest_sha256: digest(&manifest_bytes),
+                },
+                &manifest.workspace_id,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(staged.staged.unwrap().state, "ready");
+        let activated = service
+            .activate_generation(authenticated(
+                ActivateGenerationRequest {
+                    workspace_id: manifest.workspace_id.clone(),
+                    collection: manifest.collection.clone(),
+                    generation_id: manifest.generation_id.clone(),
+                    expected_active: Some(ActiveGenerationPrecondition {
+                        condition: Some(Condition::NoActive(true)),
+                    }),
+                },
+                &manifest.workspace_id,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        let active = activated.active.unwrap();
+        assert_eq!(active.state, "serving");
+        assert_eq!(active.manifest_sha256, digest(&manifest_bytes));
+    }
+
     #[tokio::test]
     async fn unauthenticated_and_cross_workspace_publication_are_denied() {
         let (_temporary, service, _manifest) = service_with_bundle(BUNDLE.to_vec());

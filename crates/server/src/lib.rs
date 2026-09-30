@@ -4,6 +4,8 @@
 //! In standalone mode (`--standalone`), it runs with no external dependencies
 //! (no SeaweedFS, no NATS) and optionally uses ax-engine for text embeddings.
 
+#[cfg(any(feature = "generation-s3", test))]
+use akidb_common::config::GenerationBundleSource;
 use akidb_common::config::{AkiDbConfig, AuthMode, RebuildSettings, TombstoneSettings};
 use akidb_common::scheduler::{ResourceGovernor, ResourceGovernorConfig, SimpleMetricsSource};
 use akidb_common::VectorId;
@@ -22,9 +24,11 @@ use akidb_grpc::{
 };
 #[cfg(feature = "generation-s3")]
 use akidb_grpc::{
-    CollectionRegistry, GenerationController, GenerationDataPlane, GenerationDataPlaneConfig,
-    GenerationManagementServiceImpl, GenerationMaterializer, GenerationMaterializerConfig,
-    S3GenerationBundleFetcher, S3GenerationBundleFetcherConfig,
+    CollectionRegistry, GenerationBundleFetcher, GenerationController, GenerationDataPlane,
+    GenerationDataPlaneConfig, GenerationManagementServiceImpl, GenerationMaterializer,
+    GenerationMaterializerConfig, LocalMirrorGenerationBundleFetcher,
+    LocalMirrorGenerationBundleFetcherConfig, S3GenerationBundleFetcher,
+    S3GenerationBundleFetcherConfig,
 };
 #[cfg(feature = "generation-postgres")]
 use akidb_grpc::{PostgresReplicaWorker, ReplicaWorkerConfig};
@@ -421,21 +425,7 @@ async fn run_generation_server(
     );
     data_plane.restore_scope(&default_scope)?;
 
-    let allowed_buckets: HashSet<String> = if generation.allowed_buckets.is_empty() {
-        HashSet::from([config.storage.seaweedfs.bucket.clone()])
-    } else {
-        generation.allowed_buckets.iter().cloned().collect()
-    };
-    let fetcher = Arc::new(S3GenerationBundleFetcher::for_seaweedfs(
-        &config.storage.seaweedfs,
-        generation.s3_region.clone(),
-        S3GenerationBundleFetcherConfig {
-            allowed_buckets,
-            download_directory: PathBuf::from(&generation.download_path),
-            max_bundle_size_bytes: generation.max_bundle_size_bytes,
-            require_version_or_digest_key: generation.require_version_or_digest_key,
-        },
-    )?);
+    let fetcher = build_generation_fetcher(config)?;
     let metrics = Arc::new(SimpleMetricsSource::new());
     let governor = Arc::new(ResourceGovernor::new(
         ResourceGovernorConfig::default(),
@@ -787,6 +777,48 @@ async fn metrics_response(
 }
 
 #[cfg(feature = "generation-s3")]
+fn build_generation_fetcher(
+    config: &AkiDbConfig,
+) -> Result<Arc<dyn GenerationBundleFetcher>, Box<dyn std::error::Error>> {
+    let generation = &config.generation_serving;
+    let allowed_buckets: HashSet<String> = if generation.allowed_buckets.is_empty() {
+        HashSet::from([config.storage.seaweedfs.bucket.clone()])
+    } else {
+        generation.allowed_buckets.iter().cloned().collect()
+    };
+    let fetcher: Arc<dyn GenerationBundleFetcher> = match generation.bundle_source {
+        GenerationBundleSource::S3 => Arc::new(S3GenerationBundleFetcher::for_seaweedfs(
+            &config.storage.seaweedfs,
+            generation.s3_region.clone(),
+            S3GenerationBundleFetcherConfig {
+                allowed_buckets,
+                download_directory: PathBuf::from(&generation.download_path),
+                max_bundle_size_bytes: generation.max_bundle_size_bytes,
+                require_version_or_digest_key: generation.require_version_or_digest_key,
+            },
+        )?),
+        GenerationBundleSource::LocalMirror => {
+            let mirror = generation.bundle_mirror_path.as_deref().ok_or_else(|| {
+                akidb_grpc::GenerationFetchError::Rejected(
+                    "generation_serving.bundle_mirror_path is required for local_mirror"
+                        .to_string(),
+                )
+            })?;
+            Arc::new(LocalMirrorGenerationBundleFetcher::new(
+                LocalMirrorGenerationBundleFetcherConfig {
+                    mirror_directory: PathBuf::from(mirror),
+                    download_directory: PathBuf::from(&generation.download_path),
+                    allowed_buckets,
+                    max_bundle_size_bytes: generation.max_bundle_size_bytes,
+                    require_version_or_digest_key: generation.require_version_or_digest_key,
+                },
+            )?)
+        }
+    };
+    Ok(fetcher)
+}
+
+#[cfg(feature = "generation-s3")]
 fn auth_mode_name(mode: AuthMode) -> &'static str {
     match mode {
         AuthMode::LoopbackOptional => "loopback_optional",
@@ -832,6 +864,24 @@ fn validate_generation_paths(config: &AkiDbConfig) -> Result<(), Box<dyn std::er
         || generation.max_graph_edges == 0
     {
         return Err("generation serving index limits must be greater than zero".into());
+    }
+    match generation.bundle_source {
+        GenerationBundleSource::S3 if generation.bundle_mirror_path.is_some() => {
+            return Err(
+                "generation_serving.bundle_mirror_path requires bundle_source=local_mirror".into(),
+            );
+        }
+        GenerationBundleSource::LocalMirror
+            if generation
+                .bundle_mirror_path
+                .as_deref()
+                .is_none_or(|path| path.trim().is_empty() || path.trim() != path) =>
+        {
+            return Err(
+                "generation_serving.bundle_mirror_path is required for local_mirror".into(),
+            );
+        }
+        _ => {}
     }
     if !(100..=1000).contains(&generation.estimated_build_overhead_percent) {
         return Err(
@@ -896,11 +946,14 @@ fn validate_generation_paths(config: &AkiDbConfig) -> Result<(), Box<dyn std::er
         );
     }
 
-    let configured = [
+    let mut configured = vec![
         PathBuf::from(&generation.generation_root),
         PathBuf::from(&generation.control_rocksdb_path),
         PathBuf::from(&generation.download_path),
     ];
+    if let Some(mirror) = &generation.bundle_mirror_path {
+        configured.push(PathBuf::from(mirror));
+    }
     for path in &configured {
         std::fs::create_dir_all(path)?;
     }
@@ -1663,6 +1716,44 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&config.generation_serving.download_path);
+    }
+
+    #[test]
+    fn local_mirror_requires_a_separate_explicit_path() {
+        let base = unique_temp_path("generation-mirror-overlap");
+        let mut config = AkiDbConfig::default();
+        config.generation_serving.replica_id = "replica-test".to_string();
+        config.generation_serving.generation_root = base.join("generations").display().to_string();
+        config.generation_serving.control_rocksdb_path = base.join("control").display().to_string();
+        config.generation_serving.download_path = base.join("downloads").display().to_string();
+        config.generation_serving.bundle_source = GenerationBundleSource::LocalMirror;
+        let missing = validate_generation_paths(&config).unwrap_err();
+        assert!(missing
+            .to_string()
+            .contains("bundle_mirror_path is required"));
+
+        config.generation_serving.bundle_mirror_path =
+            Some(config.generation_serving.generation_root.clone());
+        let overlap = validate_generation_paths(&config).unwrap_err();
+        assert!(overlap.to_string().contains("non-overlapping"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(feature = "generation-s3")]
+    #[test]
+    fn local_mirror_fetcher_does_not_require_seaweedfs_credentials() {
+        let base = unique_temp_path("generation-local-source");
+        let mut config = AkiDbConfig::default();
+        config.generation_serving.bundle_source = GenerationBundleSource::LocalMirror;
+        config.generation_serving.bundle_mirror_path =
+            Some(base.join("mirror").display().to_string());
+        config.generation_serving.download_path = base.join("downloads").display().to_string();
+        assert!(config.storage.seaweedfs.credentials().is_err());
+        assert!(build_generation_fetcher(&config).is_ok());
+
+        config.generation_serving.bundle_source = GenerationBundleSource::S3;
+        assert!(build_generation_fetcher(&config).is_err());
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

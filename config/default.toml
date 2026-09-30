@@ -114,6 +114,10 @@ control_token_file = "./data/generation-control.token"
 # control_token = "set-explicitly-or-use-AKIDB_GENERATION_CONTROL_TOKEN"
 # Empty restricts publication to storage.seaweedfs.bucket.
 allowed_buckets = []
+# s3 (default) | local_mirror; local_mirror never contacts SeaweedFS.
+bundle_source = "s3"
+# Required for local_mirror. Put bundles at <path>/sha256/<bundle SHA-256>.
+# bundle_mirror_path = "/var/lib/akidb/bundle-mirror"
 s3_region = "us-east-1"
 # Require ?versionId=... or a checksum-addressed S3 key.
 require_version_or_digest_key = true
