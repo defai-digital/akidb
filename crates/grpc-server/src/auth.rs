@@ -1851,19 +1851,70 @@ mod tests {
         assert_eq!(first.correlation_hint.as_deref(), Some("shared.trace_123"));
         assert_eq!(second.correlation_hint, first.correlation_hint);
 
+        metadata.insert(CORRELATION_HINT_HEADER, "12345678".parse().unwrap());
+        assert_eq!(
+            runtime
+                .authorize(&metadata)
+                .unwrap()
+                .correlation_hint
+                .as_deref(),
+            Some("12345678")
+        );
+        metadata.insert(
+            CORRELATION_HINT_HEADER,
+            "a".repeat(MAX_CORRELATION_HINT_BYTES).parse().unwrap(),
+        );
+        assert_eq!(
+            runtime
+                .authorize(&metadata)
+                .unwrap()
+                .correlation_hint
+                .as_deref()
+                .map(str::len),
+            Some(MAX_CORRELATION_HINT_BYTES)
+        );
+        metadata.insert(CORRELATION_HINT_HEADER, "  padded.id  ".parse().unwrap());
+        assert_eq!(
+            runtime
+                .authorize(&metadata)
+                .unwrap()
+                .correlation_hint
+                .as_deref(),
+            Some("padded.id")
+        );
+
         metadata.insert(CORRELATION_HINT_HEADER, "short".parse().unwrap());
-        assert!(runtime.authorize(&metadata).unwrap().correlation_hint.is_none());
-        metadata.insert(CORRELATION_HINT_HEADER, "invalid:separator".parse().unwrap());
-        assert!(runtime.authorize(&metadata).unwrap().correlation_hint.is_none());
+        assert!(runtime
+            .authorize(&metadata)
+            .unwrap()
+            .correlation_hint
+            .is_none());
+        metadata.insert(
+            CORRELATION_HINT_HEADER,
+            "invalid:separator".parse().unwrap(),
+        );
+        assert!(runtime
+            .authorize(&metadata)
+            .unwrap()
+            .correlation_hint
+            .is_none());
         metadata.insert(
             CORRELATION_HINT_HEADER,
             "a".repeat(MAX_CORRELATION_HINT_BYTES + 1).parse().unwrap(),
         );
-        assert!(runtime.authorize(&metadata).unwrap().correlation_hint.is_none());
+        assert!(runtime
+            .authorize(&metadata)
+            .unwrap()
+            .correlation_hint
+            .is_none());
         metadata.remove(CORRELATION_HINT_HEADER);
         metadata.append(CORRELATION_HINT_HEADER, "shared.trace_123".parse().unwrap());
         metadata.append(CORRELATION_HINT_HEADER, "other.trace_456".parse().unwrap());
-        assert!(runtime.authorize(&metadata).unwrap().correlation_hint.is_none());
+        assert!(runtime
+            .authorize(&metadata)
+            .unwrap()
+            .correlation_hint
+            .is_none());
 
         metadata.insert(AUTH_HEADER, "Bearer wrong-secret".parse().unwrap());
         assert_eq!(

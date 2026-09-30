@@ -295,6 +295,10 @@ per-process key), hit count, latency, and outcome. Records go through a
 non-blocking queue to an append-only local JSONL spool (`0600`, size-bounded
 rotation, hard file-count cap).
 
+An optional gRPC `x-request-id` becomes a bounded `correlation_hint` in the
+record; AkiDB still mints its own `request_id`. The caller hint is not an
+identity, authorization input, or audit key.
+
 This is deliberately **not** an audit store: the spool is a delivery buffer
 for a governance platform, it is never exposed over any API, and emission is
 fail-open (drops are counted, the data plane never blocks). Adjudication,
