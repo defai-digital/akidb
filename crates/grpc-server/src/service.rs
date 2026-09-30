@@ -2,6 +2,7 @@
 
 use crate::access_log::{AccessLog, AccessRecord};
 use crate::acl::{self, stamp_write_metadata};
+use crate::admission::{self, AdmissionClass, AdmissionController};
 use crate::auth::{self, AuthContext};
 use crate::collections::{CollectionMeta, CollectionRegistry, SharedCollectionRegistry};
 use crate::filter::MetadataFilter;
@@ -170,6 +171,9 @@ where
     embedding_model_id: Option<String>,
     /// Emit-only data-plane access records (ADR-0009); disabled by default.
     access_log: AccessLog,
+    /// Shard-side bounded admission for synchronous index/storage work.
+    /// A disabled controller preserves the pre-admission behavior.
+    admission: AdmissionController,
 }
 
 impl<I, S> AkiDbService<I, S>
@@ -223,7 +227,35 @@ where
             collections,
             embedding_model_id: None,
             access_log: AccessLog::disabled(),
+            admission: AdmissionController::disabled(),
         }
+    }
+
+    /// Attach the shard-side admission controller (default: disabled).
+    pub fn with_admission(mut self, admission: AdmissionController) -> Self {
+        self.admission = admission;
+        self
+    }
+
+    /// Run one data-plane operation under shard-side admission.
+    ///
+    /// The client deadline is checked before a permit is acquired and again
+    /// after any permit wait, so expensive synchronous work never starts for
+    /// a request that can no longer beat its `grpc-timeout`. The permit guard
+    /// is held for the full synchronous lifetime of `work`, and the work
+    /// itself runs via [`admission::run_blocking`] so a saturated shard does
+    /// not pin every tokio worker behind HNSW/RocksDB calls.
+    async fn run_admitted<T>(
+        &self,
+        class: AdmissionClass,
+        received: Instant,
+        client_timeout: Option<std::time::Duration>,
+        work: impl FnOnce(&Self) -> Result<T, Status>,
+    ) -> Result<T, Status> {
+        admission::check_deadline(received, client_timeout)?;
+        let _guard = self.admission.acquire(class).await?;
+        admission::check_deadline(received, client_timeout)?;
+        admission::run_blocking(|| work(self))
     }
 
     /// Attach the ADR-0009 access-record emitter (default: disabled no-op).
@@ -648,7 +680,7 @@ where
         Ok(())
     }
 
-    async fn insert_inner(
+    fn insert_inner(
         &self,
         request: Request<InsertRequest>,
     ) -> Result<Response<InsertResponse>, Status> {
@@ -767,7 +799,7 @@ where
         }))
     }
 
-    async fn search_inner(
+    fn search_inner(
         &self,
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
@@ -841,7 +873,7 @@ where
         }))
     }
 
-    async fn delete_inner(
+    fn delete_inner(
         &self,
         request: Request<DeleteRequest>,
     ) -> Result<Response<DeleteResponse>, Status> {
@@ -915,7 +947,7 @@ where
         }))
     }
 
-    async fn update_inner(
+    fn update_inner(
         &self,
         request: Request<UpdateRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
@@ -970,10 +1002,7 @@ where
         self.do_update_locked(&req.id, &vector_id, &req.vector, &req.metadata)
     }
 
-    async fn get_inner(
-        &self,
-        request: Request<GetRequest>,
-    ) -> Result<Response<GetResponse>, Status> {
+    fn get_inner(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let ctx = self.request_auth_context(&request);
         let req = request.into_inner();
         self.validate_request_collection(&req.collection)?;
@@ -1023,7 +1052,7 @@ where
         }))
     }
 
-    async fn insert_batch_inner(
+    fn insert_batch_inner(
         &self,
         request: Request<InsertBatchRequest>,
     ) -> Result<Response<InsertBatchResponse>, Status> {
@@ -1211,7 +1240,7 @@ where
         }))
     }
 
-    async fn text_search_inner(
+    fn text_search_inner(
         &self,
         request: Request<TextSearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
@@ -1665,7 +1694,7 @@ where
         }))
     }
     #[instrument(skip(self, request))]
-    async fn search_batch_inner(
+    fn search_batch_inner(
         &self,
         request: Request<SearchBatchRequest>,
     ) -> Result<Response<SearchBatchResponse>, Status> {
@@ -3349,7 +3378,15 @@ where
         } else {
             String::new()
         };
-        let access_result = self.insert_inner(request).await;
+        let client_timeout = admission::client_timeout(request.metadata());
+        let access_result = self
+            .run_admitted(
+                AdmissionClass::Mutation,
+                access_start,
+                client_timeout,
+                |svc| svc.insert_inner(request),
+            )
+            .await;
         self.emit_access_record(
             "Insert",
             &access_ctx,
@@ -3382,7 +3419,15 @@ where
         } else {
             String::new()
         };
-        let access_result = self.search_inner(request).await;
+        let client_timeout = admission::client_timeout(request.metadata());
+        let access_result = self
+            .run_admitted(
+                AdmissionClass::Search,
+                access_start,
+                client_timeout,
+                |svc| svc.search_inner(request),
+            )
+            .await;
         self.emit_access_record(
             "Search",
             &access_ctx,
@@ -3411,7 +3456,15 @@ where
         } else {
             String::new()
         };
-        let access_result = self.delete_inner(request).await;
+        let client_timeout = admission::client_timeout(request.metadata());
+        let access_result = self
+            .run_admitted(
+                AdmissionClass::Mutation,
+                access_start,
+                client_timeout,
+                |svc| svc.delete_inner(request),
+            )
+            .await;
         self.emit_access_record(
             "Delete",
             &access_ctx,
@@ -3444,7 +3497,15 @@ where
         } else {
             String::new()
         };
-        let access_result = self.update_inner(request).await;
+        let client_timeout = admission::client_timeout(request.metadata());
+        let access_result = self
+            .run_admitted(
+                AdmissionClass::Mutation,
+                access_start,
+                client_timeout,
+                |svc| svc.update_inner(request),
+            )
+            .await;
         self.emit_access_record(
             "Update",
             &access_ctx,
@@ -3470,7 +3531,15 @@ where
         } else {
             String::new()
         };
-        let access_result = self.get_inner(request).await;
+        let client_timeout = admission::client_timeout(request.metadata());
+        let access_result = self
+            .run_admitted(
+                AdmissionClass::Search,
+                access_start,
+                client_timeout,
+                |svc| svc.get_inner(request),
+            )
+            .await;
         self.emit_access_record(
             "Get",
             &access_ctx,
@@ -3534,7 +3603,15 @@ where
         } else {
             String::new()
         };
-        let access_result = self.insert_batch_inner(request).await;
+        let client_timeout = admission::client_timeout(request.metadata());
+        let access_result = self
+            .run_admitted(
+                AdmissionClass::Mutation,
+                access_start,
+                client_timeout,
+                |svc| svc.insert_batch_inner(request),
+            )
+            .await;
         self.emit_access_record(
             "InsertBatch",
             &access_ctx,
@@ -3568,7 +3645,15 @@ where
         } else {
             String::new()
         };
-        let access_result = self.search_batch_inner(request).await;
+        let client_timeout = admission::client_timeout(request.metadata());
+        let access_result = self
+            .run_admitted(
+                AdmissionClass::Search,
+                access_start,
+                client_timeout,
+                |svc| svc.search_batch_inner(request),
+            )
+            .await;
         self.emit_access_record(
             "SearchBatch",
             &access_ctx,
@@ -3740,7 +3825,15 @@ where
         } else {
             String::new()
         };
-        let access_result = self.text_search_inner(request).await;
+        let client_timeout = admission::client_timeout(request.metadata());
+        let access_result = self
+            .run_admitted(
+                AdmissionClass::Search,
+                access_start,
+                client_timeout,
+                |svc| svc.text_search_inner(request),
+            )
+            .await;
         self.emit_access_record(
             "TextSearch",
             &access_ctx,

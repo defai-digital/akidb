@@ -27,8 +27,8 @@ use crate::proto::{
     UpdateResponse,
 };
 use crate::{
-    AkiDbService, EmbeddingProvider, ExpectedActiveGeneration, GenerationControlError,
-    GenerationController, ReadyGenerationRuntime,
+    AdmissionController, AkiDbService, EmbeddingProvider, ExpectedActiveGeneration,
+    GenerationControlError, GenerationController, ReadyGenerationRuntime,
 };
 
 type ImmutableGenerationService = AkiDbService<HnswIndex, RocksDbBackend>;
@@ -43,6 +43,9 @@ pub struct GenerationDataPlaneConfig {
     /// ADR-0009 emitter; records stamped with each runtime's generation
     /// identity before they are emitted. Disabled by default.
     pub access_log: crate::access_log::AccessLog,
+    /// Shard-side bounded admission shared by every immutable generation
+    /// runtime service. Disabled by default.
+    pub admission: AdmissionController,
 }
 
 impl Default for GenerationDataPlaneConfig {
@@ -54,6 +57,7 @@ impl Default for GenerationDataPlaneConfig {
             filter_settings: FilterSettings::default(),
             embedding_provider: None,
             access_log: crate::access_log::AccessLog::disabled(),
+            admission: AdmissionController::disabled(),
         }
     }
 }
@@ -233,6 +237,7 @@ impl GenerationDataPlane {
         .with_collections(Arc::new(CollectionRegistry::new()))
         .with_embedding_model_id(manifest.embedding_model_id.clone())
         .with_graph_index(runtime.graph.clone())
+        .with_admission(self.config.admission.clone())
         .with_access_log(self.config.access_log.scoped_for_generation(
             manifest.generation_id.clone(),
             runtime.ready.marker.manifest_sha256.clone(),

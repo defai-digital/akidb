@@ -248,6 +248,22 @@ soft_breach_ms = 50
 hard_breach_ms = 75
 degraded_mode_enabled = true
 
+# Shard-side bounded admission for synchronous index/storage work (opt-in).
+# When enabled, each Search/SearchBatch/TextSearch/Get must hold a search
+# permit and each Insert/InsertBatch/Update/Delete a mutation permit for its
+# entire synchronous lifetime; excess executions are rejected with
+# RESOURCE_EXHAUSTED. Permits mainly bound queued work and memory under
+# overload — execution parallelism still equals the tokio worker count — so
+# a saturated shard keeps its health probe and deadline handling responsive.
+# Size permits from measured query cost and SLOs; see the ANN service-load
+# follow-up (.internal/analysis/ann-service-load-report.md).
+[admission]
+enabled = false
+search_permits = 64
+mutation_permits = 32
+# 0 fails fast; >0 waits up to this long for a permit before rejecting.
+acquire_timeout_ms = 0
+
 [embedding]
 enabled = false
 url = "http://127.0.0.1:8081/v1/embeddings"

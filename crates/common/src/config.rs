@@ -13,6 +13,10 @@ pub struct AkiDbConfig {
     pub sql: SqlMetadataConfig,
     pub observability: ObservabilityConfig,
     pub slo: SloConfig,
+    /// Shard-side bounded admission for synchronous index/storage work.
+    /// Disabled by default.
+    #[serde(default)]
+    pub admission: AdmissionConfig,
     pub embedding: EmbeddingClientConfig,
     /// Authentication and request authorization (v3.1 trust).
     #[serde(default)]
@@ -1056,6 +1060,46 @@ impl Default for BackpressureConfig {
     }
 }
 
+/// Shard-side bounded admission for synchronous index/storage work.
+///
+/// The data plane executes USearch HNSW search, RocksDB reads/writes, BM25,
+/// and graph expansion inline on tokio worker threads. Under overload every
+/// worker can end up pinned behind synchronous work, which stalls health
+/// probes and deadline handling. When admission is enabled, each data-plane
+/// operation must hold a class permit for its entire synchronous lifetime;
+/// excess executions are rejected with RESOURCE_EXHAUSTED (matching the
+/// coordinator's admission behavior) instead of queueing unbounded work.
+///
+/// Disabled by default: existing deployments keep today's behavior until an
+/// operator sizes permits from measured query cost and SLOs (see the ANN
+/// service-load follow-up in `.internal/analysis/ann-service-load-report.md`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdmissionConfig {
+    /// Enable shard-side admission control.
+    pub enabled: bool,
+    /// Maximum concurrent synchronous read executions
+    /// (Search / SearchBatch / TextSearch / Get).
+    pub search_permits: usize,
+    /// Maximum concurrent synchronous mutation executions
+    /// (Insert / InsertBatch / Update / Delete).
+    pub mutation_permits: usize,
+    /// How long to wait for a permit before rejecting with
+    /// RESOURCE_EXHAUSTED. Zero fails fast.
+    pub acquire_timeout_ms: u64,
+}
+
+impl Default for AdmissionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            search_permits: 64,
+            mutation_permits: 32,
+            acquire_timeout_ms: 0,
+        }
+    }
+}
+
 /// Configuration for the local embedding HTTP client
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingClientConfig {
@@ -1220,6 +1264,160 @@ mod tests {
         assert!(!config.sql.enabled);
         assert_eq!(config.sql.sqlite_path, "./data/akidb-metadata.sqlite");
         assert!(config.sql.postgres_url.is_none());
+    }
+
+    #[test]
+    fn test_admission_defaults_when_section_missing() {
+        let config: AkiDbConfig = toml::from_str(
+            r#"
+            [server]
+            host = "127.0.0.1"
+            port = 8080
+            grpc_port = 50051
+            tls_enabled = false
+
+            [index]
+            index_type = "HNSW"
+            hnsw_m = 16
+            hnsw_ef_construction = 128
+            hnsw_ef_search = 64
+
+            [index.rebuild]
+            tombstone_ratio_trigger = 0.10
+            max_duration_seconds = 300
+            preferred_hours = [2, 3, 4]
+
+            [index.tombstone]
+            max_count = 100000
+
+            [storage]
+            rocksdb_path = "./data/rocksdb"
+            wal_enabled = false
+            wal_path = "./data/wal"
+
+            [storage.seaweedfs]
+            endpoint = ""
+            bucket = ""
+            access_key = ""
+            secret_key = ""
+            use_ssl = false
+
+            [observability]
+            tracing_enabled = false
+            metrics_enabled = false
+            metrics_port = 9090
+            log_level = "info"
+            log_format = "pretty"
+
+            [slo]
+            [slo.reference]
+            dimensions = 768
+            vectors_per_shard = 1000000
+            top_k = 10
+            nprobe = 32
+            batch_size = 1
+            target_p95_ms = 50
+
+            [slo.backpressure]
+            soft_breach_ms = 50
+            hard_breach_ms = 75
+            degraded_mode_enabled = true
+
+            [embedding]
+            enabled = false
+            url = "http://127.0.0.1:8081/v1/embeddings"
+            model = "Qwen/Qwen3-Embedding-4B"
+            dimensions = 2560
+            timeout_ms = 10000
+            max_batch_size = 32
+            "#,
+        )
+        .unwrap();
+
+        assert!(!config.admission.enabled);
+        assert_eq!(config.admission.search_permits, 64);
+        assert_eq!(config.admission.mutation_permits, 32);
+        assert_eq!(config.admission.acquire_timeout_ms, 0);
+    }
+
+    #[test]
+    fn test_admission_section_parses() {
+        let config: AkiDbConfig = toml::from_str(
+            r#"
+            [server]
+            host = "127.0.0.1"
+            port = 8080
+            grpc_port = 50051
+            tls_enabled = false
+
+            [index]
+            index_type = "HNSW"
+            hnsw_m = 16
+            hnsw_ef_construction = 128
+            hnsw_ef_search = 64
+
+            [index.rebuild]
+            tombstone_ratio_trigger = 0.10
+            max_duration_seconds = 300
+            preferred_hours = [2, 3, 4]
+
+            [index.tombstone]
+            max_count = 100000
+
+            [storage]
+            rocksdb_path = "./data/rocksdb"
+            wal_enabled = false
+            wal_path = "./data/wal"
+
+            [storage.seaweedfs]
+            endpoint = ""
+            bucket = ""
+            access_key = ""
+            secret_key = ""
+            use_ssl = false
+
+            [observability]
+            tracing_enabled = false
+            metrics_enabled = false
+            metrics_port = 9090
+            log_level = "info"
+            log_format = "pretty"
+
+            [slo]
+            [slo.reference]
+            dimensions = 768
+            vectors_per_shard = 1000000
+            top_k = 10
+            nprobe = 32
+            batch_size = 1
+            target_p95_ms = 50
+
+            [slo.backpressure]
+            soft_breach_ms = 50
+            hard_breach_ms = 75
+            degraded_mode_enabled = true
+
+            [admission]
+            enabled = true
+            search_permits = 8
+            mutation_permits = 4
+            acquire_timeout_ms = 25
+
+            [embedding]
+            enabled = false
+            url = "http://127.0.0.1:8081/v1/embeddings"
+            model = "Qwen/Qwen3-Embedding-4B"
+            dimensions = 2560
+            timeout_ms = 10000
+            max_batch_size = 32
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.admission.enabled);
+        assert_eq!(config.admission.search_permits, 8);
+        assert_eq!(config.admission.mutation_permits, 4);
+        assert_eq!(config.admission.acquire_timeout_ms, 25);
     }
 
     #[test]

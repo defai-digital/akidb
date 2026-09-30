@@ -7,6 +7,7 @@
 mod access_log;
 mod acl;
 mod admin;
+pub mod admission;
 pub mod auth;
 mod collections;
 mod filter;
@@ -28,6 +29,7 @@ mod webhook;
 
 pub use access_log::{AccessLog, AccessRecord};
 pub use admin::{AdminServiceImpl, AdminState, RegisteredTask};
+pub use admission::{AdmissionClass, AdmissionController, AdmissionGuard};
 pub use auth::{
     memory_auth_context, AuthContext, AuthInterceptor, AuthRuntime, AuthorizedMemoryContext,
     MemoryAuthContext, MemoryScopeSelector,

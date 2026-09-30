@@ -16,9 +16,9 @@ use akidb_faiss::{
 };
 use akidb_graph::NativeGraphIndex;
 use akidb_grpc::{
-    export_metrics, mcp::AuthoritativeMemoryMcp, AccessLog, AdminState, AkiDbService,
-    AuthInterceptor, AuthRuntime, EmbeddingProvider, ManagementServiceImpl, ManagementState,
-    MemoryServiceImpl, StagingRegistry,
+    export_metrics, mcp::AuthoritativeMemoryMcp, AccessLog, AdminState, AdmissionController,
+    AkiDbService, AuthInterceptor, AuthRuntime, EmbeddingProvider, ManagementServiceImpl,
+    ManagementState, MemoryServiceImpl, StagingRegistry,
 };
 #[cfg(feature = "generation-s3")]
 use akidb_grpc::{
@@ -412,6 +412,7 @@ async fn run_generation_server(
             filter_settings: config.index.filter.clone(),
             embedding_provider,
             access_log: AccessLog::spawn(&config.observability.access_log)?,
+            admission: AdmissionController::new(&config.admission),
         },
     )?;
     let default_scope = KnowledgeScope::new(
@@ -1292,11 +1293,21 @@ fn build_service(
 
     // Create gRPC service
     let graph_index = Arc::new(NativeGraphIndex::new(storage));
+    let admission = AdmissionController::new(&config.admission);
+    if admission.is_enabled() {
+        info!(
+            search_permits = config.admission.search_permits,
+            mutation_permits = config.admission.mutation_permits,
+            acquire_timeout_ms = config.admission.acquire_timeout_ms,
+            "Shard-side admission control enabled"
+        );
+    }
     let mut service = AkiDbService::new(index, id_mapping, "default")
         .with_graph_index(graph_index)
         .with_acl(config.auth.acl.clone())
         .with_filter_settings(config.index.filter.clone())
-        .with_embedding_model_id(config.embedding.model.clone());
+        .with_embedding_model_id(config.embedding.model.clone())
+        .with_admission(admission);
     service.seed_collection_schema(
         config.slo.reference.dimensions as u32,
         &config.index.metric,

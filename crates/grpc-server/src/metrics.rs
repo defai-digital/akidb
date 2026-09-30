@@ -184,6 +184,14 @@ pub struct AkiDbMetrics {
     pub memory_replay_total: IntCounterVec,
     /// Reviewed deletion operations by stage and outcome.
     pub memory_deletion_total: IntCounterVec,
+
+    // ============================================
+    // Shard Admission Metrics
+    // ============================================
+    /// Data-plane executions rejected by shard-side admission, by class.
+    pub admission_rejections_total: IntCounterVec,
+    /// Data-plane executions currently holding an admission permit, by class.
+    pub admission_in_flight: IntGaugeVec,
 }
 
 impl AkiDbMetrics {
@@ -673,6 +681,22 @@ impl AkiDbMetrics {
                 &["stage", "result"],
             )
             .unwrap(),
+            admission_rejections_total: IntCounterVec::new(
+                Opts::new(
+                    "akidb_admission_rejections_total",
+                    "Data-plane executions rejected by shard-side admission",
+                ),
+                &["class"],
+            )
+            .unwrap(),
+            admission_in_flight: IntGaugeVec::new(
+                Opts::new(
+                    "akidb_admission_in_flight",
+                    "Data-plane executions currently holding an admission permit",
+                ),
+                &["class"],
+            )
+            .unwrap(),
         }
     }
 
@@ -742,6 +766,8 @@ impl AkiDbMetrics {
             self.memory_quarantine_total,
             self.memory_replay_total,
             self.memory_deletion_total,
+            self.admission_rejections_total,
+            self.admission_in_flight,
         )
     }
 
