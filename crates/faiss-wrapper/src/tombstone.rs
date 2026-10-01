@@ -209,7 +209,7 @@ impl TombstoneBitset {
                 bytes.len()
             )));
         }
-        if capacity % 8 != 0 {
+        if !capacity.is_multiple_of(8) {
             if let Some(last) = bytes.last() {
                 let valid_bits = (capacity % 8) as u32;
                 if last >> valid_bits != 0 {

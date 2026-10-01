@@ -6,6 +6,8 @@ use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "generation-s3")]
+use std::time::Duration;
 
 use akidb_contracts::ImmutableObjectReference;
 use async_trait::async_trait;
@@ -29,6 +31,13 @@ pub enum GenerationFetchError {
     Unavailable(String),
     #[error("generation object fetch failed: {0}")]
     Transport(String),
+    #[error("generation object {operation} returned HTTP {status}")]
+    Remote {
+        operation: &'static str,
+        status: u16,
+    },
+    #[error("generation object {0} deadline exceeded")]
+    Timeout(&'static str),
     #[error("generation object temporary-file error: {0}")]
     Io(#[from] std::io::Error),
     #[error("generation object fetch was rejected: {0}")]
@@ -267,6 +276,26 @@ impl GenerationBundleFetcher for LocalMirrorGenerationBundleFetcher {
 pub struct S3GenerationBundleFetcher {
     client: aws_sdk_s3::Client,
     config: S3GenerationBundleFetcherConfig,
+    deadlines: FetchDeadlines,
+}
+
+#[cfg(feature = "generation-s3")]
+#[derive(Clone, Copy)]
+struct FetchDeadlines {
+    request: Duration,
+    idle: Duration,
+    total: Duration,
+}
+
+#[cfg(feature = "generation-s3")]
+impl Default for FetchDeadlines {
+    fn default() -> Self {
+        Self {
+            request: Duration::from_secs(30),
+            idle: Duration::from_secs(30),
+            total: Duration::from_secs(120),
+        }
+    }
 }
 
 #[cfg(feature = "generation-s3")]
@@ -278,7 +307,11 @@ impl S3GenerationBundleFetcher {
         validate_object_policy(&config.allowed_buckets, config.max_bundle_size_bytes)?;
         create_private_download_directory(&config.download_directory)?;
         config.download_directory = fs::canonicalize(&config.download_directory)?;
-        Ok(Self { client, config })
+        Ok(Self {
+            client,
+            config,
+            deadlines: FetchDeadlines::default(),
+        })
     }
 
     pub fn for_seaweedfs(
@@ -299,6 +332,13 @@ impl S3GenerationBundleFetcher {
             .endpoint_url(endpoint)
             .credentials_provider(credentials)
             .force_path_style(true)
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard().with_max_attempts(3))
+            .timeout_config(
+                aws_sdk_s3::config::timeout::TimeoutConfig::builder()
+                    .operation_timeout(Duration::from_secs(30))
+                    .operation_attempt_timeout(Duration::from_secs(10))
+                    .build(),
+            )
             .build();
         Self::new(aws_sdk_s3::Client::from_conf(sdk_config), config)
     }
@@ -333,6 +373,23 @@ impl GenerationBundleFetcher for S3GenerationBundleFetcher {
         &self,
         reference: &ImmutableObjectReference,
     ) -> Result<FetchedGenerationBundle, GenerationFetchError> {
+        tokio::time::timeout(
+            self.deadlines.total.saturating_add(Duration::from_secs(
+                (reference.size_bytes / (1024 * 1024)).min(86_400),
+            )),
+            self.fetch_inner(reference),
+        )
+        .await
+        .map_err(|_| GenerationFetchError::Timeout("total fetch"))?
+    }
+}
+
+#[cfg(feature = "generation-s3")]
+impl S3GenerationBundleFetcher {
+    async fn fetch_inner(
+        &self,
+        reference: &ImmutableObjectReference,
+    ) -> Result<FetchedGenerationBundle, GenerationFetchError> {
         if reference.size_bytes > self.config.max_bundle_size_bytes {
             return Err(GenerationFetchError::Rejected(format!(
                 "bundle size {} exceeds configured maximum {}",
@@ -348,10 +405,18 @@ impl GenerationBundleFetcher for S3GenerationBundleFetcher {
         if let Some(version_id) = &address.version_id {
             head = head.version_id(version_id);
         }
-        let head = head
-            .send()
+        let head = tokio::time::timeout(self.deadlines.request, head.send())
             .await
-            .map_err(|_| GenerationFetchError::Unavailable("S3 object HEAD failed".to_string()))?;
+            .map_err(|_| GenerationFetchError::Timeout("HEAD"))?
+            .map_err(|error| match &error {
+                aws_sdk_s3::error::SdkError::TimeoutError(_) => {
+                    GenerationFetchError::Timeout("HEAD")
+                }
+                aws_sdk_s3::error::SdkError::DispatchFailure(failure) if failure.is_timeout() => {
+                    GenerationFetchError::Timeout("HEAD")
+                }
+                _ => remote_error("HEAD", error.raw_response().map(|r| r.status().as_u16())),
+            })?;
         let head_length = checked_content_length(head.content_length())?;
         if head_length != reference.size_bytes {
             return Err(GenerationFetchError::Rejected(format!(
@@ -368,10 +433,18 @@ impl GenerationBundleFetcher for S3GenerationBundleFetcher {
         if let Some(version_id) = &address.version_id {
             get = get.version_id(version_id);
         }
-        let response = get
-            .send()
+        let response = tokio::time::timeout(self.deadlines.request, get.send())
             .await
-            .map_err(|_| GenerationFetchError::Unavailable("S3 object GET failed".to_string()))?;
+            .map_err(|_| GenerationFetchError::Timeout("GET"))?
+            .map_err(|error| match &error {
+                aws_sdk_s3::error::SdkError::TimeoutError(_) => {
+                    GenerationFetchError::Timeout("GET")
+                }
+                aws_sdk_s3::error::SdkError::DispatchFailure(failure) if failure.is_timeout() => {
+                    GenerationFetchError::Timeout("GET")
+                }
+                _ => remote_error("GET", error.raw_response().map(|r| r.status().as_u16())),
+            })?;
         let response_length = checked_content_length(response.content_length())?;
         if response_length != reference.size_bytes {
             return Err(GenerationFetchError::Rejected(format!(
@@ -388,13 +461,23 @@ impl GenerationBundleFetcher for S3GenerationBundleFetcher {
             .write(true)
             .create_new(true)
             .open(&path)?;
+        // Own cleanup before the first await: timeout, task abort, stream errors,
+        // and successful handoff all retain the same exact-file ownership.
+        let fetched = FetchedGenerationBundle {
+            path,
+            remove_on_drop: true,
+        };
         let mut file = tokio::fs::File::from_std(file);
         let mut body = response.body;
         let mut observed = 0u64;
         let write_result: Result<(), GenerationFetchError> = async {
-            while let Some(bytes) = body.try_next().await.map_err(|_| {
-                GenerationFetchError::Transport("S3 response stream failed".to_string())
-            })? {
+            while let Some(bytes) = tokio::time::timeout(self.deadlines.idle, body.try_next())
+                .await
+                .map_err(|_| GenerationFetchError::Timeout("body idle"))?
+                .map_err(|_| {
+                    GenerationFetchError::Transport("S3 response stream failed".to_string())
+                })?
+            {
                 let chunk_len = u64::try_from(bytes.len()).map_err(|_| {
                     GenerationFetchError::Rejected(
                         "S3 response chunk cannot fit the platform".to_string(),
@@ -422,11 +505,17 @@ impl GenerationBundleFetcher for S3GenerationBundleFetcher {
         }
         .await;
         drop(file);
-        if let Err(error) = write_result {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(error);
-        }
-        FetchedGenerationBundle::temporary(path)
+        write_result?;
+        Ok(fetched)
+    }
+}
+
+#[cfg(feature = "generation-s3")]
+fn remote_error(operation: &'static str, status: Option<u16>) -> GenerationFetchError {
+    // Never retain SDK diagnostics: they can contain signed URLs or credentials.
+    match status {
+        Some(status) => GenerationFetchError::Remote { operation, status },
+        None => GenerationFetchError::Transport(format!("S3 {operation} transport failed")),
     }
 }
 
@@ -770,5 +859,205 @@ mod tests {
         // SeaweedFS serves every operation anonymously without an identity
         // configuration, so the fetcher must refuse to be built credential-less.
         assert!(seaweedfs.credentials().is_err());
+    }
+    #[cfg(feature = "generation-s3")]
+    async fn scripted_fetcher(
+        directory: &Path,
+        responses: Vec<(String, Duration)>,
+    ) -> (S3GenerationBundleFetcher, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            for (response, delay) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 8192];
+                let _ = stream.read(&mut request).await;
+                if !response.is_empty() {
+                    let _ = stream.write_all(response.as_bytes()).await;
+                }
+                tokio::time::sleep(delay).await;
+            }
+        });
+        let config = S3ClientConfigBuilder::new()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::new("us-east-1"))
+            .endpoint_url(endpoint)
+            .credentials_provider(Credentials::new(
+                "test-key",
+                "test-secret",
+                None,
+                None,
+                "test",
+            ))
+            .force_path_style(true)
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard().with_max_attempts(1))
+            .build();
+        let fetcher = S3GenerationBundleFetcher::new(
+            aws_sdk_s3::Client::from_conf(config),
+            s3_config(directory),
+        )
+        .unwrap();
+        (fetcher, task)
+    }
+
+    #[cfg(feature = "generation-s3")]
+    fn tiny_reference() -> ImmutableObjectReference {
+        let mut value = reference(format!("s3://knowledge/{}/bundle", "a".repeat(64)));
+        value.size_bytes = 2;
+        value
+    }
+
+    #[cfg(feature = "generation-s3")]
+    fn ok_headers() -> String {
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n".to_string()
+    }
+
+    #[cfg(feature = "generation-s3")]
+    #[tokio::test]
+    async fn s3_status_is_classified_without_sdk_secrets() {
+        for status in [403, 404, 429, 503] {
+            let directory = tempfile::tempdir().unwrap();
+            let (fetcher, server) = scripted_fetcher(directory.path(), vec![(format!("HTTP/1.1 {status} Failure\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), Duration::ZERO)]).await;
+            let error = fetcher.fetch(&tiny_reference()).await.unwrap_err();
+            assert!(
+                matches!(error, GenerationFetchError::Remote { operation: "HEAD", status: actual } if actual == status)
+            );
+            assert!(!error.to_string().contains("test-secret"));
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+            server.abort();
+        }
+    }
+
+    #[cfg(feature = "generation-s3")]
+    #[tokio::test]
+    async fn request_and_body_deadlines_remove_partial_files() {
+        for mode in ["request", "idle", "total", "truncated"] {
+            let directory = tempfile::tempdir().unwrap();
+            let responses = if mode == "request" {
+                vec![(String::new(), Duration::from_secs(10))]
+            } else {
+                vec![
+                    (ok_headers(), Duration::ZERO),
+                    (
+                        format!("{}x", ok_headers()),
+                        if mode == "truncated" {
+                            Duration::ZERO
+                        } else {
+                            Duration::from_secs(10)
+                        },
+                    ),
+                ]
+            };
+            let (mut fetcher, server) = scripted_fetcher(directory.path(), responses).await;
+            fetcher.deadlines = FetchDeadlines {
+                request: if mode == "request" {
+                    Duration::from_millis(100)
+                } else {
+                    Duration::from_secs(2)
+                },
+                idle: if mode == "idle" {
+                    Duration::from_millis(100)
+                } else {
+                    Duration::from_secs(2)
+                },
+                total: if mode == "total" {
+                    Duration::from_millis(100)
+                } else {
+                    Duration::from_secs(5)
+                },
+            };
+            let error = fetcher.fetch(&tiny_reference()).await.unwrap_err();
+            if mode == "truncated" {
+                assert!(matches!(
+                    error,
+                    GenerationFetchError::Transport(_) | GenerationFetchError::Rejected(_)
+                ));
+            } else {
+                assert!(
+                    matches!(error, GenerationFetchError::Timeout(_)),
+                    "{mode}: {error}"
+                );
+            }
+            assert_eq!(
+                std::fs::read_dir(directory.path()).unwrap().count(),
+                0,
+                "{mode}"
+            );
+            server.abort();
+        }
+    }
+
+    #[cfg(feature = "generation-s3")]
+    #[tokio::test]
+    async fn sdk_request_timeout_preserves_timeout_classification() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut fetcher, server) = scripted_fetcher(
+            directory.path(),
+            vec![(String::new(), Duration::from_secs(5))],
+        )
+        .await;
+        fetcher.client = aws_sdk_s3::Client::from_conf(
+            fetcher
+                .client
+                .config()
+                .to_builder()
+                .timeout_config(
+                    aws_sdk_s3::config::timeout::TimeoutConfig::builder()
+                        .operation_timeout(Duration::from_millis(50))
+                        .build(),
+                )
+                .build(),
+        );
+        assert!(matches!(
+            fetcher.fetch(&tiny_reference()).await.unwrap_err(),
+            GenerationFetchError::Timeout("HEAD")
+        ));
+        server.abort();
+    }
+
+    #[cfg(feature = "generation-s3")]
+    #[tokio::test]
+    async fn abort_during_body_cleans_partial_download() {
+        let directory = tempfile::tempdir().unwrap();
+        let (fetcher, server) = scripted_fetcher(
+            directory.path(),
+            vec![
+                (ok_headers(), Duration::ZERO),
+                (format!("{}x", ok_headers()), Duration::from_secs(10)),
+            ],
+        )
+        .await;
+        let download = tokio::spawn(async move { fetcher.fetch(&tiny_reference()).await });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while std::fs::read_dir(directory.path()).unwrap().count() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        download.abort();
+        assert!(download.await.unwrap_err().is_cancelled());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        server.abort();
+    }
+
+    #[cfg(feature = "generation-s3")]
+    #[tokio::test]
+    async fn successful_download_retains_file_until_consumer_drops_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let (fetcher, server) = scripted_fetcher(
+            directory.path(),
+            vec![
+                (ok_headers(), Duration::ZERO),
+                (format!("{}ok", ok_headers()), Duration::ZERO),
+            ],
+        )
+        .await;
+        let fetched = fetcher.fetch(&tiny_reference()).await.unwrap();
+        assert_eq!(std::fs::read(fetched.path()).unwrap(), b"ok");
+        drop(fetched);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        server.abort();
     }
 }

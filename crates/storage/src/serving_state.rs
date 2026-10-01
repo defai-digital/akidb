@@ -449,6 +449,44 @@ impl<S: StorageBackend> ServingStateStore<S> {
         Ok(ApplyMutationOutcome::Applied)
     }
 
+    /// Verify a previously applied contract without re-fetching its immutable payload.
+    /// Both durable identity markers must agree with the complete contract fingerprint.
+    pub fn verify_applied_mutation(&self, mutation: &KnowledgeMutation) -> ServingStateResult<()> {
+        let _guard = self.transition_lock.lock();
+        mutation.validate()?;
+        let scope = mutation.scope();
+        let mut record = self.load_required_unlocked(&scope)?;
+        let generation = generation_by_id_mut(&mut record, &mutation.generation_id)?;
+        if mutation.sequence <= generation.manifest.target_sequence
+            || mutation.sequence > generation.applied_sequence
+        {
+            return Err(ServingStateError::InvalidTransition(
+                "historical mutation is outside the applied revision".to_string(),
+            ));
+        }
+        let expected = MutationMarker {
+            mutation_id: mutation.mutation_id.clone(),
+            sequence: mutation.sequence,
+            mutation_sha256: mutation_fingerprint(mutation)?,
+        };
+        for key in [
+            mutation_sequence_key(&scope, &mutation.generation_id, mutation.sequence),
+            mutation_identity_key(&scope, &mutation.generation_id, &mutation.mutation_id),
+        ] {
+            let marker = self
+                .storage
+                .get(&key)?
+                .map(|bytes| decode_marker(&bytes))
+                .transpose()?;
+            if marker.as_ref() != Some(&expected) {
+                return Err(ServingStateError::MutationContentConflict {
+                    mutation_id: mutation.mutation_id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Atomically advance any locally retained generation to an already
     /// verified shadow revision.
     ///
@@ -1631,6 +1669,44 @@ mod tests {
                 ReplicaState::Serving
             );
         }
+    }
+
+    #[test]
+    fn historical_payload_reference_and_both_markers_are_required_for_skip() {
+        let backend = Arc::new(MemoryBackend::default());
+        let store = ServingStateStore::new(backend.clone(), "replica-1").unwrap();
+        let mut base = manifest("generation-a", None);
+        base.target_sequence = base.base_sequence;
+        store.stage_generation(base, DIGEST_A, 1).unwrap();
+        store
+            .mark_bundle_loaded(&scope(), "generation-a", 2)
+            .unwrap();
+        store.mark_ready(&scope(), "generation-a", 3).unwrap();
+        store.activate(&scope(), "generation-a", 4).unwrap();
+        let original = mutation("generation-a", 101, "mutation-101");
+        assert!(store.verify_applied_mutation(&original).is_err());
+        store
+            .commit_generation_revision(
+                &scope(),
+                "generation-a",
+                DIGEST_A,
+                101,
+                std::slice::from_ref(&original),
+                5,
+            )
+            .unwrap();
+        store.verify_applied_mutation(&original).unwrap();
+        let mut changed = original.clone();
+        changed.payload.as_mut().unwrap().sha256 = "b".repeat(64);
+        assert!(store.verify_applied_mutation(&changed).is_err());
+        backend
+            .delete(&mutation_identity_key(
+                &scope(),
+                "generation-a",
+                "mutation-101",
+            ))
+            .unwrap();
+        assert!(store.verify_applied_mutation(&original).is_err());
     }
 
     #[test]
