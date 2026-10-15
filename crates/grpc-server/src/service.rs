@@ -754,6 +754,21 @@ where
         );
 
         if let Err(e) = mapping_result {
+            // The index reuses the existing internal id when the external id
+            // already exists, so on an upsert `internal_id` is the id that was
+            // live before this call. Deleting it here would tombstone a vector
+            // whose previous payload is still active in storage - invisible to
+            // search, still returned by Get, and permanent across restarts.
+            // Leave it indexed and let the caller retry the write.
+            if old_internal_id == Some(internal_id) {
+                warn!(
+                    vector_id = %vector_id,
+                    internal_id = internal_id.0,
+                    error = %e,
+                    "Durable write failed during upsert; the previously indexed vector is left in place"
+                );
+                return Err(Self::to_status(e));
+            }
             // FIX BUG-HUNT-601: Log rollback failures instead of silently ignoring
             if let Err(rollback_err) = self.index.delete(internal_id) {
                 tracing::error!(
@@ -781,8 +796,17 @@ where
         // Keep BM25, context packing, and persisted source text aligned with
         // upsert semantics. Empty text clears any previous source text.
         self.sync_source_text(&vector_id, &req.text);
-        self.index_graph_chunk(&vector_id, &stamped_metadata, old_metadata.as_deref())
-            .map_err(|e| Status::internal(format!("graph projection failed: {e}")))?;
+        // The graph is a derived projection that startup reconciliation repairs,
+        // so a projection failure must not fail a write that is already durable
+        // and searchable -- nor skip the SQL metadata mirror below.
+        if let Err(e) = self.index_graph_chunk(&vector_id, &stamped_metadata, old_metadata.as_deref())
+        {
+            warn!(
+                vector_id = %vector_id,
+                error = %e,
+                "Graph projection failed during insert; startup reconciliation will repair it"
+            );
+        }
         self.index_sql_metadata(&vector_id, internal_id.0, &stamped_metadata);
 
         let elapsed = start.elapsed();
@@ -1183,6 +1207,10 @@ where
                                 }
                             }
                             self.sync_source_text(&vector_id, &vector.text);
+                            // A graph projection failure leaves the vector
+                            // durable and searchable, so it is a warning, not a
+                            // failed insert: startup reconciliation repairs the
+                            // projection.
                             if let Err(e) = self.index_graph_chunk(
                                 &vector_id,
                                 &vector.metadata,
@@ -1191,15 +1219,27 @@ where
                                 warn!(
                                     vector_id = %vector.id,
                                     error = %e,
-                                    "Batch insert: graph projection failed"
+                                    "Batch insert: graph projection failed; startup reconciliation will repair it"
                                 );
-                                failed_ids.push(vector.id);
-                                continue;
                             }
                             self.index_sql_metadata(&vector_id, internal_id.0, &vector.metadata);
                             inserted_count += 1;
                         }
                         Err(e) => {
+                            // On an upsert the index reused the pre-existing
+                            // internal id, so a rollback delete would tombstone
+                            // the vector that was live before this call while
+                            // storage still holds its previous payload.
+                            if old_internal_id == Some(internal_id) {
+                                warn!(
+                                    vector_id = %vector.id,
+                                    internal_id = internal_id.0,
+                                    error = %e,
+                                    "Batch insert: durable write failed during upsert; the previously indexed vector is left in place"
+                                );
+                                failed_ids.push(vector.id);
+                                continue;
+                            }
                             // FIX BUG-046, BUG-HUNT-601: Rollback and log failures
                             if let Err(rollback_err) = self.index.delete(internal_id) {
                                 tracing::error!(
@@ -1428,16 +1468,20 @@ where
                         Ok(chunks) => {
                             for chunk in chunks {
                                 let id = chunk.vector_id;
-                                if !graph_expanded_ids.insert(id.clone()) {
-                                    continue;
-                                }
-                                let score =
-                                    graph_seed_score * GRAPH_HOP_DECAY.powi(i32::from(chunk.hop));
+                                // Filter before counting: `graph_expanded_ids` is
+                                // also the expansion budget, so a chunk the
+                                // caller's filter rejects must not spend it on a
+                                // node that can never be returned.
                                 if let Some(metadata_filter) = &metadata_filter {
                                     if !self.metadata_matches_filter(&id, metadata_filter) {
                                         continue;
                                     }
                                 }
+                                if !graph_expanded_ids.insert(id.clone()) {
+                                    continue;
+                                }
+                                let score =
+                                    graph_seed_score * GRAPH_HOP_DECAY.powi(i32::from(chunk.hop));
                                 if req.include_diagnostics {
                                     graph_expansions.push(GraphExpansionEvidence {
                                         result_id: id.to_string(),
@@ -1482,15 +1526,18 @@ where
                         Ok(chunks) => {
                             for chunk in chunks {
                                 let id = chunk.vector_id;
-                                if !graph_expanded_ids.insert(id.clone()) {
-                                    continue;
-                                }
-                                let score = seed.score * GRAPH_HOP_DECAY.powi(i32::from(chunk.hop));
+                                // Filter before counting: `graph_expanded_ids` is also the
+                                // expansion budget, so a chunk the caller's filter rejects must
+                                // not spend it on a node that can never be returned.
                                 if let Some(metadata_filter) = &metadata_filter {
                                     if !self.metadata_matches_filter(&id, metadata_filter) {
                                         continue;
                                     }
                                 }
+                                if !graph_expanded_ids.insert(id.clone()) {
+                                    continue;
+                                }
+                                let score = seed.score * GRAPH_HOP_DECAY.powi(i32::from(chunk.hop));
                                 if req.include_diagnostics {
                                     graph_expansions.push(GraphExpansionEvidence {
                                         result_id: id.to_string(),
@@ -2431,9 +2478,15 @@ where
         if workspace_pushdown {
             query = query.with_eq(acl::WORKSPACE_KEY, serde_json::json!(ctx.workspace_id));
         }
-        let ids = sql_index
-            .query_ids(&query)
-            .map_err(|e| Status::internal(format!("SQL metadata retrieval failed: {e}")))?;
+        let ids = sql_index.query_ids(&query).map_err(|e| match e {
+            // A filter that the adapter cannot push down is a caller-input
+            // problem, so it must not be reported as a server fault: the same
+            // filter is accepted (and post-filtered) in dense mode.
+            akidb_sql::SqlMetadataError::InvalidQuery(reason) => Status::invalid_argument(
+                format!("metadata filter is not supported by structured retrieval: {reason}"),
+            ),
+            other => Status::internal(format!("SQL metadata retrieval failed: {other}")),
+        })?;
         let candidate_cap_reached = needs_post_filter && ids.len() == sql_limit;
 
         let results: Vec<SearchResult> = ids
@@ -3322,6 +3375,18 @@ where
                 .upsert_with_vector(vector_id, new_internal_id, vector, metadata);
 
         if let Err(e) = mapping_result {
+            // Same hazard as the insert path: on an update of an existing id the
+            // index reused that id, so rolling back by deletion would tombstone
+            // the vector that was live before this call.
+            if old_internal_id == Some(new_internal_id) {
+                warn!(
+                    vector_id = %vector_id,
+                    internal_id = new_internal_id.0,
+                    error = %e,
+                    "Durable write failed during update; the previously indexed vector is left in place"
+                );
+                return Err(Self::to_status(e));
+            }
             // FIX BUG-HUNT-601: Log rollback failures instead of silently ignoring
             // Previously, rollback failures were discarded with `let _ =`, potentially
             // leaving orphan vectors in the index with no ID mapping.
@@ -3351,8 +3416,13 @@ where
         }
 
         self.index_sql_metadata(vector_id, new_internal_id.0, metadata);
-        self.index_graph_chunk(vector_id, metadata, old_metadata.as_deref())
-            .map_err(|e| Status::internal(format!("graph projection failed: {e}")))?;
+        if let Err(e) = self.index_graph_chunk(vector_id, metadata, old_metadata.as_deref()) {
+            warn!(
+                vector_id = %vector_id,
+                error = %e,
+                "Graph projection failed during update; startup reconciliation will repair it"
+            );
+        }
 
         let elapsed = start.elapsed();
         info!(
