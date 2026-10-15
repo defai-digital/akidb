@@ -16,7 +16,7 @@ use akidb_proto::{
     InsertBatchRequest, InsertBatchResponse, InsertRequest, InsertResponse, ListCollectionsRequest,
     ListCollectionsResponse, NodeStatus, SearchBatchRequest, SearchBatchResponse, SearchRequest,
     SearchResponse, SearchResult as ProtoSearchResult, ShardNode, TextSearchRequest, UpdateRequest,
-    UpdateResponse, UpdateStatus, Vector, VisibilityInfo,
+    UpdateResponse, Vector, VisibilityInfo,
 };
 use http_body_util::Full;
 use hyper::body::Bytes;
@@ -796,12 +796,7 @@ impl Akidb for CoordinatorService {
             result.target_shard
         );
 
-        // Determine update status based on whether vector existed before
-        let status = if result.delete_result.was_deleted() {
-            UpdateStatus::Updated
-        } else {
-            UpdateStatus::Created
-        };
+        let status = result.reported_status();
 
         Ok(Response::new(UpdateResponse {
             success,

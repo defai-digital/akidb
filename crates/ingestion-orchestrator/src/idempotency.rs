@@ -172,6 +172,12 @@ impl IdempotencyChecker {
     }
 
     /// Check and mark in one operation (returns true if duplicate)
+    ///
+    /// The mark is held in memory only. Callers that finish indexing the
+    /// document must then call [`Self::persist_hash`]; until then a restart (or
+    /// any process death) drops the mark, which is what lets a redelivered
+    /// upload be indexed again. Persisting here instead would silently discard
+    /// every upload that died mid-processing.
     pub fn check_and_mark(&self, content: &[u8]) -> (bool, String) {
         let hash = Self::hash_content(content);
 
@@ -201,21 +207,28 @@ impl IdempotencyChecker {
                 }
             }
             processed.insert(hash.clone());
-
-            // Persist to SQLite
-            if let Some(ref db) = self.db {
-                if let Ok(conn) = db.lock() {
-                    if let Err(e) = conn.execute(
-                        "INSERT OR IGNORE INTO processed_hashes (hash) VALUES (?)",
-                        [&hash],
-                    ) {
-                        warn!(error = %e, "Failed to persist hash to SQLite");
-                    }
-                }
-            }
         }
 
         (is_dup, hash)
+    }
+
+    /// Persist a completed hash so it survives a restart.
+    ///
+    /// Call this only after the document has been indexed. Together with the
+    /// in-memory mark from [`Self::check_and_mark`] this keeps duplicates out of
+    /// a running process while leaving an interrupted upload redeliverable.
+    pub fn persist_hash(&self, hash: &str) -> Result<(), String> {
+        if let Some(ref db) = self.db {
+            let conn = db
+                .lock()
+                .map_err(|e| format!("Failed to lock database: {}", e))?;
+            conn.execute(
+                "INSERT OR IGNORE INTO processed_hashes (hash) VALUES (?)",
+                [hash],
+            )
+            .map_err(|e| format!("Failed to persist hash to SQLite: {}", e))?;
+        }
+        Ok(())
     }
 
     /// Remove a previously marked hash.
@@ -322,6 +335,37 @@ mod tests {
         let (is_dup_after_unmark, same_hash) = checker.check_and_mark(b"content");
         assert!(!is_dup_after_unmark);
         assert_eq!(same_hash, hash);
+    }
+
+    #[test]
+    fn test_unconfirmed_mark_stays_redeliverable_across_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("idempotency.sqlite");
+
+        let hash = {
+            let checker = IdempotencyChecker::new_persistent(&db_path, 100).unwrap();
+            let (is_dup, hash) = checker.check_and_mark(b"interrupted upload");
+            assert!(!is_dup);
+            // Within this process the mark is already in effect.
+            assert!(checker.is_duplicate(b"interrupted upload"));
+            // The process dies here, before the document was indexed.
+            hash
+        };
+
+        let reloaded = IdempotencyChecker::new_persistent(&db_path, 100).unwrap();
+        assert!(
+            !reloaded.is_duplicate(b"interrupted upload"),
+            "an upload that was never indexed must still be redeliverable"
+        );
+
+        let (is_dup, reloaded_hash) = reloaded.check_and_mark(b"interrupted upload");
+        assert!(!is_dup);
+        assert_eq!(reloaded_hash, hash);
+        reloaded.persist_hash(&hash).unwrap();
+        drop(reloaded);
+
+        let confirmed = IdempotencyChecker::new_persistent(&db_path, 100).unwrap();
+        assert!(confirmed.is_duplicate(b"interrupted upload"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use akidb_common::{AkiDbError, Result, SearchResult, VectorId};
 use akidb_proto::akidb_client::AkidbClient;
 use akidb_proto::{
     DeleteRequest, DeleteStatus, SearchRequest, SearchResult as ProtoSearchResult, TagFilter,
-    UpdateRequest,
+    UpdateRequest, UpdateStatus,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -214,7 +214,7 @@ impl PoolCreationTracker {
 }
 
 impl ShardConnectionPool {
-    async fn new(address: &str, pool_size: usize) -> Result<Self> {
+    async fn new(address: &str, pool_size: usize, request_timeout: Duration) -> Result<Self> {
         let endpoint = format!("http://{}", address);
         let mut clients = Vec::with_capacity(pool_size);
 
@@ -225,10 +225,16 @@ impl ShardConnectionPool {
             // search timeout. A lazily connected channel reports the failure as
             // a transport status on the first request instead, which the shard
             // health classification already understands.
+            //
+            // The per-request deadline mirrors the configured fan-out timeout
+            // on purpose: tonic applies `Endpoint::timeout` to every request, so
+            // a smaller hardcoded value would cut a slow-but-healthy shard's
+            // response short and (because a deadline status reads as
+            // "unreachable") mark that shard unhealthy.
             let channel = Endpoint::from_shared(endpoint.clone())
                 .map_err(|e| AkiDbError::CoordinatorError(format!("Invalid endpoint: {}", e)))?
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(10))
+                .connect_timeout(Duration::from_secs(5).min(request_timeout))
+                .timeout(request_timeout)
                 .connect_lazy();
 
             clients.push(AkidbClient::new(channel));
@@ -359,7 +365,7 @@ impl FanoutExecutor {
             "Creating connection pool for {} (size={})",
             address, self.pool_size
         );
-        let new_pool = match ShardConnectionPool::new(address, self.pool_size).await {
+        let new_pool = match ShardConnectionPool::new(address, self.pool_size, self.timeout).await {
             Ok(pool) => {
                 // FIX BUG-057: Reset backoff on success
                 self.pool_tracker.record_success(address);
@@ -749,18 +755,18 @@ impl FanoutExecutor {
 
         let result = tokio::time::timeout(self.timeout, client.update(request)).await;
 
-        let update_success = match result {
+        let (update_success, update_status) = match result {
             Ok(Ok(response)) => {
                 let resp = response.into_inner();
-                resp.success
+                (resp.success, UpdateStatus::try_from(resp.status).ok())
             }
             Ok(Err(e)) => {
                 warn!("Update failed on shard {}: {}", shard_id, e);
-                false
+                (false, None)
             }
             Err(_) => {
                 warn!("Update timeout on shard {}", shard_id);
-                false
+                (false, None)
             }
         };
 
@@ -782,6 +788,7 @@ impl FanoutExecutor {
         Ok(BroadcastUpdateResult {
             delete_result,
             update_success,
+            update_status,
             target_shard: shard_id,
         })
     }
@@ -1005,11 +1012,28 @@ pub struct BroadcastUpdateResult {
     pub delete_result: BroadcastDeleteResult,
     /// Whether the update insert succeeded
     pub update_success: bool,
+    /// Status the target shard reported for the upsert. It is the only party
+    /// that knows whether the id already existed; the cleanup delete below only
+    /// shows that *other* shards held a stale copy.
+    pub update_status: Option<UpdateStatus>,
     /// The shard where the new vector was inserted
     pub target_shard: String,
 }
 
 impl BroadcastUpdateResult {
+    /// Status to report for the upsert.
+    ///
+    /// The target shard's own answer wins: only it knows whether the id already
+    /// existed. The cleanup-delete evidence is a fallback for a shard that did
+    /// not report a status.
+    pub fn reported_status(&self) -> UpdateStatus {
+        self.update_status.unwrap_or(if self.delete_result.was_deleted() {
+            UpdateStatus::Updated
+        } else {
+            UpdateStatus::Created
+        })
+    }
+
     /// Check if the overall update was successful.
     ///
     /// The insert succeeded on the target shard, and the cleanup delete of older
@@ -1330,6 +1354,46 @@ mod tests {
     }
 
     #[test]
+    fn test_update_status_prefers_the_target_shards_own_answer() {
+        let cleanup = |stale_copy_shard: Option<&str>| BroadcastDeleteResult {
+            status: if stale_copy_shard.is_some() {
+                DeleteStatus::Deleted
+            } else {
+                DeleteStatus::NotFound
+            },
+            found_on_shard: stale_copy_shard.map(str::to_string),
+            responding_shards: stale_copy_shard.map(str::to_string).into_iter().collect(),
+            failed_shards: vec![],
+        };
+        let update = |update_status: Option<UpdateStatus>, cleanup_result| BroadcastUpdateResult {
+            delete_result: cleanup_result,
+            update_success: true,
+            update_status,
+            target_shard: "shard-0".to_string(),
+        };
+
+        // A single-shard coordinator finds no stale copy to delete, so the
+        // cleanup evidence alone reports CREATED even for an overwrite.
+        assert_eq!(
+            update(Some(UpdateStatus::Updated), cleanup(None)).reported_status(),
+            UpdateStatus::Updated
+        );
+        assert_eq!(
+            update(Some(UpdateStatus::Created), cleanup(None)).reported_status(),
+            UpdateStatus::Created
+        );
+        // With no reported status, the cleanup evidence is still the fallback.
+        assert_eq!(
+            update(None, cleanup(None)).reported_status(),
+            UpdateStatus::Created
+        );
+        assert_eq!(
+            update(None, cleanup(Some("shard-1"))).reported_status(),
+            UpdateStatus::Updated
+        );
+    }
+
+    #[test]
     fn test_update_is_not_success_when_cleanup_did_not_complete() {
         // The insert landed on the target shard, but the cleanup delete never
         // reached shard-2, whose older copy can still win a search by score.
@@ -1341,6 +1405,7 @@ mod tests {
                 failed_shards: vec!["shard-2".to_string()],
             },
             update_success: true,
+            update_status: Some(UpdateStatus::Updated),
             target_shard: "shard-0".to_string(),
         };
         assert!(!incomplete.is_success());

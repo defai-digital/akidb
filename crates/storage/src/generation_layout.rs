@@ -512,18 +512,30 @@ impl GenerationStore {
         }
 
         if paths.building_dir.exists() {
-            self.verify_building_identity(
-                &paths.building_dir,
-                manifest_bytes,
-                &manifest,
-                expected_manifest_sha256,
-            )?;
-            return Ok(PreparedGeneration {
-                manifest,
-                manifest_sha256: expected_manifest_sha256.to_string(),
-                paths,
-                outcome: GenerationPrepareOutcome::Resumed,
-            });
+            // A staging directory without a manifest is an aborted build: it
+            // never got an identity, so nothing inside can be verified or
+            // resumed. Recycle it and start over rather than failing every
+            // later prepare for this generation forever.
+            if !paths.building_dir.join(MANIFEST_FILE).exists() {
+                tracing::warn!(
+                    directory = %paths.building_dir.display(),
+                    "Discarding an aborted generation build that has no manifest"
+                );
+                remove_dir_all_checked(&paths.building_dir)?;
+            } else {
+                self.verify_building_identity(
+                    &paths.building_dir,
+                    manifest_bytes,
+                    &manifest,
+                    expected_manifest_sha256,
+                )?;
+                return Ok(PreparedGeneration {
+                    manifest,
+                    manifest_sha256: expected_manifest_sha256.to_string(),
+                    paths,
+                    outcome: GenerationPrepareOutcome::Resumed,
+                });
+            }
         }
 
         create_dir(&paths.building_dir)?;
@@ -1142,6 +1154,18 @@ impl GenerationStore {
                 ));
             };
             if !is_generation_directory_name(name) {
+                continue;
+            }
+            // A build stages its directory before it writes a manifest, so a
+            // crash in that window leaves a `.building` directory with nothing
+            // to validate. Skipping it keeps the retention scan (and every
+            // later one) working; `prepare` recycles it when that generation is
+            // built again.
+            if name.ends_with(BUILDING_SUFFIX) && !directory.join(MANIFEST_FILE).exists() {
+                tracing::warn!(
+                    directory = %directory.display(),
+                    "Skipping an aborted generation build that has no manifest"
+                );
                 continue;
             }
             let manifest_bytes =
@@ -1797,6 +1821,9 @@ fn revision_name(applied_sequence: u64) -> String {
     format!("s-{applied_sequence:020}")
 }
 
+/// Suffix that marks a generation directory still being staged.
+const BUILDING_SUFFIX: &str = ".building";
+
 /// Whether a `generations/` entry name denotes a generation directory.
 ///
 /// Generation directories are keyed as `g-<sha256 hex>`; a build in progress
@@ -1804,7 +1831,7 @@ fn revision_name(applied_sequence: u64) -> String {
 /// directory (notably `<generation>.revisions`) is sibling state, not a
 /// generation.
 fn is_generation_directory_name(name: &str) -> bool {
-    let key = name.strip_suffix(".building").unwrap_or(name);
+    let key = name.strip_suffix(BUILDING_SUFFIX).unwrap_or(name);
     key.strip_prefix("g-")
         .is_some_and(|digest| validate_digest(digest).is_ok())
 }
@@ -2600,6 +2627,43 @@ mod tests {
         assert_eq!(evidence.retained[0].generation_id, manifest.generation_id);
         assert!(evidence.candidates.is_empty());
         assert!(revision.exists());
+    }
+
+    #[test]
+    fn generation_gc_skips_an_aborted_build_without_a_manifest() {
+        let (_temporary, store, prepared, manifest) = prepare_store();
+        complete(&store, &prepared, &manifest);
+
+        // A build creates its staging directory before writing a manifest, so a
+        // crash in that window leaves a `.building` directory with nothing to
+        // validate. It must not take the whole retention scan down.
+        let generations_dir = prepared.ready_dir().parent().unwrap().to_path_buf();
+        let aborted = generations_dir.join(format!("g-{}.building", "0".repeat(64)));
+        std::fs::create_dir_all(aborted.join("rocksdb")).unwrap();
+
+        let retained = BTreeSet::from([manifest.generation_id.clone()]);
+        let evidence = store
+            .garbage_collect_scope(&manifest.scope(), &retained, 1, 1_000, false)
+            .unwrap();
+
+        assert_eq!(evidence.scanned, 1);
+        assert_eq!(evidence.retained[0].generation_id, manifest.generation_id);
+        assert!(aborted.exists());
+    }
+
+    #[test]
+    fn prepare_recycles_an_aborted_build_that_has_no_manifest() {
+        let (_temporary, store, prepared, manifest) = prepare_store();
+
+        let manifest_path = prepared.building_dir().join(MANIFEST_FILE);
+        std::fs::remove_file(&manifest_path).unwrap();
+
+        let (bytes, expected, digest) = fixture();
+        assert_eq!(expected.generation_id, manifest.generation_id);
+        let restarted = store.prepare(&bytes, &digest, 9).unwrap();
+
+        assert_eq!(restarted.outcome(), GenerationPrepareOutcome::Started);
+        assert!(restarted.building_dir().join(MANIFEST_FILE).exists());
     }
 
     #[test]

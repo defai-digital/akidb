@@ -334,21 +334,28 @@ impl IngestionPipeline {
         debug!(bucket = %event.bucket, key = %event.key, "Fetching document from storage");
         let data = self.storage.fetch(&event.bucket, &event.key).await?;
 
-        // Check idempotency using actual content hash
+        // Check idempotency using actual content hash. This marks the hash as
+        // in-flight, which only skips duplicates inside this process: the mark
+        // is persisted once the document is fully indexed, so a process that
+        // dies mid-processing leaves the upload redeliverable instead of
+        // permanently skipped.
         let (is_dup, content_hash) = self.idempotency.check_and_mark(&data);
         if is_dup {
             debug!(key = %event.key, hash = %content_hash, "Duplicate document, skipping");
             return Ok(());
         }
 
-        // Record document
-        self.state.record_document(&content_hash, &event.key)?;
+        let document = async {
+            // Record document
+            self.state.record_document(&content_hash, &event.key)?;
 
-        // FIX: Call internal processing with error handling for state tracking
-        if let Err(e) = self
-            .process_document_internal(event, &content_hash, &data, start)
-            .await
-        {
+            // FIX: Call internal processing with error handling for state tracking
+            self.process_document_internal(event, &content_hash, &data, start)
+                .await
+        }
+        .await;
+
+        if let Err(e) = document {
             // Record failure in state tracker
             let error_msg = e.to_string();
             if let Err(state_err) =
@@ -365,6 +372,17 @@ impl IngestionPipeline {
                 );
             }
             return Err(e);
+        }
+
+        // Persist only now: the document is indexed, so this hash may keep
+        // redeliveries from repeating the work. A failure here costs re-indexing
+        // a redelivered upload, not a lost document.
+        if let Err(error) = self.idempotency.persist_hash(&content_hash) {
+            error!(
+                %error,
+                hash = %content_hash,
+                "Failed to persist idempotency mark; a redelivery will re-index this document"
+            );
         }
 
         Ok(())

@@ -20,23 +20,29 @@ impl HtmlParser {
         Self
     }
 
-    /// Recursively extract text from an element, skipping script and style elements
+    /// Extract text from an element, skipping script and style elements
+    ///
+    /// Traversed with an explicit stack rather than recursion: nesting depth is
+    /// whatever the document says, and a deeply nested (untrusted) document
+    /// would otherwise overflow the worker's stack and abort the process.
     fn extract_text_excluding_scripts(
         element: ElementRef,
         text: &mut String,
         excluded_tags: &HashSet<&str>,
     ) {
-        for child in element.children() {
-            if let Some(el) = ElementRef::wrap(child) {
+        let mut pending = Vec::new();
+        pending.extend(element.children().rev());
+
+        while let Some(node) = pending.pop() {
+            if let Some(el) = ElementRef::wrap(node) {
                 let tag_name = el.value().name();
                 if excluded_tags.contains(tag_name) || Self::is_hidden_element(el) {
                     // Skip script, style, and other excluded elements
                     continue;
                 }
                 Self::push_semantic_attributes(el, text);
-                // Recursively process child elements
-                Self::extract_text_excluding_scripts(el, text, excluded_tags);
-            } else if let Some(text_node) = child.value().as_text() {
+                pending.extend(el.children().rev());
+            } else if let Some(text_node) = node.value().as_text() {
                 let trimmed = text_node.trim();
                 if !trimmed.is_empty() {
                     Self::push_text_piece(text, trimmed);
@@ -217,6 +223,26 @@ fn is_phrase_boundary(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_html_deeply_nested_document_does_not_abort() {
+        let parser = HtmlParser::new();
+        let mut data = String::from("<html><body>");
+        for _ in 0..10_000 {
+            data.push_str("<div>");
+        }
+        data.push_str("deep");
+        for _ in 0..10_000 {
+            data.push_str("</div>");
+        }
+        data.push_str("</body></html>");
+
+        // Nesting depth is whatever the document says. A recursive text walk
+        // overflows the worker stack and aborts the process at this depth, so
+        // extraction has to stay iterative for untrusted input.
+        let result = parser.parse(data.as_bytes()).unwrap();
+        assert!(result.text.contains("deep"));
+    }
 
     #[test]
     fn test_parse_html() {
@@ -476,3 +502,4 @@ mod tests {
         assert!(!result.text.contains("Hidden important visibility token"));
     }
 }
+

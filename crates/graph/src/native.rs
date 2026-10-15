@@ -405,11 +405,15 @@ impl<S: StorageBackend> GraphIndex for NativeGraphIndex<S> {
             return Ok(Vec::new());
         }
 
+        // Read every edge of this node before ranking: the adjacency scan
+        // returns edges in key order, so capping it here would decide the result
+        // by edge-id sort order and could drop higher-weight edges (and make
+        // `min_weight` reject a set that had qualifying edges).
         let edge_refs = self.edge_refs_for_node(
             &request.node_id,
             request.direction,
             &request.edge_kinds,
-            Some(request.limit.saturating_mul(4)),
+            None,
         )?;
         let mut seen_edges = HashSet::new();
         let mut neighbors = Vec::new();
@@ -885,6 +889,55 @@ mod tests {
 
         assert_eq!(neighbors.len(), 1);
         assert_eq!(neighbors[0].node.id, GraphNodeId::from("target"));
+    }
+
+    #[test]
+    fn test_neighbors_ranks_every_edge_before_applying_the_limit() {
+        let (_dir, graph) = index();
+        graph.upsert_node(node("hub", NodeKind::Entity)).unwrap();
+
+        // Edge ids sort ahead of the heavy edge, so a candidate cap applied
+        // before ranking would hide it.
+        for index in 0..6 {
+            let peer = format!("peer:{index}");
+            graph.upsert_node(node(&peer, NodeKind::Entity)).unwrap();
+            graph
+                .upsert_edge(edge(
+                    &format!("a{index}"),
+                    "hub",
+                    &peer,
+                    EdgeKind::RelatedTo,
+                    0.1,
+                ))
+                .unwrap();
+        }
+        graph.upsert_node(node("heavy", NodeKind::Entity)).unwrap();
+        graph
+            .upsert_edge(edge("z-heavy", "hub", "heavy", EdgeKind::RelatedTo, 0.9))
+            .unwrap();
+
+        let neighbors = graph
+            .neighbors(
+                NeighborRequest::new("hub")
+                    .with_direction(Direction::Out)
+                    .with_limit(1),
+            )
+            .unwrap();
+
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(neighbors[0].node.id, GraphNodeId::from("heavy"));
+
+        // The same cap must not hide a `min_weight` match either.
+        let filtered = graph
+            .neighbors(
+                NeighborRequest::new("hub")
+                    .with_direction(Direction::Out)
+                    .with_min_weight(0.5)
+                    .with_limit(1),
+            )
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].node.id, GraphNodeId::from("heavy"));
     }
 
     #[test]
