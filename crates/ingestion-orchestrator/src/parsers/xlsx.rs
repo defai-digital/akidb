@@ -424,14 +424,26 @@ fn read_sheet_paths(
     Ok(paths)
 }
 
+/// Highest column index the XLSX format defines (`XFD`, 1-based 16 384).
+/// Cell references come straight from the file, so they are untrusted input:
+/// an unbounded index lets a crafted `r="AAAAAAAAAAAAAA1"` size a row into the
+/// hundreds of terabytes.
+const MAX_COLUMN_INDEX: usize = 16_383;
+
 /// Extract the 0-based column index from a cell reference like "A1", "B2", "AA26".
-/// Returns None if the reference has no alphabetic prefix.
+/// Returns None if the reference has no alphabetic prefix or names a column
+/// outside the format's range.
 fn col_index_from_ref(cell_ref: &[u8]) -> Option<usize> {
     let mut col: usize = 0;
     let mut has_letters = false;
     for &b in cell_ref {
         if b.is_ascii_alphabetic() {
-            col = col * 26 + (b.to_ascii_uppercase() - b'A') as usize + 1;
+            col = col
+                .checked_mul(26)?
+                .checked_add((b.to_ascii_uppercase() - b'A') as usize + 1)?;
+            if col > MAX_COLUMN_INDEX + 1 {
+                return None;
+            }
             has_letters = true;
         } else {
             break;
@@ -699,6 +711,44 @@ mod tests {
 
         assert_eq!(result.text, "customer\ncustomer HGC");
         assert_eq!(result.metadata.extra.unwrap()["columns"], 1);
+    }
+
+    #[test]
+    fn test_xlsx_cell_reference_column_bounds() {
+        assert_eq!(col_index_from_ref(b"A1"), Some(0));
+        assert_eq!(col_index_from_ref(b"Z9"), Some(25));
+        assert_eq!(col_index_from_ref(b"AA26"), Some(26));
+        assert_eq!(col_index_from_ref(b"XFD1"), Some(MAX_COLUMN_INDEX));
+
+        // A cell reference is file content: one that names a column past the
+        // format's range (or overflows the accumulator) must not be turned into
+        // a row size.
+        assert_eq!(col_index_from_ref(b"XFE1"), None);
+        assert_eq!(col_index_from_ref(b"AAAAAAAAAAAAAA1"), None);
+        assert_eq!(col_index_from_ref(b"1"), None);
+    }
+
+    #[test]
+    fn test_parse_xlsx_tolerates_out_of_range_cell_references() {
+        let parser = XlsxParser::new();
+        let data = minimal_xlsx_with_sheet_data(
+            r#"<row r="1">
+      <c r="A1" t="inlineStr"><is><t>name</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>alpha</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>beta</t></is></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="inlineStr"><is><t>gamma</t></is></c>
+      <c r="AAAAAAAAAAAAAA3" t="inlineStr"><is><t>hostile</t></is></c>
+    </row>"#,
+        );
+
+        let result = parser.parse(&data).unwrap();
+
+        assert!(result.text.contains("beta"));
+        assert!(result.text.contains("gamma"));
     }
 
     #[test]

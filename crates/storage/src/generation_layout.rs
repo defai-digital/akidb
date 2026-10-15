@@ -1130,6 +1130,20 @@ impl GenerationStore {
             if !file_type.is_dir() {
                 return Err(GenerationLayoutError::NotDirectory(directory));
             }
+            // The generations directory also holds sibling state that is not a
+            // generation: `<generation>.revisions` (mutation-tail checkpoints,
+            // one full RocksDB checkpoint each) and staging siblings. Only
+            // `g-<hex>` directories (optionally `.building`) carry a manifest
+            // and a build journal, so anything else is skipped rather than
+            // treated as a generation whose manifest failed to load.
+            let Some(name) = directory.file_name().and_then(|value| value.to_str()) else {
+                return Err(GenerationLayoutError::CorruptState(
+                    "generation GC directory name is not UTF-8".to_string(),
+                ));
+            };
+            if !is_generation_directory_name(name) {
+                continue;
+            }
             let manifest_bytes =
                 read_bounded_file(&directory.join(MANIFEST_FILE), MAX_MANIFEST_BYTES)?;
             let manifest: KnowledgeGenerationManifest =
@@ -1781,6 +1795,18 @@ fn revision_parent(paths: &GenerationPaths) -> PathBuf {
 
 fn revision_name(applied_sequence: u64) -> String {
     format!("s-{applied_sequence:020}")
+}
+
+/// Whether a `generations/` entry name denotes a generation directory.
+///
+/// Generation directories are keyed as `g-<sha256 hex>`; a build in progress
+/// stages into the same key with a `.building` suffix. Everything else in that
+/// directory (notably `<generation>.revisions`) is sibling state, not a
+/// generation.
+fn is_generation_directory_name(name: &str) -> bool {
+    let key = name.strip_suffix(".building").unwrap_or(name);
+    key.strip_prefix("g-")
+        .is_some_and(|digest| validate_digest(digest).is_ok())
 }
 
 fn remove_dir_all_checked(path: &Path) -> LayoutResult<()> {
@@ -2546,6 +2572,34 @@ mod tests {
 
         drop(store);
         drop(temporary);
+    }
+
+    #[test]
+    fn generation_gc_ignores_mutation_tail_revision_directories() {
+        let (_temporary, store, prepared, manifest) = prepare_store();
+        complete(&store, &prepared, &manifest);
+
+        // Applying a mutation tail materializes a `<generation>.revisions`
+        // sibling inside the generations directory. It is checkpoint state, not
+        // a generation, and must not make the scan fail.
+        let ready_dir = prepared.ready_dir();
+        let revision_parent = ready_dir.parent().unwrap().join(format!(
+            "{}.revisions",
+            ready_dir.file_name().unwrap().to_str().unwrap()
+        ));
+        let revision = revision_parent.join("s-00000000000000000001");
+        std::fs::create_dir_all(&revision).unwrap();
+        std::fs::write(revision.join("CURRENT"), b"checkpoint").unwrap();
+
+        let retained = BTreeSet::from([manifest.generation_id.clone()]);
+        let evidence = store
+            .garbage_collect_scope(&manifest.scope(), &retained, 1, 1_000, false)
+            .unwrap();
+
+        assert_eq!(evidence.scanned, 1);
+        assert_eq!(evidence.retained[0].generation_id, manifest.generation_id);
+        assert!(evidence.candidates.is_empty());
+        assert!(revision.exists());
     }
 
     #[test]

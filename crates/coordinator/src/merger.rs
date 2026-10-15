@@ -116,11 +116,13 @@ impl ResultMerger {
             if existing_score >= score {
                 return;
             }
-            // New score is better - we need to add this result
-            // The old entry will be filtered out in finish() via deduplication
-            // Update our tracking of the best score
+            // New score is better - replace the stale copy with the upgraded one.
+            // Dropping it here (rather than at finish()) keeps one heap entry per
+            // ID, so the stale score can neither occupy a slot that belongs to
+            // another ID nor be evicted in its place.
             self.best_scores.insert(id_str.clone(), score);
-            // Add to heap (may create temporary duplicate, resolved in finish())
+            self.heap
+                .retain(|existing| existing.result.id.as_str() != id_str.as_str());
             self.heap.push(ScoredResult { result });
 
             // FIX BUG-H050, BUG-HUNT-003: Maintain heap size limit to prevent unbounded growth
@@ -329,6 +331,39 @@ mod tests {
             "Expected 0.9, got {}",
             dup_result.score
         );
+    }
+
+    #[test]
+    fn test_merger_upgraded_duplicate_does_not_evict_a_distinct_id() {
+        let mut merger = ResultMerger::new(2);
+
+        // The same ID is served by two shards; the upgrade arrives while the
+        // heap is already full. The stale copy must not hold a slot that
+        // belongs to "b".
+        merger.add(make_result("a", 0.8));
+        merger.add(make_result("a", 0.9));
+        merger.add(make_result("b", 0.2));
+
+        let results = merger.finish();
+        let ids: Vec<&str> = results.iter().map(|result| result.id.as_str()).collect();
+
+        assert_eq!(ids, vec!["a", "b"]);
+        assert_eq!(results[0].score, 0.9);
+    }
+
+    #[test]
+    fn test_merger_upgraded_duplicate_keeps_the_true_top_k() {
+        let mut merger = ResultMerger::new(3);
+
+        merger.add(make_result("x", 0.9));
+        merger.add(make_result("x", 0.8));
+        merger.add(make_result("y", 0.7));
+        merger.add(make_result("z", 0.65));
+
+        let results = merger.finish();
+        let ids: Vec<&str> = results.iter().map(|result| result.id.as_str()).collect();
+
+        assert_eq!(ids, vec!["x", "y", "z"]);
     }
 
     #[test]

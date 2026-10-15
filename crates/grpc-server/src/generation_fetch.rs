@@ -138,6 +138,7 @@ impl LocalMirrorGenerationBundleFetcher {
         let digest_directory = config.mirror_directory.join("sha256");
         create_private_download_directory(&digest_directory)?;
         create_private_download_directory(&config.download_directory)?;
+        sweep_abandoned_partial_downloads(&config.download_directory)?;
         let bundle_directory = fs::canonicalize(digest_directory)?;
         config.mirror_directory = fs::canonicalize(&config.mirror_directory)?;
         config.download_directory = fs::canonicalize(&config.download_directory)?;
@@ -306,6 +307,7 @@ impl S3GenerationBundleFetcher {
     ) -> Result<Self, GenerationFetchError> {
         validate_object_policy(&config.allowed_buckets, config.max_bundle_size_bytes)?;
         create_private_download_directory(&config.download_directory)?;
+        sweep_abandoned_partial_downloads(&config.download_directory)?;
         config.download_directory = fs::canonicalize(&config.download_directory)?;
         Ok(Self {
             client,
@@ -630,6 +632,32 @@ fn create_private_download_directory(path: &Path) -> Result<(), GenerationFetchE
     Ok(())
 }
 
+/// Remove `.generation-*.partial` files that an earlier process left behind.
+///
+/// `FetchedGenerationBundle` cleans up on `Drop`, which covers cooperative
+/// failures but not a SIGKILL or OOM kill; those leave a file whose UUID name
+/// is never reused, and it can be as large as the configured maximum bundle
+/// size. Fetchers call this once at construction, before any download of their
+/// own can be in flight.
+#[cfg(feature = "generation-s3")]
+fn sweep_abandoned_partial_downloads(
+    download_directory: &Path,
+) -> Result<(), GenerationFetchError> {
+    for entry in fs::read_dir(download_directory)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !name.starts_with(".generation-") || !name.ends_with(".partial") {
+            continue;
+        }
+        if entry.file_type()?.is_file() {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_regular_file(path: &Path) -> Result<(), GenerationFetchError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
@@ -777,6 +805,25 @@ mod tests {
         let mut config = mirror_config(directory.path());
         config.download_directory = config.mirror_directory.join("downloads");
         assert!(LocalMirrorGenerationBundleFetcher::new(config).is_err());
+    }
+
+    #[cfg(feature = "generation-s3")]
+    #[test]
+    fn stale_partial_downloads_are_swept_at_construction() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = mirror_config(directory.path());
+        std::fs::create_dir_all(&config.download_directory).unwrap();
+        let abandoned = config
+            .download_directory
+            .join(".generation-6f1b2c3d4e5f.partial");
+        std::fs::write(&abandoned, b"half a bundle").unwrap();
+        let unrelated = config.download_directory.join("keep-me");
+        std::fs::write(&unrelated, b"not a partial").unwrap();
+
+        LocalMirrorGenerationBundleFetcher::new(config).unwrap();
+
+        assert!(!abandoned.exists());
+        assert!(unrelated.exists());
     }
 
     #[cfg(feature = "generation-s3")]

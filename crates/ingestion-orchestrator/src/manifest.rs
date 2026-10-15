@@ -227,10 +227,16 @@ impl ManifestStore {
     }
 
     /// Scan all manifest entries
+    ///
+    /// This feeds completeness decisions (`detect_changes`, hard-delete
+    /// readiness, stats), so it must not silently stop at the bounded default:
+    /// a truncated scan makes every manifest past the cap look like a new
+    /// object on each sync and hides confirmed deletes.
     fn scan_all(&self) -> Result<Vec<ObjectManifest>> {
-        let entries = self.backend.scan_prefix(MANIFEST_PREFIX).map_err(|e| {
-            IngestionError::Manifest(format!("Failed to scan manifests: {}", e))
-        })?;
+        let entries = self
+            .backend
+            .scan_prefix_limited(MANIFEST_PREFIX, None)
+            .map_err(|e| IngestionError::Manifest(format!("Failed to scan manifests: {}", e)))?;
 
         let mut manifests = Vec::new();
         for (key, value) in entries {

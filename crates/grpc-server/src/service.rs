@@ -3427,6 +3427,7 @@ where
             let access_parts = [
                 f32_le_bytes(&request.get_ref().query),
                 format!("{:?}", request.get_ref().filter).into_bytes(),
+                format!("{:?}", request.get_ref().tag_filter).into_bytes(),
             ];
             let access_hash = self
                 .access_log
@@ -3832,6 +3833,7 @@ where
             let access_parts = [
                 request.get_ref().text.clone().into_bytes(),
                 format!("{:?}", request.get_ref().filter).into_bytes(),
+                format!("{:?}", request.get_ref().tag_filter).into_bytes(),
                 request.get_ref().retrieval_mode.clone().into_bytes(),
             ];
             let access_hash = self

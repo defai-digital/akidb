@@ -157,9 +157,13 @@ impl ResourceGovernor {
         // Check cooldown
         if let Some(last_high) = *self.last_high_latency.read() {
             let cooldown = Duration::from_millis(self.config.cooldown_after_high_latency_ms);
-            if last_high.elapsed() < cooldown {
+            // Read the clock once: `elapsed()` grows between calls, so
+            // re-evaluating it here can exceed `cooldown` and panic in the
+            // subtraction on the branch that just compared it as smaller.
+            let elapsed = last_high.elapsed();
+            if elapsed < cooldown {
                 debug!(
-                    cooldown_remaining_ms = (cooldown - last_high.elapsed()).as_millis(),
+                    cooldown_remaining_ms = cooldown.saturating_sub(elapsed).as_millis(),
                     "Cannot start task: in cooldown period"
                 );
                 return false;

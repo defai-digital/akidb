@@ -434,39 +434,41 @@ impl<I: VectorIndex + 'static> RebuildFsm<Swapping<I>, I> {
     /// Perform the atomic swap and transition to Cleaning
     ///
     /// ## Guard G4
-    /// - New index must have at least as many active vectors as old (minus tombstones)
+    /// - New index must still hold every vector that was live in the old one
     ///
     /// ## Returns
     /// - Ok: FSM in Cleaning state with new primary
     /// - Err: Data loss detected, returns to Idle
     pub fn swap(self) -> Result<RebuildFsm<Cleaning, I>> {
         let new_stats = self.state.shadow.stats();
-        let expected_min = self
-            .state
-            .old_active_vectors
-            .saturating_sub(self.state.old_tombstones);
+        // `active_vectors` already excludes tombstones, so the old live count is
+        // the barrier the shadow has to clear; subtracting the tombstone count a
+        // second time would weaken the guard. The shadow is measured by total
+        // entries because a delete applied while the rebuild runs tombstones a
+        // shadow entry without removing it, and that is not data loss.
+        let expected_min = self.state.old_active_vectors;
 
         // Guard G4: No data loss
         critical_invariant!(
-            new_stats.active_vectors >= expected_min,
+            new_stats.total_vectors >= expected_min,
             "rebuild_data_loss",
-            "Data loss detected: new index has {} active vectors, expected at least {} (old: {} - tombstones: {})",
-            new_stats.active_vectors,
+            "Data loss detected: new index has {} vectors, expected at least {} (old live: {}, old tombstones: {})",
+            new_stats.total_vectors,
             expected_min,
             self.state.old_active_vectors,
             self.state.old_tombstones
         );
 
-        if new_stats.active_vectors < expected_min {
+        if new_stats.total_vectors < expected_min {
             warn!(
-                new_vectors = new_stats.active_vectors,
+                new_vectors = new_stats.total_vectors,
                 expected_min, "Data loss detected during swap - aborting"
             );
             set_rebuild_state("swapping", false);
             set_rebuild_state("idle", true);
             return Err(AkiDbError::IndexError(format!(
                 "Data loss detected: new index has {} vectors, expected at least {}",
-                new_stats.active_vectors, expected_min
+                new_stats.total_vectors, expected_min
             )));
         }
 

@@ -229,8 +229,15 @@ impl ObjectManifest {
     }
 
     /// Transition to ConfirmedMissing state
+    ///
+    /// A manifest that already scheduled its hard delete must keep that
+    /// schedule: overwriting it with `ConfirmedMissing` moves the delete state
+    /// backwards and drops `scheduled_for`, so the object can never satisfy
+    /// `is_ready_for_hard_delete()` and its vectors stay forever.
     pub fn transition_to_confirmed(&mut self) {
-        self.delete_state = DeleteState::confirm_missing();
+        if !matches!(self.delete_state, DeleteState::HardDeleteScheduled { .. }) {
+            self.delete_state = DeleteState::confirm_missing();
+        }
     }
 
     /// Increment version for reindexing
@@ -396,6 +403,32 @@ mod tests {
             manifest.delete_state,
             DeleteState::ConfirmedMissing { .. }
         ));
+    }
+
+    #[test]
+    fn test_scheduled_hard_delete_survives_a_later_missing_report() {
+        let doc_id = DocumentIdentifier::new(b"content", "path".to_string());
+        let mut manifest = ObjectManifest::new("key".to_string(), "etag".to_string(), doc_id);
+
+        for _ in 0..3 {
+            manifest.increment_missing();
+        }
+        manifest.schedule_hard_delete(7);
+        let scheduled_for = match manifest.delete_state {
+            DeleteState::HardDeleteScheduled { scheduled_for } => scheduled_for,
+            _ => panic!("hard delete should be scheduled"),
+        };
+
+        // A later sync still reports the object missing; that must not move the
+        // state backwards and drop the schedule.
+        manifest.transition_to_confirmed();
+
+        match manifest.delete_state {
+            DeleteState::HardDeleteScheduled {
+                scheduled_for: after,
+            } => assert_eq!(after, scheduled_for),
+            other => panic!("schedule lost, state is {:?}", other),
+        }
     }
 
     #[test]

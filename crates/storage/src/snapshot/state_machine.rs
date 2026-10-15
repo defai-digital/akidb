@@ -525,7 +525,9 @@ impl<S: StorageBackend> SnapshotStateMachine<S> {
     /// List all state records
     pub fn list_all(&self) -> Result<Vec<SnapshotStateRecord>> {
         let prefix = self.key_prefix.as_bytes();
-        let entries = self.storage.scan_prefix(prefix)?;
+        // Recovery and cleanup both treat this as the complete record set, so
+        // the bounded default scan is not enough here.
+        let entries = self.storage.scan_prefix_limited(prefix, None)?;
         let mut records = Vec::new();
         for (_, data) in entries {
             match serde_json::from_slice::<SnapshotStateRecord>(&data) {

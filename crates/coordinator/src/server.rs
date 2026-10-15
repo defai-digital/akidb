@@ -552,6 +552,14 @@ impl CoordinatorService {
         let latency_secs = start.elapsed().as_secs_f64();
         let latency_us = (latency_secs * 1_000_000.0) as u64;
 
+        // No shard answered and at least one rejected the request outright: the
+        // request itself is wrong (bad vector length, unparsable filter, ...).
+        // Returning the shard's status beats an empty page that looks complete.
+        if let Some((code, message)) = result.sole_rejection() {
+            coordinator_metrics().record_request("search", "error");
+            return Err(Status::new(code, message));
+        }
+
         // Extract values before consuming
         let partial = result.is_partial();
         let coverage = result.coverage();

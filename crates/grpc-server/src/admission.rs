@@ -30,6 +30,15 @@ use crate::metrics::metrics;
 /// before starting expensive synchronous work.
 pub const GRPC_TIMEOUT_HEADER: &str = "grpc-timeout";
 
+/// Clamp an operator-supplied permit count into the range `Semaphore` accepts.
+///
+/// Zero would block every request forever, and anything above the semaphore's
+/// own maximum panics; both are configuration mistakes, not reasons to abort
+/// startup.
+fn permit_count(configured: usize) -> usize {
+    configured.clamp(1, Semaphore::MAX_PERMITS)
+}
+
 /// Data-plane permit classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionClass {
@@ -92,8 +101,10 @@ impl AdmissionController {
         }
         Self {
             enabled: true,
-            search: Arc::new(Semaphore::new(config.search_permits.max(1))),
-            mutation: Arc::new(Semaphore::new(config.mutation_permits.max(1))),
+            // `Semaphore::new` panics above `MAX_PERMITS`; a misconfigured
+            // permit count must not abort the process during startup.
+            search: Arc::new(Semaphore::new(permit_count(config.search_permits))),
+            mutation: Arc::new(Semaphore::new(permit_count(config.mutation_permits))),
             acquire_timeout: Duration::from_millis(config.acquire_timeout_ms),
         }
     }
@@ -250,6 +261,21 @@ mod tests {
         let mut metadata = MetadataMap::new();
         metadata.insert(GRPC_TIMEOUT_HEADER, value.parse().unwrap());
         metadata
+    }
+
+    #[test]
+    fn oversized_or_zero_permit_counts_do_not_abort_startup() {
+        let config = AdmissionConfig {
+            enabled: true,
+            // Above `Semaphore::MAX_PERMITS`, which panics inside `new`.
+            search_permits: usize::MAX,
+            // Zero, which would otherwise block every request forever.
+            mutation_permits: 0,
+            acquire_timeout_ms: 0,
+        };
+
+        let controller = AdmissionController::new(&config);
+        assert!(controller.is_enabled());
     }
 
     #[test]

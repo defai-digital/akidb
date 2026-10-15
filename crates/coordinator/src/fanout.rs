@@ -74,7 +74,7 @@ enum ShardSearchFailure {
     /// The shard answered with an application-level gRPC status (for example
     /// `InvalidArgument` on an over-large `top_k`). It is up, so rejecting the
     /// request is not evidence that the shard itself is unhealthy.
-    Rejected(String),
+    Rejected { code: tonic::Code, message: String },
     /// A timeout, a dropped connection, or a panicked task: the shard's state is
     /// unknown.
     Unreachable(String),
@@ -94,7 +94,7 @@ impl ShardSearchFailure {
             | tonic::Code::DeadlineExceeded
             | tonic::Code::Cancelled
             | tonic::Code::Unknown => Self::Unreachable(message),
-            _ => Self::Rejected(message),
+            code => Self::Rejected { code, message },
         }
     }
 
@@ -105,7 +105,7 @@ impl ShardSearchFailure {
 
     fn message(&self) -> &str {
         match self {
-            Self::Rejected(message) | Self::Unreachable(message) => message,
+            Self::Rejected { message, .. } | Self::Unreachable(message) => message,
         }
     }
 }
@@ -492,7 +492,11 @@ impl FanoutExecutor {
         // `top_k` here would leave grouped queries short.
         let mut merger = ResultMerger::new(fetch_k);
         let mut responding_shards = Vec::new();
-        let mut candidate_limited = Some(false);
+        let mut first_rejection: Option<(tonic::Code, String)> = None;
+        // `None` means no responding shard has reported the status yet. Seeding
+        // this with `Some(false)` would claim "not candidate limited" for a
+        // fan-out where no shard answered at all.
+        let mut candidate_limited: Option<bool> = None;
 
         // FIX BUG-071: Iterate with index to identify shard even on task panic
         for (idx, handle) in handles.into_iter().enumerate() {
@@ -500,15 +504,25 @@ impl FanoutExecutor {
                 Ok(Ok((shard_id, results, shard_candidate_limited))) => {
                     debug!("Shard {} returned {} results", shard_id, results.len());
                     responding_shards.push(shard_id);
+                    // `true` is sticky: one truncated shard is enough. Otherwise
+                    // the first shard that reports wins, and a shard that stays
+                    // silent leaves the aggregate unknown.
                     candidate_limited = match (candidate_limited, shard_candidate_limited) {
                         (Some(true), _) | (_, Some(true)) => Some(true),
-                        (Some(false), Some(false)) => Some(false),
-                        _ => None,
+                        (None, reported) => reported,
+                        (Some(false), reported) => reported,
                     };
                     merger.add_results(results);
                 }
                 Ok(Err((shard_id, failure))) => {
                     warn!("Shard {} failed: {}", shard_id, failure.message());
+
+                    // Remember the first application-level rejection. When no
+                    // shard answers at all, that status is the client's own
+                    // error and must not be reported as an empty success.
+                    if let ShardSearchFailure::Rejected { code, message } = &failure {
+                        first_rejection.get_or_insert_with(|| (*code, message.clone()));
+                    }
 
                     // A shard that answered is reachable; only a failure that
                     // left its state unknown takes it out of the fan-out set.
@@ -562,6 +576,7 @@ impl FanoutExecutor {
             missing_shards,
             total_shards,
             candidate_limited,
+            first_rejection,
         })
     }
 
@@ -925,6 +940,10 @@ pub struct FanoutResult {
     /// Any responding shard exhausted its bounded filtered search window.
     /// `None` means at least one responding shard did not report the status.
     pub candidate_limited: Option<bool>,
+    /// The first application-level rejection a shard returned, if any. Kept so
+    /// that a fan-out where every shard rejected the request can surface the
+    /// caller's own error instead of an empty, complete-looking page.
+    pub first_rejection: Option<(tonic::Code, String)>,
 }
 
 impl FanoutResult {
@@ -939,6 +958,18 @@ impl FanoutResult {
     /// Check if this is a partial result
     pub fn is_partial(&self) -> bool {
         !self.missing_shards.is_empty() || self.responding_shards.len() < self.total_shards
+    }
+
+    /// The caller's own error, when no shard answered at all and at least one
+    /// rejected the request outright (bad vector length, unparsable filter, ...).
+    ///
+    /// With any shard responding, the fan-out has real results to report and the
+    /// partial coverage already tells the caller what was missed.
+    pub fn sole_rejection(&self) -> Option<(tonic::Code, String)> {
+        if !self.responding_shards.is_empty() {
+            return None;
+        }
+        self.first_rejection.clone()
     }
 }
 
@@ -1169,6 +1200,17 @@ mod tests {
         );
     }
 
+    fn test_fanout_result() -> FanoutResult {
+        FanoutResult {
+            results: vec![],
+            responding_shards: vec![],
+            missing_shards: vec![],
+            total_shards: 0,
+            candidate_limited: None,
+            first_rejection: None,
+        }
+    }
+
     #[test]
     fn test_fanout_result_is_partial_when_coverage_incomplete_without_missing_list() {
         let result = FanoutResult {
@@ -1177,6 +1219,7 @@ mod tests {
             missing_shards: vec![],
             total_shards: 2,
             candidate_limited: Some(false),
+            first_rejection: None,
         };
 
         assert_eq!(result.coverage(), 0.5);
@@ -1219,6 +1262,53 @@ mod tests {
         assert_eq!(result.responding_shards.len(), 0);
         assert_eq!(result.coverage(), 0.0);
         assert!(result.is_partial());
+        // No shard reported anything, so the status is unknown, not false, and
+        // there is no application-level rejection to surface.
+        assert_eq!(result.candidate_limited, None);
+        assert!(result.first_rejection.is_none());
+    }
+
+    #[test]
+    fn test_shard_status_classification_keeps_rejections_apart_from_transport_failures() {
+        // `InvalidArgument` is an application-level status: the shard answered,
+        // so it stays healthy but its status is retained for the caller.
+        let failure = ShardSearchFailure::from_status(&tonic::Status::invalid_argument("bad"));
+        assert!(!failure.indicates_unhealthy_shard());
+        assert!(matches!(
+            failure,
+            ShardSearchFailure::Rejected {
+                code: tonic::Code::InvalidArgument,
+                ..
+            }
+        ));
+
+        // A transport-level status leaves the shard's state unknown.
+        let unreachable = ShardSearchFailure::from_status(&tonic::Status::unavailable("down"));
+        assert!(unreachable.indicates_unhealthy_shard());
+        assert!(matches!(
+            unreachable,
+            ShardSearchFailure::Unreachable(_)
+        ));
+    }
+
+    #[test]
+    fn test_sole_rejection_only_applies_when_no_shard_answered() {
+        let rejected = || {
+            Some((
+                tonic::Code::InvalidArgument,
+                "Search failed: invalid vector length".to_string(),
+            ))
+        };
+        let mut result = test_fanout_result();
+        result.total_shards = 1;
+        result.missing_shards = vec!["shard-0".to_string()];
+        result.first_rejection = rejected();
+        assert_eq!(result.sole_rejection(), rejected());
+
+        // One shard answered, so the caller gets its results plus the coverage
+        // report rather than another shard's status.
+        result.responding_shards = vec!["shard-1".to_string()];
+        assert!(result.sole_rejection().is_none());
     }
 
     #[tokio::test]

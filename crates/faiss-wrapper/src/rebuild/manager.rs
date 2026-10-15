@@ -318,7 +318,7 @@ impl<I: VectorIndex + 'static> RebuildManager<I> {
     ///
     /// ## Guards
     /// - G3: Shadow index must exist and be valid
-    /// - G4: New index must have at least as many active vectors as old (minus tombstones)
+    /// - G4: New index must still hold every vector that was live in the old one
     pub fn swap_indices(&self) -> Result<()> {
         // GUARD G3: Validate shadow exists
         let shadow = {
@@ -352,34 +352,51 @@ impl<I: VectorIndex + 'static> RebuildManager<I> {
             *state = RebuildState::Swapping;
         }
 
-        // Capture old stats for guard verification
+        // Capture the guard inputs before the swap: a failing check has to be
+        // able to refuse the swap, so it cannot run after the primary is gone.
+        //
+        // `active_vectors` already excludes tombstones, so `old_active_vectors`
+        // is the old live count; subtracting the tombstone count a second time
+        // would weaken the guard. The shadow is measured by total entries
+        // because a delete applied while the rebuild runs tombstones a shadow
+        // entry without removing it, and that is not data loss.
         let old_stats = self.primary().stats();
         let old_active_vectors = old_stats.active_vectors;
+        let new_stats = shadow.stats();
+
+        // GUARD G4: Critical check - no data loss during rebuild
+        // New index must still hold every vector that was live in the old one.
+        if new_stats.total_vectors < old_active_vectors {
+            critical_invariant!(
+                false,
+                "rebuild_data_loss",
+                "Data loss detected during rebuild: new index has {} vectors, expected at least {} (old live: {}, old tombstones: {})",
+                new_stats.total_vectors,
+                old_active_vectors,
+                old_active_vectors,
+                old_stats.tombstoned_vectors
+            );
+            warn!(
+                new_vectors = new_stats.total_vectors,
+                expected_min = old_active_vectors,
+                "Data loss detected during swap - aborting"
+            );
+            self.abort_rebuild("data loss detected during swap");
+            return Err(AkiDbError::IndexError(format!(
+                "Data loss detected: new index has {} vectors, expected at least {}",
+                new_stats.total_vectors, old_active_vectors
+            )));
+        }
 
         // Atomic swap
         {
             let mut primary = self.primary.write();
             let old_primary = std::mem::replace(&mut *primary, shadow);
 
-            let new_stats = primary.stats();
-
             info!(
                 old_vectors = old_primary.stats().total_vectors,
                 new_vectors = new_stats.total_vectors,
                 "Swapped indices"
-            );
-
-            // GUARD G4: Critical check - no data loss during rebuild
-            // New index should have at least as many active vectors as old index had
-            // (minus any tombstoned vectors that were compacted)
-            critical_invariant!(
-                new_stats.active_vectors >= old_active_vectors.saturating_sub(old_stats.tombstoned_vectors),
-                "rebuild_data_loss",
-                "Data loss detected during rebuild: new index has {} active vectors, expected at least {} (old: {} - tombstones: {})",
-                new_stats.active_vectors,
-                old_active_vectors.saturating_sub(old_stats.tombstoned_vectors),
-                old_active_vectors,
-                old_stats.tombstoned_vectors
             );
         }
 
@@ -839,7 +856,12 @@ mod tests {
 
         // Start rebuild with shadow
         manager.start_rebuild(100).unwrap();
+        // A real rebuild replays the primary's contents into the shadow, so the
+        // shadow starts as a copy of the vector that already existed.
         let shadow = Arc::new(MockIndex::new(128, 10000));
+        shadow
+            .insert(&VectorId::new("vec-1"), &vec![1.0; 128])
+            .unwrap();
         manager.set_shadow(shadow);
 
         // Insert during rebuild (should go to both)
@@ -860,6 +882,31 @@ mod tests {
         // Stats should reflect rebuild state
         let stats = manager.stats();
         assert!(!stats.rebuild_in_progress);
+    }
+
+    #[test]
+    fn test_swap_refuses_a_short_shadow_and_keeps_the_primary() {
+        let manager = create_test_manager();
+        for i in 0..3 {
+            manager
+                .insert(&VectorId::new(format!("vec-{}", i)), &vec![1.0; 128])
+                .unwrap();
+        }
+
+        manager.start_rebuild(100).unwrap();
+        // A shadow that lost two of the three live vectors.
+        let shadow = Arc::new(MockIndex::new(128, 10000));
+        shadow
+            .insert(&VectorId::new("vec-0"), &vec![1.0; 128])
+            .unwrap();
+        manager.set_shadow(shadow);
+
+        let error = manager.swap_indices().unwrap_err();
+        assert!(matches!(error, AkiDbError::IndexError(_)));
+
+        // The short shadow must not have replaced the primary.
+        assert_eq!(manager.stats().total_vectors, 3);
+        assert!(!manager.is_rebuilding());
     }
 
     #[test]
