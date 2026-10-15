@@ -420,19 +420,25 @@ def evaluate(args: argparse.Namespace, address: str) -> dict[str, Any]:
     elif (
         active_before_entry is not None
         and active_after_entry is not None
-        and active_after_entry >= active_before_entry
-        and (active_after_entry - active_before_entry) == args.vectors
+        # A coordinator entry point reports 0 for both, which means "no signal"
+        # rather than "no vectors". Any other pair is a usable measurement, and
+        # then the delta has to be checked honestly: a negative delta means
+        # vectors disappeared.
+        and (active_before_entry or active_after_entry)
     ):
+        delta = active_after_entry - active_before_entry
         report.add(
             "index_active_delta_match",
-            active_after_entry - active_before_entry,
+            delta,
             "vectors",
             f"== {args.vectors}",
-            True,
+            delta == args.vectors,
             "Entry health active_vectors grew by exactly the inserted count",
         )
     else:
-        # Not a hard fail when coordinator health returns 0; Get path is authoritative.
+        # Not a hard fail when entry health exposes no usable active delta
+        # (common on coordinators); Get-found-rate is the authoritative
+        # missing-data gate.
         report.add(
             "index_active_delta_match",
             "n/a",
@@ -445,14 +451,23 @@ def evaluate(args: argparse.Namespace, address: str) -> dict[str, Any]:
 
     # --- Get integrity (missing data / wrong payload) ---
     get_found = 0
+    get_errors = 0
     get_embedding_match = 0
     get_checked_embeddings = 0
     for i, doc_id in enumerate(ids):
-        response = grpcurl(
-            address,
-            "Get",
-            {"collection": args.collection, "id": doc_id},
-        )
+        try:
+            response = grpcurl(
+                address,
+                "Get",
+                {"collection": args.collection, "id": doc_id},
+            )
+        except RuntimeError as exc:
+            # A failing Get is itself the missing-data signal, so keep going and
+            # still produce a report instead of losing the whole run to a
+            # traceback.
+            get_errors += 1
+            print(f"  Get {doc_id} failed: {exc}", file=sys.stderr)
+            continue
         found = bool(response.get("found", False))
         if found:
             get_found += 1
@@ -461,6 +476,15 @@ def evaluate(args: argparse.Namespace, address: str) -> dict[str, Any]:
             get_checked_embeddings += 1
             if cosine(emb, vectors[i]) >= args.min_embedding_cosine:
                 get_embedding_match += 1
+
+    report.add(
+        "get_error_count",
+        get_errors,
+        "count",
+        "== 0",
+        get_errors == 0,
+        "No Get RPC failed while reading back every ingested ID",
+    )
 
     get_found_rate = get_found / float(args.vectors) if args.vectors else 0.0
     report.add(

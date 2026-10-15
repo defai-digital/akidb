@@ -80,6 +80,10 @@ fn draw_text_metrics(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
 /// Draw coverage gauge
 fn draw_coverage_gauge(frame: &mut Frame, area: Rect, coverage: f32, theme: &Theme) {
+    // Coverage arrives as a plain wire float: clamp before it reaches
+    // `Gauge::percent`, which panics outside 0..=100 and would take the console
+    // down with it.
+    let coverage = coverage.clamp(0.0, 1.0);
     let coverage_percent = (coverage * 100.0) as u16;
 
     let gauge_style = if coverage >= 1.0 {
@@ -107,6 +111,8 @@ fn draw_coverage_gauge(frame: &mut Frame, area: Rect, coverage: f32, theme: &The
 
 /// Draw backpressure gauge
 fn draw_backpressure_gauge(frame: &mut Frame, area: Rect, backpressure: f32, theme: &Theme) {
+    // Same clamp as the coverage gauge: the value is server-supplied.
+    let backpressure = backpressure.clamp(0.0, 1.0);
     let bp_percent = (backpressure * 100.0) as u16;
 
     let gauge_style = if backpressure <= 0.1 {

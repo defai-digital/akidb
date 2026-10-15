@@ -2538,6 +2538,11 @@ where
             .and_then(|m| {
                 m.get("parent_id")
                     .and_then(|v| v.as_str())
+                    // The convention points at another chunk id, so an empty
+                    // string names nothing. Accepting it would build a
+                    // `VectorId("")` graph node (a debug assertion today, junk
+                    // in release builds).
+                    .filter(|parent_id| !parent_id.is_empty())
                     .map(String::from)
             })
     }

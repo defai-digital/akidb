@@ -56,7 +56,9 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .cluster_state
         .leader_id
         .as_ref()
-        .map(|id| format!("Leader: {}...", &id[..12.min(id.len())]))
+        // Slicing by character, not byte: a non-ASCII leader id would panic on
+        // a byte index that lands inside a multi-byte character.
+        .map(|id| format!("Leader: {}...", id.chars().take(12).collect::<String>()))
         .unwrap_or_else(|| "No leader".to_string());
 
     let status_text = format!(

@@ -740,8 +740,13 @@ async fn start_metrics_server(
             let (stream, _) = match listener.accept().await {
                 Ok(value) => value,
                 Err(error) => {
-                    warn!(%error, "AkiDB metrics listener failed");
-                    break;
+                    // Accept errors are per-connection (a reset, a file
+                    // descriptor limit hit): breaking out here would silently
+                    // stop metrics for the rest of the process lifetime, so log
+                    // and back off briefly instead of exiting the loop.
+                    warn!(%error, "AkiDB metrics listener failed to accept");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue;
                 }
             };
             tokio::spawn(async move {

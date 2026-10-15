@@ -177,6 +177,17 @@ impl ObjectManifest {
         }
     }
 
+    /// Restore this document to the active, searchable state.
+    ///
+    /// Explicit recovery uses this: a document observed again in the bucket must
+    /// leave every delete state except a scheduled hard delete, otherwise it
+    /// stays unsearchable while remaining eligible to be hard-deleted.
+    pub fn restore_active(&mut self) {
+        if !matches!(self.delete_state, DeleteState::HardDeleteScheduled { .. }) {
+            self.delete_state = DeleteState::Active;
+        }
+    }
+
     /// Increment missing count and potentially transition delete state
     ///
     /// Returns true if the document should now be tombstoned

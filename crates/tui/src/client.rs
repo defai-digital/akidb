@@ -117,7 +117,15 @@ impl OperationsClient {
         } else {
             format!("http://{address}")
         };
-        let channel = Endpoint::from_shared(endpoint)?.connect().await?;
+        // Bound every request: the console's workers are serial, so one RPC that
+        // never returns would leave the affected screen loading forever with no
+        // effect processed again. A deadline turns that into a normal failed
+        // load, which the console already renders and can retry.
+        let channel = Endpoint::from_shared(endpoint)?
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(15))
+            .connect()
+            .await?;
         Ok(Self {
             data: AkidbClient::new(channel.clone()),
             management: ManagementServiceClient::new(channel),

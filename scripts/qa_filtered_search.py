@@ -260,6 +260,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.buckets < 1:
+        parser.error("--buckets must be at least 1")
+    if args.vectors < 1:
+        parser.error("--vectors must be at least 1")
+    if args.queries < 1:
+        parser.error("--queries must be at least 1")
+
     if not args.dry_run and not args.external_server and not args.build:
         # Allow running against existing debug binary without --build
         if not (ROOT / "target" / "debug" / "akidb-server").exists():

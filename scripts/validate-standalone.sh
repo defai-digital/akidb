@@ -23,6 +23,9 @@ CONFIG="$TMP_DIR/standalone.toml"
 PROTO_DIR="$PROJECT_ROOT/crates/proto/proto"
 PROTO_FILE="akidb.proto"
 GRPC_PORT="${GRPC_PORT:-50051}"
+# The mutable shard serves exactly one collection; its name comes from the
+# server, not from the request.
+COLLECTION="${AKIDB_COLLECTION:-default}"
 AX_ENGINE_PORT="${AX_ENGINE_PORT:-8081}"
 SKIP_BUILD=false
 SKIP_AX_ENGINE=false
@@ -40,6 +43,20 @@ for arg in "$@"; do
         *) echo "Unknown argument: $arg"; exit 1 ;;
     esac
 done
+
+# Every RPC in this sweep goes through the helper: grpcurl exits non-zero on an
+# RPC error, and a sweep that prints "Validation Complete" regardless of the
+# responses validates nothing.
+grpc_call() {
+    local label="$1"
+    local symbol="$2"
+    shift 2
+    if ! grpcurl -plaintext -import-path "$PROTO_DIR" -proto "$PROTO_FILE" \
+        "$@" "localhost:$GRPC_PORT" "$symbol"; then
+        echo "FAILED: $label" >&2
+        exit 1
+    fi
+}
 
 cleanup() {
     echo ""
@@ -183,8 +200,7 @@ echo ""
 
 # Step 5: Health check
 echo "=== Health Check ==="
-grpcurl -plaintext -import-path "$PROTO_DIR" -proto "$PROTO_FILE" \
-    "localhost:$GRPC_PORT" akidb.v1.Akidb/Health
+grpc_call "Health" akidb.v1.Akidb/Health
 echo ""
 
 # Step 6: Insert test vectors (using pre-computed embeddings)
@@ -211,12 +227,8 @@ vec = [v/norm for v in vec]
 print('[' + ','.join(str(v) for v in vec) + ']')
 ")
 
-    grpcurl -plaintext \
-        -import-path "$PROTO_DIR" \
-        -proto "$PROTO_FILE" \
-        -d "{\"collection\":\"test\",\"id\":\"$id\",\"vector\":$vector}" \
-        "localhost:$GRPC_PORT" \
-        akidb.v1.Akidb/Insert
+    grpc_call "Insert $id" akidb.v1.Akidb/Insert \
+        -d "{\"collection\":\"$COLLECTION\",\"id\":\"$id\",\"vector\":$vector}"
     echo "  Inserted: $id ($description)"
 }
 
@@ -244,24 +256,16 @@ print('[' + ','.join(str(v) for v in vec) + ']')
 ")
 
 echo "Searching for vectors similar to doc-001..."
-grpcurl -plaintext \
-    -import-path "$PROTO_DIR" \
-    -proto "$PROTO_FILE" \
-    -d "{\"collection\":\"test\",\"query\":$QUERY_VECTOR,\"top_k\":3}" \
-    "localhost:$GRPC_PORT" \
-    akidb.v1.Akidb/Search
+grpc_call "Search" akidb.v1.Akidb/Search \
+    -d "{\"collection\":\"$COLLECTION\",\"query\":$QUERY_VECTOR,\"top_k\":3}"
 echo ""
 
 # Step 8: Text search (requires ax-engine embedding sidecar)
 if [ "$SKIP_AX_ENGINE" = false ]; then
     echo "=== Text Search (via ax-engine embedding sidecar) ==="
     echo "Searching for: 'neural network learning'"
-    grpcurl -plaintext \
-        -import-path "$PROTO_DIR" \
-        -proto "$PROTO_FILE" \
-        -d "{\"collection\":\"test\",\"text\":\"neural network learning\",\"top_k\":3}" \
-        "localhost:$GRPC_PORT" \
-        akidb.v1.Akidb/TextSearch
+    grpc_call "TextSearch" akidb.v1.Akidb/TextSearch \
+        -d "{\"collection\":\"$COLLECTION\",\"text\":\"neural network learning\",\"top_k\":3}"
     echo ""
 else
     echo "=== Text Search SKIPPED (embedding sidecar not running) ==="
@@ -270,12 +274,8 @@ fi
 
 # Step 9: Get vector by ID
 echo "=== Get Vector by ID ==="
-grpcurl -plaintext \
-    -import-path "$PROTO_DIR" \
-    -proto "$PROTO_FILE" \
-    -d "{\"collection\":\"test\",\"id\":\"doc-001\"}" \
-    "localhost:$GRPC_PORT" \
-    akidb.v1.Akidb/Get | python3 -c "
+grpc_call "Get doc-001" akidb.v1.Akidb/Get \
+    -d "{\"collection\":\"$COLLECTION\",\"id\":\"doc-001\"}" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 print(f\"  ID: {data.get('id')}\")
@@ -289,12 +289,8 @@ echo ""
 
 # Step 10: Delete
 echo "=== Delete doc-005 ==="
-grpcurl -plaintext \
-    -import-path "$PROTO_DIR" \
-    -proto "$PROTO_FILE" \
-    -d "{\"collection\":\"test\",\"id\":\"doc-005\"}" \
-    "localhost:$GRPC_PORT" \
-    akidb.v1.Akidb/Delete
+grpc_call "Delete doc-005" akidb.v1.Akidb/Delete \
+    -d "{\"collection\":\"$COLLECTION\",\"id\":\"doc-005\"}"
 echo ""
 
 echo "=== Validation Complete ==="

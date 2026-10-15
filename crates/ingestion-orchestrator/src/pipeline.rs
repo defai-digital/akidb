@@ -262,7 +262,15 @@ impl IngestionPipeline {
                                 stage: "processing".to_string(),
                             };
                             if let Err(dlq_err) = self.dlq.publish(dlq_entry).await {
-                                error!(?dlq_err, "Failed to publish to DLQ");
+                                // The DLQ is the only replay path for a failed
+                                // upload, so terminating a message that never
+                                // made it there would drop it for good. Leave it
+                                // in the stream instead.
+                                error!(
+                                    ?dlq_err,
+                                    "Failed to publish to DLQ; leaving the message unacked for replay"
+                                );
+                                continue;
                             }
 
                             // Terminate message (don't redeliver since it's in DLQ)

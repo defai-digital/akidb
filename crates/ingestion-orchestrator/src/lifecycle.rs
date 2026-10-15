@@ -206,8 +206,12 @@ impl LifecycleManager {
                 return Ok(false);
             }
 
-            // Reset to active state
+            // Reset to active state. `mark_seen` alone only clears a soft-delete
+            // mark, so a document that had already reached ConfirmedMissing
+            // would keep reporting success while staying unsearchable - and
+            // would still be eligible for the hard delete its state implies.
             manifest.mark_seen(epoch);
+            manifest.restore_active();
             manifest.etag = etag.to_string();
             self.manifest.upsert(&manifest)?;
 
@@ -398,6 +402,39 @@ mod tests {
         assert_eq!(m.delete_state, DeleteState::Active);
         assert_eq!(m.etag, "new-etag");
         assert_eq!(m.last_seen_epoch, 5);
+    }
+
+    #[test]
+    fn test_recover_document_clears_a_confirmed_missing_state() {
+        let store = create_test_store();
+        let manager = LifecycleManager::new(Arc::clone(&store), LifecycleConfig::default());
+
+        // The object was gone long enough to be confirmed missing, then came
+        // back into the bucket.
+        let mut manifest = create_test_manifest("test/restored.pdf");
+        for _ in 0..3 {
+            manifest.increment_missing();
+        }
+        assert!(matches!(
+            manifest.delete_state,
+            DeleteState::ConfirmedMissing { .. }
+        ));
+        store.upsert(&manifest).unwrap();
+
+        assert!(manager
+            .recover_document("test/restored.pdf", "new-etag", 6)
+            .unwrap());
+
+        let recovered = store.get("test/restored.pdf").unwrap().unwrap();
+        assert!(
+            recovered.delete_state.is_active(),
+            "recovered document is still not searchable: {:?}",
+            recovered.delete_state
+        );
+        assert!(recovered.is_searchable());
+        // A confirmed-missing document is a hard-delete candidate; recovery has
+        // to take it out of that set.
+        assert!(!recovered.delete_state.is_ready_for_hard_delete());
     }
 
     #[test]
