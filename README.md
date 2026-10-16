@@ -201,6 +201,23 @@ The commands below build and run the writable standalone server. That is the
 default profile. Generation serving, the experimental Memory preview, and MCP
 are separate opt-in entry points later in this section.
 
+### Install a release
+
+On macOS Apple Silicon or Linux AMD64, install a prebuilt release without a
+Rust toolchain:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/defai-digital/akidb/main/scripts/install.sh | sh
+```
+
+The script resolves the latest release, verifies the archive's SHA-256 before
+extracting anything, and links `akidb` into `~/.akidb/bin`. Set
+`AKIDB_VERSION` to pin a tag and `AKIDB_INSTALL_DIR` to change the prefix. The
+`akidb start`, `akidb index`, and `akidb pack` commands used below ship in
+releases after v2.0.0; on v2.0.0, or to run from source, build as described
+next. See [`docs/platform/INSTALL.md`](docs/platform/INSTALL.md) for Homebrew
+formula maintenance.
+
 ### Prerequisites
 
 - Rust stable via [rustup](https://rustup.rs/)

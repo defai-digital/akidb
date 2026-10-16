@@ -22,6 +22,7 @@
 ## Design
 
 - [Platform Support](platform/SUPPORT.md)
+- [Installing releases](platform/INSTALL.md)
 - [Agentic Knowledge-Serving Architecture](architecture/knowledge-serving.md)
 - [Immutable Generation Serving](development/generation-serving-preview.md)
 - [Authoritative Memory Developer Preview](development/authoritative-memory-preview.md)

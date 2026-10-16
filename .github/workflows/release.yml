@@ -189,7 +189,7 @@ jobs:
           {
             echo "## AkiDB ${TAG}"
             echo
-            echo "CPU-portable private retrieval engine for vector search, hybrid text retrieval, and agent memory."
+            echo "Local-first retrieval for private AI that returns cited, token-budgeted context for agents."
             echo
             echo "### Assets"
             echo
@@ -201,6 +201,12 @@ jobs:
             echo "| Linux AMD64 | \`akidb-linux-amd64-*.tar.gz\` / \`akidb-x86_64-unknown-linux-gnu*.tar.gz\` |"
             echo
             echo "### Install"
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${TAG}/scripts/install.sh | AKIDB_VERSION=${TAG} sh"
+            echo '```'
+            echo
+            echo "The script verifies the archive checksum before installing. To install by hand, download the archive and its \`.sha256\`, verify it, then:"
             echo
             echo '```bash'
             echo 'tar -xzf akidb-*.tar.gz'

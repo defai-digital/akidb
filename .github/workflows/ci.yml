@@ -58,6 +58,11 @@ jobs:
       - name: Check (no default features)
         run: cargo check --workspace --no-default-features
 
+      - name: Lint and test the install scripts
+        run: |
+          shellcheck scripts/install.sh scripts/render-homebrew-formula.sh scripts/tests/test_install.sh
+          sh scripts/tests/test_install.sh
+
   # Unit tests on every supported operating-system and architecture target.
   test:
     name: Test (${{ matrix.name }})
