@@ -21,6 +21,7 @@ akidb-coordinator = { path = "../coordinator" }
 akidb-embedding = { path = "../embedding" }
 akidb-graph = { path = "../graph" }
 akidb-proto = { path = "../proto" }
+akidb-retrieval = { path = "../retrieval" }
 akidb-server = { path = "../server" }
 akidb-storage = { path = "../storage" }
 akidb-tui = { path = "../tui" }

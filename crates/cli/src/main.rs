@@ -25,7 +25,9 @@ use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tonic::Request;
 
 mod bundle;
+mod chunking;
 mod index;
+mod index_state;
 
 /// AkiDB command line interface.
 #[derive(Parser, Debug)]

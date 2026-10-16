@@ -21,13 +21,16 @@ use akidb_common::config::EmbeddingClientConfig;
 use akidb_embedding::ax_engine::AxEngineEmbedding;
 use akidb_embedding::EmbeddingService;
 use akidb_proto::akidb_client::AkidbClient;
-use akidb_proto::{DeleteRequest, DeleteStatus, InsertRequest, TextSearchRequest};
+use akidb_proto::{DeleteRequest, DeleteStatus, GetRequest, InsertRequest, TextSearchRequest};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use tonic::{Code, Request};
+
+use crate::chunking::{segment, CHUNKER_VERSION};
+use crate::index_state::{default_state_dir, settings_fingerprint, FileEntry, IndexState};
 
 /// File extensions treated as indexable text.
 const TEXT_EXTENSIONS: &[&str] = &[
@@ -119,6 +122,23 @@ pub struct IndexArgs {
     /// Plan only: list files and chunk counts without embedding or writing.
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
+
+    /// Re-embed every file even when its content has not changed since the
+    /// last run. Files deleted from disk are still removed.
+    #[arg(long, default_value_t = false)]
+    pub full: bool,
+
+    /// Split Rust, Python, TypeScript/JavaScript and Go files at symbol
+    /// boundaries (default). Pass `--symbol-chunking=false` for plain
+    /// line-aligned chunks.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub symbol_chunking: bool,
+
+    /// Directory for the incremental-index state. Defaults to
+    /// `$AKIDB_INDEX_STATE_DIR` or `~/.akidb/index-state`. The state is kept
+    /// outside the indexed folder.
+    #[arg(long)]
+    pub state_dir: Option<PathBuf>,
 }
 
 /// Print a cited, token-budgeted context pack for a query.
@@ -154,6 +174,8 @@ pub struct Chunk {
     pub start: usize,
     pub end: usize,
     pub text: String,
+    /// Symbol name(s) when the chunk follows a code symbol boundary.
+    pub symbol: Option<String>,
 }
 
 /// Split `text` into line-aligned chunks of at most `max_chars` characters.
@@ -174,6 +196,7 @@ pub fn chunk_text(text: &str, max_chars: usize) -> Vec<Chunk> {
                     start,
                     end,
                     text: slice.to_string(),
+                    symbol: None,
                 });
             }
         }
@@ -297,7 +320,7 @@ fn chunk_metadata(
     document_version: &str,
     chunk: &Chunk,
 ) -> Vec<u8> {
-    json!({
+    let mut value = json!({
         "source_uri": format!("file://{}", absolute.display()),
         "file": relative,
         "document_id": relative,
@@ -306,9 +329,11 @@ fn chunk_metadata(
         "start_offset": chunk.start,
         "end_offset": chunk.end,
         "ingest": "akidb-index",
-    })
-    .to_string()
-    .into_bytes()
+    });
+    if let Some(symbol) = &chunk.symbol {
+        value["symbol"] = json!(symbol);
+    }
+    value.to_string().into_bytes()
 }
 
 async fn connect(args: &ConnectArgs) -> Result<AkidbClient<Channel>> {
@@ -435,7 +460,11 @@ fn plan_file(path: &Path, base: &Path, args: &IndexArgs) -> Result<PlanOutcome> 
     else {
         return Ok(PlanOutcome::Skipped);
     };
-    let chunks = chunk_text(&text, args.chunk_chars);
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    let chunks = segment(&text, extension, args.chunk_chars, args.symbol_chunking);
     if chunks.is_empty() {
         return Ok(PlanOutcome::Skipped);
     }
@@ -467,32 +496,91 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
         root.clone()
     };
     let files = collect_files(&root)?;
-    if files.is_empty() {
-        bail!("nothing to index under {}", args.path.display());
-    }
+
+    let settings = settings_fingerprint(
+        &args.embedding_model,
+        args.dimensions,
+        args.chunk_chars,
+        CHUNKER_VERSION,
+        args.symbol_chunking,
+    );
+    let state_dir = args.state_dir.clone().or_else(default_state_dir);
+    let mut state = match &state_dir {
+        Some(dir) => Some(IndexState::load(
+            dir,
+            &args.connect.server,
+            &args.connect.collection,
+        )?),
+        None => {
+            eprintln!(
+                "warning: no state directory (set HOME or --state-dir); \
+                 every run re-embeds all files and removed files are not pruned"
+            );
+            None
+        }
+    };
 
     if args.dry_run {
         let mut planned = 0usize;
         let mut chunks = 0usize;
         let mut skipped = 0usize;
+        let mut unchanged = 0usize;
+        let mut present = std::collections::BTreeSet::new();
         for path in &files {
             match plan_file(path, &base, &args)? {
                 PlanOutcome::Ready(plan) => {
-                    println!("{}\t{} chunks", plan.relative, plan.chunks.len());
+                    let key = plan.absolute.to_string_lossy().to_string();
+                    present.insert(key.clone());
+                    let same = !args.full
+                        && state
+                            .as_ref()
+                            .and_then(|s| s.get(&key))
+                            .is_some_and(|e| entry_matches(e, &plan, &settings));
+                    if same {
+                        unchanged += 1;
+                    }
+                    println!(
+                        "{}\t{} chunks{}",
+                        plan.relative,
+                        plan.chunks.len(),
+                        if same {
+                            "\t(unchanged since last index)"
+                        } else {
+                            ""
+                        }
+                    );
                     planned += 1;
                     chunks += plan.chunks.len();
                 }
                 PlanOutcome::Skipped => skipped += 1,
             }
         }
+        let removed = state
+            .as_ref()
+            .map(|s| s.missing_under(&root, &present))
+            .unwrap_or_default();
+        for (file, entry) in &removed {
+            println!(
+                "{file}\twould remove {} chunks (file is gone)",
+                entry.chunk_count
+            );
+        }
         eprintln!(
-            "planned {planned} files, {chunks} chunks ({skipped} files skipped as empty, \
-             oversized, or non-UTF-8)"
+            "planned {planned} files, {chunks} chunks ({unchanged} unchanged, {} would be \
+             removed, {skipped} files skipped as empty, oversized, or non-UTF-8)",
+            removed.len()
         );
-        if planned == 0 {
+        if planned == 0 && removed.is_empty() {
             bail!("nothing to index under {}", args.path.display());
         }
         return Ok(());
+    }
+    if files.is_empty()
+        && state
+            .as_ref()
+            .is_none_or(|s| s.missing_under(&root, &Default::default()).is_empty())
+    {
+        bail!("nothing to index under {}", args.path.display());
     }
 
     let config = EmbeddingClientConfig {
@@ -518,8 +606,13 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
 
     let mut inserted = 0usize;
     let mut indexed_files = 0usize;
+    let mut unchanged = 0usize;
+    let mut removed_files = 0usize;
     let mut skipped = 0usize;
     let mut failures: Vec<(String, String)> = Vec::new();
+    // Paths that exist and were not skipped as empty or oversized. A file
+    // that failed to read stays here so its earlier chunks are not pruned.
+    let mut present = std::collections::BTreeSet::new();
     for path in &files {
         let plan = match plan_file(path, &base, &args) {
             Ok(PlanOutcome::Ready(plan)) => plan,
@@ -528,22 +621,74 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
                 continue;
             }
             Err(e) => {
+                present.insert(path.to_string_lossy().to_string());
                 failures.push((path.display().to_string(), format!("{e:#}")));
                 continue;
             }
         };
+        let key = plan.absolute.to_string_lossy().to_string();
+        present.insert(key.clone());
+        if !args.full {
+            if let Some(entry) = state.as_ref().and_then(|s| s.get(&key)) {
+                if entry_matches(entry, &plan, &settings)
+                    && server_has_file(&mut client, &args.connect.collection, &plan).await
+                {
+                    unchanged += 1;
+                    continue;
+                }
+            }
+        }
         match index_file(&mut client, &embedder, &plan, &args).await {
             Ok(count) => {
                 inserted += count;
                 indexed_files += 1;
                 eprintln!("indexed {} ({count} chunks)", plan.relative);
+                if let Some(state) = state.as_mut() {
+                    state.set(
+                        key,
+                        FileEntry {
+                            document_version: plan.document_version.clone(),
+                            chunk_count: plan.chunks.len(),
+                            settings: settings.clone(),
+                        },
+                    );
+                }
             }
-            Err(e) => failures.push((plan.relative.clone(), format!("{e:#}"))),
+            Err(e) => {
+                // The server may hold a partial file now; forget the entry so
+                // the next run re-indexes it.
+                if let Some(state) = state.as_mut() {
+                    state.remove(&key);
+                }
+                failures.push((plan.relative.clone(), format!("{e:#}")));
+            }
         }
     }
+
+    // Remove chunks of files that were indexed before and are gone now.
+    if let Some(state) = state.as_mut() {
+        for (file, entry) in state.missing_under(&root, &present) {
+            match delete_chunks_from(&mut client, &args.connect.collection, &file, 0).await {
+                Ok(deleted) => {
+                    removed_files += 1;
+                    eprintln!(
+                        "removed {file} ({deleted} chunks; {} were recorded)",
+                        entry.chunk_count
+                    );
+                    state.remove(&file);
+                }
+                Err(e) => failures.push((file, format!("{e:#}"))),
+            }
+        }
+        if let Err(e) = state.save() {
+            eprintln!("warning: could not save index state: {e:#}");
+        }
+    }
+
     println!(
         "indexed {inserted} chunks from {indexed_files} files into collection '{}' \
-         ({skipped} files skipped as empty, oversized, or non-UTF-8)",
+         ({unchanged} unchanged, {removed_files} removed, {skipped} skipped as empty, \
+         oversized, or non-UTF-8)",
         args.connect.collection
     );
     if !failures.is_empty() {
@@ -557,6 +702,75 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// True when the recorded entry describes exactly this plan.
+fn entry_matches(entry: &FileEntry, plan: &FilePlan, settings: &str) -> bool {
+    entry.document_version == plan.document_version
+        && entry.chunk_count == plan.chunks.len()
+        && entry.settings == settings
+}
+
+/// Confirm the first and last chunk of `plan` are on the server with the
+/// expected version. A wiped or restored server then triggers a re-index
+/// instead of a silent skip. Any error counts as "not there".
+async fn server_has_file(
+    client: &mut AkidbClient<Channel>,
+    collection: &str,
+    plan: &FilePlan,
+) -> bool {
+    let key = plan.absolute.to_string_lossy().to_string();
+    let last = plan.chunks.len().saturating_sub(1);
+    for index in [0, last] {
+        let Ok(request) = authorize(GetRequest {
+            collection: collection.to_string(),
+            id: chunk_id(&key, index),
+        }) else {
+            return false;
+        };
+        let Ok(response) = client.get(request).await else {
+            return false;
+        };
+        let response = response.into_inner();
+        if !response.found {
+            return false;
+        }
+        let version = serde_json::from_str::<serde_json::Value>(&response.metadata)
+            .ok()
+            .and_then(|m| m["document_version"].as_str().map(str::to_string));
+        if version.as_deref() != Some(plan.document_version.as_str()) {
+            return false;
+        }
+        if last == 0 {
+            break;
+        }
+    }
+    true
+}
+
+/// Delete chunks `from..` of a file until the server reports one missing.
+/// Returns how many were deleted.
+async fn delete_chunks_from(
+    client: &mut AkidbClient<Channel>,
+    collection: &str,
+    canonical_path: &str,
+    from: usize,
+) -> Result<usize> {
+    let mut deleted = 0usize;
+    for index in from..from + MAX_STALE_CHUNKS {
+        let response = client
+            .delete(authorize(DeleteRequest {
+                collection: collection.to_string(),
+                id: chunk_id(canonical_path, index),
+            })?)
+            .await?
+            .into_inner();
+        if response.status() != DeleteStatus::Deleted {
+            break;
+        }
+        deleted += 1;
+    }
+    Ok(deleted)
 }
 
 /// Embed and store one file, replacing earlier chunks with the same ids and
@@ -637,18 +851,7 @@ async fn index_file(
         }
     }
     // Remove chunks left over from a longer earlier version of this file.
-    for stale in plan.chunks.len()..plan.chunks.len() + MAX_STALE_CHUNKS {
-        let response = client
-            .delete(authorize(DeleteRequest {
-                collection: collection.clone(),
-                id: chunk_id(&key, stale),
-            })?)
-            .await?
-            .into_inner();
-        if response.status() != DeleteStatus::Deleted {
-            break;
-        }
-    }
+    delete_chunks_from(client, collection, &key, plan.chunks.len()).await?;
     Ok(stored)
 }
 
@@ -848,6 +1051,7 @@ mod tests {
             start: 4,
             end: 9,
             text: "hello".to_string(),
+            symbol: Some("greet".to_string()),
         };
         let bytes = chunk_metadata("docs/a.md", Path::new("/tmp/docs/a.md"), "v1", &chunk);
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

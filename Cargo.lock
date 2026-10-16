@@ -70,6 +70,7 @@ dependencies = [
  "akidb-embedding",
  "akidb-graph",
  "akidb-proto",
+ "akidb-retrieval",
  "akidb-server",
  "akidb-storage",
  "akidb-tui",

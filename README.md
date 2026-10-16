@@ -279,14 +279,26 @@ ollama pull nomic-embed-text
 ./target/release/akidb pack "why does token refresh fail?" --token-budget 1024
 ```
 
-`akidb index` splits text and source files into line-aligned chunks, embeds
-them, and stores each with a `source_uri`, a document version, a content hash,
-and byte offsets, so every passage in the pack names its file and span.
-Re-running it replaces changed chunks and removes chunks left over from a
-longer earlier version of a file. It skips hidden folders, dependency and
-build folders, symlinks, binary files, and files over 1 MiB, and it refuses a
-non-loopback embedding endpoint unless you pass `--allow-remote-embeddings`.
-`akidb index --dry-run` lists what would be indexed. `akidb pack --json`
+`akidb index` splits text files into line-aligned chunks and splits Rust,
+Python, TypeScript/JavaScript, and Go files at top-level symbol boundaries, so
+a signature stays with its body and doc comments. It embeds the chunks and
+stores each with a `source_uri`, a document version, a content hash, and byte
+offsets, so every passage in the pack names its file and span. Symbol
+splitting is a dependency-free heuristic scanner, not a full parser; pass
+`--symbol-chunking=false` for plain line-aligned chunks.
+
+Re-running `akidb index` is incremental. It re-embeds only files whose content
+changed, deletes the chunks of files you removed, and skips files that are
+already stored, after checking that their first and last chunk are still on
+the server. It records what it stored in `~/.akidb/index-state/` (override with
+`--state-dir` or `AKIDB_INDEX_STATE_DIR`), never inside your folder. Change
+detection uses content hashes, so it works without git. `--full` re-embeds
+everything, for example after a crash that interrupted a run.
+
+It skips hidden folders, dependency and build folders, symlinks, binary files,
+and files over 1 MiB, and it refuses a non-loopback embedding endpoint unless
+you pass `--allow-remote-embeddings`. `akidb index --dry-run` lists what would
+be indexed, what is unchanged, and what would be removed. `akidb pack --json`
 prints the typed `ContextPackV1`. The index command and the server must use
 the same embedding model and dimensions. PDFs and Office files go through the
 document pipeline described above.
