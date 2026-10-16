@@ -262,22 +262,28 @@ loopback clients. To inspect available commands:
 ./target/release/akidb server --help
 ```
 
-### From a folder to a cited pack in two commands
+### From a folder to a cited pack in three commands
 
 With a local embedding server running (Ollama shown; LM Studio and llama.cpp
-expose the same `/v1/embeddings` interface), start the server with the Ollama
-profile, index a folder, and ask for a pack:
+expose the same `/v1/embeddings` interface), start the server, index a folder,
+and ask for a pack:
 
 ```bash
 ollama pull nomic-embed-text
 
-./target/release/akidb server \
-  --standalone \
-  --config config/standalone-ollama.toml &
-
+./target/release/akidb start &
 ./target/release/akidb index ./my-notes
 ./target/release/akidb pack "why does token refresh fail?" --token-budget 1024
 ```
+
+`akidb start` renders the shipped Ollama profile into `~/.akidb/data` (override
+with `--data-dir` or `AKIDB_HOME`) and runs a loopback-only standalone server
+there, so there is no config file to write. It refuses to start if the gRPC
+port is taken and warns if nothing answers at the embedding URL. Use
+`--embedding-url`, `--embedding-model`, and `--dimensions` for another local
+embedding server, and pass the same values to `akidb index`. To run from a
+config file you manage, use `akidb server --standalone --config
+config/standalone-ollama.toml` instead.
 
 `akidb index` splits text files into line-aligned chunks and splits Rust,
 Python, TypeScript/JavaScript, and Go files at top-level symbol boundaries, so

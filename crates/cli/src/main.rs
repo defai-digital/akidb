@@ -28,6 +28,7 @@ mod bundle;
 mod chunking;
 mod index;
 mod index_state;
+mod start;
 
 /// AkiDB command line interface.
 #[derive(Parser, Debug)]
@@ -63,6 +64,9 @@ enum Command {
 
     /// Import an immutable logical generation bundle into a local mirror.
     Bundle(bundle::BundleArgs),
+
+    /// Start a standalone server from a generated local configuration.
+    Start(start::StartArgs),
 
     /// Index a folder of text and source files into a running server.
     Index(index::IndexArgs),
@@ -330,6 +334,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Server(args) => akidb_server::run(args)
             .await
             .map_err(|e| anyhow::anyhow!("{e}")),
+        Command::Start(args) => start::run_start(args).await,
         Command::Mcp(args) => akidb_server::run_mcp(args)
             .await
             .map_err(|e| anyhow::anyhow!("{e}")),

@@ -34,3 +34,4 @@ tempfile.workspace = true
 libc = "0.2"
 tokio.workspace = true
 tonic.workspace = true
+toml = "0.8"
