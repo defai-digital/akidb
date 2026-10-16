@@ -1,7 +1,7 @@
 {
   "name": "@akidb/client",
   "version": "2.0.0",
-  "description": "TypeScript SDK for AkiDB, a portable retrieval database for private AI systems",
+  "description": "TypeScript SDK for AkiDB: local-first retrieval for private AI that returns cited, token-budgeted context for agents",
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",

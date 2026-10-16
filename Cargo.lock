@@ -65,7 +65,9 @@ dependencies = [
 name = "akidb-cli"
 version = "2.0.0"
 dependencies = [
+ "akidb-common",
  "akidb-coordinator",
+ "akidb-embedding",
  "akidb-graph",
  "akidb-proto",
  "akidb-server",

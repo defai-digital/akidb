@@ -262,6 +262,35 @@ loopback clients. To inspect available commands:
 ./target/release/akidb server --help
 ```
 
+### From a folder to a cited pack in two commands
+
+With a local embedding server running (Ollama shown; LM Studio and llama.cpp
+expose the same `/v1/embeddings` interface), start the server with the Ollama
+profile, index a folder, and ask for a pack:
+
+```bash
+ollama pull nomic-embed-text
+
+./target/release/akidb server \
+  --standalone \
+  --config config/standalone-ollama.toml &
+
+./target/release/akidb index ./my-notes
+./target/release/akidb pack "why does token refresh fail?" --token-budget 1024
+```
+
+`akidb index` splits text and source files into line-aligned chunks, embeds
+them, and stores each with a `source_uri`, a document version, a content hash,
+and byte offsets, so every passage in the pack names its file and span.
+Re-running it replaces changed chunks and removes chunks left over from a
+longer earlier version of a file. It skips hidden folders, dependency and
+build folders, symlinks, binary files, and files over 1 MiB, and it refuses a
+non-loopback embedding endpoint unless you pass `--allow-remote-embeddings`.
+`akidb index --dry-run` lists what would be indexed. `akidb pack --json`
+prints the typed `ContextPackV1`. The index command and the server must use
+the same embedding model and dimensions. PDFs and Office files go through the
+document pipeline described above.
+
 ### Connect a client
 
 - [Python SDK](sdks/python/README.md)
@@ -338,9 +367,10 @@ AX_ENGINE_MODEL_DIR=/path/to/Qwen3-Embedding-4B \
   ./scripts/validate-standalone.sh
 ```
 
-Linux deployments may point the same interface at any compatible local
-embedding service. Keep the configured embedding dimension aligned with the
-collection/index dimension.
+Any compatible local embedding service works on macOS and Linux, including
+Ollama, LM Studio, and llama.cpp's server. `config/standalone-ollama.toml` is
+a ready profile for Ollama with `nomic-embed-text` (768 dimensions). Keep the
+configured embedding dimension aligned with the collection/index dimension.
 
 ## Configuration and security
 

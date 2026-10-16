@@ -187,6 +187,7 @@ fn initialize_result() -> Value {
         "protocolVersion": PROTOCOL_VERSION,
         "serverInfo": { "name": "akidb", "version": env!("CARGO_PKG_VERSION") },
         "capabilities": { "tools": {} },
+        "instructions": "AkiDB returns cited, token-budgeted context from a local index. Call the pack tool with a natural-language query to get ranked passages, each with its source citation and the reason it was included, cut to a token budget. Check the truncated and candidate_limited flags before treating the result as complete. Use search only when you need bare ids and scores.",
     })
 }
 
@@ -194,24 +195,8 @@ fn tool_definitions(authoritative_memory: bool) -> Value {
     let mut tools = vec![
         json!(
         {
-            "name": "search",
-            "description": "Hybrid (dense + lexical) retrieval; returns ranked ids and scores.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string" },
-                    "top_k": { "type": "integer" },
-                    "hybrid": { "type": "boolean" },
-                    "workspace": { "type": "string", "description": "Workspace ACL scope (workspace_id)." },
-                    "workspace_id": { "type": "string" }
-                },
-                "required": ["query"]
-            }
-        }),
-        json!(
-        {
             "name": "pack",
-            "description": "TextSearch with pack=true. Returns a cited, token-budgeted context pack.",
+            "description": "Start here. Returns cited, token-budgeted context for a question: ranked passages, each with its source citation and why it was included, cut to a token budget. The result states the budget, the tokens used, and whether it was truncated.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -228,6 +213,22 @@ fn tool_definitions(authoritative_memory: bool) -> Value {
                     "graph_per_seed_fanout": { "type": "integer" },
                     "graph_max_expanded_nodes": { "type": "integer" },
                     "workspace": { "type": "string" },
+                    "workspace_id": { "type": "string" }
+                },
+                "required": ["query"]
+            }
+        }),
+        json!(
+        {
+            "name": "search",
+            "description": "Low-level hybrid (dense + lexical) retrieval; returns ranked ids and scores only, with no citations or token budget. Prefer pack for answering questions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "top_k": { "type": "integer" },
+                    "hybrid": { "type": "boolean" },
+                    "workspace": { "type": "string", "description": "Workspace ACL scope (workspace_id)." },
                     "workspace_id": { "type": "string" }
                 },
                 "required": ["query"]

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "akidb"
 version = "2.0.0"
-description = "Python SDK for AkiDB retrieval and the experimental authoritative Memory developer preview"
+description = "Python SDK for AkiDB: local-first retrieval for private AI that returns cited, token-budgeted context for agents"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }

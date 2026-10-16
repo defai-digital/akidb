@@ -1,0 +1,860 @@
+//! `akidb index` and `akidb pack`: the shortest path from a folder of files
+//! to a cited, token-budgeted context pack.
+//!
+//! `index` walks a folder, splits text and source files into line-aligned
+//! chunks, embeds them through an OpenAI-compatible `/v1/embeddings` endpoint
+//! (Ollama, LM Studio, llama.cpp, or the ax-engine sidecar), and inserts them
+//! over gRPC with the metadata the citation contract reads (`source_uri`,
+//! `document_version`, `content_hash`, byte offsets). `pack` issues a
+//! `TextSearch` with `pack=true` and prints the typed `ContextPackV1`.
+//!
+//! Embedding egress fails closed: the endpoint must be loopback unless the
+//! operator passes `--allow-remote-embeddings`.
+
+use std::collections::BTreeMap;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use akidb_common::config::EmbeddingClientConfig;
+use akidb_embedding::ax_engine::AxEngineEmbedding;
+use akidb_embedding::EmbeddingService;
+use akidb_proto::akidb_client::AkidbClient;
+use akidb_proto::{DeleteRequest, DeleteStatus, InsertRequest, TextSearchRequest};
+use anyhow::{bail, Context, Result};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use tonic::metadata::{Ascii, MetadataValue};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
+use tonic::{Code, Request};
+
+/// File extensions treated as indexable text.
+const TEXT_EXTENSIONS: &[&str] = &[
+    "md", "markdown", "txt", "rst", "adoc", "org", "csv", "tsv", "json", "jsonl", "yaml", "yml",
+    "toml", "ini", "cfg", "conf", "html", "htm", "xml", "rs", "py", "ts", "tsx", "js", "jsx",
+    "mjs", "cjs", "go", "java", "kt", "swift", "c", "h", "cc", "cpp", "hpp", "cs", "rb", "php",
+    "sh", "bash", "zsh", "sql", "proto", "gradle", "lua", "scala", "dart",
+];
+
+/// Directory names that are never descended into.
+const SKIP_DIRS: &[&str] = &[
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    "__pycache__",
+    "venv",
+    "vendor",
+];
+
+/// Connection settings shared by `index` and `pack`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct ConnectArgs {
+    /// AkiDB gRPC endpoint.
+    #[arg(long, default_value = "127.0.0.1:50051")]
+    pub server: String,
+
+    /// Collection to write to or read from. Must match the server's active
+    /// collection (normally `default`).
+    #[arg(long, default_value = "default")]
+    pub collection: String,
+
+    /// PEM CA used to verify a TLS-enabled AkiDB server.
+    #[arg(long)]
+    pub tls_ca: Option<PathBuf>,
+
+    /// Certificate DNS name override (defaults to the endpoint host).
+    #[arg(long)]
+    pub tls_domain: Option<String>,
+
+    /// Connection and RPC timeout in seconds. `index` also uses it as the
+    /// timeout for each embedding request.
+    #[arg(long, default_value_t = 30)]
+    pub timeout_seconds: u64,
+
+    /// Allow plaintext gRPC to a non-loopback server. Document text and the
+    /// bearer token would cross the network unencrypted.
+    #[arg(long, default_value_t = false)]
+    pub allow_plaintext_remote: bool,
+}
+
+/// Index a folder of text and source files.
+#[derive(clap::Args, Debug)]
+pub struct IndexArgs {
+    /// Folder (or single file) to index.
+    pub path: PathBuf,
+
+    #[command(flatten)]
+    pub connect: ConnectArgs,
+
+    /// OpenAI-compatible embeddings endpoint. The default is Ollama's.
+    #[arg(long, default_value = "http://127.0.0.1:11434/v1/embeddings")]
+    pub embedding_url: String,
+
+    /// Embedding model name sent in the request.
+    #[arg(long, default_value = "nomic-embed-text")]
+    pub embedding_model: String,
+
+    /// Embedding dimensions. Must equal the server's index dimensions.
+    #[arg(long, default_value_t = 768)]
+    pub dimensions: usize,
+
+    /// Allow a non-loopback embedding endpoint (text leaves this machine).
+    #[arg(long, default_value_t = false)]
+    pub allow_remote_embeddings: bool,
+
+    /// Target maximum characters per chunk.
+    #[arg(long, default_value_t = 1200)]
+    pub chunk_chars: usize,
+
+    /// Skip files larger than this many bytes.
+    #[arg(long, default_value_t = 1_048_576)]
+    pub max_file_bytes: u64,
+
+    /// Chunks embedded per request.
+    #[arg(long, default_value_t = 16)]
+    pub batch_size: usize,
+
+    /// Plan only: list files and chunk counts without embedding or writing.
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+}
+
+/// Print a cited, token-budgeted context pack for a query.
+#[derive(clap::Args, Debug)]
+pub struct PackArgs {
+    /// Natural-language query.
+    pub query: String,
+
+    #[command(flatten)]
+    pub connect: ConnectArgs,
+
+    /// Token budget for the pack.
+    #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
+    pub token_budget: u32,
+
+    /// Number of candidate passages to retrieve before packing.
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+    pub top_k: u32,
+
+    /// Retrieval mode override. Without it the server plans the mode and the
+    /// request asks for hybrid dense plus lexical retrieval.
+    #[arg(long, value_parser = ["auto", "vector", "bm25", "hybrid", "graph", "graph_hybrid"])]
+    pub retrieval_mode: Option<String>,
+
+    /// Print the typed pack as JSON instead of readable text.
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+/// One chunk of a source file with its byte span.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chunk {
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+}
+
+/// Split `text` into line-aligned chunks of at most `max_chars` characters.
+/// A single line longer than `max_chars` is split at character boundaries.
+/// Whitespace-only chunks are dropped. Offsets are byte offsets into `text`.
+pub fn chunk_text(text: &str, max_chars: usize) -> Vec<Chunk> {
+    let max_chars = max_chars.max(1);
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    let mut end = 0usize;
+    let mut chars = 0usize;
+
+    let flush = |start: usize, end: usize, chunks: &mut Vec<Chunk>| {
+        if end > start {
+            let slice = &text[start..end];
+            if !slice.trim().is_empty() {
+                chunks.push(Chunk {
+                    start,
+                    end,
+                    text: slice.to_string(),
+                });
+            }
+        }
+    };
+
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        let line_chars = line.chars().count();
+        if line_chars > max_chars {
+            flush(start, end, &mut chunks);
+            // Split the oversized line at character boundaries.
+            let mut piece_start = offset;
+            let mut piece_chars = 0usize;
+            for (i, _) in line.char_indices() {
+                if piece_chars == max_chars {
+                    flush(piece_start, offset + i, &mut chunks);
+                    piece_start = offset + i;
+                    piece_chars = 0;
+                }
+                piece_chars += 1;
+            }
+            flush(piece_start, offset + line.len(), &mut chunks);
+            offset += line.len();
+            start = offset;
+            end = offset;
+            chars = 0;
+            continue;
+        }
+        if chars + line_chars > max_chars && end > start {
+            flush(start, end, &mut chunks);
+            start = end;
+            chars = 0;
+        }
+        if chars == 0 {
+            start = offset;
+        }
+        offset += line.len();
+        end = offset;
+        chars += line_chars;
+    }
+    flush(start, end, &mut chunks);
+    chunks
+}
+
+fn is_indexable(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| TEXT_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// Collect indexable files under `root`, skipping hidden entries, dependency
+/// and build directories, and symlinks. Returned paths are sorted.
+pub fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let meta = std::fs::symlink_metadata(root)
+        .with_context(|| format!("cannot read {}", root.display()))?;
+    if meta.is_file() {
+        if !is_indexable(root) {
+            bail!(
+                "{} does not have an indexable text or source extension",
+                root.display()
+            );
+        }
+        return Ok(vec![root.to_path_buf()]);
+    }
+    if !meta.is_dir() {
+        bail!("{} is neither a file nor a directory", root.display());
+    }
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .with_context(|| format!("cannot read directory {}", dir.display()))?
+        {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                if !SKIP_DIRS.contains(&name.as_str()) {
+                    stack.push(path);
+                }
+            } else if file_type.is_file() && is_indexable(&path) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn hex_prefix(bytes: &[u8], len: usize) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(len);
+    for byte in digest.iter() {
+        out.push_str(&format!("{byte:02x}"));
+        if out.len() >= len {
+            break;
+        }
+    }
+    out.truncate(len);
+    out
+}
+
+/// Deterministic chunk id: stable across re-indexing of the same file. The
+/// caller passes the canonical absolute path, so two folders that contain a
+/// file with the same relative name never share ids.
+pub fn chunk_id(canonical_path: &str, index: usize) -> String {
+    format!("{}-{index:05}", hex_prefix(canonical_path.as_bytes(), 16))
+}
+
+fn chunk_metadata(
+    relative: &str,
+    absolute: &Path,
+    document_version: &str,
+    chunk: &Chunk,
+) -> Vec<u8> {
+    json!({
+        "source_uri": format!("file://{}", absolute.display()),
+        "file": relative,
+        "document_id": relative,
+        "document_version": document_version,
+        "content_hash": hex_prefix(chunk.text.as_bytes(), 16),
+        "start_offset": chunk.start,
+        "end_offset": chunk.end,
+        "ingest": "akidb-index",
+    })
+    .to_string()
+    .into_bytes()
+}
+
+async fn connect(args: &ConnectArgs) -> Result<AkidbClient<Channel>> {
+    let tls_enabled = args.server.starts_with("https://") || args.tls_ca.is_some();
+    let endpoint = if args.server.starts_with("http://") || args.server.starts_with("https://") {
+        args.server.clone()
+    } else if tls_enabled {
+        format!("https://{}", args.server)
+    } else {
+        format!("http://{}", args.server)
+    };
+    let timeout = Duration::from_secs(args.timeout_seconds);
+    let mut endpoint = Endpoint::from_shared(endpoint)?
+        .connect_timeout(timeout)
+        .timeout(timeout);
+    if tls_enabled {
+        let domain = args
+            .tls_domain
+            .clone()
+            .or_else(|| endpoint.uri().host().map(str::to_string))
+            .ok_or_else(|| anyhow::anyhow!("TLS endpoint has no certificate domain"))?;
+        let mut tls = ClientTlsConfig::new().domain_name(domain);
+        if let Some(ca_path) = &args.tls_ca {
+            tls = tls.ca_certificate(Certificate::from_pem(std::fs::read(ca_path)?));
+        }
+        endpoint = endpoint.tls_config(tls)?;
+    } else if !host_is_loopback(endpoint.uri().host()) && !args.allow_plaintext_remote {
+        bail!(
+            "refusing plaintext gRPC to non-loopback server {}: document text and the bearer \
+             token would be sent unencrypted. Use https:// or --tls-ca, or pass \
+             --allow-plaintext-remote on a trusted network",
+            args.server
+        );
+    }
+    let channel = endpoint
+        .connect()
+        .await
+        .with_context(|| format!("cannot reach AkiDB at {}", args.server))?;
+    Ok(AkidbClient::new(channel))
+}
+
+fn host_is_loopback(host: Option<&str>) -> bool {
+    let Some(host) = host else { return false };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+/// Attach the bearer token and workspace/agent headers the same way
+/// `akidb health` does.
+fn authorize<T>(body: T) -> Result<Request<T>> {
+    let mut request = Request::new(body);
+    if let Some(token) = super::health_token() {
+        let value: MetadataValue<Ascii> = format!("Bearer {token}").parse()?;
+        request.metadata_mut().insert("authorization", value);
+    }
+    for (env, header) in [
+        ("AKIDB_WORKSPACE", "x-akidb-workspace"),
+        ("AKIDB_AGENT", "x-akidb-agent"),
+    ] {
+        if let Ok(value) = std::env::var(env) {
+            let value = value.trim();
+            if !value.is_empty() {
+                request.metadata_mut().insert(header, value.parse()?);
+            }
+        }
+    }
+    Ok(request)
+}
+
+/// Owns the blocking embedding client and drops it on a blocking thread.
+struct EmbedderHandle(Option<Arc<AxEngineEmbedding>>);
+
+impl EmbedderHandle {
+    fn arc(&self) -> Arc<AxEngineEmbedding> {
+        Arc::clone(self.0.as_ref().expect("embedder present until drop"))
+    }
+}
+
+impl Drop for EmbedderHandle {
+    fn drop(&mut self) {
+        if let Some(embedder) = self.0.take() {
+            // Fire and forget: the runtime outlives this call.
+            tokio::task::spawn_blocking(move || drop(embedder));
+        }
+    }
+}
+
+/// One file read, chunked, and ready to embed.
+struct FilePlan {
+    relative: String,
+    /// Canonical absolute path; keys the chunk ids and the citation URI.
+    absolute: PathBuf,
+    document_version: String,
+    chunks: Vec<Chunk>,
+}
+
+enum PlanOutcome {
+    Ready(FilePlan),
+    /// Oversized, not UTF-8, unreadable, or empty after trimming.
+    Skipped,
+}
+
+/// Read at most `max_bytes` of a file. Returns `None` when the file is larger
+/// (checked while reading, so a file that grows after a metadata check cannot
+/// exhaust memory) or is not valid UTF-8.
+fn read_bounded_utf8(path: &Path, max_bytes: u64) -> Result<Option<String>> {
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Ok(None);
+    }
+    Ok(String::from_utf8(bytes).ok())
+}
+
+fn plan_file(path: &Path, base: &Path, args: &IndexArgs) -> Result<PlanOutcome> {
+    let Some(text) = read_bounded_utf8(path, args.max_file_bytes)
+        .with_context(|| format!("cannot read {}", path.display()))?
+    else {
+        return Ok(PlanOutcome::Skipped);
+    };
+    let chunks = chunk_text(&text, args.chunk_chars);
+    if chunks.is_empty() {
+        return Ok(PlanOutcome::Skipped);
+    }
+    let relative = path
+        .strip_prefix(base)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    Ok(PlanOutcome::Ready(FilePlan {
+        relative,
+        absolute: path.to_path_buf(),
+        document_version: hex_prefix(text.as_bytes(), 16),
+        chunks,
+    }))
+}
+
+/// Safety bound on the leftover-chunk cleanup loop.
+const MAX_STALE_CHUNKS: usize = 100_000;
+
+pub async fn run_index(args: IndexArgs) -> Result<()> {
+    if args.dimensions == 0 || args.batch_size == 0 || args.chunk_chars == 0 {
+        bail!("--dimensions, --batch-size and --chunk-chars must be greater than zero");
+    }
+    let root = std::fs::canonicalize(&args.path)
+        .with_context(|| format!("cannot resolve {}", args.path.display()))?;
+    let base = if root.is_file() {
+        root.parent().unwrap_or(&root).to_path_buf()
+    } else {
+        root.clone()
+    };
+    let files = collect_files(&root)?;
+    if files.is_empty() {
+        bail!("nothing to index under {}", args.path.display());
+    }
+
+    if args.dry_run {
+        let mut planned = 0usize;
+        let mut chunks = 0usize;
+        let mut skipped = 0usize;
+        for path in &files {
+            match plan_file(path, &base, &args)? {
+                PlanOutcome::Ready(plan) => {
+                    println!("{}\t{} chunks", plan.relative, plan.chunks.len());
+                    planned += 1;
+                    chunks += plan.chunks.len();
+                }
+                PlanOutcome::Skipped => skipped += 1,
+            }
+        }
+        eprintln!(
+            "planned {planned} files, {chunks} chunks ({skipped} files skipped as empty, \
+             oversized, or non-UTF-8)"
+        );
+        if planned == 0 {
+            bail!("nothing to index under {}", args.path.display());
+        }
+        return Ok(());
+    }
+
+    let config = EmbeddingClientConfig {
+        enabled: true,
+        url: args.embedding_url.clone(),
+        model: args.embedding_model.clone(),
+        dimensions: args.dimensions,
+        timeout_ms: args.connect.timeout_seconds.saturating_mul(1000),
+        max_batch_size: args.batch_size,
+        require_local_embeddings: !args.allow_remote_embeddings,
+    };
+    config
+        .validate_egress_policy()
+        .map_err(|e| anyhow::anyhow!("{e} (pass --allow-remote-embeddings to override)"))?;
+    // `reqwest::blocking` clients must be built and dropped off the async
+    // runtime threads, so construction and teardown both use blocking tasks.
+    let embedder = EmbedderHandle(Some(Arc::new(
+        tokio::task::spawn_blocking(move || AxEngineEmbedding::new(config))
+            .await?
+            .map_err(|e| anyhow::anyhow!("embedding client: {e}"))?,
+    )));
+    let mut client = connect(&args.connect).await?;
+
+    let mut inserted = 0usize;
+    let mut indexed_files = 0usize;
+    let mut skipped = 0usize;
+    let mut failures: Vec<(String, String)> = Vec::new();
+    for path in &files {
+        let plan = match plan_file(path, &base, &args) {
+            Ok(PlanOutcome::Ready(plan)) => plan,
+            Ok(PlanOutcome::Skipped) => {
+                skipped += 1;
+                continue;
+            }
+            Err(e) => {
+                failures.push((path.display().to_string(), format!("{e:#}")));
+                continue;
+            }
+        };
+        match index_file(&mut client, &embedder, &plan, &args).await {
+            Ok(count) => {
+                inserted += count;
+                indexed_files += 1;
+                eprintln!("indexed {} ({count} chunks)", plan.relative);
+            }
+            Err(e) => failures.push((plan.relative.clone(), format!("{e:#}"))),
+        }
+    }
+    println!(
+        "indexed {inserted} chunks from {indexed_files} files into collection '{}' \
+         ({skipped} files skipped as empty, oversized, or non-UTF-8)",
+        args.connect.collection
+    );
+    if !failures.is_empty() {
+        for (file, reason) in &failures {
+            eprintln!("FAILED {file}: {reason}");
+        }
+        bail!(
+            "{} file(s) failed. Files that failed after a re-index delete may be missing \
+             chunks; re-run `akidb index` to repair them",
+            failures.len()
+        );
+    }
+    Ok(())
+}
+
+/// Embed and store one file, replacing earlier chunks with the same ids and
+/// removing leftover chunks from a longer earlier version.
+async fn index_file(
+    client: &mut AkidbClient<Channel>,
+    embedder: &EmbedderHandle,
+    plan: &FilePlan,
+    args: &IndexArgs,
+) -> Result<usize> {
+    let collection = &args.connect.collection;
+    let key = plan.absolute.to_string_lossy().to_string();
+    let mut index = 0usize;
+    let mut stored = 0usize;
+    for batch in plan.chunks.chunks(args.batch_size) {
+        let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
+        let embedder = embedder.arc();
+        let vectors = tokio::task::spawn_blocking(move || {
+            let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+            embedder.embed_batch(&refs)
+        })
+        .await?
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "embedding failed: {e}. Is the embedding server running at {}?",
+                args.embedding_url
+            )
+        })?;
+        if vectors.len() != batch.len() {
+            bail!(
+                "embedding server returned {} vectors for {} chunks",
+                vectors.len(),
+                batch.len()
+            );
+        }
+        for (chunk, vector) in batch.iter().zip(vectors) {
+            let id = chunk_id(&key, index);
+            index += 1;
+            let body = InsertRequest {
+                collection: collection.clone(),
+                id: id.clone(),
+                vector,
+                metadata: chunk_metadata(
+                    &plan.relative,
+                    &plan.absolute,
+                    &plan.document_version,
+                    chunk,
+                ),
+                text: chunk.text.clone(),
+            };
+            match client.insert(authorize(body.clone())?).await {
+                Ok(_) => {}
+                Err(status) if status.code() == Code::AlreadyExists => {
+                    // Re-indexing: replace the earlier chunk with this id. A
+                    // failure between the delete and the insert leaves a gap,
+                    // which the file-level error tells the operator to repair.
+                    client
+                        .delete(authorize(DeleteRequest {
+                            collection: collection.clone(),
+                            id: id.clone(),
+                        })?)
+                        .await
+                        .with_context(|| format!("delete of {id} failed"))?;
+                    client
+                        .insert(authorize(body)?)
+                        .await
+                        .with_context(|| format!("re-insert of {id} failed after delete"))?;
+                }
+                Err(status) => {
+                    bail!(
+                        "insert of {id} failed: {} ({})",
+                        status.message(),
+                        status.code()
+                    );
+                }
+            }
+            stored += 1;
+        }
+    }
+    // Remove chunks left over from a longer earlier version of this file.
+    for stale in plan.chunks.len()..plan.chunks.len() + MAX_STALE_CHUNKS {
+        let response = client
+            .delete(authorize(DeleteRequest {
+                collection: collection.clone(),
+                id: chunk_id(&key, stale),
+            })?)
+            .await?
+            .into_inner();
+        if response.status() != DeleteStatus::Deleted {
+            break;
+        }
+    }
+    Ok(stored)
+}
+
+pub async fn run_pack(args: PackArgs) -> Result<()> {
+    let mut client = connect(&args.connect).await?;
+    let body = TextSearchRequest {
+        collection: args.connect.collection.clone(),
+        text: args.query.clone(),
+        top_k: args.top_k,
+        hybrid: args.retrieval_mode.is_none(),
+        pack: true,
+        pack_token_budget: Some(args.token_budget),
+        retrieval_mode: args.retrieval_mode.clone().unwrap_or_default(),
+        ..Default::default()
+    };
+    let response = client
+        .text_search(authorize(body)?)
+        .await
+        .map_err(|s| {
+            anyhow::anyhow!(
+                "TextSearch failed: {} ({}). TextSearch needs the server's [embedding] section \
+                 enabled and pointed at the same model used by `akidb index`.",
+                s.message(),
+                s.code()
+            )
+        })?
+        .into_inner();
+    let Some(pack) = response.context_pack_v1 else {
+        bail!("the server returned no typed context pack (is it an older build?)");
+    };
+
+    if args.json {
+        let items: Vec<_> = pack
+            .items
+            .iter()
+            .map(|item| {
+                let c = item.citation.clone().unwrap_or_default();
+                json!({
+                    "chunk_id": item.chunk_id,
+                    "score": item.score,
+                    "reason": item.reason,
+                    "text": item.text,
+                    "citation": {
+                        "source_uri": c.source_uri,
+                        "document_id": c.document_id,
+                        "document_version": c.document_version,
+                        "content_hash": c.content_hash,
+                        "start_offset": c.start_offset,
+                        "end_offset": c.end_offset,
+                        "citation_status": c.citation_status,
+                    }
+                })
+            })
+            .collect();
+        let mut out = BTreeMap::new();
+        out.insert("schema_version", json!(pack.schema_version));
+        out.insert("token_budget", json!(pack.token_budget));
+        out.insert("used_tokens", json!(pack.used_tokens));
+        out.insert("token_counter", json!(pack.token_counter));
+        out.insert("truncated", json!(pack.truncated));
+        out.insert("candidate_limited", json!(pack.candidate_limited));
+        out.insert("items", json!(items));
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    println!(
+        "pack: {} passages, {}/{} tokens ({}), truncated={}, candidate_limited={}",
+        pack.items.len(),
+        pack.used_tokens,
+        pack.token_budget,
+        pack.token_counter,
+        pack.truncated,
+        pack.candidate_limited
+    );
+    for (n, item) in pack.items.iter().enumerate() {
+        let c = item.citation.clone().unwrap_or_default();
+        let source = if c.source_uri.is_empty() {
+            "missing_source".to_string()
+        } else {
+            match (c.start_offset, c.end_offset) {
+                (Some(s), Some(e)) => format!("{} [{s}..{e}]", c.source_uri),
+                _ => c.source_uri.clone(),
+            }
+        };
+        println!(
+            "\n[{}] score={:.4} reason={} source={}\n{}",
+            n + 1,
+            item.score,
+            item.reason,
+            source,
+            item.text.trim_end()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunks_are_line_aligned_and_cover_the_text() {
+        let text = "alpha\nbeta\ngamma\ndelta\n";
+        let chunks = chunk_text(text, 12);
+        assert!(chunks.len() > 1);
+        let rebuilt: String = chunks.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(rebuilt, text);
+        for chunk in &chunks {
+            assert_eq!(&text[chunk.start..chunk.end], chunk.text);
+            assert!(chunk.text.chars().count() <= 12);
+        }
+    }
+
+    #[test]
+    fn oversized_line_is_split_at_char_boundaries() {
+        let text = "é".repeat(25) + "\n";
+        let chunks = chunk_text(&text, 10);
+        assert!(chunks.len() >= 3);
+        for chunk in &chunks {
+            assert!(chunk.text.chars().count() <= 10);
+            assert_eq!(&text[chunk.start..chunk.end], chunk.text);
+        }
+    }
+
+    #[test]
+    fn whitespace_only_input_yields_no_chunks() {
+        assert!(chunk_text("   \n\n  \n", 100).is_empty());
+        assert!(chunk_text("", 100).is_empty());
+    }
+
+    #[test]
+    fn chunk_ids_are_deterministic_and_distinct() {
+        assert_eq!(chunk_id("a/b.md", 3), chunk_id("a/b.md", 3));
+        assert_ne!(chunk_id("a/b.md", 3), chunk_id("a/b.md", 4));
+        assert_ne!(chunk_id("a/b.md", 3), chunk_id("a/c.md", 3));
+        assert!(chunk_id("a/b.md", 3).ends_with("-00003"));
+        assert_eq!(chunk_id("/x/a.md", 0).len(), 16 + 6);
+    }
+
+    #[test]
+    fn collect_files_skips_hidden_dependency_and_non_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("keep.md"), "hello").unwrap();
+        std::fs::write(root.join("image.png"), [0u8, 1, 2]).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/config.toml"), "x").unwrap();
+        std::fs::create_dir(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("node_modules/dep.js"), "x").unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "fn main() {}").unwrap();
+        let files = collect_files(root).unwrap();
+        let names: Vec<_> = files
+            .iter()
+            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["keep.md", "src/lib.rs"]);
+    }
+
+    #[test]
+    fn single_file_without_a_text_extension_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("id_rsa");
+        std::fs::write(&key, "secret").unwrap();
+        assert!(collect_files(&key).is_err());
+        let note = dir.path().join("note.md");
+        std::fs::write(&note, "hello").unwrap();
+        assert_eq!(collect_files(&note).unwrap(), vec![note]);
+    }
+
+    #[test]
+    fn bounded_read_rejects_large_and_non_utf8_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big.txt");
+        std::fs::write(&big, "x".repeat(100)).unwrap();
+        assert_eq!(read_bounded_utf8(&big, 100).unwrap().unwrap().len(), 100);
+        assert!(read_bounded_utf8(&big, 99).unwrap().is_none());
+        let bin = dir.path().join("bin.txt");
+        std::fs::write(&bin, [0xffu8, 0xfe, 0x00]).unwrap();
+        assert!(read_bounded_utf8(&bin, 100).unwrap().is_none());
+    }
+
+    #[test]
+    fn loopback_detection() {
+        assert!(host_is_loopback(Some("127.0.0.1")));
+        assert!(host_is_loopback(Some("localhost")));
+        assert!(host_is_loopback(Some("[::1]")));
+        assert!(!host_is_loopback(Some("10.0.0.5")));
+        assert!(!host_is_loopback(Some("example.com")));
+        assert!(!host_is_loopback(None));
+    }
+
+    #[test]
+    fn metadata_carries_the_citation_keys() {
+        let chunk = Chunk {
+            start: 4,
+            end: 9,
+            text: "hello".to_string(),
+        };
+        let bytes = chunk_metadata("docs/a.md", Path::new("/tmp/docs/a.md"), "v1", &chunk);
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["source_uri"], "file:///tmp/docs/a.md");
+        assert_eq!(value["document_version"], "v1");
+        assert_eq!(value["start_offset"], 4);
+        assert_eq!(value["end_offset"], 9);
+        assert_eq!(value["content_hash"].as_str().unwrap().len(), 16);
+    }
+}

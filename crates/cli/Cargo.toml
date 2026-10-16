@@ -16,7 +16,9 @@ generation-s3 = ["akidb-server/generation-s3"]
 generation-postgres = ["generation-s3", "akidb-server/generation-postgres"]
 
 [dependencies]
+akidb-common = { path = "../common" }
 akidb-coordinator = { path = "../coordinator" }
+akidb-embedding = { path = "../embedding" }
 akidb-graph = { path = "../graph" }
 akidb-proto = { path = "../proto" }
 akidb-server = { path = "../server" }

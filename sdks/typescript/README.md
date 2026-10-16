@@ -1,7 +1,6 @@
 # AkiDB TypeScript SDK
 
-A typed TypeScript client for [AkiDB](../../README.md), a portable retrieval
-database for private AI systems.
+A typed TypeScript client for [AkiDB](../../README.md), local-first retrieval for private AI that returns cited, token-budgeted context for agents.
 
 ## Install
 

@@ -155,6 +155,17 @@ async fn test_initialize_reports_server_info() {
     assert_eq!(v["id"], 1);
     assert_eq!(v["result"]["serverInfo"]["name"], "akidb");
     assert!(v["result"]["protocolVersion"].is_string());
+    let instructions = v["result"]["instructions"].as_str().unwrap();
+    // The first 512 characters must stand alone for clients that truncate.
+    let head: String = instructions.chars().take(512).collect();
+    assert!(
+        head.contains("pack"),
+        "instructions must point at the pack tool"
+    );
+    assert!(
+        head.contains("truncated"),
+        "instructions must name the truncation flag"
+    );
 }
 
 #[tokio::test]
@@ -166,6 +177,13 @@ async fn test_tools_list_exposes_the_tool_surface() {
     for expected in ["search", "pack", "memory_write", "memory_read", "status"] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
+    // `pack` is the headline tool: it must be listed first so agents see it
+    // before the low-level `search`.
+    assert_eq!(
+        names.first().copied(),
+        Some("pack"),
+        "pack must lead the tool list"
+    );
     // Workspace ACL must be documented on memory tools (criterion 2).
     for name in ["memory_write", "memory_read", "search", "pack"] {
         let tool = tools.iter().find(|t| t["name"] == name).unwrap();

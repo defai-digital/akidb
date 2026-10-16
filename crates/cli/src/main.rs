@@ -25,6 +25,7 @@ use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tonic::Request;
 
 mod bundle;
+mod index;
 
 /// AkiDB command line interface.
 #[derive(Parser, Debug)]
@@ -60,6 +61,12 @@ enum Command {
 
     /// Import an immutable logical generation bundle into a local mirror.
     Bundle(bundle::BundleArgs),
+
+    /// Index a folder of text and source files into a running server.
+    Index(index::IndexArgs),
+
+    /// Print a cited, token-budgeted context pack for a query.
+    Pack(index::PackArgs),
 
     /// Use the separately authenticated authoritative Memory API.
     Memory(Box<MemoryArgs>),
@@ -332,6 +339,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Health(args) => run_health(args).await,
         Command::Graph(args) => run_graph(args),
         Command::Bundle(args) => bundle::run(args),
+        Command::Index(args) => index::run_index(args).await,
+        Command::Pack(args) => index::run_pack(args).await,
         Command::Memory(args) => run_memory(*args).await,
     }
 }

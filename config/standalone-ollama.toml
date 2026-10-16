@@ -1,0 +1,106 @@
+# AkiDB Standalone Configuration, Ollama embeddings profile
+# Same as standalone.toml, but embeddings come from a local Ollama server
+# (ollama pull nomic-embed-text). LM Studio and llama.cpp also work: change
+# embedding.url and keep dimensions equal to the model's output size.
+# Use with: akidb server --config config/standalone-ollama.toml --standalone
+# Single-machine mode with no external dependencies (no SeaweedFS, no NATS, no GPU)
+# Use with: akidb-server --config config/standalone.toml --standalone
+
+[server]
+host = "127.0.0.1"
+port = 8080
+grpc_port = 50051
+tls_enabled = false
+
+[auth]
+mode = "loopback_optional"
+token_file = "./data/auth.token"
+authorization_epoch = 1
+
+[auth.acl]
+default_workspace = "default"
+enforce_workspace = true
+
+[auth.memory]
+workspace_id = "default"
+allow_legacy_principal = false
+allow_unauthenticated_loopback = false
+
+[memory]
+enabled = false
+rocksdb_path = "./data/memory-rocksdb"
+max_recall_items = 100
+max_candidates = 5000
+default_context_token_budget = 1024
+snapshot_max_bytes = 4194304
+
+[memory.retention]
+raw_event_seconds = 0
+memory_version_seconds = 0
+compiler_artifact_seconds = 0
+index_artifact_seconds = 0
+audit_seconds = 0
+snapshot_seconds = 0
+
+[index]
+index_type = "HNSW"
+hnsw_m = 16
+hnsw_ef_construction = 128
+hnsw_ef_search = 64
+
+[index.rebuild]
+tombstone_ratio_trigger = 0.10
+max_duration_seconds = 300
+preferred_hours = [2, 3, 4]
+
+[index.tombstone]
+max_count = 100000
+
+[storage]
+rocksdb_path = "./data/rocksdb"
+wal_enabled = false
+wal_path = "./data/wal"
+
+[storage.seaweedfs]
+endpoint = ""
+bucket = ""
+access_key = ""
+secret_key = ""
+use_ssl = false
+
+[sql]
+enabled = false
+backend = "sqlite"
+sqlite_path = "./data/akidb-metadata.sqlite"
+# postgres_url = "postgres://user:pass@localhost:5432/akidb"
+
+[observability]
+tracing_enabled = false
+metrics_enabled = false
+metrics_port = 9090
+log_level = "info"
+log_format = "pretty"
+
+[slo]
+[slo.reference]
+dimensions = 768
+vectors_per_shard = 1000000
+top_k = 10
+nprobe = 64
+batch_size = 1
+target_p95_ms = 100
+
+[slo.backpressure]
+soft_breach_ms = 100
+hard_breach_ms = 200
+degraded_mode_enabled = true
+
+[embedding]
+enabled = true
+url = "http://127.0.0.1:11434/v1/embeddings"
+model = "nomic-embed-text"
+dimensions = 768
+timeout_ms = 10000
+max_batch_size = 32
+# Fail closed: refuse any non-loopback embedding endpoint.
+require_local_embeddings = true
