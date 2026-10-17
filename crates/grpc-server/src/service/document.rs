@@ -19,6 +19,38 @@ fn scope_key(workspace: &str, document: &str) -> String {
     format!("{:x}", hash.finalize())
 }
 
+/// Marks the shard's projections as requiring restart recovery unless disarmed.
+///
+/// A document replacement stages vectors and then projects them outside the
+/// commit batch. If the task is cancelled (client disconnect) or unwinds
+/// mid-way, the projections may be half-applied, so the guard arms before
+/// staging and only a path that leaves the shard consistent disarms it. Arming
+/// the flag eagerly, as the code used to, made health report "restart
+/// required" for the whole duration of every normal replacement.
+struct ProjectionFaultGuard<'a> {
+    flag: &'a std::sync::atomic::AtomicBool,
+    armed: bool,
+}
+
+impl<'a> ProjectionFaultGuard<'a> {
+    fn new(flag: &'a std::sync::atomic::AtomicBool) -> Self {
+        Self { flag, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProjectionFaultGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
 impl<I: VectorIndex + 'static, S: StorageBackend + 'static> AkiDbService<I, S> {
     pub(super) fn get_document_inner(
         &self,
@@ -162,10 +194,17 @@ impl<I: VectorIndex + 'static, S: StorageBackend + 'static> AkiDbService<I, S> {
             {
                 return Err(Status::invalid_argument("invalid legacy ID prefix"));
             }
-            let legacy = self
+            let legacy: Vec<_> = self
                 .id_mapping
                 .vectors_with_id_prefix(prefix, MAX_DOCUMENT_CHUNKS + 1)
-                .map_err(Self::to_status)?;
+                .map_err(Self::to_status)?
+                .into_iter()
+                // Earlier runs leave tombstones behind. They are already
+                // invisible, need no retirement, and must not consume the
+                // atomic bound: a file indexed once with small chunks could
+                // otherwise never be migrated again.
+                .filter(|vector| !vector.deleted)
+                .collect();
             if legacy.len() > MAX_DOCUMENT_CHUNKS {
                 return Err(Status::resource_exhausted(
                     "legacy document exceeds the atomic replacement bound",
@@ -204,9 +243,10 @@ impl<I: VectorIndex + 'static, S: StorageBackend + 'static> AkiDbService<I, S> {
             }
         }
         let revision = uuid::Uuid::new_v4().to_string();
-        // Also fail closed if a projection panics and the RPC task unwinds.
-        self.serving_fault
-            .store(true, std::sync::atomic::Ordering::Release);
+        // Fail closed only if this task is cancelled or unwinds while staging
+        // or projecting: the guard sets the flag on drop unless a path below
+        // leaves the shard consistent.
+        let mut projection_fault = ProjectionFaultGuard::new(&self.serving_fault);
         let mut staged = Vec::new();
         for (position, chunk) in req.chunks.into_iter().enumerate() {
             let id = VectorId::new(format!("{DOCUMENT_CHUNK_PREFIX}{revision}:{position}"));
@@ -219,7 +259,9 @@ impl<I: VectorIndex + 'static, S: StorageBackend + 'static> AkiDbService<I, S> {
                     text: chunk.text,
                 }),
                 Err(error) => {
-                    self.rollback_document_stage(&staged);
+                    if self.rollback_document_stage(&staged) {
+                        projection_fault.disarm();
+                    }
                     return Err(Self::to_status(error));
                 }
             }
@@ -238,12 +280,17 @@ impl<I: VectorIndex + 'static, S: StorageBackend + 'static> AkiDbService<I, S> {
             .id_mapping
             .replace_document(&key, &expected, &head, &staged, &retired)
         {
-            self.rollback_document_stage(&staged);
+            let rolled_back = self.rollback_document_stage(&staged);
             match error {
-                DocumentWriteError::BeforeCommit(error) => return Err(Self::to_status(error)),
+                DocumentWriteError::BeforeCommit(error) => {
+                    if rolled_back {
+                        projection_fault.disarm();
+                    }
+                    return Err(Self::to_status(error));
+                }
                 DocumentWriteError::CommitUncertain(error) => {
-                    self.serving_fault
-                        .store(true, std::sync::atomic::Ordering::Release);
+                    // The commit may or may not have landed; stay fail-closed
+                    // and let the guard keep the fault flag set.
                     return Err(Self::to_status(error));
                 }
             }
@@ -295,13 +342,21 @@ impl<I: VectorIndex + 'static, S: StorageBackend + 'static> AkiDbService<I, S> {
                 .map_err(Self::to_status)?;
             Ok(())
         })();
-        if projections.is_err() {
-            self.serving_fault
-                .store(true, std::sync::atomic::Ordering::Release);
+        if let Err(error) = projections {
+            // Keep the cause in the log: the client status is deliberately
+            // generic, but without this the only recovery signal is a restart
+            // whose failure message names no operation or chunk.
+            warn!(
+                document = %req.document_id,
+                error = %error,
+                "document projections failed after commit; restart required"
+            );
+            // The guard keeps the shard fail-closed (`serving_fault`).
             return Err(Status::unavailable(
                 "document committed; restart required to rebuild projections before retrying",
             ));
         }
+        projection_fault.disarm();
         self.serving_fault
             .store(false, std::sync::atomic::Ordering::Release);
         Ok(Response::new(ReplaceDocumentResponse {
@@ -311,15 +366,16 @@ impl<I: VectorIndex + 'static, S: StorageBackend + 'static> AkiDbService<I, S> {
         }))
     }
 
-    fn rollback_document_stage(&self, staged: &[DocumentVector]) {
+    /// Drop the staged vectors from the index. Returns true when every staged
+    /// vector was tombstoned, i.e. no projection was left behind.
+    fn rollback_document_stage(&self, staged: &[DocumentVector]) -> bool {
         let mut clean = true;
         for vector in staged {
             if self.index.delete(vector.internal_id).is_err() {
                 clean = false;
             }
         }
-        self.serving_fault
-            .store(!clean, std::sync::atomic::Ordering::Release);
+        clean
     }
 
     /// Must run before opening network listeners, even when optional general
@@ -344,10 +400,23 @@ impl<I: VectorIndex + 'static, S: StorageBackend + 'static> AkiDbService<I, S> {
         }
         self.rebuild_graph_index()
             .map_err(|e| AkiDbError::StorageError(e.to_string()))?;
-        if self.metadata_sql_index.is_some() && self.rebuild_sql_metadata_index() != active {
-            return Err(AkiDbError::StorageError(
-                "document SQL recovery incomplete".into(),
-            ));
+        if self.metadata_sql_index.is_some() {
+            // A failed rebuild is incomplete recovery even when the active set
+            // is empty: `active == 0` must not let an error pass for "zero
+            // records" and clear the marker that forces this retry.
+            match self.rebuild_sql_metadata_index() {
+                Ok(rebuilt) if rebuilt == active => {}
+                Ok(rebuilt) => {
+                    return Err(AkiDbError::StorageError(format!(
+                        "document SQL recovery incomplete: rebuilt {rebuilt} of {active} records"
+                    )));
+                }
+                Err(error) => {
+                    return Err(AkiDbError::StorageError(format!(
+                        "document SQL recovery incomplete: {error}"
+                    )));
+                }
+            }
         }
         self.id_mapping.finish_document_projections()
     }

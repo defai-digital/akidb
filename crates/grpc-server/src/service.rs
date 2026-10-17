@@ -431,22 +431,23 @@ where
     }
 
     /// Rebuild the optional SQL metadata mirror from durable vector payloads.
-    /// Returns the number of records successfully mirrored.
-    pub fn rebuild_sql_metadata_index(&self) -> usize {
+    ///
+    /// Returns the number of records successfully mirrored, or the error that
+    /// stopped the rebuild. A failed clear/load must not be reported as "zero
+    /// records": the document-recovery path uses the count to decide whether
+    /// the durable projection marker can be cleared.
+    pub fn rebuild_sql_metadata_index(&self) -> Result<usize, String> {
         let Some(sql_index) = &self.metadata_sql_index else {
-            return 0;
+            return Ok(0);
         };
-        if let Err(e) = sql_index.clear_collection(&self.collection) {
+        sql_index.clear_collection(&self.collection).map_err(|e| {
             warn!(collection = %self.collection, error = %e, "failed to clear SQL metadata before rebuild");
-            return 0;
-        }
-        let stored_vectors = match self.id_mapping.load_active_vectors() {
-            Ok(vectors) => vectors,
-            Err(e) => {
-                warn!(error = %e, "failed to load persisted vectors for SQL metadata rebuild");
-                return 0;
-            }
-        };
+            format!("failed to clear SQL metadata before rebuild: {e}")
+        })?;
+        let stored_vectors = self.id_mapping.load_active_vectors().map_err(|e| {
+            warn!(error = %e, "failed to load persisted vectors for SQL metadata rebuild");
+            format!("failed to load persisted vectors for SQL metadata rebuild: {e}")
+        })?;
 
         let mut count = 0usize;
         for stored in stored_vectors {
@@ -471,7 +472,7 @@ where
                 "rebuilt SQL metadata index from persisted vectors"
             );
         }
-        count
+        Ok(count)
     }
 
     /// Rebuild metadata-derived graph projections from durable active vectors.

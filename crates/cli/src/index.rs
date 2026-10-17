@@ -451,6 +451,34 @@ fn read_bounded_utf8_under(base: &Path, path: &Path, max_bytes: u64) -> Result<O
     Ok(String::from_utf8(bytes).ok())
 }
 
+/// Encoded size of the atomic replacement request this plan would send.
+///
+/// Placeholder vectors encode to the same size as the real ones, so the size is
+/// exact without embedding anything.
+fn replacement_request_bytes(plan: &FilePlan, args: &IndexArgs, settings: &str) -> usize {
+    replacement_body(
+        &args.connect.collection,
+        &plan.absolute,
+        &plan.document_version,
+        settings,
+        String::new(),
+        plan.chunks
+            .iter()
+            .map(|chunk| DocumentChunk {
+                vector: vec![0.0; args.dimensions],
+                metadata: chunk_metadata(
+                    &plan.relative,
+                    &plan.absolute,
+                    &plan.document_version,
+                    chunk,
+                ),
+                text: chunk.text.clone(),
+            })
+            .collect(),
+    )
+    .encoded_len()
+}
+
 fn plan_file(path: &Path, base: &Path, args: &IndexArgs) -> Result<PlanOutcome> {
     let Some(text) = read_bounded_utf8_under(base, path, args.max_file_bytes)
         .with_context(|| format!("cannot read {}", path.display()))?
@@ -850,6 +878,17 @@ async fn index_file(
 ) -> Result<usize> {
     use akidb_contracts::document::validate_document_bounds;
     validate_document_bounds(plan.chunks.len(), 0)?;
+    // One document is replaced in one atomic request (3 MiB). Measure that
+    // request before paying for embeddings: placeholder vectors encode to the
+    // same size, so an oversized file is reported here with a fix, not after
+    // embedding with advice to check server health.
+    let probe_bytes = replacement_request_bytes(plan, args, settings);
+    if let Err(error) = validate_document_bounds(plan.chunks.len(), probe_bytes) {
+        bail!(
+            "{error}: the document must fit one atomic replacement request; \
+             raise --chunk-chars or split the file"
+        );
+    }
     let head = document_status(client, &args.connect.collection, &plan.absolute).await?;
     let mut chunks = Vec::with_capacity(plan.chunks.len());
     for batch in plan.chunks.chunks(args.batch_size) {
@@ -1073,6 +1112,36 @@ mod tests {
         assert_eq!(
             explicit_token(None, Some(file)).unwrap().as_deref(),
             Some("synthetic-file-token")
+        );
+    }
+
+    #[test]
+    fn oversized_documents_are_detected_before_embedding() {
+        let crate::Cli {
+            command: crate::Command::Index(args),
+            ..
+        } = <crate::Cli as clap::Parser>::parse_from(["akidb", "index", "."])
+        else {
+            panic!("expected the index subcommand");
+        };
+        // ~900 KiB of text passes the default --max-file-bytes filter, but the
+        // default chunking and dimensions produce a request above the 3 MiB
+        // atomic bound.
+        let text = "paragraph text\n".repeat(60_000);
+        let plan = FilePlan {
+            relative: "big.txt".into(),
+            absolute: PathBuf::from("/tmp/big.txt"),
+            document_version: hex_prefix(text.as_bytes(), 64),
+            chunks: segment(&text, "txt", args.chunk_chars, false),
+        };
+        assert!(
+            u64::try_from(text.len()).unwrap() <= args.max_file_bytes,
+            "the fixture must be admitted by the default file-size filter"
+        );
+        let bytes = replacement_request_bytes(&plan, &args, &hex_prefix(b"", 64));
+        assert!(
+            bytes > akidb_contracts::document::MAX_DOCUMENT_REQUEST_BYTES,
+            "expected an oversized atomic request, got {bytes} bytes"
         );
     }
 

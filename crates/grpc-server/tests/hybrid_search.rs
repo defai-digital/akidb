@@ -1161,7 +1161,7 @@ async fn test_rebuild_sql_metadata_index_removes_deleted_vectors() {
         .mark_deleted(&akidb_common::VectorId::new("stale-contract"))
         .unwrap();
 
-    assert_eq!(svc.rebuild_sql_metadata_index(), 0);
+    assert_eq!(svc.rebuild_sql_metadata_index().unwrap(), 0);
 
     let resp = svc
         .text_search(Request::new(TextSearchRequest {

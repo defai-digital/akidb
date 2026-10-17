@@ -1382,7 +1382,10 @@ fn build_service(
             }
             let sql_index = Arc::new(SqliteMetadataIndex::open(&sqlite_path)?);
             service = service.with_metadata_sql_index(sql_index);
-            let rebuilt = service.rebuild_sql_metadata_index();
+            let rebuilt = service.rebuild_sql_metadata_index().unwrap_or_else(|error| {
+                warn!(%error, "SQL metadata rebuild failed; structured retrieval may be incomplete");
+                0
+            });
             info!(
                 path = %sqlite_path.display(),
                 records = rebuilt,
@@ -1396,7 +1399,10 @@ fn build_service(
                 })?;
                 let sql_index = Arc::new(PostgresMetadataIndex::connect(postgres_url)?);
                 service = service.with_metadata_sql_index(sql_index);
-                let rebuilt = service.rebuild_sql_metadata_index();
+                let rebuilt = service.rebuild_sql_metadata_index().unwrap_or_else(|error| {
+                    warn!(%error, "SQL metadata rebuild failed; structured retrieval may be incomplete");
+                    0
+                });
                 info!(records = rebuilt, "PostgreSQL metadata adapter enabled");
             }
             #[cfg(not(feature = "postgres"))]

@@ -321,6 +321,65 @@ async fn legacy_migration_scans_past_missing_middle_chunks() {
         .contains("migrated"));
 }
 
+#[tokio::test]
+async fn legacy_migration_ignores_tombstoned_legacy_chunks() {
+    let h = setup();
+    // A tombstone from an earlier run whose metadata no longer matches this
+    // source must not block (or count against) the migration.
+    h.service
+        .insert(scoped(
+            InsertRequest {
+                collection: "default".into(),
+                id: "0123456789abcdef-00000".into(),
+                vector: vec![0.0, 1.0],
+                text: "older run".into(),
+                metadata: br#"{"ingest":"akidb-index","source_uri":"file:///elsewhere.md"}"#
+                    .to_vec(),
+            },
+            "alpha",
+        ))
+        .await
+        .unwrap();
+    h.service
+        .delete(scoped(
+            DeleteRequest {
+                collection: "default".into(),
+                id: "0123456789abcdef-00000".into(),
+            },
+            "alpha",
+        ))
+        .await
+        .unwrap();
+    h.service
+        .insert(scoped(
+            InsertRequest {
+                collection: "default".into(),
+                id: "0123456789abcdef-00001".into(),
+                vector: vec![1.0, 0.0],
+                text: "document legacy".into(),
+                metadata:
+                    br#"{"ingest":"akidb-index","source_uri":"file:///synthetic/source.md"}"#
+                        .to_vec(),
+            },
+            "alpha",
+        ))
+        .await
+        .unwrap();
+
+    let mut body = replacement("migrated", "", 1);
+    body.legacy_id_prefix = "0123456789abcdef-".into();
+    h.service
+        .replace_document(scoped(body, "alpha"))
+        .await
+        .unwrap();
+
+    let results = search(&h.service, "bm25").await;
+    assert_eq!(results.results.len(), 1);
+    assert!(results.context_pack_v1.unwrap().items[0]
+        .text
+        .contains("migrated"));
+}
+
 struct BrokenSql;
 impl akidb_sql::MetadataSqlIndex for BrokenSql {
     fn upsert_record(&self, _: &akidb_sql::SqlMetadataRecord) -> akidb_sql::Result<()> {
