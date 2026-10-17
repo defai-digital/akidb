@@ -56,7 +56,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, is_active: 
 
         let is_selected = is_active
             && app.selected_panel == crate::app::Panel::Health
-            && app.selected_index == i;
+            // Same index space as the topology panel: coordinators occupy the
+            // first entries, so shard `i` is `coordinators.len() + i`.
+            && app.selected_index == app.cluster_state.coordinators.len() + i;
 
         draw_shard_health_row(frame, row_area, shard, &app.metrics.history, theme, is_selected);
     }

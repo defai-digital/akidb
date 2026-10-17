@@ -15,7 +15,7 @@ use crate::index::{chunk_text, Chunk};
 
 /// Bump when the segmentation rules change so `akidb index` re-embeds files
 /// that were chunked by an earlier rule set.
-pub const CHUNKER_VERSION: &str = "sym1";
+pub const CHUNKER_VERSION: &str = "sym2";
 
 /// Whether `ext` (without dot) is chunked by symbol.
 pub fn is_symbol_language(ext: &str) -> bool {
@@ -95,10 +95,23 @@ pub fn segment(text: &str, extension: &str, max_chars: usize, symbols: bool) -> 
     for (start, end, name) in segments {
         let slice = &text[start..end];
         if slice.trim().is_empty() {
-            // Blank gap: let it ride along with a pending chunk only.
-            if let Some((_, e, chars)) = pending.as_mut() {
-                *e = end;
-                *chars += slice.chars().count();
+            // Blank gap: let it ride along with a pending chunk only, and only
+            // while it fits. An unbounded run of blank lines would otherwise
+            // produce a chunk as large as the file, which blows the embedding
+            // context and dilutes retrieval.
+            let gap_chars = slice.chars().count();
+            let fits = pending
+                .as_ref()
+                .is_some_and(|(_, _, chars)| *chars + gap_chars <= max_chars);
+            if fits {
+                if let Some((_, e, chars)) = pending.as_mut() {
+                    *e = end;
+                    *chars += gap_chars;
+                }
+            } else if pending.is_some() {
+                // Close the chunk at the last symbol; the whitespace adds
+                // nothing to retrieval and the next symbol opens a new chunk.
+                flush(&mut pending, &mut pending_names, &mut out);
             }
             continue;
         }
@@ -164,6 +177,24 @@ mod tests {
         assert!(chunks[0].text.contains("pub fn sub"));
         let sym = chunks[0].symbol.as_deref().unwrap();
         assert!(sym.contains("add") && sym.contains("sub"));
+    }
+
+    #[test]
+    fn blank_gaps_do_not_grow_a_chunk_past_the_budget() {
+        let text = format!(
+            "fn a() -> i32 {{ 1 }}\n{}\nfn b() -> i32 {{ 2 }}\n",
+            "\n".repeat(300)
+        );
+        let chunks = segment(&text, "rs", 120, true);
+
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.text.chars().count() <= 120),
+            "a blank gap must not push a chunk over the budget: {chunks:?}"
+        );
+        assert!(chunks.iter().any(|chunk| chunk.text.contains("fn a")));
+        assert!(chunks.iter().any(|chunk| chunk.text.contains("fn b")));
     }
 
     #[test]

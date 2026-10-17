@@ -173,9 +173,10 @@ fn build_topology_items<'a>(app: &App, theme: &Theme) -> Vec<ListItem<'a>> {
             spans.push(Span::styled(format!(" {:.0}°C", temp), temp_style));
         }
 
-        // Selection indicator
-        // Offset by coord_count + 2 (for header and separator)
-        let adjusted_index = coord_count + 2 + i;
+        // Selection index space is the flattened node list: coordinators first,
+        // then shards. The blank line and section headers are decoration and
+        // must not shift the index, or the last rows become unreachable.
+        let adjusted_index = coord_count + i;
         let line = if app.selected_index == adjusted_index
             && app.selected_panel == crate::app::Panel::Topology
         {

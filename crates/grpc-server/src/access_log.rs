@@ -352,6 +352,12 @@ impl SpoolWriter {
             if let Err(error) = self.append(&record) {
                 let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
                 error!(%error, dropped = total, "access-record spool write failed; record dropped");
+                // A failed append can leave a partial line in the current file.
+                // Rotate so the fragment can never merge with the next record
+                // and corrupt that one too; the spool is the only delivery path.
+                if let Err(roll_error) = self.roll() {
+                    error!(%roll_error, "access-record spool could not rotate after a write failure");
+                }
             }
         }
         if let Some(file) = self.current.as_mut() {
@@ -379,10 +385,10 @@ impl SpoolWriter {
         if let Some(file) = self.current.as_mut() {
             let _ = file.flush();
         }
-        self.sequence += 1;
-        self.current_path = self
+        let sequence = self.sequence + 1;
+        let path = self
             .directory
-            .join(format!("access-{:06}.jsonl", self.sequence));
+            .join(format!("access-{sequence:06}.jsonl"));
         // The spool holds access metadata (principal, workspace, query
         // digests): owner-read/write only, never group/world readable.
         let mut options = OpenOptions::new();
@@ -392,7 +398,11 @@ impl SpoolWriter {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let file = options.open(&self.current_path)?;
+        let file = options.open(&path)?;
+        // Publish the new file only once it is open, so a failed rotation leaves
+        // the writer and its recorded path in agreement.
+        self.sequence = sequence;
+        self.current_path = path;
         self.current_bytes = file.metadata()?.len();
         self.current = Some(BufWriter::new(file));
         self.enforce_retention()?;
