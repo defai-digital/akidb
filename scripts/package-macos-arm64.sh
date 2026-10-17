@@ -20,6 +20,8 @@ if [[ ! "$build_jobs" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 export AKIDB_GIT_COMMIT="${AKIDB_GIT_COMMIT:-$(git rev-parse HEAD)}"
+# A newer local Xcode/SDK must not silently raise the supported OS floor.
+export MACOSX_DEPLOYMENT_TARGET=26.0
 
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
@@ -46,6 +48,11 @@ for binary in \
   akidb-graph-bench \
   akidb-recovery-probe
 do
+  minimum_os="$(otool -l "target/release/$binary" | awk '$1 == "minos" && !seen++ { print $2 }')"
+  if [[ "$minimum_os" != "26.0" ]]; then
+    echo "$binary must target macOS 26.0, found '${minimum_os:-unknown}'; rebuild without AKIDB_SKIP_BUILD" >&2
+    exit 1
+  fi
   install -m 0755 "target/release/$binary" "$staging_dir/bin/$binary"
 done
 install -m 0644 LICENSE "$staging_dir/LICENSE"
@@ -82,6 +89,7 @@ printf '%s\n' \
   "  \"release_id\": \"$release_id\"," \
   "  \"version\": \"$cargo_version\"," \
   '  "target": "aarch64-apple-darwin",' \
+  '  "minimum_macos_version": "26.0",' \
   '  "akidb_server_features": [],' \
   "  \"build_jobs\": $build_jobs," \
   "  \"source_date_epoch\": $source_epoch" \
