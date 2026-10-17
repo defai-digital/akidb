@@ -671,7 +671,14 @@ impl Akidb for CoordinatorService {
                 text: req.text,
             })
             .await
-            .map_err(|e| Status::internal(format!("Shard insert failed: {}", e)))?;
+            .map_err(|status| {
+                // Preserve the shard's status: an application error (wrong
+                // dimension, invalid metadata, ACL denial) is the caller's own
+                // error, and reporting it as INTERNAL makes a 4xx-class mistake
+                // look like a server fault. Transport failures keep their own
+                // code (typically UNAVAILABLE).
+                Status::new(status.code(), format!("Shard insert failed: {status}"))
+            })?;
 
         // Record write for consistency tracking AFTER successful write
         // This ensures we don't have stale entries if the write fails
@@ -1381,7 +1388,17 @@ async fn run_metrics_server(
     info!("Metrics server listening on {}", addr);
 
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = match listener.accept().await {
+            Ok(value) => value,
+            Err(error) => {
+                // A per-connection accept failure (reset, file descriptor
+                // limit) must not stop the metrics endpoint for the rest of the
+                // process lifetime.
+                warn!("Metrics accept failed: {error}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let io = TokioIo::new(stream);
 
         tokio::spawn(async move {

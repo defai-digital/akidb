@@ -86,6 +86,12 @@ pub fn render_config(data_dir: &Path, args: &StartArgs) -> Result<String> {
     if args.dimensions == 0 {
         bail!("--dimensions must be greater than zero");
     }
+    // TOML integers are i64: casting a wider value would silently wrap into a
+    // negative dimension in the generated config.
+    let dimensions = i64::try_from(args.dimensions)
+        .ok()
+        .filter(|dimensions| *dimensions > 0)
+        .context("--dimensions does not fit the configuration format")?;
     let mut table: toml::Table = PROFILE.parse().context("embedded profile is invalid")?;
     let path = |name: &str| toml::Value::String(data_dir.join(name).display().to_string());
     set(&mut table, &["auth", "token_file"], path("auth.token"))?;
@@ -119,12 +125,12 @@ pub fn render_config(data_dir: &Path, args: &StartArgs) -> Result<String> {
     set(
         &mut table,
         &["embedding", "dimensions"],
-        toml::Value::Integer(args.dimensions as i64),
+        toml::Value::Integer(dimensions),
     )?;
     set(
         &mut table,
         &["slo", "reference", "dimensions"],
-        toml::Value::Integer(args.dimensions as i64),
+        toml::Value::Integer(dimensions),
     )?;
     set(
         &mut table,
@@ -183,6 +189,28 @@ pub async fn run_start(args: StartArgs) -> Result<()> {
         return Ok(());
     }
 
+    // The server honours these environment overrides and they win over the
+    // config written above, so the printed plan would otherwise disagree with
+    // the process that actually starts.
+    let overrides: Vec<&str> = [
+        "AKIDB_LISTEN_ADDR",
+        "AKIDB_DATA_DIR",
+        "AKIDB_WAL_DIR",
+        "AKIDB_DIMENSIONS",
+        "AKIDB_METRICS_ADDR",
+        "AKIDB_AUTH_MODE",
+        "AKIDB_REQUIRE_LOCAL_EMBEDDINGS",
+    ]
+    .into_iter()
+    .filter(|name| std::env::var_os(name).is_some())
+    .collect();
+    if !overrides.is_empty() {
+        eprintln!(
+            "warning: environment overrides take precedence over this config: {}",
+            overrides.join(", ")
+        );
+    }
+
     if TcpListener::bind(("127.0.0.1", args.grpc_port)).is_err() {
         bail!(
             "127.0.0.1:{} is already in use. Stop the other process or pass --grpc-port",
@@ -207,6 +235,11 @@ pub async fn run_start(args: StartArgs) -> Result<()> {
     }
     if args.dimensions != 768 {
         flags.push_str(&format!(" --dimensions {}", args.dimensions));
+    }
+    // `index` fails closed on a non-loopback embedding endpoint unless this is
+    // passed, so the suggested command has to carry it or it cannot run.
+    if args.allow_remote_embeddings {
+        flags.push_str(" --allow-remote-embeddings");
     }
     eprintln!("\nnext: akidb index <folder> {flags}\n      akidb pack \"<question>\" --server 127.0.0.1:{}\n", args.grpc_port);
 

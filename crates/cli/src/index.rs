@@ -877,20 +877,40 @@ async fn index_file(
             });
         }
     }
-    let body = replacement_body(
-        &args.connect.collection,
-        &plan.absolute,
-        &plan.document_version,
-        settings,
-        head.revision,
-        chunks,
-    );
-    validate_document_bounds(body.chunks.len(), body.encoded_len())?;
-    let result = client
-        .replace_document(authorize(body)?)
-        .await
-        .context("atomic replacement failed; retry after checking health (no legacy fallback)")?
-        .into_inner();
+    let mut attempt = 0u32;
+    let result = loop {
+        attempt += 1;
+        let revision = if attempt == 1 {
+            head.revision.clone()
+        } else {
+            // A concurrent write changed the document between the status read
+            // and the replacement. The server tells the caller to refresh the
+            // head revision and retry, which is exactly what a folder index
+            // should do instead of failing the file for good.
+            tokio::time::sleep(Duration::from_millis(50 * u64::from(attempt - 1))).await;
+            document_status(client, &args.connect.collection, &plan.absolute)
+                .await?
+                .revision
+        };
+        let body = replacement_body(
+            &args.connect.collection,
+            &plan.absolute,
+            &plan.document_version,
+            settings,
+            revision,
+            chunks.clone(),
+        );
+        validate_document_bounds(body.chunks.len(), body.encoded_len())?;
+        match client.replace_document(authorize(body)?).await {
+            Ok(response) => break response.into_inner(),
+            Err(status) if status.code() == tonic::Code::Aborted && attempt < 3 => continue,
+            Err(status) => {
+                return Err(status).context(
+                    "atomic replacement failed; retry after checking health (no legacy fallback)",
+                )
+            }
+        }
+    };
     Ok(result.chunk_count as usize)
 }
 

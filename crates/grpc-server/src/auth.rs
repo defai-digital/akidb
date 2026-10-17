@@ -1320,14 +1320,34 @@ fn resolve_or_create_token(
     }
 
     let token = format!("akidb_{}", Uuid::new_v4().simple());
-    write_token_file(&path, &token)?;
-    info!(
-        path = %path.display(),
-        env = token_env,
-        "generated new auth token file (store securely)"
-    );
-    eprintln!("{token_label} (save this): {token}");
-    Ok(token)
+    match write_token_file(&path, &token)? {
+        TokenFileOutcome::Created => {
+            info!(
+                path = %path.display(),
+                env = token_env,
+                "generated new auth token file (store securely)"
+            );
+            eprintln!("{token_label} (save this): {token}");
+            Ok(token)
+        }
+        TokenFileOutcome::AlreadyExists => {
+            // Another instance created the file between the check above and our
+            // write, or a symlink is in the way. `verify_private_token_file`
+            // refuses the symlink; otherwise reuse the token that is on disk so
+            // both instances agree on a credential.
+            verify_private_token_file(&path)?;
+            let token = fs::read_to_string(&path)
+                .map_err(|error| {
+                    format!("failed to read auth token file {}: {error}", path.display())
+                })?
+                .trim()
+                .to_string();
+            if token.is_empty() {
+                return Err(format!("auth token file {} is empty", path.display()));
+            }
+            Ok(token)
+        }
+    }
 }
 
 fn verify_private_token_file(path: &Path) -> Result<(), String> {
@@ -1360,7 +1380,18 @@ fn verify_private_token_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
+enum TokenFileOutcome {
+    Created,
+    AlreadyExists,
+}
+
+/// Create the token file with mode 0600, or report that it already exists.
+///
+/// The file is created with `create_new` so the permission mode is set
+/// atomically at creation (never a window where the bearer token is
+/// world-readable), and so a dangling symlink at the path is refused instead of
+/// followed.
+fn write_token_file(path: &Path, token: &str) -> Result<TokenFileOutcome, String> {
     if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -1369,19 +1400,31 @@ fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
             )
         })?;
     }
-    fs::write(path, format!("{token}\n"))
-        .map_err(|error| format!("failed to write token file {}: {error}", path.display()))?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| {
-            format!(
-                "failed to set token file {} mode 0600: {error}",
-                path.display()
-            )
-        })?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    Ok(())
+    match options.open(path) {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(format!("{token}\n").as_bytes())
+                .and_then(|()| file.sync_all())
+                .map_err(|error| {
+                    format!("failed to write token file {}: {error}", path.display())
+                })?;
+            Ok(TokenFileOutcome::Created)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Ok(TokenFileOutcome::AlreadyExists)
+        }
+        Err(error) => Err(format!(
+            "failed to create token file {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 pub fn is_loopback_host(host: &str) -> bool {
@@ -1423,6 +1466,50 @@ mod tests {
     use super::*;
     use akidb_common::config::{AclConfig, MemoryAuthorizationConfig, PrincipalCredentialConfig};
     use tonic::metadata::MetadataValue;
+
+    #[test]
+    fn token_file_creation_is_private_and_first_writer_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.token");
+
+        assert!(matches!(
+            write_token_file(&path, "first").unwrap(),
+            TokenFileOutcome::Created
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "token file must be private");
+        }
+
+        // A concurrent starter must not clobber the token the running instance
+        // already published.
+        assert!(matches!(
+            write_token_file(&path, "second").unwrap(),
+            TokenFileOutcome::AlreadyExists
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_file_creation_refuses_a_dangling_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("attacker-chosen");
+        let path = dir.path().join("auth.token");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        // `create_new` does not follow the link, so it reports the existing
+        // entry and the caller's verification step refuses it.
+        assert!(matches!(
+            write_token_file(&path, "token").unwrap(),
+            TokenFileOutcome::AlreadyExists
+        ));
+        assert!(!target.exists(), "token must not be written through a link");
+        assert!(verify_private_token_file(&path).is_err());
+    }
 
     fn runtime(mode: AuthMode, token: Option<&str>, loopback: bool) -> AuthRuntime {
         let config = AuthConfig {

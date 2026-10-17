@@ -98,15 +98,20 @@ pub fn collect(root: &Path, base: &Path, rules: &Exclusions) -> Result<Selection
             .with_context(|| format!("cannot inspect {}", path.display()))?;
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let relative = path.strip_prefix(base).unwrap_or(&path);
+        // An explicitly selected directory is indexed even when its own name is
+        // on a default skip list (`akidb index ./build`): the operator asked for
+        // it. Its contents are still filtered below. An explicitly selected
+        // *file* keeps every refusal, including the sensitive-name one.
+        let selected_root_directory = meta.is_dir() && path.as_path() == root;
         let reason = if meta.file_type().is_symlink() {
             Some("symlink")
         } else if !relative.as_os_str().is_empty() && name.starts_with('.') {
             Some("hidden")
-        } else if sensitive_name(&name) {
+        } else if !selected_root_directory && sensitive_name(&name) {
             Some("sensitive filename")
         } else if rules.matches(relative) {
             Some("excluded by rule")
-        } else if meta.is_dir() && SKIP_DIRS.contains(&name.as_ref()) {
+        } else if !selected_root_directory && meta.is_dir() && SKIP_DIRS.contains(&name.as_ref()) {
             Some("dependency or build directory")
         } else {
             None
@@ -166,6 +171,34 @@ mod tests {
         for bad in ["../secret", "/tmp/secret", "*.json", "!keep.txt"] {
             assert!(Exclusions::load(dir.path(), &[bad.into()]).is_err());
         }
+    }
+
+    #[test]
+    fn explicitly_selected_directory_overrides_default_skip_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("target");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("notes.md"), "example").unwrap();
+        std::fs::create_dir(root.join("nested")).unwrap();
+        std::fs::write(root.join("nested/more.md"), "example").unwrap();
+        let rules = Exclusions::load(&root, &[]).unwrap();
+
+        let result = collect(&root, &root, &rules).unwrap();
+        assert_eq!(
+            result.files,
+            [root.join("nested/more.md"), root.join("notes.md")]
+        );
+
+        // Its contents are still filtered: a nested skip-listed directory and a
+        // secret file stay out.
+        std::fs::create_dir(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("node_modules/pkg.md"), "example").unwrap();
+        std::fs::write(root.join("credentials.json"), "example").unwrap();
+        let result = collect(&root, &root, &rules).unwrap();
+        assert_eq!(
+            result.files,
+            [root.join("nested/more.md"), root.join("notes.md")]
+        );
     }
 
     #[cfg(unix)]
