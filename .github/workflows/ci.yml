@@ -60,7 +60,7 @@ jobs:
 
       - name: Lint and test the install scripts
         run: |
-          shellcheck scripts/install.sh scripts/render-homebrew-formula.sh scripts/tests/test_install.sh
+          shellcheck scripts/install.sh scripts/render-homebrew-formula.sh scripts/package-public-assets.sh scripts/tests/test_install.sh
           sh scripts/tests/test_install.sh
 
   # Unit tests on every supported operating-system and architecture target.
@@ -110,6 +110,11 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --verbose
+
+      - name: Exercise standalone onboarding with a real server
+        run: |
+          cargo build --locked -p akidb-cli
+          python3 scripts/qa_adoption.py
 
   # Explicit macOS 26 Apple Silicon validation path for M2 or later hosts.
   macos-arm64:

@@ -5,12 +5,18 @@ on:
     branches: [main]
     paths:
       - 'sdks/**'
-      - 'crates/proto/proto/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'config/**'
       - '.github/workflows/sdks.yml'
   pull_request:
     paths:
       - 'sdks/**'
-      - 'crates/proto/proto/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'config/**'
       - '.github/workflows/sdks.yml'
 
 permissions:

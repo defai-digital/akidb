@@ -27,7 +27,9 @@ if [[ ! -x "$PYTHON" ]]; then
   echo "ERROR: Python environment with grpcio is missing: $PYTHON" >&2
   exit 1
 fi
-if [[ -z "$USER_SUPPLIED_BIN" && ! -x "$AKIDB_BIN" ]]; then
+if [[ -z "$USER_SUPPLIED_BIN" ]]; then
+  # Executable presence does not prove generation-s3 support. Cargo reuses
+  # an already matching build, including its feature selection.
   (
     cd "$ROOT"
     cargo build -p akidb-cli --features generation-s3
@@ -75,6 +77,27 @@ start_server() {
     --listen "$ADDRESS" \
     --log-level info >"$1" 2>&1 &
   SERVER_PID="$!"
+  for _ in $(seq 1 100); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+      echo "ERROR: generation server exited; check generation-s3 support and configuration. Set AKIDB_QA_KEEP=1 to retain local logs." >&2
+      return 1
+    fi
+    if "$PYTHON" - "$GRPC_PORT" <<'PY'
+import socket
+import sys
+try:
+    with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=0.1):
+        pass
+except OSError:
+    raise SystemExit(1)
+PY
+    then
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "ERROR: generation server did not open its gRPC port" >&2
+  return 1
 }
 
 stop_server() {

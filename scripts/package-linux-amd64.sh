@@ -64,6 +64,7 @@ do
 done
 install -m 0644 LICENSE "$staging_dir/LICENSE"
 install -m 0644 README.md "$staging_dir/README.md"
+bash scripts/package-public-assets.sh "$staging_dir"
 
 cargo_version="$(
   awk '

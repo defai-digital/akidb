@@ -1,0 +1,39 @@
+name: Bug report
+description: Report an installation, correctness, recovery, or API failure.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: "Use synthetic data. Never attach credentials, private documents, database dumps, or raw production logs. Report sensitive security details through a private channel."
+  - type: input
+    id: version
+    attributes:
+      label: AkiDB version or commit
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS, architecture, SDK version, and deployment mode
+      placeholder: "macOS 26 arm64, CLI, writable standalone"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include commands and a small synthetic or redistributable fixture.
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Optional reviewed diagnostic report
+      description: "On supported builds, run akidb doctor --json. Inspect the report before pasting."
+      render: json

@@ -1,5 +1,12 @@
 # AkiDB Documentation
 
+## Get started and contribute
+
+- [Standalone source-build quickstart](development/quickstart.md)
+- [AX Fabric integration and lifecycle checks](development/fabric-integration.md)
+- [Public synthetic corpus](../contracts/fixtures/adoption/README.md)
+- [Contributor guide and defect workflow](../CONTRIBUTING.md)
+
 ## Current design and status
 
 | Area | Status | Canonical document |

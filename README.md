@@ -1,9 +1,23 @@
 # AkiDB
 
-**Local-first retrieval for private AI.**
+**An Apache-2.0 retrieval engine for AX Fabric and standalone private AI.**
 
 Cited, token-budgeted context for agents, from one Rust service you run
-yourself.
+yourself. Combine vectors, keywords, and bounded graph expansion without
+assembling separate retrieval services. AX Fabric is optional for standalone use.
+
+The project aims to earn sustained use and reproducible bug reports that improve
+AkiDB and Fabric reliability. Revenue is not the goal; the engine is Apache-2.0.
+
+## Start here
+
+- **Try standalone:** [source-build quickstart](docs/development/quickstart.md)
+  walks through diagnosis, safe indexing, and a verifiable pack using public
+  synthetic documents. These CLI additions are not in the v2.0.0 release archive.
+- **Integrate Fabric:** [lifecycle checklist](docs/development/fabric-integration.md)
+  covers publication, activation, rollback, rebuild, and compatibility evidence.
+- **Help improve reliability:** [contributor guide](CONTRIBUTING.md) explains
+  minimal reproductions, regression tests, and safe diagnostic reports.
 
 ## The problem
 
@@ -36,7 +50,9 @@ AkiDB is the service that does this in one process. A request can combine:
 The agent call is `TextSearch` with `pack` set. That request returns
 `ContextPackV1`: each passage has text, a score, a reason, and a citation,
 plus the token budget, the counter name (`conservative_v1`), and whether the
-budget or a filter candidate window cut the result. Vector `Search` stays a
+budget or a filter candidate window cut the result. `conservative_v1` is an
+estimate, not a guaranteed upper bound for a model's tokenizer; reserve prompt
+and output headroom and validate against the target tokenizer. Vector `Search` stays a
 top-k call and does not build that pack. `SearchResponse.candidate_limited`
 reports an underfilled, bounded filtered scan for vector and text calls even
 when `pack` is false; returned hits still satisfy the filter. The field is
@@ -312,16 +328,24 @@ splitting is a dependency-free heuristic scanner, not a full parser; pass
 
 Re-running `akidb index` is incremental. It re-embeds only files whose content
 changed, deletes the chunks of files you removed, and skips files that are
-already stored, after checking that their first and last chunk are still on
-the server. It records what it stored in `~/.akidb/index-state/` (override with
+already stored, after checking the committed document head and every durable
+chunk. Each bounded file is replaced atomically on a mutable standalone shard;
+concurrent readers never see its in-progress revision. Requests are limited to
+2,048 chunks / 3 MiB including vectors. The CLI rejects incompatible servers. It records what it stored in `~/.akidb/index-state/` (override with
 `--state-dir` or `AKIDB_INDEX_STATE_DIR`), never inside your folder. Change
 detection uses content hashes, so it works without git. `--full` re-embeds
-everything, for example after a crash that interrupted a run.
+everything. Keep the state directory to discover removed files for pruning;
+a server document head, rather than local state, proves completeness.
 
-It skips hidden folders, dependency and build folders, symlinks, binary files,
+It skips hidden entries, common credential filenames, dependency/build folders,
+symlinks, binary files,
 and files over 1 MiB, and it refuses a non-loopback embedding endpoint unless
 you pass `--allow-remote-embeddings`. `akidb index --dry-run` lists what would
-be indexed, what is unchanged, and what would be removed. `akidb pack --json`
+be indexed, exclusions, what is unchanged, and what would be removed. Add
+literal paths with `.akidbignore` or repeatable `--exclude`. `akidb doctor --json`
+produces a content-free prerequisite report. `akidb pack --verify-sources-under
+<folder>` checks local citation bytes and hashes without fetching URLs.
+`akidb pack --json`
 prints the typed `ContextPackV1`. The index command and the server must use
 the same embedding model and dimensions. PDFs and Office files go through the
 document pipeline described above.
@@ -606,10 +630,9 @@ akidb/
 
 ## Contributing
 
-1. Fork the repository and create a focused branch.
-2. Add tests for behavior changes.
-3. Run the validation commands above.
-4. Open a pull request with a concise summary and the commands run.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, issue templates, and
+the regression workflow. A useful contribution can be a small reproducible
+failure or a retrieval example with an expected source, not only code.
 
 ## License
 

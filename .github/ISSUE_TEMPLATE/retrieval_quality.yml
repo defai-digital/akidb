@@ -1,0 +1,34 @@
+name: Retrieval quality or citation problem
+description: Report a missed passage, incorrect source, filtering issue, or budget behavior.
+title: "[Retrieval]: "
+body:
+  - type: markdown
+    attributes:
+      value: "Share only synthetic or redistributable examples. Do not include private queries, document text, tokens, or paths. A small failing example is a useful contribution."
+  - type: input
+    id: versions
+    attributes:
+      label: AkiDB, SDK, and deployment versions
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Retrieval settings
+      description: "Include mode, embedding model/dimensions, top-k, token budget, filters, and generation mode if applicable."
+    validations:
+      required: true
+  - type: textarea
+    id: fixture
+    attributes:
+      label: Query and small eligible corpus
+      description: Provide a synthetic fixture or a public source with redistribution permission.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected passages and actual result
+      description: "Include expected source IDs and reasons, actual IDs, citation status, truncated and candidate_limited flags."
+    validations:
+      required: true
