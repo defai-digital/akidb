@@ -412,7 +412,11 @@ fn read_sheet_paths(
     if paths.is_empty() {
         for i in 0..archive.len() {
             if let Ok(file) = archive.by_index_raw(i) {
-                let name = file.name();
+                let name = file.name().map_err(|error| {
+                    crate::IngestionError::Parse(format!(
+                        "Invalid worksheet ZIP entry name: {error}"
+                    ))
+                })?;
                 if name.starts_with("xl/worksheets/") && name.ends_with(".xml") {
                     paths.push(name.to_string());
                 }

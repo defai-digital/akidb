@@ -187,10 +187,7 @@ pub fn canonical_leader_address(local: &str, peers: &[String]) -> String {
     if !local.is_empty() {
         all.push(local);
     }
-    all.into_iter()
-        .min()
-        .unwrap_or(local)
-        .to_string()
+    all.into_iter().min().unwrap_or(local).to_string()
 }
 
 /// Resolve reported leader address for cluster state.
@@ -622,6 +619,23 @@ impl CoordinatorService {
 
 #[tonic::async_trait]
 impl Akidb for CoordinatorService {
+    async fn replace_document(
+        &self,
+        _request: Request<akidb_proto::ReplaceDocumentRequest>,
+    ) -> Result<Response<akidb_proto::ReplaceDocumentResponse>, Status> {
+        Err(Status::failed_precondition(
+            "document operations require a mutable standalone shard",
+        ))
+    }
+    async fn get_document(
+        &self,
+        _request: Request<akidb_proto::GetDocumentRequest>,
+    ) -> Result<Response<akidb_proto::GetDocumentResponse>, Status> {
+        Err(Status::failed_precondition(
+            "document operations require a mutable standalone shard",
+        ))
+    }
+
     async fn insert(
         &self,
         request: Request<InsertRequest>,
@@ -1220,7 +1234,10 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    info!("Configured {} shards (sorted unique endpoints):", shards.len());
+    info!(
+        "Configured {} shards (sorted unique endpoints):",
+        shards.len()
+    );
     for shard in &shards {
         info!("  {} -> {}", shard.id, shard.address);
     }
@@ -1432,10 +1449,7 @@ mod tests {
     #[test]
     fn test_resolve_leader_auto_picks_lexicographic_minimum() {
         let local = "10.1.1.121:50050";
-        let peers = vec![
-            "10.1.0.132:50050".to_string(),
-            "10.1.3.4:50050".to_string(),
-        ];
+        let peers = vec!["10.1.0.132:50050".to_string(), "10.1.3.4:50050".to_string()];
         assert_eq!(
             resolve_leader_address(CoordRole::Auto, local, &peers),
             "10.1.0.132:50050"
@@ -1460,7 +1474,11 @@ mod tests {
     #[test]
     fn test_secondary_alone_never_claims_leadership() {
         // BUG fix: secondary with empty peers must not become leader.
-        assert!(!resolve_is_leader(CoordRole::Secondary, "10.1.0.1:50050", &[]));
+        assert!(!resolve_is_leader(
+            CoordRole::Secondary,
+            "10.1.0.1:50050",
+            &[]
+        ));
         assert_eq!(
             resolve_leader_address(CoordRole::Secondary, "10.1.0.1:50050", &[]),
             "10.1.0.1:50050"
@@ -1515,10 +1533,7 @@ mod tests {
 
         // Lexicographic min among 10.1.0.132 and 10.1.1.121 is 10.1.0.132
         assert!(!service.is_leader());
-        assert_eq!(
-            service.leader_id(),
-            coordinator_node_id("10.1.0.132:50050")
-        );
+        assert_eq!(service.leader_id(), coordinator_node_id("10.1.0.132:50050"));
         assert_eq!(service.peer_addresses(), &["10.1.0.132:50050".to_string()]);
 
         let state = service

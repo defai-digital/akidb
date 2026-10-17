@@ -5,7 +5,7 @@
 //! the chunk count, and the settings the chunks were built with. A later run
 //! skips a file whose entry still matches, and deletes the chunks of a file
 //! that is gone from disk. The state is only a hint: before skipping, the
-//! caller confirms the first and last chunk still exist on the server, so a
+//! caller checks the server document head and every durable chunk, so a
 //! wiped or restored server is re-indexed rather than trusted.
 //!
 //! The file lives outside the indexed folder (default
@@ -67,7 +67,8 @@ impl IndexState {
         match std::fs::read_to_string(&path) {
             Ok(raw) => {
                 // A corrupt or newer-schema file is ignored: the worst case
-                // is a full re-index, which is always correct.
+                // is a full re-index of present files. Removed paths cannot be
+                // pruned without their local receipt.
                 if let Ok(value) = serde_json::from_str::<Value>(&raw) {
                     if value["schema"].as_u64() == Some(STATE_SCHEMA) {
                         if let Some(map) = value["files"].as_object() {

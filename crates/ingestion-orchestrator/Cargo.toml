@@ -28,7 +28,7 @@ serde_json = "1.0"
 scraper = "0.23"            # HTML
 quick-xml = "0.41"          # XML
 csv = "1.3"                 # CSV
-zip = "2.2"                 # DOCX is a ZIP archive
+zip = { version = "9.0", default-features = false, features = ["deflate"] } # Office ZIP formats use Store/Deflate
 
 # Text processing
 unicode-segmentation = "1.12"

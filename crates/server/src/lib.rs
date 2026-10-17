@@ -1457,6 +1457,8 @@ fn build_service(
         info!("Rebuilt lexical index from {} persisted documents", loaded);
     }
 
+    service.recover_document_projections()?;
+
     // Reconcile the derived projections against durable storage so partial
     // failures from a previous run cannot drift permanently.
     if config.index.rebuild.reconcile_at_startup {

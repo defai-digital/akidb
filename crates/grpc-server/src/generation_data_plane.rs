@@ -336,6 +336,23 @@ fn precision_name(precision: VectorPrecision) -> &'static str {
 
 #[tonic::async_trait]
 impl Akidb for GenerationDataPlane {
+    async fn replace_document(
+        &self,
+        _request: Request<akidb_proto::ReplaceDocumentRequest>,
+    ) -> Result<Response<akidb_proto::ReplaceDocumentResponse>, Status> {
+        Err(Status::failed_precondition(
+            "document operations require a mutable standalone shard",
+        ))
+    }
+    async fn get_document(
+        &self,
+        _request: Request<akidb_proto::GetDocumentRequest>,
+    ) -> Result<Response<akidb_proto::GetDocumentResponse>, Status> {
+        Err(Status::failed_precondition(
+            "document operations require a mutable standalone shard",
+        ))
+    }
+
     async fn insert(
         &self,
         _request: Request<InsertRequest>,
@@ -628,6 +645,17 @@ mod tests {
     #[tokio::test]
     async fn writes_are_rejected_in_generation_mode() {
         let (_temporary, _controller, plane, scope) = harness();
+        let document_error = plane
+            .replace_document(authorized(
+                akidb_proto::ReplaceDocumentRequest {
+                    collection: scope.collection.clone(),
+                    ..Default::default()
+                },
+                &scope.workspace_id,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(document_error.code(), tonic::Code::FailedPrecondition);
         let error = plane
             .insert(authorized(
                 InsertRequest {

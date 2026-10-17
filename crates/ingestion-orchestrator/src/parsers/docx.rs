@@ -48,7 +48,10 @@ impl DocxParser {
         // Check for complex elements that require Python
         for i in 0..archive.len() {
             if let Ok(file) = archive.by_index_raw(i) {
-                let name = file.name().to_lowercase();
+                let Ok(name) = file.name() else {
+                    return false;
+                };
+                let name = name.to_lowercase();
 
                 // VBA macros
                 if name.contains("vbaproject") || name.contains("vbaprojectbin") {

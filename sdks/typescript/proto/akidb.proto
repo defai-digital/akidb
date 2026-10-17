@@ -7,6 +7,11 @@ service Akidb {
   // Insert a vector
   rpc Insert(InsertRequest) returns (InsertResponse);
 
+  // Bounded atomic replacement on a mutable standalone shard. No coordinator
+  // or generation-serving fallback. Empty chunks commit an empty document.
+  rpc ReplaceDocument(ReplaceDocumentRequest) returns (ReplaceDocumentResponse);
+  rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
+
   // Search for similar vectors
   rpc Search(SearchRequest) returns (SearchResponse);
 
@@ -39,6 +44,46 @@ service Akidb {
   rpc GetCollection(GetCollectionRequest) returns (GetCollectionResponse);
   rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse);
   rpc DropCollection(DropCollectionRequest) returns (DropCollectionResponse);
+}
+
+message DocumentChunk {
+  repeated float vector = 1;
+  bytes metadata = 2;
+  string text = 3;
+}
+
+message ReplaceDocumentRequest {
+  string collection = 1;
+  string document_id = 2;
+  string source_uri = 3;
+  string document_version = 4;
+  string settings_fingerprint = 5;
+  // Empty means no existing document head. Otherwise a compare-and-swap token.
+  string expected_revision = 6;
+  repeated DocumentChunk chunks = 7;
+  // First replacement only: migrate the old CLI ID prefix (16 hex plus '-').
+  string legacy_id_prefix = 8;
+}
+
+message ReplaceDocumentResponse {
+  string revision = 1;
+  uint32 chunk_count = 2;
+  bool unchanged = 3;
+}
+
+message GetDocumentRequest {
+  string collection = 1;
+  string document_id = 2;
+}
+
+message GetDocumentResponse {
+  bool found = 1;
+  string revision = 2;
+  string document_version = 3;
+  string settings_fingerprint = 4;
+  uint32 chunk_count = 5;
+  // Every chunk has an active durable vector, mapping, and source text.
+  bool complete = 6;
 }
 
 // ============================================

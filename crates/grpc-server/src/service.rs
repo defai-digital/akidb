@@ -40,6 +40,8 @@ use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, instrument, warn};
 
+mod document;
+
 const MAX_PACK_TOKEN_BUDGET: u32 = 100_000;
 const MAX_SQL_POSTFILTER_CANDIDATES: usize = 100_000;
 const DEFAULT_GRAPH_DEPTH: u32 = 1;
@@ -137,6 +139,8 @@ where
     collection: String,
     /// Per-key lock set used by every vector mutation.
     mutation_locks: DashSet<String>,
+    serving_gate: RwLock<()>,
+    serving_fault: std::sync::atomic::AtomicBool,
     /// FIX BUG-HUNT-202: Configurable SLO threshold in microseconds
     /// Previously hardcoded to 50_000us, now configurable via constructor
     slo_threshold_us: u64,
@@ -216,6 +220,8 @@ where
             id_mapping,
             collection,
             mutation_locks: DashSet::new(),
+            serving_gate: RwLock::new(()),
+            serving_fault: std::sync::atomic::AtomicBool::new(false),
             slo_threshold_us,
             embedding_provider: None,
             lexical: Arc::new(RwLock::new(Bm25Index::new())),
@@ -252,10 +258,45 @@ where
         client_timeout: Option<std::time::Duration>,
         work: impl FnOnce(&Self) -> Result<T, Status>,
     ) -> Result<T, Status> {
+        self.run_admitted_mode(class, received, client_timeout, false, work)
+            .await
+    }
+
+    async fn run_admitted_mode<T>(
+        &self,
+        class: AdmissionClass,
+        received: Instant,
+        client_timeout: Option<std::time::Duration>,
+        exclusive: bool,
+        work: impl FnOnce(&Self) -> Result<T, Status>,
+    ) -> Result<T, Status> {
         admission::check_deadline(received, client_timeout)?;
         let _guard = self.admission.acquire(class).await?;
-        admission::check_deadline(received, client_timeout)?;
-        admission::run_blocking(|| work(self))
+        admission::run_blocking(|| {
+            let _write =
+                if exclusive {
+                    Some(self.serving_gate.try_write().ok_or_else(|| {
+                        Status::aborted("shard is busy; retry document replacement")
+                    })?)
+                } else {
+                    None
+                };
+            let _read = if exclusive {
+                None
+            } else {
+                Some(self.serving_gate.read())
+            };
+            admission::check_deadline(received, client_timeout)?;
+            if self
+                .serving_fault
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(Status::unavailable(
+                    "document projections require restart recovery",
+                ));
+            }
+            work(self)
+        })
     }
 
     /// Attach the ADR-0009 access-record emitter (default: disabled no-op).
@@ -442,7 +483,7 @@ where
         let Some(graph) = &self.graph_index else {
             return Ok(0);
         };
-        let stored_vectors = self.id_mapping.load_active_vectors()?;
+        let stored_vectors = self.id_mapping.load_vectors_including_deleted()?;
 
         for stored in &stored_vectors {
             let vector_id = VectorId::new(&stored.external_id);
@@ -451,6 +492,7 @@ where
             graph.delete_node(&Self::chunk_node_id(&workspace_id, &vector_id))?;
         }
 
+        let stored_vectors: Vec<_> = stored_vectors.into_iter().filter(|v| !v.deleted).collect();
         for stored in &stored_vectors {
             self.index_graph_chunk(&VectorId::new(&stored.external_id), &stored.metadata, None)?;
         }
@@ -799,7 +841,8 @@ where
         // The graph is a derived projection that startup reconciliation repairs,
         // so a projection failure must not fail a write that is already durable
         // and searchable -- nor skip the SQL metadata mirror below.
-        if let Err(e) = self.index_graph_chunk(&vector_id, &stamped_metadata, old_metadata.as_deref())
+        if let Err(e) =
+            self.index_graph_chunk(&vector_id, &stamped_metadata, old_metadata.as_deref())
         {
             warn!(
                 vector_id = %vector_id,
@@ -909,6 +952,7 @@ where
         let ctx = self.request_auth_context(&request);
         let req = request.into_inner();
 
+        Self::validate_mutable_id(&req.id).map_err(Status::failed_precondition)?;
         debug!("Delete request for ID: {}", req.id);
         self.validate_request_collection(&req.collection)?;
         if let Err(message) = Self::validate_vector_id(&req.id) {
@@ -982,6 +1026,7 @@ where
         let ctx = self.request_auth_context(&request);
         let mut req = request.into_inner();
 
+        Self::validate_mutable_id(&req.id).map_err(Status::failed_precondition)?;
         debug!("Update request for ID: {}", req.id);
         self.validate_request_collection(&req.collection)?;
 
@@ -2222,6 +2267,13 @@ where
             .map_err(|e| format!("Metadata must be valid JSON: {e}"))
     }
 
+    fn validate_mutable_id(id: &str) -> Result<(), &'static str> {
+        if id.starts_with(akidb_contracts::document::DOCUMENT_CHUNK_PREFIX) {
+            return Err("managed document chunks require ReplaceDocument");
+        }
+        Ok(())
+    }
+
     fn validate_vector_id(id: &str) -> Result<(), &'static str> {
         if id.is_empty() {
             return Err("Vector ID cannot be empty");
@@ -2234,6 +2286,7 @@ where
 
     fn validate_vector_payload(id: &str, vector: &[f32]) -> Result<(), &'static str> {
         Self::validate_vector_id(id)?;
+        Self::validate_mutable_id(id)?;
         if vector.iter().any(|v| v.is_nan() || v.is_infinite()) {
             return Err("Vector contains NaN or Infinity values");
         }
@@ -2482,9 +2535,9 @@ where
             // A filter that the adapter cannot push down is a caller-input
             // problem, so it must not be reported as a server fault: the same
             // filter is accepted (and post-filtered) in dense mode.
-            akidb_sql::SqlMetadataError::InvalidQuery(reason) => Status::invalid_argument(
-                format!("metadata filter is not supported by structured retrieval: {reason}"),
-            ),
+            akidb_sql::SqlMetadataError::InvalidQuery(reason) => Status::invalid_argument(format!(
+                "metadata filter is not supported by structured retrieval: {reason}"
+            )),
             other => Status::internal(format!("SQL metadata retrieval failed: {other}")),
         })?;
         let candidate_cap_reached = needs_post_filter && ids.len() == sql_limit;
@@ -3448,6 +3501,62 @@ where
     I: VectorIndex + 'static,
     S: StorageBackend + 'static,
 {
+    async fn replace_document(
+        &self,
+        request: Request<crate::proto::ReplaceDocumentRequest>,
+    ) -> Result<Response<crate::proto::ReplaceDocumentResponse>, Status> {
+        let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
+        let collection = request.get_ref().collection.clone();
+        let hash = self
+            .access_log
+            .query_digest(&[request.get_ref().document_id.as_bytes()]);
+        let timeout = admission::client_timeout(request.metadata());
+        let result = self
+            .run_admitted_mode(AdmissionClass::Mutation, start, timeout, true, |svc| {
+                svc.replace_document_inner(request)
+            })
+            .await;
+        self.emit_access_record(
+            "ReplaceDocument",
+            &ctx,
+            &collection,
+            hash,
+            &result,
+            start,
+            |response| Some(response.chunk_count),
+        );
+        result
+    }
+
+    async fn get_document(
+        &self,
+        request: Request<crate::proto::GetDocumentRequest>,
+    ) -> Result<Response<crate::proto::GetDocumentResponse>, Status> {
+        let start = Instant::now();
+        let ctx = self.request_auth_context(&request);
+        let collection = request.get_ref().collection.clone();
+        let hash = self
+            .access_log
+            .query_digest(&[request.get_ref().document_id.as_bytes()]);
+        let timeout = admission::client_timeout(request.metadata());
+        let result = self
+            .run_admitted(AdmissionClass::Search, start, timeout, |svc| {
+                svc.get_document_inner(request)
+            })
+            .await;
+        self.emit_access_record(
+            "GetDocument",
+            &ctx,
+            &collection,
+            hash,
+            &result,
+            start,
+            |response| Some(response.found as u32),
+        );
+        result
+    }
+
     #[instrument(skip(self, request))]
     async fn insert(
         &self,
@@ -3652,9 +3761,21 @@ where
         let stats = self.index.stats();
 
         Ok(Response::new(HealthResponse {
-            healthy: self.index.is_ready(),
-            ready: self.index.is_ready() && !self.index.is_rebuilding(),
-            message: if self.index.is_rebuilding() {
+            healthy: self.index.is_ready()
+                && !self
+                    .serving_fault
+                    .load(std::sync::atomic::Ordering::Acquire),
+            ready: self.index.is_ready()
+                && !self.index.is_rebuilding()
+                && !self
+                    .serving_fault
+                    .load(std::sync::atomic::Ordering::Acquire),
+            message: if self
+                .serving_fault
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                "Document projections require restart recovery".to_string()
+            } else if self.index.is_rebuilding() {
                 "Rebuild in progress".to_string()
             } else if !self.index.is_ready() {
                 "Index not ready".to_string()

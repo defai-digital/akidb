@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
 
+mod document;
+pub use document::{DocumentHead, DocumentVector, DocumentWriteError};
+
 /// FIX BUG-HUNT-001: Number of lock stripes for concurrent access
 /// Using 256 stripes provides good parallelism while bounded memory usage
 const LOCK_STRIPE_COUNT: usize = 256;

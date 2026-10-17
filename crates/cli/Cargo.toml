@@ -16,6 +16,7 @@ generation-s3 = ["akidb-server/generation-s3"]
 generation-postgres = ["generation-s3", "akidb-server/generation-postgres"]
 
 [dependencies]
+akidb-contracts = { path = "../contracts" }
 akidb-common = { path = "../common" }
 akidb-coordinator = { path = "../coordinator" }
 akidb-embedding = { path = "../embedding" }
@@ -30,8 +31,10 @@ anyhow.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
+prost.workspace = true
 tempfile.workspace = true
 libc = "0.2"
 tokio.workspace = true
 tonic.workspace = true
 toml = "0.8"
+url.workspace = true

@@ -25,7 +25,7 @@ pub use generation_layout::{
     PreparedGeneration, PreparedGenerationRevision, ReadyGeneration, ReadyGenerationMarker,
     ReplicaVolumeClaimOutcome, ReplicaVolumeOwner, GENERATION_LAYOUT_SCHEMA_VERSION,
 };
-pub use id_mapping::{IdMapping, IdMappingEntry};
+pub use id_mapping::{DocumentHead, DocumentVector, DocumentWriteError, IdMapping, IdMappingEntry};
 pub use memory::{
     ActiveProjectionSet, ClaimedMemoryCompilerJob, CommitMemoryOutcome, CommitMemoryReceipt,
     CommitMemoryRequest, CommitProposalRequest, ExecuteMemoryDeletionReceipt,

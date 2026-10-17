@@ -21,13 +21,17 @@ use akidb_common::config::EmbeddingClientConfig;
 use akidb_embedding::ax_engine::AxEngineEmbedding;
 use akidb_embedding::EmbeddingService;
 use akidb_proto::akidb_client::AkidbClient;
-use akidb_proto::{DeleteRequest, DeleteStatus, GetRequest, InsertRequest, TextSearchRequest};
+use akidb_proto::{
+    DocumentChunk, GetDocumentRequest, GetDocumentResponse, ReplaceDocumentRequest,
+    TextSearchRequest,
+};
 use anyhow::{bail, Context, Result};
+use prost::Message;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
-use tonic::{Code, Request};
+use tonic::Request;
 
 use crate::chunking::{segment, CHUNKER_VERSION};
 use crate::index_state::{default_state_dir, settings_fingerprint, FileEntry, IndexState};
@@ -38,17 +42,6 @@ const TEXT_EXTENSIONS: &[&str] = &[
     "toml", "ini", "cfg", "conf", "html", "htm", "xml", "rs", "py", "ts", "tsx", "js", "jsx",
     "mjs", "cjs", "go", "java", "kt", "swift", "c", "h", "cc", "cpp", "hpp", "cs", "rb", "php",
     "sh", "bash", "zsh", "sql", "proto", "gradle", "lua", "scala", "dart",
-];
-
-/// Directory names that are never descended into.
-const SKIP_DIRS: &[&str] = &[
-    "target",
-    "node_modules",
-    "dist",
-    "build",
-    "__pycache__",
-    "venv",
-    "vendor",
 ];
 
 /// Connection settings shared by `index` and `pack`.
@@ -123,6 +116,11 @@ pub struct IndexArgs {
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
 
+    /// Exclude a literal relative path or basename (repeatable). Also reads
+    /// .akidbignore at the selected root. No globs or negation are accepted.
+    #[arg(long)]
+    pub exclude: Vec<String>,
+
     /// Re-embed every file even when its content has not changed since the
     /// last run. Files deleted from disk are still removed.
     #[arg(long, default_value_t = false)]
@@ -150,7 +148,7 @@ pub struct PackArgs {
     #[command(flatten)]
     pub connect: ConnectArgs,
 
-    /// Token budget for the pack.
+    /// Budget measured by the server counter, not a model-specific tokenizer.
     #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
     pub token_budget: u32,
 
@@ -166,6 +164,11 @@ pub struct PackArgs {
     /// Print the typed pack as JSON instead of readable text.
     #[arg(long, default_value_t = false)]
     pub json: bool,
+
+    /// Verify local citation bytes under this directory; never follows links
+    /// or fetches URLs. Exits nonzero if any returned citation fails verification.
+    #[arg(long)]
+    pub verify_sources_under: Option<PathBuf>,
 }
 
 /// One chunk of a source file with its byte span.
@@ -241,57 +244,26 @@ pub fn chunk_text(text: &str, max_chars: usize) -> Vec<Chunk> {
     chunks
 }
 
-fn is_indexable(path: &Path) -> bool {
+pub(crate) fn is_indexable(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| TEXT_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
         .unwrap_or(false)
 }
 
-/// Collect indexable files under `root`, skipping hidden entries, dependency
-/// and build directories, and symlinks. Returned paths are sorted.
-pub fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let meta = std::fs::symlink_metadata(root)
-        .with_context(|| format!("cannot read {}", root.display()))?;
-    if meta.is_file() {
-        if !is_indexable(root) {
-            bail!(
-                "{} does not have an indexable text or source extension",
-                root.display()
-            );
-        }
-        return Ok(vec![root.to_path_buf()]);
+#[cfg(test)]
+fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let base = if root.is_file() {
+        root.parent().unwrap()
+    } else {
+        root
+    };
+    let rules = crate::index_filter::Exclusions::load(base, &[])?;
+    let selection = crate::index_filter::collect(root, base, &rules)?;
+    if root.is_file() && selection.files.is_empty() {
+        bail!("explicit input is excluded or unsupported");
     }
-    if !meta.is_dir() {
-        bail!("{} is neither a file nor a directory", root.display());
-    }
-    let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)
-            .with_context(|| format!("cannot read directory {}", dir.display()))?
-        {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
-                continue;
-            }
-            let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
-                continue;
-            }
-            let path = entry.path();
-            if file_type.is_dir() {
-                if !SKIP_DIRS.contains(&name.as_str()) {
-                    stack.push(path);
-                }
-            } else if file_type.is_file() && is_indexable(&path) {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
+    Ok(selection.files)
 }
 
 fn hex_prefix(bytes: &[u8], len: usize) -> String {
@@ -310,6 +282,7 @@ fn hex_prefix(bytes: &[u8], len: usize) -> String {
 /// Deterministic chunk id: stable across re-indexing of the same file. The
 /// caller passes the canonical absolute path, so two folders that contain a
 /// file with the same relative name never share ids.
+#[cfg(test)]
 pub fn chunk_id(canonical_path: &str, index: usize) -> String {
     format!("{}-{index:05}", hex_prefix(canonical_path.as_bytes(), 16))
 }
@@ -321,11 +294,11 @@ fn chunk_metadata(
     chunk: &Chunk,
 ) -> Vec<u8> {
     let mut value = json!({
-        "source_uri": format!("file://{}", absolute.display()),
+        "source_uri": url::Url::from_file_path(absolute).expect("canonical absolute path").to_string(),
         "file": relative,
-        "document_id": relative,
+        "document_id": hex_prefix(absolute.as_os_str().as_encoded_bytes(), 64),
         "document_version": document_version,
-        "content_hash": hex_prefix(chunk.text.as_bytes(), 16),
+        "content_hash": hex_prefix(chunk.text.as_bytes(), 64),
         "start_offset": chunk.start,
         "end_offset": chunk.end,
         "ingest": "akidb-index",
@@ -336,7 +309,7 @@ fn chunk_metadata(
     value.to_string().into_bytes()
 }
 
-async fn connect(args: &ConnectArgs) -> Result<AkidbClient<Channel>> {
+pub(crate) async fn connect(args: &ConnectArgs) -> Result<AkidbClient<Channel>> {
     let tls_enabled = args.server.starts_with("https://") || args.tls_ca.is_some();
     let endpoint = if args.server.starts_with("http://") || args.server.starts_with("https://") {
         args.server.clone()
@@ -385,11 +358,27 @@ fn host_is_loopback(host: Option<&str>) -> bool {
             .unwrap_or(false)
 }
 
-/// Attach the bearer token and workspace/agent headers the same way
-/// `akidb health` does.
-fn authorize<T>(body: T) -> Result<Request<T>> {
+fn explicit_token(token: Option<String>, file: Option<PathBuf>) -> Result<Option<String>> {
+    if let Some(token) = token.filter(|value| !value.trim().is_empty()) {
+        return Ok(Some(token.trim().to_string()));
+    }
+    file.map(|path| {
+        std::fs::read_to_string(path)
+            .context("cannot read explicitly configured token file")
+            .map(|token| token.trim().to_string())
+    })
+    .transpose()
+    .map(|token| token.filter(|value| !value.is_empty()))
+}
+
+/// New onboarding commands use explicitly configured credentials. They do not
+/// infer credentials from an unrelated database in the current directory.
+pub(crate) fn authorize<T>(body: T) -> Result<Request<T>> {
     let mut request = Request::new(body);
-    if let Some(token) = super::health_token() {
+    if let Some(token) = explicit_token(
+        std::env::var("AKIDB_AUTH_TOKEN").ok(),
+        std::env::var_os("AKIDB_AUTH_TOKEN_FILE").map(PathBuf::from),
+    )? {
         let value: MetadataValue<Ascii> = format!("Bearer {token}").parse()?;
         request.metadata_mut().insert("authorization", value);
     }
@@ -436,15 +425,23 @@ struct FilePlan {
 
 enum PlanOutcome {
     Ready(FilePlan),
-    /// Oversized, not UTF-8, unreadable, or empty after trimming.
+    /// Oversized or not UTF-8. Read failures are reported separately.
     Skipped,
 }
 
 /// Read at most `max_bytes` of a file. Returns `None` when the file is larger
 /// (checked while reading, so a file that grows after a metadata check cannot
 /// exhaust memory) or is not valid UTF-8.
-fn read_bounded_utf8(path: &Path, max_bytes: u64) -> Result<Option<String>> {
-    let file = std::fs::File::open(path)?;
+pub(crate) fn read_bounded_utf8(path: &Path, max_bytes: u64) -> Result<Option<String>> {
+    let parent = path.parent().context("source has no parent directory")?;
+    read_bounded_utf8_under(parent, path, max_bytes)
+}
+
+fn read_bounded_utf8_under(base: &Path, path: &Path, max_bytes: u64) -> Result<Option<String>> {
+    let file = crate::citations::open_source(base, path.strip_prefix(base)?)?;
+    if !file.metadata()?.is_file() {
+        bail!("index input must be a regular file");
+    }
     let mut bytes = Vec::new();
     file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)?;
@@ -455,7 +452,7 @@ fn read_bounded_utf8(path: &Path, max_bytes: u64) -> Result<Option<String>> {
 }
 
 fn plan_file(path: &Path, base: &Path, args: &IndexArgs) -> Result<PlanOutcome> {
-    let Some(text) = read_bounded_utf8(path, args.max_file_bytes)
+    let Some(text) = read_bounded_utf8_under(base, path, args.max_file_bytes)
         .with_context(|| format!("cannot read {}", path.display()))?
     else {
         return Ok(PlanOutcome::Skipped);
@@ -465,9 +462,6 @@ fn plan_file(path: &Path, base: &Path, args: &IndexArgs) -> Result<PlanOutcome> 
         .and_then(|e| e.to_str())
         .unwrap_or_default();
     let chunks = segment(&text, extension, args.chunk_chars, args.symbol_chunking);
-    if chunks.is_empty() {
-        return Ok(PlanOutcome::Skipped);
-    }
     let relative = path
         .strip_prefix(base)
         .unwrap_or(path)
@@ -476,17 +470,20 @@ fn plan_file(path: &Path, base: &Path, args: &IndexArgs) -> Result<PlanOutcome> 
     Ok(PlanOutcome::Ready(FilePlan {
         relative,
         absolute: path.to_path_buf(),
-        document_version: hex_prefix(text.as_bytes(), 16),
+        document_version: hex_prefix(text.as_bytes(), 64),
         chunks,
     }))
 }
 
-/// Safety bound on the leftover-chunk cleanup loop.
-const MAX_STALE_CHUNKS: usize = 100_000;
-
 pub async fn run_index(args: IndexArgs) -> Result<()> {
     if args.dimensions == 0 || args.batch_size == 0 || args.chunk_chars == 0 {
         bail!("--dimensions, --batch-size and --chunk-chars must be greater than zero");
+    }
+    if std::fs::symlink_metadata(&args.path)?
+        .file_type()
+        .is_symlink()
+    {
+        bail!("refusing a symlink indexing root; select the source directory explicitly");
     }
     let root = std::fs::canonicalize(&args.path)
         .with_context(|| format!("cannot resolve {}", args.path.display()))?;
@@ -495,7 +492,17 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
     } else {
         root.clone()
     };
-    let files = collect_files(&root)?;
+    let rules = crate::index_filter::Exclusions::load(&base, &args.exclude)?;
+    let selection = crate::index_filter::collect(&root, &base, &rules)?;
+    if args.dry_run {
+        for (path, reason) in &selection.excluded {
+            println!(
+                "{}\texcluded: {reason}",
+                path.strip_prefix(&base).unwrap_or(path).display()
+            );
+        }
+    }
+    let files = selection.files;
 
     let settings = settings_fingerprint(
         &args.embedding_model,
@@ -504,7 +511,21 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
         CHUNKER_VERSION,
         args.symbol_chunking,
     );
-    let state_dir = args.state_dir.clone().or_else(default_state_dir);
+    let state_dir = args
+        .state_dir
+        .clone()
+        .or_else(default_state_dir)
+        .map(|dir| {
+            // An explicit workspace gets separate pruning receipts. Preserve the
+            // legacy default path for existing standalone users.
+            match std::env::var("AKIDB_WORKSPACE")
+                .ok()
+                .filter(|w| !w.trim().is_empty())
+            {
+                Some(workspace) => dir.join(hex_prefix(workspace.trim().as_bytes(), 64)),
+                None => dir,
+            }
+        });
     let mut state = match &state_dir {
         Some(dir) => Some(IndexState::load(
             dir,
@@ -561,13 +582,13 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
             .unwrap_or_default();
         for (file, entry) in &removed {
             println!(
-                "{file}\twould remove {} chunks (file is gone)",
+                "{file}\twould remove {} chunks (file is gone or excluded)",
                 entry.chunk_count
             );
         }
         eprintln!(
             "planned {planned} files, {chunks} chunks ({unchanged} unchanged, {} would be \
-             removed, {skipped} files skipped as empty, oversized, or non-UTF-8)",
+             removed, {skipped} files skipped as oversized or non-UTF-8)",
             removed.len()
         );
         if planned == 0 && removed.is_empty() {
@@ -603,6 +624,16 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("embedding client: {e}"))?,
     )));
     let mut client = connect(&args.connect).await?;
+    let info = client
+        .get_collection(authorize(akidb_proto::GetCollectionRequest {
+            name: args.connect.collection.clone(),
+        })?)
+        .await
+        .context("cannot inspect collection; run akidb doctor")?
+        .into_inner()
+        .collection
+        .context("collection not found; run akidb doctor")?;
+    crate::doctor::validate_collection(&info, args.dimensions, &args.embedding_model)?;
 
     let mut inserted = 0usize;
     let mut indexed_files = 0usize;
@@ -617,6 +648,7 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
         let plan = match plan_file(path, &base, &args) {
             Ok(PlanOutcome::Ready(plan)) => plan,
             Ok(PlanOutcome::Skipped) => {
+                present.insert(path.to_string_lossy().to_string());
                 skipped += 1;
                 continue;
             }
@@ -631,14 +663,15 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
         if !args.full {
             if let Some(entry) = state.as_ref().and_then(|s| s.get(&key)) {
                 if entry_matches(entry, &plan, &settings)
-                    && server_has_file(&mut client, &args.connect.collection, &plan).await
+                    && server_has_file(&mut client, &args.connect.collection, &plan, &settings)
+                        .await
                 {
                     unchanged += 1;
                     continue;
                 }
             }
         }
-        match index_file(&mut client, &embedder, &plan, &args).await {
+        match index_file(&mut client, &embedder, &plan, &args, &settings).await {
             Ok(count) => {
                 inserted += count;
                 indexed_files += 1;
@@ -655,11 +688,9 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
                 }
             }
             Err(e) => {
-                // The server may hold a partial file now; forget the entry so
-                // the next run re-indexes it.
-                if let Some(state) = state.as_mut() {
-                    state.remove(&key);
-                }
+                // Keep the previous local receipt. The server commits an entire
+                // document or retains the old head; ambiguous replies are resolved
+                // through GetDocument on the next attempt.
                 failures.push((plan.relative.clone(), format!("{e:#}")));
             }
         }
@@ -668,7 +699,7 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
     // Remove chunks of files that were indexed before and are gone now.
     if let Some(state) = state.as_mut() {
         for (file, entry) in state.missing_under(&root, &present) {
-            match delete_chunks_from(&mut client, &args.connect.collection, &file, 0).await {
+            match delete_document(&mut client, &args.connect.collection, &file, &entry).await {
                 Ok(deleted) => {
                     removed_files += 1;
                     eprintln!(
@@ -696,8 +727,8 @@ pub async fn run_index(args: IndexArgs) -> Result<()> {
             eprintln!("FAILED {file}: {reason}");
         }
         bail!(
-            "{} file(s) failed. Files that failed after a re-index delete may be missing \
-             chunks; re-run `akidb index` to repair them",
+            "{} file(s) failed. No delete/insert fallback was attempted. Check server health \
+             and re-run `akidb index` to resolve the committed document state",
             failures.len()
         );
     }
@@ -711,80 +742,116 @@ fn entry_matches(entry: &FileEntry, plan: &FilePlan, settings: &str) -> bool {
         && entry.settings == settings
 }
 
-/// Confirm the first and last chunk of `plan` are on the server with the
-/// expected version. A wiped or restored server then triggers a re-index
-/// instead of a silent skip. Any error counts as "not there".
+fn document_id(path: &Path) -> String {
+    hex_prefix(path.as_os_str().as_encoded_bytes(), 64)
+}
+
+async fn document_status(
+    client: &mut AkidbClient<Channel>,
+    collection: &str,
+    path: &Path,
+) -> Result<GetDocumentResponse> {
+    Ok(client
+        .get_document(authorize(GetDocumentRequest {
+            collection: collection.to_string(),
+            document_id: document_id(path),
+        })?)
+        .await
+        .context(
+            "GetDocument failed; atomic indexing requires a compatible mutable standalone server",
+        )?
+        .into_inner())
+}
+
+/// The server checks every durable chunk; local state alone is never sufficient.
 async fn server_has_file(
     client: &mut AkidbClient<Channel>,
     collection: &str,
     plan: &FilePlan,
+    settings: &str,
 ) -> bool {
-    let key = plan.absolute.to_string_lossy().to_string();
-    let last = plan.chunks.len().saturating_sub(1);
-    for index in [0, last] {
-        let Ok(request) = authorize(GetRequest {
-            collection: collection.to_string(),
-            id: chunk_id(&key, index),
-        }) else {
-            return false;
-        };
-        let Ok(response) = client.get(request).await else {
-            return false;
-        };
-        let response = response.into_inner();
-        if !response.found {
-            return false;
-        }
-        let version = serde_json::from_str::<serde_json::Value>(&response.metadata)
-            .ok()
-            .and_then(|m| m["document_version"].as_str().map(str::to_string));
-        if version.as_deref() != Some(plan.document_version.as_str()) {
-            return false;
-        }
-        if last == 0 {
-            break;
-        }
-    }
-    true
+    document_status(client, collection, &plan.absolute)
+        .await
+        .is_ok_and(|head| {
+            head.found
+                && head.complete
+                && head.document_version == plan.document_version
+                && head.chunk_count as usize == plan.chunks.len()
+                && head.settings_fingerprint == hex_prefix(settings.as_bytes(), 64)
+        })
 }
 
-/// Delete chunks `from..` of a file until the server reports one missing.
-/// Returns how many were deleted.
-async fn delete_chunks_from(
+fn replacement_body(
+    collection: &str,
+    path: &Path,
+    version: &str,
+    settings: &str,
+    revision: String,
+    chunks: Vec<DocumentChunk>,
+) -> ReplaceDocumentRequest {
+    let migrating = revision.is_empty();
+    ReplaceDocumentRequest {
+        collection: collection.into(),
+        document_id: document_id(path),
+        source_uri: url::Url::from_file_path(path)
+            .expect("absolute path")
+            .to_string(),
+        document_version: version.into(),
+        settings_fingerprint: hex_prefix(settings.as_bytes(), 64),
+        expected_revision: revision,
+        chunks,
+        legacy_id_prefix: if migrating {
+            format!("{}-", hex_prefix(path.to_string_lossy().as_bytes(), 16))
+        } else {
+            String::new()
+        },
+    }
+}
+
+async fn delete_document(
     client: &mut AkidbClient<Channel>,
     collection: &str,
-    canonical_path: &str,
-    from: usize,
+    file: &str,
+    entry: &FileEntry,
 ) -> Result<usize> {
-    let mut deleted = 0usize;
-    for index in from..from + MAX_STALE_CHUNKS {
-        let response = client
-            .delete(authorize(DeleteRequest {
-                collection: collection.to_string(),
-                id: chunk_id(canonical_path, index),
-            })?)
-            .await?
-            .into_inner();
-        if response.status() != DeleteStatus::Deleted {
-            break;
-        }
-        deleted += 1;
+    let path = Path::new(file);
+    let head = document_status(client, collection, path).await?;
+    if head.found && head.chunk_count > 0 && head.document_version != entry.document_version {
+        bail!(
+            "document changed since this index state was saved; refusing to prune a newer version"
+        );
     }
-    Ok(deleted)
+    let body = replacement_body(
+        collection,
+        path,
+        &hex_prefix(b"", 64),
+        &entry.settings,
+        head.revision,
+        Vec::new(),
+    );
+    client
+        .replace_document(authorize(body)?)
+        .await
+        .context("atomic document removal failed")?;
+    Ok(if head.found {
+        head.chunk_count as usize
+    } else {
+        entry.chunk_count
+    })
 }
 
-/// Embed and store one file, replacing earlier chunks with the same ids and
-/// removing leftover chunks from a longer earlier version.
+/// Embed the complete bounded document before the server sees any mutation.
 async fn index_file(
     client: &mut AkidbClient<Channel>,
     embedder: &EmbedderHandle,
     plan: &FilePlan,
     args: &IndexArgs,
+    settings: &str,
 ) -> Result<usize> {
-    let collection = &args.connect.collection;
-    let key = plan.absolute.to_string_lossy().to_string();
-    let mut index = 0usize;
-    let mut stored = 0usize;
+    use akidb_contracts::document::validate_document_bounds;
+    validate_document_bounds(plan.chunks.len(), 0)?;
+    let head = document_status(client, &args.connect.collection, &plan.absolute).await?;
+    let mut chunks = Vec::with_capacity(plan.chunks.len());
     for batch in plan.chunks.chunks(args.batch_size) {
         let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
         let embedder = embedder.arc();
@@ -793,25 +860,12 @@ async fn index_file(
             embedder.embed_batch(&refs)
         })
         .await?
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "embedding failed: {e}. Is the embedding server running at {}?",
-                args.embedding_url
-            )
-        })?;
+        .map_err(|e| anyhow::anyhow!("embedding failed before document replacement: {e}"))?;
         if vectors.len() != batch.len() {
-            bail!(
-                "embedding server returned {} vectors for {} chunks",
-                vectors.len(),
-                batch.len()
-            );
+            bail!("embedding server returned the wrong number of vectors");
         }
         for (chunk, vector) in batch.iter().zip(vectors) {
-            let id = chunk_id(&key, index);
-            index += 1;
-            let body = InsertRequest {
-                collection: collection.clone(),
-                id: id.clone(),
+            chunks.push(DocumentChunk {
                 vector,
                 metadata: chunk_metadata(
                     &plan.relative,
@@ -820,42 +874,40 @@ async fn index_file(
                     chunk,
                 ),
                 text: chunk.text.clone(),
-            };
-            match client.insert(authorize(body.clone())?).await {
-                Ok(_) => {}
-                Err(status) if status.code() == Code::AlreadyExists => {
-                    // Re-indexing: replace the earlier chunk with this id. A
-                    // failure between the delete and the insert leaves a gap,
-                    // which the file-level error tells the operator to repair.
-                    client
-                        .delete(authorize(DeleteRequest {
-                            collection: collection.clone(),
-                            id: id.clone(),
-                        })?)
-                        .await
-                        .with_context(|| format!("delete of {id} failed"))?;
-                    client
-                        .insert(authorize(body)?)
-                        .await
-                        .with_context(|| format!("re-insert of {id} failed after delete"))?;
-                }
-                Err(status) => {
-                    bail!(
-                        "insert of {id} failed: {} ({})",
-                        status.message(),
-                        status.code()
-                    );
-                }
-            }
-            stored += 1;
+            });
         }
     }
-    // Remove chunks left over from a longer earlier version of this file.
-    delete_chunks_from(client, collection, &key, plan.chunks.len()).await?;
-    Ok(stored)
+    let body = replacement_body(
+        &args.connect.collection,
+        &plan.absolute,
+        &plan.document_version,
+        settings,
+        head.revision,
+        chunks,
+    );
+    validate_document_bounds(body.chunks.len(), body.encoded_len())?;
+    let result = client
+        .replace_document(authorize(body)?)
+        .await
+        .context("atomic replacement failed; retry after checking health (no legacy fallback)")?
+        .into_inner();
+    Ok(result.chunk_count as usize)
 }
 
 pub async fn run_pack(args: PackArgs) -> Result<()> {
+    let verification_root = args
+        .verify_sources_under
+        .as_ref()
+        .map(|p| {
+            let path = p
+                .canonicalize()
+                .context("cannot resolve source verification directory")?;
+            if !path.is_dir() {
+                bail!("source verification root must be a directory");
+            }
+            Ok::<_, anyhow::Error>(path)
+        })
+        .transpose()?;
     let mut client = connect(&args.connect).await?;
     let body = TextSearchRequest {
         collection: args.connect.collection.clone(),
@@ -883,19 +935,36 @@ pub async fn run_pack(args: PackArgs) -> Result<()> {
         bail!("the server returned no typed context pack (is it an older build?)");
     };
 
+    let verifications: Vec<_> = pack
+        .items
+        .iter()
+        .map(|item| {
+            verification_root
+                .as_ref()
+                .map(|root| crate::citations::verify(item, root))
+                .unwrap_or("not_requested")
+        })
+        .collect();
+    let verification_failed =
+        verification_root.is_some() && verifications.iter().any(|s| *s != "verified");
     if args.json {
         let items: Vec<_> = pack
             .items
             .iter()
-            .map(|item| {
+            .zip(&verifications)
+            .map(|(item, verification)| {
                 let c = item.citation.clone().unwrap_or_default();
                 json!({
                     "chunk_id": item.chunk_id,
                     "score": item.score,
                     "reason": item.reason,
                     "text": item.text,
+                    "source_verification": verification,
                     "citation": {
+                        "chunk_id": c.chunk_id,
                         "source_uri": c.source_uri,
+                        "source_version": c.source_version,
+                        "generation_id": c.generation_id,
                         "document_id": c.document_id,
                         "document_version": c.document_version,
                         "content_hash": c.content_hash,
@@ -908,6 +977,11 @@ pub async fn run_pack(args: PackArgs) -> Result<()> {
             .collect();
         let mut out = BTreeMap::new();
         out.insert("schema_version", json!(pack.schema_version));
+        out.insert("text", json!(pack.text));
+        out.insert(
+            "token_count_is_estimate",
+            json!((pack.token_counter == "conservative_v1").then_some(true)),
+        );
         out.insert("token_budget", json!(pack.token_budget));
         out.insert("used_tokens", json!(pack.used_tokens));
         out.insert("token_counter", json!(pack.token_counter));
@@ -915,6 +989,9 @@ pub async fn run_pack(args: PackArgs) -> Result<()> {
         out.insert("candidate_limited", json!(pack.candidate_limited));
         out.insert("items", json!(items));
         println!("{}", serde_json::to_string_pretty(&out)?);
+        if verification_failed {
+            bail!("one or more local citations could not be verified; inspect source_verification");
+        }
         return Ok(());
     }
 
@@ -927,6 +1004,9 @@ pub async fn run_pack(args: PackArgs) -> Result<()> {
         pack.truncated,
         pack.candidate_limited
     );
+    if pack.token_counter == "conservative_v1" {
+        println!("token count is an estimate, not the target model's tokenizer count");
+    }
     for (n, item) in pack.items.iter().enumerate() {
         let c = item.citation.clone().unwrap_or_default();
         let source = if c.source_uri.is_empty() {
@@ -938,13 +1018,17 @@ pub async fn run_pack(args: PackArgs) -> Result<()> {
             }
         };
         println!(
-            "\n[{}] score={:.4} reason={} source={}\n{}",
+            "\n[{}] score={:.4} reason={} source={} verification={}\n{}",
             n + 1,
             item.score,
             item.reason,
             source,
+            verifications[n],
             item.text.trim_end()
         );
+    }
+    if verification_failed {
+        bail!("one or more local citations could not be verified");
     }
     Ok(())
 }
@@ -952,6 +1036,25 @@ pub async fn run_pack(args: PackArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_are_explicit_and_token_takes_precedence() {
+        assert_eq!(explicit_token(None, None).unwrap(), None);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("credential.txt");
+        assert!(explicit_token(None, Some(file.clone())).is_err());
+        assert_eq!(
+            explicit_token(Some(" synthetic-token ".into()), Some(file.clone()))
+                .unwrap()
+                .as_deref(),
+            Some("synthetic-token")
+        );
+        std::fs::write(&file, " synthetic-file-token\n").unwrap();
+        assert_eq!(
+            explicit_token(None, Some(file)).unwrap().as_deref(),
+            Some("synthetic-file-token")
+        );
+    }
 
     #[test]
     fn chunks_are_line_aligned_and_cover_the_text() {
@@ -1059,6 +1162,6 @@ mod tests {
         assert_eq!(value["document_version"], "v1");
         assert_eq!(value["start_offset"], 4);
         assert_eq!(value["end_offset"], 9);
-        assert_eq!(value["content_hash"].as_str().unwrap().len(), 16);
+        assert_eq!(value["content_hash"].as_str().unwrap().len(), 64);
     }
 }

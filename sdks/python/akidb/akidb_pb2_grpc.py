@@ -40,6 +40,16 @@ class AkidbStub(object):
                 request_serializer=akidb__pb2.InsertRequest.SerializeToString,
                 response_deserializer=akidb__pb2.InsertResponse.FromString,
                 _registered_method=True)
+        self.ReplaceDocument = channel.unary_unary(
+                '/akidb.v1.Akidb/ReplaceDocument',
+                request_serializer=akidb__pb2.ReplaceDocumentRequest.SerializeToString,
+                response_deserializer=akidb__pb2.ReplaceDocumentResponse.FromString,
+                _registered_method=True)
+        self.GetDocument = channel.unary_unary(
+                '/akidb.v1.Akidb/GetDocument',
+                request_serializer=akidb__pb2.GetDocumentRequest.SerializeToString,
+                response_deserializer=akidb__pb2.GetDocumentResponse.FromString,
+                _registered_method=True)
         self.Search = channel.unary_unary(
                 '/akidb.v1.Akidb/Search',
                 request_serializer=akidb__pb2.SearchRequest.SerializeToString,
@@ -114,6 +124,20 @@ class AkidbServicer(object):
     def Insert(self, request, context):
         """Insert a vector
         """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReplaceDocument(self, request, context):
+        """Bounded atomic replacement on a mutable standalone shard. No coordinator
+        or generation-serving fallback. Empty chunks commit an empty document.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetDocument(self, request, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -214,6 +238,16 @@ def add_AkidbServicer_to_server(servicer, server):
                     request_deserializer=akidb__pb2.InsertRequest.FromString,
                     response_serializer=akidb__pb2.InsertResponse.SerializeToString,
             ),
+            'ReplaceDocument': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReplaceDocument,
+                    request_deserializer=akidb__pb2.ReplaceDocumentRequest.FromString,
+                    response_serializer=akidb__pb2.ReplaceDocumentResponse.SerializeToString,
+            ),
+            'GetDocument': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetDocument,
+                    request_deserializer=akidb__pb2.GetDocumentRequest.FromString,
+                    response_serializer=akidb__pb2.GetDocumentResponse.SerializeToString,
+            ),
             'Search': grpc.unary_unary_rpc_method_handler(
                     servicer.Search,
                     request_deserializer=akidb__pb2.SearchRequest.FromString,
@@ -308,6 +342,60 @@ class Akidb(object):
             '/akidb.v1.Akidb/Insert',
             akidb__pb2.InsertRequest.SerializeToString,
             akidb__pb2.InsertResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReplaceDocument(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.Akidb/ReplaceDocument',
+            akidb__pb2.ReplaceDocumentRequest.SerializeToString,
+            akidb__pb2.ReplaceDocumentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetDocument(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/akidb.v1.Akidb/GetDocument',
+            akidb__pb2.GetDocumentRequest.SerializeToString,
+            akidb__pb2.GetDocumentResponse.FromString,
             options,
             channel_credentials,
             insecure,

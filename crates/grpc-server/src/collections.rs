@@ -42,6 +42,16 @@ impl CollectionRegistry {
         let mut guard = self.collections.write();
         guard
             .entry(name.to_string())
+            .and_modify(|meta| {
+                // Constructors reserve the active name before the physical
+                // index configuration is known. Replace only that placeholder.
+                if meta.dimensions == 0 && dimensions > 0 {
+                    meta.dimensions = dimensions;
+                    meta.metric = metric.to_string();
+                    meta.vector_precision = precision.to_string();
+                    meta.embedding_model_id = embedding_model_id.to_string();
+                }
+            })
             .or_insert_with(|| CollectionMeta {
                 name: name.to_string(),
                 dimensions,
@@ -88,3 +98,24 @@ impl CollectionRegistry {
 }
 
 pub type SharedCollectionRegistry = Arc<CollectionRegistry>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boot_schema_replaces_placeholder_but_not_an_existing_binding() {
+        let registry = CollectionRegistry::new();
+        registry.ensure_default("default", 0, "cosine", "f32", "");
+        registry.ensure_default("default", 8, "ip", "f16", "model-a");
+        let info = registry.get("default").unwrap();
+        assert_eq!(info.dimensions, 8);
+        assert_eq!(info.embedding_model_id, "model-a");
+        assert_eq!(info.metric, "ip");
+        registry.ensure_default("default", 16, "cosine", "f32", "model-b");
+        assert_eq!(
+            registry.get("default").unwrap().embedding_model_id,
+            "model-a"
+        );
+    }
+}

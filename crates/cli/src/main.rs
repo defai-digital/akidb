@@ -26,7 +26,10 @@ use tonic::Request;
 
 mod bundle;
 mod chunking;
+mod citations;
+mod doctor;
 mod index;
+mod index_filter;
 mod index_state;
 mod start;
 
@@ -58,6 +61,9 @@ enum Command {
 
     /// Check gRPC health and exit non-zero when the service is unhealthy.
     Health(HealthArgs),
+
+    /// Check retrieval prerequisites without indexing or printing private settings.
+    Doctor(doctor::DoctorArgs),
 
     /// Inspect the local native graph index stored in RocksDB.
     Graph(GraphArgs),
@@ -344,6 +350,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Tui(args) => akidb_tui::run(args).await,
         Command::Ops(args) => run_ops(args).await,
         Command::Health(args) => run_health(args).await,
+        Command::Doctor(args) => doctor::run(args).await,
         Command::Graph(args) => run_graph(args),
         Command::Bundle(args) => bundle::run(args),
         Command::Index(args) => index::run_index(args).await,

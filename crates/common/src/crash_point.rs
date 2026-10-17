@@ -15,6 +15,10 @@
 //! - `insert_batch.after_durable_write` — same point in the batch path
 //! - `delete.after_durable_write` — after the synced tombstone batch, before
 //!   the in-memory tombstone
+//! - `document.before_commit` — after staging new HNSW entries, before the
+//!   atomic document batch (old version remains durable)
+//! - `document.after_commit` — after the document batch, before rebuilding
+//!   projections (new version is durable, recovery marker is set)
 
 use std::sync::OnceLock;
 

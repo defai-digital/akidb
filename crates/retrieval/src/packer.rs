@@ -7,7 +7,7 @@
 //! [`PackStrategy`], and guarantees every included span carries a [`Citation`]
 //! back to its source (PACK-001/002/004).
 //!
-//! Token counting is the named `conservative_v1` upper bound in
+//! Token counting is the named `conservative_v1` estimate in
 //! [`estimate_tokens`]: ASCII words cost `ceil(chars / 4)` (at least one), and
 //! each non-ASCII scalar costs two. It is not a model tokenizer. A later
 //! counter can replace it without changing which passages are selected, as
@@ -239,12 +239,12 @@ impl ContextPack {
     }
 }
 
-/// `conservative_v1` token upper bound.
+/// `conservative_v1` token estimate.
 ///
 /// Each ASCII word costs `max(1, ceil(char_count / 4))`. Each non-ASCII scalar
 /// costs 2 and ends the current ASCII word. Empty and whitespace-only text
-/// costs 0. This overestimates common BPE counts for English and CJK rather
-/// than counting whitespace-separated words.
+/// costs 0. This is a heuristic, not a guaranteed upper bound for any model
+/// tokenizer. The pack budget is enforced in these counter units.
 pub fn estimate_tokens(text: &str) -> usize {
     let mut tokens = 0usize;
     let mut ascii_run = 0usize;

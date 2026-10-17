@@ -26,6 +26,7 @@
 //! ```
 
 pub mod collection_key;
+pub mod document;
 pub mod error;
 pub mod knowledge;
 pub mod knowledge_bundle;
